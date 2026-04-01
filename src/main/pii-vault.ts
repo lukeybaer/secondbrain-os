@@ -7,7 +7,7 @@
 //   Windows: DPAPI-protected via Credential Manager (accessed via a stub file)
 //   Fallback: PBKDF2-derived key from a master password prompt (dev only)
 //
-// Vault file: %APPDATA%\secondbrain\data\vault\pii.encrypted.json
+// Vault file: {userData}/data/vault/pii.encrypted.json
 
 import * as crypto from "crypto";
 import * as fs from "fs";

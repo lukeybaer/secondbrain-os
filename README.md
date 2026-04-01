@@ -98,8 +98,13 @@ All main <-> renderer communication flows through Electron's IPC with a typed co
 
 All data is stored as local JSON files and SQLite — no external database required.
 
+Data lives in the Electron `userData` directory:
+- **Windows:** `%APPDATA%/secondbrain/`
+- **macOS:** `~/Library/Application Support/secondbrain/`
+- **Linux:** `~/.config/secondbrain/`
+
 ```
-%APPDATA%/secondbrain/
+{userData}/
 ├── config.json              # API keys and settings
 ├── secondbrain.db           # SQLite (approvals, whitelist, conversations FTS)
 ├── data/
@@ -197,7 +202,7 @@ Audit trail logged to SQLite
 ### Prerequisites
 
 - Node.js 18+
-- Windows 10/11 (primary platform; macOS/Linux untested)
+- Windows 10/11 or macOS 12+ (Linux untested)
 - API keys for services you want to use (see Settings page)
 
 ### Install
@@ -230,7 +235,9 @@ This starts the Electron app with hot reload. On first launch, go to **Settings*
 
 ```bash
 npm run build        # Compile TypeScript
-npm run dist         # Build Windows installer (.exe)
+npm run dist         # Build for current platform
+npm run dist:win     # Build Windows installer (.exe)
+npm run dist:mac     # Build macOS disk image (.dmg)
 ```
 
 ### Test
@@ -292,7 +299,7 @@ SecondBrain's agent learns and improves over time. Here's how the learning pipel
 
 ### On First Launch
 
-The app creates a generic `EA_MEMORY.md` in your local data directory (`%APPDATA%/secondbrain/data/agent/`). Edit this file to tell the agent about yourself — your name, location, communication preferences, active projects. The more context you give it, the better it performs.
+The app creates a generic `EA_MEMORY.md` in your local data directory (see [Data Storage](#data-storage) above). Edit this file to tell the agent about yourself — your name, location, communication preferences, active projects. The more context you give it, the better it performs.
 
 ### After Every Call
 
@@ -328,7 +335,7 @@ The `install.sh` script creates symlinks so your personal files appear in the ri
 
 This project is under active development. Some honest context:
 
-- **Windows-primary.** Built and tested on Windows 10. macOS and Linux are untested.
+- **Windows and macOS.** Built on Windows 10, with macOS support added. Linux is untested.
 - **Single-user design.** This is a personal assistant, not a multi-tenant SaaS. Auth, permissions, and multi-user concerns are out of scope.
 - **Many features are partially built.** WhatsApp integration, daily briefings, knowledge graph, and inbound call routing exist in code but are not fully tested or may have known issues.
 - **The content pipeline assumes a specific external workflow** (video generation → review → YouTube upload). It won't be useful out of the box without adaptation.

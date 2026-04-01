@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "dist": "npm run build && electron-packager . SecondBrain --platform=win32 --arch=x64 --out=dist-pkg --overwrite --app-bundle-id=com.secondbrain.app --ignore=\"node_modules|src|\\.git|dist-pkg|dist$\" --electron-version=28.3.3",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
     "preview": "electron-vite preview",
     "test": "vitest run",
     "test:e2e": "playwright test",
@@ -24,6 +26,10 @@
     "win": {
       "target": "nsis",
       "icon": "resources/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity"
     },
     "nsis": {
       "oneClick": false,

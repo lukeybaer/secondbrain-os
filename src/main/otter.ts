@@ -1,15 +1,17 @@
 // Otter.ai unofficial API client
 // Auth: GET /login with HTTP Basic (email:password) → get userid + session cookies
+import { app } from "electron";
 import { getConfig } from "./config";
 import * as fs from "fs";
 import * as path from "path";
 
 function debugLog(msg: string): void {
   try {
-    const dir = process.env.APPDATA
-      ? path.join(process.env.APPDATA, "secondbrain")
-      : path.join(require("os").homedir(), ".secondbrain");
-    fs.appendFileSync(path.join(dir, "error.log"), `[${new Date().toISOString()}] OTTER: ${msg}\n`, "utf-8");
+    fs.appendFileSync(
+      path.join(app.getPath("userData"), "error.log"),
+      `[${new Date().toISOString()}] OTTER: ${msg}\n`,
+      "utf-8",
+    );
   } catch { /* best-effort */ }
 }
 

@@ -10,6 +10,7 @@
  * queries like "when did I talk to Leslie about NVF?" resolve correctly.
  */
 
+import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -19,10 +20,7 @@ import { getConfig } from './config';
 // ── Storage paths ─────────────────────────────────────────────────────────────
 
 function memoryDir(): string {
-  const base = process.env.APPDATA
-    ? path.join(process.env.APPDATA, 'secondbrain')
-    : path.join(require('os').homedir(), '.secondbrain');
-  return path.join(base, 'memory');
+  return path.join(app.getPath('userData'), 'memory');
 }
 
 function archiveDir(): string {

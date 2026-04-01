@@ -1,3 +1,4 @@
+import { app } from "electron";
 import OpenAI from "openai";
 import { getConfig } from "./config";
 import { getAllConversationMeta } from "./database";
@@ -14,10 +15,11 @@ function getOpenAI(): OpenAI {
 
 function chatDebugLog(msg: string): void {
   try {
-    const dir = process.env.APPDATA
-      ? path.join(process.env.APPDATA, "secondbrain")
-      : path.join(require("os").homedir(), ".secondbrain");
-    fs.appendFileSync(path.join(dir, "error.log"), `[${new Date().toISOString()}] CHAT: ${msg}\n`, "utf-8");
+    fs.appendFileSync(
+      path.join(app.getPath("userData"), "error.log"),
+      `[${new Date().toISOString()}] CHAT: ${msg}\n`,
+      "utf-8",
+    );
   } catch { /* best-effort */ }
 }
 

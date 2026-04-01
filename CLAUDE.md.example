@@ -10,7 +10,7 @@ Copy this file to `CLAUDE.md` and customize for your own use.
 - **Preload**: secure IPC bridge via `contextBridge`
 
 ### Data Storage Pattern
-All data is stored as JSON files in `%APPDATA%\secondbrain\data\{module}\{id}.json`
+All data is stored as JSON files in `{userData}/data/{module}/{id}.json`
 
 ### IPC Pattern
 All main<->renderer communication goes through:

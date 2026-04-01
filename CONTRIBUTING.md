@@ -5,7 +5,7 @@
 ### Prerequisites
 
 - **Node.js 18+** (LTS recommended)
-- **Windows 10/11** (primary dev platform)
+- **Windows 10/11 or macOS 12+**
 - **Git**
 
 ### Install
@@ -28,7 +28,7 @@ This starts Electron with hot reload via electron-vite. The app opens automatica
 
 ### Configure
 
-On first launch, open the **Settings** page and add your API keys. The app stores config at `%APPDATA%/secondbrain/config.json`. No API keys are hardcoded in the source — you bring your own.
+On first launch, open the **Settings** page and add your API keys. The app stores config in the Electron `userData` directory (`config.json`). No API keys are hardcoded in the source — you bring your own.
 
 ---
 

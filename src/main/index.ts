@@ -1,5 +1,6 @@
 import { app, BrowserWindow, shell, protocol, net } from "electron";
 import { join } from "path";
+import { pathToFileURL } from "node:url";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { loadConfig } from "./config";
@@ -18,7 +19,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 // ── Crash / error log ─────────────────────────────────────────────────────────
-// Written to %APPDATA%\secondbrain\error.log so errors survive the process dying.
+// Written to app.getPath("userData")/error.log so errors survive the process dying.
 function getLogPath(): string {
   return path.join(app.getPath("userData"), "error.log");
 }
@@ -120,13 +121,12 @@ app.whenReady().then(() => {
   loadConfig();
 
   // Handle media:// URLs by proxying through net.fetch with the file:// protocol.
-  // URL format: media://local/C:/path/to/file.mp4
-  // pathname = /C:/path/to/file.mp4 → strip leading slash → file:///C:/path/to/file.mp4
+  // Uses pathToFileURL() for cross-platform path handling (Windows drive letters + Unix absolute paths).
   protocol.handle("media", (request) => {
     try {
       const url = new URL(request.url);
-      const filePath = url.pathname.replace(/^\//, "");
-      return net.fetch(`file:///${filePath}`);
+      const filePath = decodeURIComponent(url.pathname);
+      return net.fetch(pathToFileURL(filePath).href);
     } catch (e) {
       writeLog("media-protocol", e);
       return new Response("File not found", { status: 404 });
