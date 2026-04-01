@@ -7,12 +7,17 @@ dist-pkg/
 .env.*
 
 # Personal data — never commit (lives in secondbrain-config private repo)
+# Patterns listed with and without trailing slash to match both real dirs and symlinks.
+memory
 memory/
 openclaw-archive/
 CLAUDE.md
 SECONDBRAIN_PLAN.md
 KNOWN_FIXES.md
+.claude
 .claude/
+.local
+.local/
 src/main/empire/empire-config.json
 
 # Content pipeline media
