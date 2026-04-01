@@ -343,6 +343,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and development gu
 
 ---
 
-## License
-
-MIT
