@@ -1,0 +1,28 @@
+node_modules/
+out/
+dist/
+dist-pkg/
+*.log
+.env
+.env.*
+
+# Personal data — never commit (lives in secondbrain-config private repo)
+memory/
+openclaw-archive/
+CLAUDE.md
+SECONDBRAIN_PLAN.md
+KNOWN_FIXES.md
+.claude/
+src/main/empire/empire-config.json
+
+# Content pipeline media
+content-review/pending/*.mp4
+content-review/pending/*.MP4
+content-review/pending/*.jpg
+content-review/pending/*.png
+
+# Runtime data
+*.db
+*.db-wal
+*.db-shm
+screenshots/

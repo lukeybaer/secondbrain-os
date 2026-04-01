@@ -1,0 +1,37 @@
+# SecondBrain — CLAUDE.md
+
+Copy this file to `CLAUDE.md` and customize for your own use.
+
+## Architecture
+
+### Electron App Stack
+- **Main process** (Node.js): file I/O, API calls, IPC handlers
+- **Renderer** (React + TypeScript): UI pages
+- **Preload**: secure IPC bridge via `contextBridge`
+
+### Data Storage Pattern
+All data is stored as JSON files in `%APPDATA%\secondbrain\data\{module}\{id}.json`
+
+### IPC Pattern
+All main<->renderer communication goes through:
+1. `src/main/ipc-handlers.ts` — `ipcMain.handle("module:action", handler)`
+2. `src/preload/index.ts` — `ipcRenderer.invoke("module:action", ...args)`
+3. `src/renderer/src/App.tsx` / pages — `window.api.module.action()`
+
+## Development Commands
+
+```bash
+npm run dev          # Start dev server
+npx tsc --noEmit     # Type check
+npm test             # Run unit tests
+npm run test:e2e     # Run Playwright tests
+npm run build        # Build for production
+```
+
+## Code Standards
+
+- TypeScript strict — no `any` except where truly unavoidable
+- Dark theme throughout (`#0f0f0f` background, `#111` sidebar)
+- File-based storage only — no external DB
+- Production-level code — clean, typed, no debug leftovers
+- Tests: Vitest unit tests + Playwright E2E for all new pages

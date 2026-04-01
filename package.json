@@ -1,0 +1,62 @@
+{
+  "name": "secondbrain",
+  "version": "1.0.0",
+  "description": "AI-powered Otter.ai conversation synthesis and search",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "dist": "npm run build && electron-packager . SecondBrain --platform=win32 --arch=x64 --out=dist-pkg --overwrite --app-bundle-id=com.secondbrain.app --ignore=\"node_modules|src|\\.git|dist-pkg|dist$\" --electron-version=28.3.3",
+    "preview": "electron-vite preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "postinstall": "electron-rebuild -f -w better-sqlite3"
+  },
+  "build": {
+    "appId": "com.secondbrain.app",
+    "productName": "SecondBrain",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "@electron-toolkit/tsconfig": "^1.0.1",
+    "@electron/rebuild": "^3.7.1",
+    "@playwright/test": "^1.58.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.14.0",
+    "@types/react": "^18.2.48",
+    "@types/react-dom": "^18.2.18",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^4.2.1",
+    "electron": "^28.2.0",
+    "electron-builder": "^24.9.1",
+    "electron-packager": "^17.1.2",
+    "electron-vite": "^2.0.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.12",
+    "vitest": "^4.1.2",
+    "ws": "^8.20.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "@electron-toolkit/preload": "^3.0.0",
+    "@electron-toolkit/utils": "^3.0.0",
+    "better-sqlite3": "^11.9.1",
+    "livekit-client": "^2.18.0",
+    "openai": "^4.26.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}
