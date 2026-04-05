@@ -1,0 +1,41 @@
+[
+  {
+    "id": "kids_tiny_elephant",
+    "title": "The Tiny Elephant Who Never Forgot a Friend",
+    "channel": "BedtimeStories",
+    "status": "approved",
+    "qc_passed": true,
+    "generated_date": "2026-03-14",
+    "video_file": "kids_tiny_elephant.mp4",
+    "video_source": "final.mp4",
+    "thumbnail_file": "kids_tiny_elephant_thumb.jpg",
+    "local_size_mb": 15,
+    "approved_at": "2026-04-01T18:06:01.944Z"
+  },
+  {
+    "id": "kids_little_whale",
+    "title": "The Little Whale Who Learned to Sing",
+    "channel": "BedtimeStories",
+    "status": "approved",
+    "qc_passed": true,
+    "generated_date": "2026-03-14",
+    "video_file": "kids_little_whale.mp4",
+    "video_source": "final.mp4",
+    "thumbnail_file": "kids_little_whale_thumb.jpg",
+    "local_size_mb": 15,
+    "approved_at": "2026-04-01T18:06:09.177Z"
+  },
+  {
+    "id": "mit_30_agents",
+    "title": "MIT Audited 30 AI Agents. Every Single One Failed.",
+    "channel": "AILifeHacks",
+    "status": "approved",
+    "qc_passed": true,
+    "generated_date": "2026-03-14",
+    "video_file": "mit_30_agents.mp4",
+    "video_source": "bg.mp4 (no final.mp4 present)",
+    "thumbnail_file": "mit_30_agents_thumb.jpg",
+    "local_size_mb": 30,
+    "approved_at": "2026-04-01T18:06:58.152Z"
+  }
+]

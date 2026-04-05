@@ -1,0 +1,47 @@
+node_modules/
+out/
+dist/
+dist-pkg/
+*.log
+.env
+.env.*
+
+# Personal data — never commit to public remote
+# Patterns listed with and without trailing slash to match both real dirs and symlinks.
+memory
+memory/
+openclaw-archive
+openclaw-archive/
+CLAUDE.md
+SECONDBRAIN_PLAN.md
+KNOWN_FIXES.md
+.claude
+.claude/
+.local
+.local/
+src/main/empire/empire-config.json
+
+# Content pipeline media
+content-review/pending/*.mp4
+content-review/pending/*.MP4
+content-review/pending/*.jpg
+content-review/pending/*.png
+
+# Claude Code hook logs
+.claude/command-log.txt
+
+# Runtime data
+*.db
+*.db-wal
+*.db-shm
+screenshots/
+.wwebjs_cache/
+UserslukedAppDataRoaming/
+*.pptx
+~$*
+
+# Published video assets (large binaries)
+content-review/published/*.mp4
+content-review/published/*.jpg
+content-review/pending/*.mp3
+*.html

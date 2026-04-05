@@ -1,0 +1,74 @@
+{
+  "name": "secondbrain",
+  "version": "1.0.0",
+  "description": "AI-powered Otter.ai conversation synthesis and search",
+  "main": "out/main/index.js",
+  "scripts": {
+    "predev": "node -e \"const fs=require('fs'),p=require('path'),d=p.join(process.env.APPDATA||'','secondbrain');['SingletonLock','SingletonCookie','SingletonSocket'].forEach(f=>{try{fs.unlinkSync(p.join(d,f))}catch{}});console.log('[predev] singleton locks cleared')\"",
+    "dev": "node -e \"const c=process.cwd().replace(/\\\\/g,'/');if(c.includes('.claude/worktrees')){console.error('\\n' + '='.repeat(60) + '\\nFATAL: npm run dev must be run from the MAIN REPO\\nYou are in: ' + c + '\\nRun from: C:/Users/luked/secondbrain\\n' + '='.repeat(60));process.exit(1)}\" && electron-vite dev",
+    "build": "electron-vite build",
+    "dist": "npm run build && electron-packager . secondbrain --platform=win32 --arch=x64 --out=dist-pkg --overwrite --app-bundle-id=com.secondbrain.app --ignore=\"node_modules|src|\\.git|dist-pkg|dist$\" --electron-version=28.3.3",
+    "preview": "electron-vite preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "postinstall": "electron-rebuild -f -w better-sqlite3"
+  },
+  "build": {
+    "appId": "com.secondbrain.app",
+    "productName": "secondbrain",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "@electron-toolkit/tsconfig": "^1.0.1",
+    "@electron/rebuild": "^3.7.1",
+    "@playwright/test": "^1.58.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.14.0",
+    "@types/react": "^18.2.48",
+    "@types/react-dom": "^18.2.18",
+    "@types/ws": "^8.18.1",
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "electron": "^28.2.0",
+    "electron-builder": "^24.9.1",
+    "electron-packager": "^17.1.2",
+    "electron-vite": "^2.0.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.12",
+    "vitest": "^4.1.2",
+    "ws": "^8.20.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "@electron-toolkit/preload": "^3.0.0",
+    "@electron-toolkit/utils": "^3.0.0",
+    "@types/qrcode": "^1.5.6",
+    "better-sqlite3": "^11.9.1",
+    "bufferutil": "^4.1.0",
+    "livekit-client": "^2.18.0",
+    "obs-websocket-js": "^5.0.8",
+    "openai": "^4.26.0",
+    "qrcode": "^1.5.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "utf-8-validate": "^6.0.6",
+    "whatsapp-web.js": "^1.34.6"
+  }
+}

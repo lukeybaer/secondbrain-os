@@ -1,0 +1,157 @@
+{
+  "videos": [
+    {
+      "id": "anthropic_vs_pentagon",
+      "title": "They Banned Claude Publicly — Then Used It in Secret",
+      "channel": "AILifeHacks",
+      "youtube_url": "https://youtube.com/shorts/qUwgcasVEbE",
+      "published_date": "2026-03-09",
+      "video_file": "anthropic_vs_pentagon.mp4",
+      "thumbnail_file": "anthropic_vs_pentagon_thumb.jpg"
+    },
+    {
+      "id": "deep_research_free",
+      "title": "OpenAI Just Made a $50,000/Year Tool Free for Everyone",
+      "channel": "AILifeHacks",
+      "youtube_url": "https://youtube.com/shorts/TpjJElU4rpw",
+      "published_date": "2026-03-10",
+      "video_file": "deep_research_free.mp4",
+      "thumbnail_file": "deep_research_free_thumb.jpg"
+    },
+    {
+      "id": "openai_ethics_users",
+      "title": "AI Ethics Just Cost OpenAI 1.5 Million Users",
+      "channel": "AILifeHacks",
+      "youtube_url": "https://youtube.com/shorts/AwicqXT_puk",
+      "published_date": "2026-03-11",
+      "video_file": "openai_ethics_users.mp4",
+      "thumbnail_file": "openai_ethics_users_thumb.jpg"
+    },
+    {
+      "id": "sundar_692m",
+      "title": "Google Paid Sundar Pichai $692 Million. Then Laid Off the Workers.",
+      "channel": "AILifeHacks",
+      "youtube_url": "https://youtube.com/shorts/u021F_4Lu-8",
+      "published_date": "2026-03-12",
+      "video_file": "sundar_692m.mp4",
+      "thumbnail_file": "sundar_692m_thumb.jpg"
+    },
+    {
+      "id": "chatgpt_to_claude_switch",
+      "title": "5 Reasons Everyone Is Secretly Switching From ChatGPT to Claude",
+      "channel": "AILifeHacks",
+      "youtube_url": "https://youtube.com/shorts/dOaRbPK8I24",
+      "published_date": "2026-03-14",
+      "video_file": "chatgpt_to_claude_switch.mp4",
+      "thumbnail_file": "chatgpt_to_claude_switch_thumb.jpg"
+    },
+    {
+      "id": "anthropic_code_review_free",
+      "title": "Anthropic's Free Code Review Catches Bugs Before They Cost You",
+      "channel": "AILifeHacks",
+      "youtube_url": "https://youtube.com/shorts/fJg_eOleK3c",
+      "published_date": "2026-03-15",
+      "video_file": "anthropic_code_review_free.mp4",
+      "thumbnail_file": "anthropic_code_review_free_thumb.jpg"
+    },
+    {
+      "id": "ami_labs_103b",
+      "title": "The $1.03 Billion Bet That ChatGPT Gets Replaced",
+      "channel": "AILifeHacks",
+      "youtube_url": "https://youtube.com/shorts/RwN4Vhsjres",
+      "published_date": "2026-03-16",
+      "video_file": "ami_labs_103b.mp4",
+      "thumbnail_file": "ami_labs_103b_thumb.jpg"
+    },
+    {
+      "id": "kids_cloud_rain",
+      "title": "The Little Cloud Who Learned to Rain",
+      "channel": "BedtimeStories",
+      "youtube_url": "https://youtube.com/shorts/20Wwb6mZiDc",
+      "published_date": "2026-03-07",
+      "video_file": "kids_cloud_rain.mp4",
+      "thumbnail_file": "kids_cloud_rain_thumb.jpg"
+    },
+    {
+      "id": "kids_lighthouse",
+      "title": "The Brave Little Lighthouse",
+      "channel": "BedtimeStories",
+      "youtube_url": "https://youtube.com/shorts/hjJOguMXAf4",
+      "published_date": "2026-03-08",
+      "video_file": "kids_lighthouse.mp4",
+      "thumbnail_file": "kids_lighthouse_thumb.jpg"
+    },
+    {
+      "id": "kids_brave_turtle",
+      "title": "The Brave Little Turtle",
+      "channel": "BedtimeStories",
+      "youtube_url": "https://youtube.com/shorts/k-h6HXmua2Q",
+      "published_date": "2026-03-09",
+      "video_file": "kids_brave_turtle.mp4",
+      "thumbnail_file": "kids_brave_turtle_thumb.jpg"
+    },
+    {
+      "id": "kids_star_that_fell",
+      "title": "The Star That Fell to Earth",
+      "channel": "BedtimeStories",
+      "youtube_url": "https://youtube.com/shorts/QBW8-c9J6D8",
+      "published_date": "2026-03-10",
+      "video_file": "kids_star_that_fell.mp4",
+      "thumbnail_file": "kids_star_that_fell_thumb.jpg"
+    },
+    {
+      "id": "kids_firefly_light",
+      "title": "The Little Firefly Who Found Her Light",
+      "channel": "BedtimeStories",
+      "youtube_url": "https://youtube.com/shorts/XwwbTAoBTgQ",
+      "published_date": "2026-03-11",
+      "video_file": "kids_firefly_light.mp4",
+      "thumbnail_file": "kids_firefly_light_thumb.jpg"
+    },
+    {
+      "id": "kids_dragon_clouds",
+      "title": "The Little Dragon Who Collected Clouds",
+      "channel": "BedtimeStories",
+      "youtube_url": "https://youtube.com/shorts/vHzOwk_aiSc",
+      "published_date": "2026-03-12",
+      "video_file": "kids_dragon_clouds.mp4",
+      "thumbnail_file": "kids_dragon_clouds_thumb.jpg"
+    },
+    {
+      "id": "kids_snail_wind",
+      "title": "The Little Snail Who Raced the Wind",
+      "channel": "BedtimeStories",
+      "youtube_url": "https://youtube.com/shorts/T45AhJ9tjnU",
+      "published_date": "2026-03-13",
+      "video_file": "kids_snail_wind.mp4",
+      "thumbnail_file": "kids_snail_wind_thumb.jpg"
+    },
+    {
+      "id": "kids_bee_garden",
+      "title": "The Little Bee Who Got Lost in the Garden",
+      "channel": "BedtimeStories",
+      "youtube_url": "https://youtube.com/shorts/0ndMs3iAc4c",
+      "published_date": "2026-03-13",
+      "video_file": "kids_bee_garden.mp4",
+      "thumbnail_file": "kids_bee_garden_thumb.jpg"
+    },
+    {
+      "id": "kids_penguin_friend",
+      "title": "The Little Penguin Who Made a New Friend",
+      "channel": "BedtimeStories",
+      "youtube_url": "https://youtube.com/shorts/2mkR4599yzM",
+      "published_date": "2026-03-14",
+      "video_file": "kids_penguin_friend.mp4",
+      "thumbnail_file": "kids_penguin_friend_thumb.jpg"
+    },
+    {
+      "id": "kids_owl_dark",
+      "title": "The Little Owl Who Was Afraid of the Dark",
+      "channel": "BedtimeStories",
+      "youtube_url": "https://youtube.com/shorts/KcQ76c5GwDE",
+      "published_date": "2026-03-14",
+      "video_file": "kids_owl_dark.mp4",
+      "thumbnail_file": "kids_owl_dark_thumb.jpg"
+    }
+  ]
+}
