@@ -90,17 +90,26 @@ function saveManifest(m: BackupManifest): void {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Recursively copy a directory. */
-async function copyDir(src: string, dest: string): Promise<void> {
+/** Recursively copy a directory. Skips files locked by another process (EBUSY/EPERM). */
+async function copyDir(src: string, dest: string, skipped?: string[]): Promise<void> {
   await fsp.mkdir(dest, { recursive: true });
   const entries = await fsp.readdir(src, { withFileTypes: true });
   for (const entry of entries) {
     const s = path.join(src, entry.name);
     const d = path.join(dest, entry.name);
     if (entry.isDirectory()) {
-      await copyDir(s, d);
+      await copyDir(s, d, skipped);
     } else {
-      await fsp.copyFile(s, d);
+      try {
+        await fsp.copyFile(s, d);
+      } catch (err: any) {
+        if (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES') {
+          console.warn(`[backup] Skipping locked file: ${s} (${err.code})`);
+          skipped?.push(s);
+        } else {
+          throw err;
+        }
+      }
     }
   }
 }
@@ -162,8 +171,14 @@ export async function createSnapshot(opts?: {
 
   // 1. Copy data directory
   const srcData = dataDir();
+  const skippedFiles: string[] = [];
   if (fs.existsSync(srcData)) {
-    await copyDir(srcData, path.join(dest, 'data'));
+    await copyDir(srcData, path.join(dest, 'data'), skippedFiles);
+    if (skippedFiles.length > 0) {
+      console.warn(
+        `[backup] Skipped ${skippedFiles.length} locked file(s) — backup is still valid`,
+      );
+    }
   }
 
   // 2. SQLite backup (consistent point-in-time copy via .backup API)

@@ -121,11 +121,71 @@ function extractCallContext(speech: OtterSpeech): {
   return { contact, topic, callType };
 }
 
+// ── Breadcrumb signal detection ──────────────────────────────────────────────
+
+/**
+ * Luke often leaves "breadcrumb" voice notes at the tail end of transcripts
+ * after the conversation ends -- a monologue reflecting on what mattered.
+ * Detect and extract these so downstream consumers can prioritize accordingly.
+ *
+ * Patterns:
+ * - Text after final "bye" / "see ya" / "talk to you" that reads as monologue
+ * - Phrases like "the most important thing", "the key takeaway", "what matters"
+ * - Shift from dialog to single-speaker reflection
+ */
+export function extractBreadcrumbs(transcript: string | undefined): string | null {
+  if (!transcript) return null;
+
+  // Find the last goodbye-like phrase and check for post-call monologue
+  const goodbyePatterns = [
+    /\b(bye|see ya|talk to you|take care|have a good|alright\s*,?\s*thanks)\b/gi,
+  ];
+
+  let lastGoodbyeIndex = -1;
+  for (const pattern of goodbyePatterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(transcript)) !== null) {
+      if (match.index > lastGoodbyeIndex) {
+        lastGoodbyeIndex = match.index;
+      }
+    }
+  }
+
+  if (lastGoodbyeIndex === -1) return null;
+
+  const postGoodbye = transcript.slice(lastGoodbyeIndex).trim();
+  // Needs to be meaningful -- at least 80 chars of post-goodbye content
+  if (postGoodbye.length < 80) return null;
+
+  // Look for breadcrumb signal phrases in post-goodbye content
+  const breadcrumbSignals = [
+    /the most important thing/i,
+    /the key takeaway/i,
+    /what matters (here|most|is)/i,
+    /what('s| is) important (about|here|is)/i,
+    /the big (thing|deal|takeaway)/i,
+    /i (need to|should|want to) remember/i,
+    /note to self/i,
+    /between .+ and .+ is/i, // "between Luke and Evgeny is..."
+  ];
+
+  const hasBreadcrumbSignal = breadcrumbSignals.some((pattern) => pattern.test(postGoodbye));
+  if (!hasBreadcrumbSignal) return null;
+
+  // Extract just the breadcrumb portion (skip the goodbye line itself)
+  const lines = postGoodbye.split('\n');
+  // Skip first line (the goodbye itself) and grab the rest
+  const breadcrumbText = lines.slice(1).join('\n').trim();
+  return breadcrumbText.length > 20 ? breadcrumbText : null;
+}
+
 // ── Markdown formatter ────────────────────────────────────────────────────────
 
 function formatTranscriptAsMarkdown(speech: OtterSpeech): string {
   const date = new Date(speech.createdAt * 1000).toISOString().split('T')[0];
   const { contact, topic, callType } = extractCallContext(speech);
+
+  const breadcrumb = extractBreadcrumbs(speech.transcript);
 
   const header = [
     `# ${speech.title}`,
@@ -137,6 +197,9 @@ function formatTranscriptAsMarkdown(speech: OtterSpeech): string {
     speech.speakers?.length ? `**Speakers:** ${speech.speakers.join(', ')}` : null,
     `**Otter ID:** ${speech.id}`,
     ``,
+    breadcrumb ? `## Breadcrumb` : null,
+    breadcrumb ? `> ${breadcrumb.replace(/\n/g, '\n> ')}` : null,
+    breadcrumb ? `` : null,
     `## Summary`,
     speech.summary || '_No summary available._',
     ``,
@@ -264,12 +327,14 @@ export async function ingestNewTranscripts(): Promise<{
           const durationMinutes =
             full.endTime && full.createdAt ? Math.round((full.endTime - full.createdAt) / 60) : 0;
           const transcript = full.transcript || full.summary || '';
+          const breadcrumb = extractBreadcrumbs(transcript);
           const meta = await tagConversation(
             full.id,
             full.title,
             date,
             durationMinutes,
             transcript,
+            breadcrumb,
           );
           saveConversation(meta, transcript);
           upsertConversation(meta);

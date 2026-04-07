@@ -84,6 +84,7 @@ import {
   loadStudioConfig,
   saveStudioConfig,
   detectDevices,
+  clearDeviceCache,
   checkNvenc,
 } from './studio';
 import {
@@ -117,6 +118,7 @@ import {
   pruneSnapshots,
   runDailyBackup,
 } from './backups';
+import { processRejectionLearning } from './rejection-skill-learning';
 
 const AUDIO_DIAG_FILE = path.join(app.getPath('userData'), 'audio-diag.log');
 
@@ -672,6 +674,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
+  // RSL — Rejection-Skill-Learning: classify feedback, update rubric, append LEARNINGS.md
+  // Also called fire-and-forget from ContentPipeline.tsx after handleReject
+  ipcMain.handle(
+    'empire:processRejectionLearning',
+    async (
+      _e,
+      input: { videoId: string; videoTitle: string; channel: string; target: string; note: string },
+    ) => {
+      try {
+        await processRejectionLearning(input);
+        return { success: true };
+      } catch (e: any) {
+        console.error('[rsl] IPC handler error:', e);
+        return { success: false, error: e.message };
+      }
+    },
+  );
+
   // Published videos — historical OpenClaw published videos
   ipcMain.handle('empire:getPublishedVideos', () => {
     const publishedDir = path.join(contentRoot, 'content-review', 'published');
@@ -1224,7 +1244,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('studio:config:get', () => loadStudioConfig());
   ipcMain.handle('studio:config:save', (_e, config: any) => saveStudioConfig(config));
   ipcMain.handle('studio:detectDevices', async () => {
-    // Get raw dshow devices, then merge camera fallback if needed
+    // Use cached devices if available — dshow hangs on repeated ffmpeg -list_devices calls
     let devices: { name: string; type: string }[] = [];
     try {
       devices = await detectDevices();
@@ -1240,8 +1260,31 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
     return devices;
   });
+  ipcMain.handle('studio:refreshDevices', async () => {
+    clearDeviceCache();
+    return detectDevices();
+  });
   ipcMain.handle('studio:checkNvenc', async () => checkNvenc());
-  ipcMain.handle('studio:start', async () => studioStartRecording());
+  ipcMain.handle('studio:start', async () => {
+    // Resolve devices HERE using the cached list, then pass to startRecording
+    // so it never calls detectDevices/detectCameras itself (those hang on repeat calls).
+    let devices: { name: string; type: string }[] = [];
+    try {
+      devices = await detectDevices();
+    } catch {
+      /* */
+    }
+    const cameras = devices
+      .filter((d) => d.type === 'video' && !d.name.includes('OBS'))
+      .map((d, i) => ({
+        id: `cam_${i}`,
+        name: d.name,
+        position: (['front', 'side', 'overhead', 'extra'] as const)[i] || 'extra',
+        enabled: true,
+      }));
+    const audioDevice = devices.find((d) => d.type === 'audio')?.name;
+    return studioStartRecording({ cameras, audioDevice });
+  });
   ipcMain.handle('studio:stop', async () => studioStopRecording());
   ipcMain.handle('studio:marker', (_e, type: string, label?: string) =>
     addMarker(type as any, label),

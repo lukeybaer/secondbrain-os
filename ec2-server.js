@@ -13,6 +13,68 @@ const LUKE_PHONE = process.env.LUKE_PRIVATE_SIM || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const NEWS_API_KEY = process.env.NEWS_API_KEY || '';
+const VAPI_SERVER_URL = 'https://unay54a6jh.execute-api.us-east-1.amazonaws.com/prod/vapi/webhook';
+
+// ── Vapi function tools for Amy outbound calls ────────────────────────────────
+const VAPI_FUNCTION_TOOLS = [
+  { type: 'dtmf' },
+  {
+    type: 'function',
+    function: {
+      name: 'query_knowledge',
+      description:
+        "Search Luke's conversation history, meeting notes, and stored knowledge. Use for 'did I talk about X?', 'who is Y?', etc. Say 'give me just a moment' before calling.",
+      parameters: {
+        type: 'object',
+        properties: { question: { type: 'string', description: 'The question to look up.' } },
+        required: ['question'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_claude_code',
+      description: "Queue a coding task for Claude Code to execute on Luke's computer.",
+      parameters: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'Description of the coding task.' },
+          priority: { type: 'string', enum: ['normal', 'urgent'] },
+        },
+        required: ['task'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'flag_reputation_risk',
+      description:
+        'Flag embarrassing, defamatory, or legally risky statements. Flag immediately, continue the call.',
+      parameters: {
+        type: 'object',
+        properties: {
+          category: {
+            type: 'string',
+            enum: [
+              'false_statement',
+              'legal_threat',
+              'defamation',
+              'misrepresentation',
+              'illegal_activity',
+              'other',
+            ],
+          },
+          description: { type: 'string', description: "What was said and why it's a risk." },
+          severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+          excerpt: { type: 'string', description: 'Exact quote that triggered the flag.' },
+        },
+        required: ['category', 'description', 'severity'],
+      },
+    },
+  },
+];
 
 // ── Synced Data Cache ────────────────────────────────────────────────────────
 // Populated by the Electron app via POST /sync. Used by tool handlers to
@@ -22,10 +84,37 @@ let syncedData = {
   todos: [],
   recentCalls: [],
   amyVersion: 2,
+  memoryContext: '', // MEMORY.md contents — pushed by Electron every 15s
   timestamp: null,
+  linkedinIntel: null, // LinkedInIntelStore — pushed nightly from Electron midnight crawl
 };
 
 const pendingApprovals = new Map();
+
+// ── Context tracker — last Telegram intent ───────────────────────────────────
+// Tracks the previous message intent so single-word confirmations work.
+let lastTgIntent = null; // { type: 'call_pending', ts: number }
+
+// ── Instant Call Patterns — intercepted before ANY other processing ───────────
+const CALL_PATTERNS = [
+  /^call\s+me$/i,
+  /^ring\s+me$/i,
+  /^phone\s+me$/i,
+  /^call$/i,
+  /^ring$/i,
+  /^phone$/i,
+  /^dial$/i,
+  /^dial\s+me$/i,
+  /\bcall\s+me\b/i,
+  /\bring\s+me\b/i,
+  /\bphone\s+me\b/i,
+  /\bgive\s+me\s+a\s+(call|ring)\b/i,
+  /^(call|ring|phone)\s+me\s+(now|please|asap)$/i,
+];
+
+// Single-word/short messages that confirm a previous pending-call intent
+const CALL_CONFIRM_WORDS =
+  /^(yes|yeah|yep|ok|okay|sure|go|do\s+it|confirmed?|vapi|call|ring|phone|go\s+ahead|yup)$/i;
 
 // ── Session Registry ──────────────────────────────────────────────────────────
 // Tracks active Claude Code sessions so we can route "continue" commands back
@@ -234,6 +323,550 @@ function ingestToGraphiti(name, body, source) {
   } else {
     doRequest();
   }
+}
+
+// ── Graphiti Search ───────────────────────────────────────────────────────────
+// Queries the temporal knowledge graph for facts about people, events, topics.
+// Uses a separate MCP session from the ingest session to avoid interference.
+
+let graphitiSearchSessionId = null;
+let graphitiSearchReqId = 0;
+
+function searchGraphiti(query) {
+  return new Promise((resolve) => {
+    const doSearch = () => {
+      const payload = JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: {
+          name: 'search_memory_facts',
+          arguments: { query, group_ids: ['luke-ea'], max_facts: 15 },
+        },
+        id: ++graphitiSearchReqId,
+      });
+
+      const headers = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'Content-Length': Buffer.byteLength(payload),
+      };
+      if (graphitiSearchSessionId) headers['Mcp-Session-Id'] = graphitiSearchSessionId;
+
+      const req = http.request(
+        { hostname: '127.0.0.1', port: 8000, path: '/mcp', method: 'POST', headers },
+        (res) => {
+          if (res.headers['mcp-session-id'])
+            graphitiSearchSessionId = res.headers['mcp-session-id'];
+          let raw = '';
+          res.on('data', (d) => (raw += d));
+          res.on('end', () => {
+            try {
+              // Response may be plain JSON or SSE (data: lines)
+              const candidates = raw
+                .split('\n')
+                .map((l) => (l.startsWith('data: ') ? l.slice(6) : l).trim())
+                .filter((l) => l && l !== '[DONE]');
+              for (const c of candidates) {
+                try {
+                  const parsed = JSON.parse(c);
+                  // MCP tool result comes in result.content[0].text as JSON string
+                  const contentText = parsed?.result?.content?.[0]?.text;
+                  if (contentText) {
+                    const inner = JSON.parse(contentText);
+                    if (inner?.facts) {
+                      resolve(inner.facts);
+                      return;
+                    }
+                  }
+                  // Direct facts in result
+                  if (parsed?.result?.facts) {
+                    resolve(parsed.result.facts);
+                    return;
+                  }
+                } catch {}
+              }
+              resolve([]);
+            } catch {
+              resolve([]);
+            }
+          });
+        },
+      );
+      req.on('error', () => resolve([]));
+      req.setTimeout(10000, () => {
+        req.destroy();
+        resolve([]);
+      });
+      req.write(payload);
+      req.end();
+    };
+
+    if (!graphitiSearchSessionId) {
+      const initBody = JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'ec2-search', version: '1.0' },
+        },
+        id: ++graphitiSearchReqId,
+      });
+      const initReq = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: 8000,
+          path: '/mcp',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/event-stream',
+            'Content-Length': Buffer.byteLength(initBody),
+          },
+        },
+        (res) => {
+          if (res.headers['mcp-session-id'])
+            graphitiSearchSessionId = res.headers['mcp-session-id'];
+          res.resume();
+          setTimeout(doSearch, 200);
+        },
+      );
+      initReq.on('error', () => {
+        graphitiSearchSessionId = null;
+        resolve([]);
+      });
+      initReq.setTimeout(10000, () => {
+        initReq.destroy();
+        resolve([]);
+      });
+      initReq.write(initBody);
+      initReq.end();
+    } else {
+      doSearch();
+    }
+  });
+}
+
+// ── Memory Context Loader ─────────────────────────────────────────────────────
+// Loads Luke's MEMORY.md into Amy's system prompt so she knows who he is,
+// his preferences, ongoing projects, etc.
+// Primary source: syncedData.memoryContext (pushed by Electron every 15s).
+// Fallback: local filesystem paths on EC2.
+
+let memoryContextCache = { text: '', loadedAt: 0 };
+
+function loadMemoryContext() {
+  // Prefer synced memory (always up to date from Electron)
+  if (syncedData.memoryContext && syncedData.memoryContext.length > 10) {
+    return syncedData.memoryContext;
+  }
+
+  // Filesystem fallback (5-min cache)
+  const now = Date.now();
+  if (memoryContextCache.loadedAt > now - 5 * 60 * 1000 && memoryContextCache.text) {
+    return memoryContextCache.text;
+  }
+
+  const candidatePaths = [
+    '/opt/secondbrain/memory/MEMORY.md',
+    '/opt/secondbrain/.claude/projects/C--Users-luked-secondbrain/memory/MEMORY.md',
+    path.join(
+      process.env.HOME || '/home/ec2-user',
+      '.claude/projects/C--Users-luked-secondbrain/memory/MEMORY.md',
+    ),
+    '/opt/secondbrain/.auto-memory/MEMORY.md',
+  ];
+
+  for (const p of candidatePaths) {
+    try {
+      if (fs.existsSync(p)) {
+        const text = fs.readFileSync(p, 'utf8');
+        memoryContextCache = { text, loadedAt: now };
+        console.log('[amy] Loaded memory context from', p, '(' + text.length + ' chars)');
+        return text;
+      }
+    } catch {}
+  }
+
+  memoryContextCache = { text: '', loadedAt: now };
+  return '';
+}
+
+// ── Amy Tool Definitions ──────────────────────────────────────────────────────
+// Tools Amy can call via Claude API when answering Telegram messages.
+// Each tool maps to a real data source on EC2.
+
+const AMY_TOOLS = [
+  {
+    name: 'search_knowledge',
+    description:
+      "Search Luke's knowledge graph (Graphiti) for facts about people, events, meetings, or any topic. ALWAYS use this when asked about a person by name, or when you need to recall a specific fact. The knowledge graph contains Otter.ai meeting transcripts, call records, emails, and other ingested data.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Search query — use the person name, topic, or a descriptive phrase',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'check_project_status',
+    description:
+      "Check the status of Luke's active projects. Use when asked about a project or what is being worked on.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_name: {
+          type: 'string',
+          description: 'Filter by project name (optional — omit to see all projects)',
+        },
+      },
+    },
+  },
+  {
+    name: 'check_todos',
+    description: "Check Luke's open todo items.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        priority: {
+          type: 'string',
+          enum: ['high', 'medium', 'low'],
+          description: 'Filter by priority (optional)',
+        },
+      },
+    },
+  },
+  {
+    name: 'check_recent_calls',
+    description: 'Look up recent phone call records — who called, when, outcome, and summary.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name_filter: { type: 'string', description: 'Filter by caller name (optional)' },
+      },
+    },
+  },
+  {
+    name: 'queue_coding_task',
+    description:
+      'Queue a coding task for Claude Code to execute. Use when Luke asks you to build something, fix a bug, or run code. Returns an acknowledgement — the task will run asynchronously.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'Full description of the coding task to execute' },
+      },
+      required: ['task'],
+    },
+  },
+];
+
+// ── Name alias map — phonetic / alternate spellings ─────────────────────────
+// Maps mis-heard or mis-spelled names to canonical search terms.
+const NAME_ALIASES = {
+  lyanne: 'Yanli Lyu',
+  lianne: 'Yanli Lyu',
+  liyanne: 'Yanli Lyu',
+  liyann: 'Yanli Lyu',
+  leanne: 'Yanli Lyu',
+  yanlee: 'Yanli Lyu',
+  yanli: 'Yanli Lyu',
+  lyu: 'Yanli Lyu',
+  lukebot: 'LukeyBot Amy EA',
+  luky: 'LukeyBot Amy EA',
+};
+
+function resolveFuzzyName(query) {
+  const q = (query || '').toLowerCase().trim();
+  for (const [alias, canonical] of Object.entries(NAME_ALIASES)) {
+    if (q.includes(alias)) return canonical;
+  }
+  return null;
+}
+// ── Amy Tool Executor ─────────────────────────────────────────────────────────
+
+async function executeAmyTool(toolName, toolInput) {
+  console.log('[amy-tool]', toolName, JSON.stringify(toolInput).slice(0, 120));
+
+  switch (toolName) {
+    case 'search_knowledge': {
+      try {
+        const facts = await searchGraphiti(toolInput.query || '');
+        if (!facts || !facts.length) {
+          // Fuzzy name retry — try canonical name if original had no results
+          const canonicalName = resolveFuzzyName(toolInput.query || '');
+          if (canonicalName) {
+            console.log(
+              '[amy-tool] Fuzzy match: "' + toolInput.query + '" → "' + canonicalName + '"',
+            );
+            const facts2 = await searchGraphiti(canonicalName);
+            if (facts2 && facts2.length) {
+              return (
+                '(Searched for "' +
+                canonicalName +
+                '" based on "' +
+                toolInput.query +
+                '")\n' +
+                facts2
+                  .map((f) => {
+                    const ts = f.valid_at || f.created_at || '';
+                    const date = ts ? ' (' + ts.slice(0, 10) + ')' : '';
+                    return (
+                      '• ' + (f.fact || f.episode_body || JSON.stringify(f)).slice(0, 400) + date
+                    );
+                  })
+                  .join('\n')
+              );
+            }
+          }
+          return (
+            'No results found in knowledge graph for: "' +
+            (toolInput.query || '') +
+            '". The person or topic may not have been mentioned in ingested transcripts or emails yet.'
+          );
+        }
+        return facts
+          .map((f) => {
+            const ts = f.valid_at || f.created_at || '';
+            const date = ts ? ' (' + ts.slice(0, 10) + ')' : '';
+            const text = f.fact || f.episode_body || JSON.stringify(f);
+            return '• ' + text.slice(0, 400) + date;
+          })
+          .join('\n');
+      } catch (e) {
+        return 'Knowledge search failed: ' + e.message;
+      }
+    }
+
+    case 'check_project_status':
+      return handleCheckProjectStatus(toolInput);
+
+    case 'check_todos':
+      return handleCheckTodos(toolInput);
+
+    case 'check_recent_calls': {
+      const calls = syncedData.recentCalls || [];
+      const filter = (toolInput.name_filter || '').toLowerCase();
+      const matched = filter
+        ? calls.filter((c) =>
+            (c.callerName || c.phoneNumber || c.instructions || '').toLowerCase().includes(filter),
+          )
+        : calls;
+      if (!matched.length) {
+        return (
+          'No recent calls found' +
+          (filter ? ' matching "' + toolInput.name_filter + '"' : '') +
+          '.'
+        );
+      }
+      return matched
+        .slice(0, 10)
+        .map((c) => {
+          const when = (c.createdAt || '').slice(0, 10);
+          const who = c.callerName || c.phoneNumber || 'Unknown';
+          const outcome = c.status || '';
+          const summary = (c.summary || c.instructions || '').slice(0, 150);
+          return (
+            '• ' +
+            who +
+            (when ? ' (' + when + ')' : '') +
+            (outcome ? ' [' + outcome + ']' : '') +
+            (summary ? ': ' + summary : '')
+          );
+        })
+        .join('\n');
+    }
+
+    case 'queue_coding_task': {
+      const task = toolInput.task || 'Unspecified task';
+      addCommand({
+        type: 'claude',
+        prompt: task,
+        replyTo: 'telegram',
+        routing: { type: 'new_task' },
+      });
+      return 'Queued: "' + task.slice(0, 80) + '". Claude Code will pick it up and report back.';
+    }
+
+    default:
+      return 'Unknown tool: ' + toolName;
+  }
+}
+
+// ── Amy Conversational Handler ────────────────────────────────────────────────
+// Called for all natural-language Telegram messages that aren't explicit task
+// prefixes. Calls Claude with tools so Amy can search real data before answering.
+// Returns the text response to send, or null if no API key (caller falls back).
+
+function askAmyViaCLI(question) {
+  // Fallback: use EC2 local claude CLI (free via Max plan) when no API key is set
+  return new Promise((resolve) => {
+    const memory = loadMemoryContext();
+    const now = new Date().toLocaleString('en-US', {
+      timeZone: 'America/Chicago',
+      dateStyle: 'full',
+      timeStyle: 'short',
+    });
+    const prompt = [
+      "You are Amy, Luke Baer's personal executive assistant AI. Be direct and concise.",
+      'Current time: ' + now,
+      memory ? "=== LUKE'S MEMORY ===\n" + memory.slice(0, 4000) + '\n=== END ===' : '',
+      '\n[USER]: ' + question,
+      '\n[ASSISTANT]:',
+    ].join('\n');
+
+    const proc = spawn('claude', ['-p', prompt, '--model', 'claude-sonnet-4-20250514'], {
+      env: { ...process.env },
+      cwd: '/opt/secondbrain',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let out = '';
+    proc.stdout.on('data', (d) => (out += d.toString()));
+    proc.on('close', () => resolve(out.trim() || null));
+    proc.on('error', () => resolve(null));
+    proc.stdin.end();
+
+    setTimeout(() => {
+      if (!proc.killed) proc.kill('SIGTERM');
+      resolve(out.trim() || null);
+    }, 25000);
+  });
+}
+
+async function askAmy(question) {
+  if (!ANTHROPIC_API_KEY) {
+    console.log('[amy] No ANTHROPIC_API_KEY — using EC2 claude CLI');
+    return askAmyViaCLI(question);
+  }
+
+  const memory = loadMemoryContext();
+  const now = new Date().toLocaleString('en-US', {
+    timeZone: 'America/Chicago',
+    dateStyle: 'full',
+    timeStyle: 'short',
+  });
+
+  const systemPrompt = [
+    "You are Amy, Luke Baer's personal executive assistant AI. You are intelligent, direct, and warm — like a senior EA who has been with Luke for years.",
+    '',
+    'INTEGRITY RULES — NON-NEGOTIABLE:',
+    '• NEVER fabricate facts, names, appointments, or meetings',
+    '• ALWAYS search the knowledge graph before answering questions about specific people or events',
+    '• If a search returns no results, say so honestly — never guess or fill in details',
+    '• Only report what you actually find in tool results',
+    '• For questions about people: always call search_knowledge with their name first',
+    '',
+    'Current time: ' + now,
+    '',
+    memory
+      ? "=== LUKE'S MEMORY CONTEXT ===\n" + memory.slice(0, 6000) + '\n=== END MEMORY CONTEXT ==='
+      : '(No memory file available — proceed based on what you find via tools)',
+    '',
+    'Synced data available: ' +
+      (syncedData.timestamp
+        ? Math.round((Date.now() - new Date(syncedData.timestamp).getTime()) / 60000) +
+          'm old, ' +
+          (syncedData.projects || []).length +
+          ' projects, ' +
+          (syncedData.todos || []).length +
+          ' todos, ' +
+          (syncedData.recentCalls || []).length +
+          ' recent calls'
+        : 'no sync yet'),
+  ]
+    .filter((l) => l !== null)
+    .join('\n');
+
+  const messages = [{ role: 'user', content: question }];
+
+  // Tool-calling loop — up to 5 rounds
+  for (let round = 0; round < 5; round++) {
+    const body = JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages,
+      tools: AMY_TOOLS,
+      tool_choice: { type: 'auto' },
+    });
+
+    let response;
+    try {
+      response = await new Promise((resolve, reject) => {
+        const req = https.request(
+          {
+            hostname: 'api.anthropic.com',
+            path: '/v1/messages',
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': ANTHROPIC_API_KEY,
+              'anthropic-version': '2023-06-01',
+              'Content-Length': Buffer.byteLength(body),
+            },
+          },
+          (res) => {
+            let raw = '';
+            res.on('data', (d) => (raw += d));
+            res.on('end', () => {
+              try {
+                resolve(JSON.parse(raw));
+              } catch (e) {
+                reject(new Error('Parse error: ' + raw.slice(0, 200)));
+              }
+            });
+          },
+        );
+        req.on('error', reject);
+        req.setTimeout(30000, () => {
+          req.destroy();
+          reject(new Error('Anthropic API timeout'));
+        });
+        req.write(body);
+        req.end();
+      });
+    } catch (e) {
+      console.error('[amy] API call failed (round ' + round + '):', e.message);
+      return 'Sorry, I hit an error: ' + e.message;
+    }
+
+    if (response.error) {
+      console.error('[amy] Anthropic error:', JSON.stringify(response.error));
+      return 'API error: ' + (response.error.message || JSON.stringify(response.error));
+    }
+
+    const assistantContent = response.content || [];
+    messages.push({ role: 'assistant', content: assistantContent });
+
+    // Check for tool use
+    const toolUses = assistantContent.filter((b) => b.type === 'tool_use');
+    if (!toolUses.length) {
+      // Final text response
+      const text = assistantContent
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text)
+        .join('')
+        .trim();
+      return text || '(No response generated)';
+    }
+
+    // Execute all tool calls in parallel
+    const toolResults = await Promise.all(
+      toolUses.map(async (tu) => ({
+        type: 'tool_result',
+        tool_use_id: tu.id,
+        content: await executeAmyTool(tu.name, tu.input || {}),
+      })),
+    );
+
+    messages.push({ role: 'user', content: toolResults });
+  }
+
+  return 'Ran out of reasoning rounds — please try again.';
 }
 
 // ── Command Queue ─────────────────────────────────────────────────────────────
@@ -453,11 +1086,15 @@ async function initiateVapiOutbound(to, message) {
 
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
-      phoneNumberId: to || LUKE_PHONE,
+      phoneNumberId: VAPI_PHONE_NUMBER_ID || undefined,
       assistantId: process.env.VAPI_ASSISTANT_ID || undefined,
       customer: { number: to || LUKE_PHONE },
       assistantOverrides: {
         firstMessage: message,
+        serverUrl: VAPI_SERVER_URL,
+        model: {
+          tools: VAPI_FUNCTION_TOOLS,
+        },
       },
     });
     const req = https.request(
@@ -1197,15 +1834,9 @@ async function streamClaudeLLM(openaiBody, res) {
     streamViaLocalProxy(openaiBody, res);
     return;
   }
-  // 2. Try Anthropic API if key is set
-  if (ANTHROPIC_API_KEY) {
-    console.log('[claude-llm] Local proxy down — using Anthropic API');
-    streamClaudeAPI(openaiBody, res);
-    return;
-  }
-  // 3. Fall back to OpenAI (current working setup)
-  console.log('[claude-llm] Local proxy down, no API key — falling back to OpenAI');
-  streamViaOpenAI(openaiBody, res);
+  // 2. Use EC2 local claude CLI (free — claude is installed on this server)
+  console.log('[claude-llm] Local proxy down — using EC2 claude CLI (free)');
+  streamClaudeCLI(openaiBody, res);
 }
 
 // ── Proactive Updates ────────────────────────────────────────────────────────
@@ -1380,6 +2011,25 @@ async function pollTelegram() {
         const text = rawText.toUpperCase();
         console.log('[tg] the owner:', rawText);
 
+        // ── INSTANT CALL — before all other processing ──────────────────────
+        // If it looks like a call request, or confirms a pending call intent, dial immediately.
+        const isCallTrigger = CALL_PATTERNS.some((p) => p.test(rawText));
+        const isCallConfirm =
+          lastTgIntent &&
+          lastTgIntent.type === 'call_pending' &&
+          Date.now() - lastTgIntent.ts < 120000 && // within 2 minutes
+          CALL_CONFIRM_WORDS.test(rawText.trim());
+
+        if (isCallTrigger || isCallConfirm) {
+          lastTgIntent = null;
+          await sendMessage('Calling you now.');
+          initiateVapiOutbound(LUKE_PHONE, 'Hi Luke, Amy here. You asked me to call you.').catch(
+            (e) => console.error('[call me] Error:', e.message),
+          );
+          ingestToGraphiti('Telegram: Luke', rawText, 'telegram-message');
+          continue;
+        }
+
         const yesMatch = text.match(/^YES\s+(\S+)/);
         const noMatch = text.match(/^NO\s+(\S+)/);
         const bareYes = text === 'YES';
@@ -1519,49 +2169,48 @@ async function pollTelegram() {
           }
 
           // ── Natural language dispatch (no prefix) ────────────────────────────
-          // Classify intent and route accordingly.
+          // All natural language goes through Amy's conversational handler first.
+          // Amy has tools to search Graphiti, check projects/todos/calls, and queue
+          // coding tasks. She only falls back to the command queue if no API key.
 
           const intent = classifyIntent(rawText);
           console.log('[dispatch] Intent:', intent.type, '—', rawText.slice(0, 60));
 
+          // /status shortcut remains instant
           if (intent.type === 'status') {
             await sendMessage(buildStatusSummary());
             continue;
           }
 
-          if (intent.type === 'query') {
-            addCommand({
-              type: 'search',
-              prompt: rawText,
-              replyTo: 'telegram',
-              routing: { type: 'query' },
-            });
-            await sendMessage('Looking that up…');
+          // Route everything else through Amy (with tools + real data)
+          console.log('[amy] Asking Amy:', rawText.slice(0, 80));
+          const amyReply = await askAmy(rawText).catch((e) => {
+            console.error('[amy] Error:', e.message);
+            return null;
+          });
+
+          if (amyReply) {
+            await sendMessage(amyReply, { raw: true });
             continue;
           }
 
+          // Fallback (no ANTHROPIC_API_KEY): use old command-queue routing
+          console.log('[dispatch] Falling back to command queue — no Amy API key');
           if (intent.type === 'continue') {
-            addCommand({
-              type: 'claude',
-              prompt: rawText,
-              replyTo: 'telegram',
-              routing: intent,
-            });
+            addCommand({ type: 'claude', prompt: rawText, replyTo: 'telegram', routing: intent });
             const ack = intent.sessionTopic
               ? 'Picking back up on: ' + intent.sessionTopic
               : 'Resuming where we left off.';
             await sendMessage(ack);
-            continue;
+          } else {
+            addCommand({
+              type: 'claude',
+              prompt: rawText,
+              replyTo: 'telegram',
+              routing: { type: intent.type || 'new_task' },
+            });
+            await sendMessage('On it.');
           }
-
-          // Default: new_task
-          addCommand({
-            type: 'claude',
-            prompt: rawText,
-            replyTo: 'telegram',
-            routing: { type: 'new_task' },
-          });
-          await sendMessage('On it.');
         }
 
         // Post-process: feed Graphiti with every Telegram message (fire-and-forget)
@@ -1859,6 +2508,125 @@ function markFired(name) {
   schedulerFlags.set(schedulerFlag(name), true);
 }
 
+// ── Contact Intelligence (EC2 side) ─────────────────────────────────────────
+// Reads syncedData.linkedinIntel (pushed from Electron midnight crawl).
+// Tracks reported event IDs in /opt/secondbrain/data/briefing-history.jsonl
+// so the same event is never surfaced twice.
+
+const EC2_BRIEFING_HISTORY = '/opt/secondbrain/data/briefing-history.jsonl';
+
+function loadEc2ReportedIds() {
+  const reported = new Set();
+  try {
+    if (!fs.existsSync(EC2_BRIEFING_HISTORY)) return reported;
+    fs.readFileSync(EC2_BRIEFING_HISTORY, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .forEach((line) => {
+        try {
+          const entry = JSON.parse(line);
+          if (Array.isArray(entry.reportedIds)) {
+            entry.reportedIds.forEach((id) => reported.add(id));
+          }
+        } catch {}
+      });
+  } catch {}
+  return reported;
+}
+
+function markEc2EventsReported(ids) {
+  if (!ids || ids.length === 0) return;
+  try {
+    const dir = '/opt/secondbrain/data';
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const entry = {
+      briefingDate: todayKeyCT(),
+      reportedAt: new Date().toISOString(),
+      reportedIds: ids,
+    };
+    fs.appendFileSync(EC2_BRIEFING_HISTORY, JSON.stringify(entry) + '\n', 'utf-8');
+  } catch {}
+}
+
+const EVENT_PRIORITY_EC2 = {
+  job_change: 1,
+  company_news: 2,
+  published_content: 3,
+  engagement: 4,
+  unread_email: 5,
+  news_mention: 6,
+};
+
+function buildEc2ContactIntelSection() {
+  const intel = syncedData.linkedinIntel;
+  if (!intel || !Array.isArray(intel.events)) return { text: '', reportedIds: [] };
+
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const fortyEightHoursAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+
+  const reported = loadEc2ReportedIds();
+
+  // Sort by priority then recency
+  const ranked = [...intel.events]
+    .filter((e) => !reported.has(e.id))
+    .sort((a, b) => {
+      const pa = EVENT_PRIORITY_EC2[a.eventType] || 99;
+      const pb = EVENT_PRIORITY_EC2[b.eventType] || 99;
+      if (pa !== pb) return pa - pb;
+      return new Date(b.detectedAt).getTime() - new Date(a.detectedAt).getTime();
+    });
+
+  const pastWeek = ranked.filter((e) => new Date(e.detectedAt) >= sevenDaysAgo).slice(0, 3);
+  const past48h = ranked.filter((e) => new Date(e.detectedAt) >= fortyEightHoursAgo).slice(0, 3);
+
+  const lines = ['\nCONTACT INTELLIGENCE'];
+
+  lines.push('Past 7 days:');
+  if (pastWeek.length > 0) {
+    for (const e of pastWeek) {
+      lines.push('• ' + e.headline);
+      if (e.detail) lines.push('  ' + e.detail.slice(0, 140));
+    }
+  } else {
+    lines.push('  Nothing new to report.');
+  }
+
+  lines.push('');
+  lines.push('Past 48 hours:');
+  if (past48h.length > 0) {
+    for (const e of past48h) {
+      lines.push('• ' + e.headline);
+      if (e.detail) lines.push('  ' + e.detail.slice(0, 140));
+    }
+  } else {
+    lines.push('  Nothing new to report.');
+  }
+
+  lines.push('');
+  const crawlAgeH = intel.lastCrawlAt
+    ? Math.round((now.getTime() - new Date(intel.lastCrawlAt).getTime()) / 3_600_000)
+    : null;
+  const ageStr = crawlAgeH !== null ? ' (' + crawlAgeH + 'h ago)' : '';
+  lines.push(
+    'LinkedIn: Queried ' +
+      intel.totalContactsQueried +
+      ' of ' +
+      intel.totalContacts +
+      ' contacts' +
+      ageStr +
+      '. Memory updated for all.',
+  );
+
+  const toMark = [
+    ...pastWeek.map((e) => e.id),
+    ...past48h.map((e) => e.id).filter((id) => !pastWeek.find((e) => e.id === id)),
+  ];
+
+  return { text: lines.join('\n'), reportedIds: toMark };
+}
+
 // ── News fetching ────────────────────────────────────────────────────────────
 
 function fetchUrl(url) {
@@ -2034,6 +2802,7 @@ async function summarizeWithGroq(headlines, prompt) {
 // ── Morning Briefing ─────────────────────────────────────────────────────────
 
 async function sendDailyBriefing() {
+  // 6-section briefing
   if (hasFired('briefing')) {
     console.log('[briefing] Already sent today — skipping');
     return;
@@ -2043,73 +2812,154 @@ async function sendDailyBriefing() {
     return;
   }
 
-  console.log('[briefing] Building morning briefing...');
+  console.log('[briefing] Building 6-section morning briefing...');
 
-  const [worldNews, aiNews] = await Promise.all([fetchNewsHeadlines(), fetchAITechNews()]);
+  const today = new Date().toLocaleDateString('en-US', {
+    timeZone: 'America/Chicago',
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
 
-  const worldSummary = await summarizeWithGroq(
-    worldNews,
-    'Summarize each headline in one concise sentence with specific facts (names, numbers, dates). Return as a numbered list, one per line. Be factual, no filler.',
-  );
-  const aiSummary = await summarizeWithGroq(
-    aiNews,
-    'Summarize each headline in one concise sentence with specific facts. Focus on what matters for someone building AI products. Return as a numbered list, one per line.',
-  );
+  const sections = [];
+  sections.push("Good morning, Luke. Here's your briefing for " + today + '.');
 
-  // Build briefing sections
-  const lines = [];
-  lines.push('Good morning Luke — ' + friendlyDateCT());
-  lines.push('');
-
-  if (aiSummary) {
-    lines.push('AI & TECH:');
-    lines.push(aiSummary);
-    lines.push('');
-  }
-
-  if (worldSummary) {
-    lines.push('WORLD NEWS:');
-    lines.push(worldSummary);
-    lines.push('');
-  }
-
-  // Synced data from Electron (projects, todos, calls)
-  if (syncedData.timestamp) {
-    const age = Math.round((Date.now() - new Date(syncedData.timestamp).getTime()) / 60000);
-    if (age < 1440) {
-      // Less than 24h old
-      if (syncedData.todos && syncedData.todos.length > 0) {
-        const open = syncedData.todos.filter((t) => !t.completed);
-        if (open.length > 0) {
-          lines.push('OPEN TASKS (' + open.length + '):');
-          for (const t of open.slice(0, 5)) {
-            lines.push('  • ' + (t.title || t.text || JSON.stringify(t)).slice(0, 80));
-          }
-          if (open.length > 5) lines.push('  ... and ' + (open.length - 5) + ' more');
-          lines.push('');
-        }
-      }
-      if (syncedData.projects && syncedData.projects.length > 0) {
-        const active = syncedData.projects.filter((p) => p.status === 'active');
-        if (active.length > 0) {
-          lines.push('ACTIVE PROJECTS (' + active.length + '):');
-          for (const p of active.slice(0, 3)) {
-            lines.push('  • ' + (p.name || p.title || 'Unnamed'));
-          }
-          lines.push('');
-        }
-      }
+  // ── 1. TODAY'S SCHEDULE ────────────────────────────────────────────────────
+  // INTEGRITY: Only show confirmed appointments from verified sources. Never fabricate.
+  const recentCalls = syncedData.recentCalls || [];
+  const todayDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/Chicago' });
+  const confirmedToday = recentCalls.filter((c) => {
+    const d = c.scheduledAt || c.dueDate || '';
+    return (
+      d &&
+      new Date(d).toLocaleDateString('en-US', { timeZone: 'America/Chicago' }) === todayDate &&
+      c.status !== 'completed'
+    );
+  });
+  if (confirmedToday.length > 0) {
+    const schedLines = ["\nTODAY'S SCHEDULE"];
+    for (const c of confirmedToday) {
+      const time = c.scheduledAt
+        ? new Date(c.scheduledAt).toLocaleTimeString('en-US', {
+            timeZone: 'America/Chicago',
+            hour: '2-digit',
+            minute: '2-digit',
+          })
+        : 'TBD';
+      const who = c.callerName || c.phoneNumber || 'Unknown';
+      const topic = (c.summary || c.instructions || '').slice(0, 80);
+      schedLines.push(time + ' — ' + who + (topic ? ': ' + topic : ''));
     }
+    sections.push(schedLines.join('\n'));
   }
 
-  lines.push("What's the focus today?");
+  // ── 2. OVERNIGHT ACTIVITY ─────────────────────────────────────────────────
+  const sinceMidnight = new Date();
+  sinceMidnight.setHours(0, 0, 0, 0);
+  const overnightCalls = recentCalls.filter((c) => {
+    const ts = c.createdAt || c.timestamp || '';
+    return ts && new Date(ts) >= sinceMidnight;
+  });
+  let nightlyCount = 0;
+  try {
+    const { existsSync, readFileSync } = require('fs');
+    const nightlyPath = '/opt/secondbrain/data/nightly-enhancements.jsonl';
+    if (existsSync(nightlyPath)) {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 1);
+      cutoff.setHours(22, 0, 0, 0);
+      readFileSync(nightlyPath, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .forEach((l) => {
+          try {
+            const e = JSON.parse(l);
+            if (new Date(e.timestamp || e.ts || 0) >= cutoff) nightlyCount++;
+          } catch {}
+        });
+    }
+  } catch {}
+  const actParts = [];
+  if (overnightCalls.length > 0) actParts.push(overnightCalls.length + ' call(s) processed');
+  if (syncedData.timestamp) {
+    const ageMin = Math.round((Date.now() - new Date(syncedData.timestamp).getTime()) / 60000);
+    if (ageMin < 60) actParts.push('data sync live (' + ageMin + 'm ago)');
+    else actParts.push('last sync ' + ageMin + 'm ago');
+  }
+  if (nightlyCount > 0) actParts.push(nightlyCount + ' nightly memory enhancements');
+  if (actParts.length > 0) sections.push('\nOVERNIGHT\n' + actParts.join(', ') + '.');
 
-  const text = lines.join('\n');
+  // ── 3. ACTION ITEMS ───────────────────────────────────────────────────────
+  const todos = syncedData.todos || [];
+  const openTodos = todos.filter((t) => t.status !== 'done' && !t.completed);
+  const highPrio = openTodos.filter((t) => t.priority === 'high');
+  const needsFollowUp = (syncedData.projects || []).flatMap((p) =>
+    (p.tasks || []).filter((t) => t.status === 'needs-follow-up').map((t) => t.title || 'Untitled'),
+  );
+  if (highPrio.length > 0 || needsFollowUp.length > 0) {
+    const actionLines = ['\nACTION ITEMS'];
+    for (const t of highPrio.slice(0, 3))
+      actionLines.push('• ' + (t.title || t.text || '').slice(0, 80) + ' [HIGH]');
+    for (const f of needsFollowUp.slice(0, 3)) actionLines.push('• Follow up: ' + f.slice(0, 80));
+    if (openTodos.length > highPrio.length)
+      actionLines.push('+ ' + (openTodos.length - highPrio.length) + ' more in queue.');
+    sections.push(actionLines.join('\n'));
+  } else if (openTodos.length > 0) {
+    sections.push('\n' + openTodos.length + ' items in queue — nothing flagged urgent.');
+  }
+
+  // ── 3.5. CONTACT INTELLIGENCE ────────────────────────────────────────────
+  const { text: contactIntelText, reportedIds: contactIntelReportedIds } =
+    buildEc2ContactIntelSection();
+  if (contactIntelText) sections.push(contactIntelText);
+
+  // ── 4. PROJECT PULSE ─────────────────────────────────────────────────────
+  const activeProjects = (syncedData.projects || []).filter((p) => p.status === 'active');
+  if (activeProjects.length > 0) {
+    const projLines = ['\nPROJECT PULSE'];
+    for (const p of activeProjects.slice(0, 5)) {
+      const tasks = p.tasks || [];
+      const blocked = tasks.filter((t) => t.status === 'needs-follow-up').length;
+      const inProg = tasks.filter((t) => t.status === 'in-progress').length;
+      const pulse =
+        blocked > 0 ? blocked + ' blocked' : inProg > 0 ? inProg + ' in progress' : 'on track';
+      projLines.push('• ' + (p.name || p.title || 'Unnamed') + ' — ' + pulse);
+    }
+    sections.push(projLines.join('\n'));
+  }
+
+  // ── 5. MONEY ─────────────────────────────────────────────────────────────
+  const moneyItems = todos.filter((t) => {
+    const text = (t.title || t.text || t.content || '').toLowerCase();
+    return (
+      !t.completed &&
+      t.status !== 'done' &&
+      (text.includes('invoice') ||
+        text.includes('payment') ||
+        text.includes('insurance') ||
+        text.includes('tax') ||
+        text.includes('bill') ||
+        /\bdue\b/.test(text) ||
+        text.includes('renew'))
+    );
+  });
+  if (moneyItems.length > 0) {
+    const moneyLines = ['\nMONEY'];
+    for (const m of moneyItems.slice(0, 4))
+      moneyLines.push('• ' + (m.title || m.text || '').slice(0, 80));
+    sections.push(moneyLines.join('\n'));
+  }
+
+  // ── 6. FOOTER ─────────────────────────────────────────────────────────────
+  sections.push("\nReply with questions or say 'call me' to discuss.");
 
   try {
-    await sendMessage(text);
+    await sendMessage(sections.join('\n'));
     markFired('briefing');
-    console.log('[briefing] Morning briefing sent successfully');
+    markEc2EventsReported(contactIntelReportedIds);
+    console.log('[briefing] 6-section briefing sent successfully');
   } catch (e) {
     console.error('[briefing] Failed to send:', e.message);
   }
@@ -2364,33 +3214,51 @@ const server = http.createServer(async (req, res) => {
         } else if (evType === 'function-call' && fnCall && fnCall.name === 'query_knowledge') {
           const params = fnCall.parameters || {};
           const question = params.question || params.query || 'unknown question';
-          const vapiCallId = callObj && callObj.id;
 
-          const queryId = addQuery({ question, vapiCallId });
-
-          const TIMEOUT_MS = 25000;
-          const POLL_INTERVAL = 1000;
-          const deadline = Date.now() + TIMEOUT_MS;
-          let answer = null;
-
-          while (Date.now() < deadline) {
-            if (queryAnswers.has(queryId)) {
-              answer = queryAnswers.get(queryId);
-              queryAnswers.delete(queryId);
-              break;
-            }
-            await new Promise((r) => setTimeout(r, POLL_INTERVAL));
-          }
-
-          if (answer !== null) {
-            jsonOk(res, { result: answer });
-          } else {
+          console.log('[query_knowledge] Answering inline:', question.slice(0, 80));
+          try {
+            const answer = await Promise.race([
+              askAmy(question),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 20000)),
+            ]);
+            jsonOk(res, { result: answer || "I couldn't find that right now." });
+          } catch (e) {
+            console.error('[query_knowledge] inline answer failed:', e.message);
             jsonOk(res, {
-              result: "I couldn't find that in time, let me check and get back to you.",
+              result: "I had trouble looking that up. I'll send you the answer on Telegram.",
             });
           }
+        } else if (evType === 'function-call' && fnCall && fnCall.name === 'run_claude_code') {
+          const params = fnCall.parameters || {};
+          const task = params.task || 'Unspecified task';
+          addCommand({
+            type: 'claude',
+            prompt: task,
+            replyTo: 'vapi',
+            routing: { type: 'new_task' },
+          });
+          console.log('[vapi] run_claude_code queued:', task.slice(0, 80));
+          jsonOk(res, { result: "Task queued for Claude Code. I'll call back when it's done." });
+        } else if (evType === 'function-call' && fnCall && fnCall.name === 'flag_reputation_risk') {
+          const params = fnCall.parameters || {};
+          const msg =
+            '[REPUTATION RISK on call ' +
+            ((callObj && callObj.id) || 'unknown') +
+            ']\n' +
+            'Category: ' +
+            (params.category || 'unknown') +
+            ' | Severity: ' +
+            (params.severity || 'unknown') +
+            '\n' +
+            (params.description || '') +
+            (params.excerpt ? '\nExcerpt: "' + params.excerpt + '"' : '');
+          sendMessage(msg).catch((e) =>
+            console.error('[flag_reputation_risk] Telegram error:', e.message),
+          );
+          console.log('[vapi] flag_reputation_risk logged');
+          jsonOk(res, { result: 'Reputation risk flagged.' });
 
-          // ── New v2+ tool handlers (direct execution, no polling) ─────────
+          // ── v2+ tool handlers (direct execution, no polling) ─────────
         } else if (evType === 'function-call' && fnCall && fnCall.name === 'check_project_status') {
           const result = handleCheckProjectStatus(fnCall.parameters || {});
           console.log('[vapi] check_project_status:', result.slice(0, 80));
@@ -2592,7 +3460,9 @@ const server = http.createServer(async (req, res) => {
         todos: body.todos || [],
         recentCalls: body.recentCalls || [],
         amyVersion: body.amyVersion || 2,
+        memoryContext: body.memoryContext || syncedData.memoryContext || '',
         timestamp: body.timestamp || new Date().toISOString(),
+        linkedinIntel: body.linkedinIntel || syncedData.linkedinIntel || null,
       };
       console.log(
         '[sync] Updated: ' +

@@ -7,6 +7,7 @@ import { runVideoPipeline } from './video-pipeline';
 import { acquireLock, lockExists } from './database-sqlite';
 import { runNightlyDecay } from './memory-index';
 import { runDailyBackup } from './backups';
+import { runLinkedInNightlyCrawl } from './linkedin-intel';
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
@@ -65,6 +66,16 @@ async function tick(): Promise<void> {
     }
   }
 
+  // 0:00–0:02 AM CT — LinkedIn contact intelligence crawl
+  if (inWindow(time, 0, 0)) {
+    const crawlKey = `linkedin-crawl-${todayKey()}`;
+    if (acquireLock(crawlKey)) {
+      runLinkedInNightlyCrawl().catch((err) =>
+        console.error('[scheduler] runLinkedInNightlyCrawl error:', err),
+      );
+    }
+  }
+
   // 2:00–2:02 AM CT — nightly Hebbian memory decay
   if (inWindow(time, 2, 0)) {
     const decayKey = `memory-decay-${todayKey()}`;
@@ -80,7 +91,7 @@ async function tick(): Promise<void> {
     }
   }
 
-  // 3:00–3:02 AM CT — Time Machine data pruning
+  // 3:00–3:02 AM CT — Time Machine data pruning + RSL automation priority refresh
   if (inWindow(time, 3, 0)) {
     const pruneKey = `tm-prune-${todayKey()}`;
     if (acquireLock(pruneKey)) {
@@ -92,6 +103,22 @@ async function tick(): Promise<void> {
         );
       } catch (err) {
         console.error('[scheduler] pruneTimeMachineData error:', err);
+      }
+
+      // RSL priority refresh — recompute automation_priority by miss_count
+      // so the video pipeline knows which QC checks to automate first
+      try {
+        const { refreshAutomationPriority } = await import('./rejection-skill-learning');
+        const { priority, topMissed } = refreshAutomationPriority();
+        if (topMissed.length > 0) {
+          console.log(
+            `[scheduler] RSL priority refresh — ${priority.length} criteria tracked. Top missed: ${topMissed.map((c) => `${c.id}(${c.miss_count})`).join(', ')}`,
+          );
+        } else {
+          console.log(`[scheduler] RSL priority refresh — no misses recorded yet`);
+        }
+      } catch (err) {
+        console.error('[scheduler] RSL refreshAutomationPriority error:', err);
       }
     }
   }

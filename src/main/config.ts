@@ -104,7 +104,12 @@ export function loadConfig(): AppConfig {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
-      _config = { ...DEFAULTS, ...JSON.parse(raw) };
+      const saved = JSON.parse(raw);
+      // Don't let empty-string saved values override env-derived defaults for API keys
+      if (!saved.anthropicApiKey && DEFAULTS.anthropicApiKey) {
+        delete saved.anthropicApiKey;
+      }
+      _config = { ...DEFAULTS, ...saved };
     } else {
       _config = { ...DEFAULTS };
       saveConfig(_config);

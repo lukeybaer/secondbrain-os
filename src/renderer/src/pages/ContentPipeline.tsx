@@ -1944,10 +1944,23 @@ function YouTubeVideosTab() {
   }
 
   async function handleReject(id: string, target: RejectTarget | 'both', note: string) {
+    const video = videos.find((v) => v.id === id);
     try {
       await ipcInvoke('empire:rejectVideo', id, target, note);
     } catch {
       /* IPC not wired yet — update local state only */
+    }
+    // RSL: fire-and-forget — classify feedback, update rubric, append LEARNINGS.md
+    if (note && video) {
+      ipcInvoke('empire:processRejectionLearning', {
+        videoId: id,
+        videoTitle: video.title,
+        channel: video.channel,
+        target,
+        note,
+      }).catch(() => {
+        /* best-effort */
+      });
     }
     if (!note) {
       setVideos((prev) => prev.filter((v) => v.id !== id));

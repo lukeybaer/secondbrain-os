@@ -657,7 +657,7 @@ export default function Studio() {
                               background: '#000',
                               display: 'block',
                             }}
-                            src={localFileUrl(rec.screenFile)}
+                            src={localFileUrl(rec.screenFile?.replace(/\.mkv$/, '.mp4') ?? '')}
                           />
                         </div>
                       )}

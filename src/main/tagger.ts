@@ -22,7 +22,15 @@ Return a JSON object with exactly these fields:
   "sentiment": string              // "productive", "tense", "exploratory", "routine", "problematic", "positive", "mixed"
 }
 
-IMPORTANT ANCHORING RULE: If the transcript contains a phrase like "this meeting is about X", "this meeting was about X", "this is a meeting about X", or "this call is about X", treat X as the authoritative subject. It must appear prominently in topics and summary.
+IMPORTANT ANCHORING RULES:
+
+1. SUBJECT ANCHORING: If the transcript contains a phrase like "this meeting is about X", "this meeting was about X", "this is a meeting about X", or "this call is about X", treat X as the authoritative subject. It must appear prominently in topics and summary.
+
+2. BREADCRUMB ANCHORING: If you are given a BREADCRUMB section (a post-call voice note from the user reflecting on what mattered), it is the HIGHEST PRIORITY signal. The breadcrumb tells you:
+   - WHO was on the call (must appear in speakers and peopleMentioned)
+   - WHAT the user cares about (must be reflected in summary, topics, and decisions)
+   - WHY it matters (should shape the tone and framing of the summary)
+   The breadcrumb overrides inferences from the transcript itself. If the breadcrumb says "this conversation is between Luke and Evgeny" then Luke and Evgeny MUST be in speakers. If it says "the important part is X", then X MUST be the lead topic and in the summary.
 
 Return ONLY valid JSON, no markdown, no explanation.`;
 
@@ -32,6 +40,7 @@ export async function tagConversation(
   date: string,
   durationMinutes: number,
   transcript: string,
+  breadcrumb?: string | null,
 ): Promise<ConversationMeta> {
   const openai = getOpenAI();
   const config = getConfig();
@@ -42,10 +51,14 @@ export async function tagConversation(
       ? transcript.slice(0, 80000) + '\n[transcript truncated]'
       : transcript;
 
+  const breadcrumbSection = breadcrumb
+    ? `\n\nBREADCRUMB (post-call voice note from user -- THIS IS THE HIGHEST PRIORITY SIGNAL about what matters):\n${breadcrumb}`
+    : '';
+
   const userMessage = `Meeting title: ${title}
 Date: ${date}
 Duration: ${durationMinutes} minutes
-
+${breadcrumbSection}
 Transcript:
 ${truncated}`;
 

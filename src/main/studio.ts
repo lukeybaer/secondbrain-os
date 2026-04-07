@@ -153,36 +153,97 @@ export function saveStudioConfig(config: Partial<StudioConfig>): StudioConfig {
 
 // ─── Camera Discovery ───────────────────────────────────────────────────
 
+// Cache device list — ffmpeg -list_devices hangs on repeated calls because
+// dshow state gets corrupted. Cache for 60s, refreshable via Refresh button.
+let cachedDevices: DetectedDevice[] | null = null;
+let cachedDevicesAt = 0;
+const DEVICE_CACHE_TTL = 600_000; // 10 minutes — dshow hangs on repeated calls
+
+export function clearDeviceCache(): void {
+  cachedDevices = null;
+  cachedDevicesAt = 0;
+  console.log('[studio] Device cache cleared');
+}
+
 export async function detectDevices(): Promise<DetectedDevice[]> {
+  // Return cached results if fresh enough
+  if (cachedDevices && Date.now() - cachedDevicesAt < DEVICE_CACHE_TTL) {
+    console.log(`[studio] Using cached devices (${cachedDevices.length} devices)`);
+    return cachedDevices;
+  }
   return new Promise((resolve, reject) => {
     const ffmpeg = spawn('ffmpeg', ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']);
 
     let stderr = '';
-    ffmpeg.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
-    });
+    let resolved = false;
 
-    // Use 'close' not 'exit' — 'close' fires after all stdio streams are flushed
-    ffmpeg.on('close', () => {
+    const parseDevices = (): DetectedDevice[] => {
       const devices: DetectedDevice[] = [];
-
       for (const line of stderr.split('\n')) {
-        // Skip @device alternative name lines
         if (line.includes('@device')) continue;
-        // Match device lines: [dshow @ 0x...] "Device Name" (video|audio)
         const match = line.match(/\[dshow[^\]]*\]\s+"(.+?)"\s+\((video|audio)\)/);
         if (match) {
           devices.push({ name: match[1], type: match[2] as 'video' | 'audio' });
         }
       }
-
       console.log(
         `[studio] detectDevices found ${devices.length} devices: ${devices.map((d) => `${d.name} (${d.type})`).join(', ') || 'none'}`,
       );
+      return devices;
+    };
+
+    ffmpeg.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    // Hard timeout: if device enumeration hangs, resolve with what we have
+    const timeout = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      console.warn('[studio] detectDevices timed out after 5s — using partial results');
+      try {
+        ffmpeg.kill();
+      } catch {
+        /* */
+      }
+      const devices = parseDevices();
+      // Only update cache if we got MORE devices than before — never downgrade
+      if (!cachedDevices || devices.length >= cachedDevices.length) {
+        cachedDevices = devices;
+        cachedDevicesAt = Date.now();
+      } else if (cachedDevices) {
+        console.log(
+          `[studio] Keeping better cached results (${cachedDevices.length} > ${devices.length})`,
+        );
+        resolve(cachedDevices);
+        return;
+      }
+      resolve(devices);
+    }, 5000);
+
+    ffmpeg.on('close', () => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeout);
+      const devices = parseDevices();
+      // Only update cache if we got MORE devices than before — never downgrade
+      if (!cachedDevices || devices.length >= cachedDevices.length) {
+        cachedDevices = devices;
+        cachedDevicesAt = Date.now();
+      } else if (cachedDevices) {
+        console.log(
+          `[studio] Keeping better cached results (${cachedDevices.length} > ${devices.length})`,
+        );
+        resolve(cachedDevices);
+        return;
+      }
       resolve(devices);
     });
 
     ffmpeg.on('error', (err) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeout);
       console.error('[studio] detectDevices spawn error:', err.message);
       reject(new Error(`FFmpeg not found: ${err.message}`));
     });
@@ -272,6 +333,57 @@ export async function checkNvenc(): Promise<boolean> {
   });
 }
 
+// ─── Camera Pre-Validation ─────────────────────────────────────────────
+
+/** Fallback formats to try when the default dshow capture fails (e.g. USB 2.0 bandwidth). */
+export const CAMERA_FALLBACK_FORMATS: Array<
+  | {
+      vcodec: string;
+      videoSize: string;
+    }
+  | undefined
+> = [
+  { vcodec: 'mjpeg', videoSize: '1280x720' },
+  { vcodec: 'mjpeg', videoSize: '640x480' },
+  undefined, // retry with no forced format (let dshow negotiate)
+];
+
+/**
+ * Validate that a camera can be opened by ffmpeg with a short 0.5s test capture.
+ * Returns true if the capture succeeds (exit code 0).
+ */
+export function validateCamera(
+  cameraName: string,
+  forceFormat?: { vcodec: string; videoSize: string },
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const args: string[] = ['-f', 'dshow'];
+    if (forceFormat) {
+      args.push('-vcodec', forceFormat.vcodec, '-video_size', forceFormat.videoSize);
+    }
+    args.push('-i', `video=${cameraName}`, '-t', '0.5', '-f', 'null', '-');
+
+    const proc = spawn('ffmpeg', args);
+    let resolved = false;
+
+    const finish = (ok: boolean) => {
+      if (resolved) return;
+      resolved = true;
+      try {
+        proc.kill();
+      } catch {
+        /* ok */
+      }
+      resolve(ok);
+    };
+
+    proc.on('exit', (code) => finish(code === 0));
+    proc.on('error', () => finish(false));
+    // Hard timeout — don't let a camera probe hang forever
+    setTimeout(() => finish(false), 5000);
+  });
+}
+
 // ─── FFmpeg Recording Processes ─────────────────────────────────────────
 
 interface FFmpegSession {
@@ -289,16 +401,23 @@ function buildCameraArgs(
   audioDevice: string | undefined,
   outputPath: string,
   useNvenc: boolean,
+  forceFormat?: { vcodec: string; videoSize: string },
 ): string[] {
-  // Don't force mjpeg/resolution — let dshow negotiate with built-in cameras
-  const args: string[] = [
-    '-f',
-    'dshow',
-    '-rtbufsize',
-    '512M',
-    '-i',
-    audioDevice ? `video=${cameraName}:audio=${audioDevice}` : `video=${cameraName}`,
-  ];
+  const args: string[] = ['-f', 'dshow', '-rtbufsize', '512M'];
+
+  // If a fallback format is specified (e.g. MJPEG after default failed), force it
+  if (forceFormat) {
+    args.push(
+      '-vcodec',
+      forceFormat.vcodec,
+      '-video_size',
+      forceFormat.videoSize,
+      '-framerate',
+      '30',
+    );
+  }
+
+  args.push('-i', audioDevice ? `video=${cameraName}:audio=${audioDevice}` : `video=${cameraName}`);
 
   if (useNvenc) {
     args.push('-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '18', '-b:v', '0');
@@ -314,26 +433,27 @@ function buildCameraArgs(
   return args;
 }
 
-function buildScreenArgs(outputPath: string, useNvenc: boolean, audioDevice?: string): string[] {
+function buildScreenArgs(outputPath: string, _useNvenc: boolean, audioDevice?: string): string[] {
   const args: string[] = [];
 
-  if (useNvenc) {
-    args.push('-f', 'lavfi', '-i', 'ddagrab=framerate=30');
-  } else {
-    // CPU fallback: gdigrab
-    args.push('-f', 'gdigrab', '-framerate', '30', '-i', 'desktop');
-  }
+  // Always use gdigrab — ddagrab + h264_nvenc fails with "Error while opening encoder"
+  // because ddagrab outputs a pixel format NVENC can't accept directly.
+  // gdigrab + libx264 ultrafast is fast enough and actually works.
+  args.push('-f', 'gdigrab', '-framerate', '30', '-i', 'desktop');
 
   // Capture audio from microphone alongside screen
   if (audioDevice) {
     args.push('-f', 'dshow', '-i', `audio=${audioDevice}`);
   }
 
-  if (useNvenc) {
-    args.push('-c:v', 'h264_nvenc', '-cq', '18');
-  } else {
-    args.push('-c:v', 'libx264', '-crf', '18', '-preset', 'ultrafast');
+  // Explicit stream mapping required when combining gdigrab + dshow audio.
+  // Without -map, FFmpeg's default "shortest stream wins" stops recording
+  // when the dshow audio buffer times out (~8s).
+  if (audioDevice) {
+    args.push('-map', '0:v', '-map', '1:a');
   }
+
+  args.push('-c:v', 'libx264', '-crf', '18', '-preset', 'ultrafast');
 
   if (audioDevice) {
     args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000');
@@ -403,9 +523,15 @@ async function remuxToMp4(mkvPath: string): Promise<string> {
 
 // ─── Recording Management ───────────────────────────────────────────────
 
-export async function startRecording(): Promise<{
+interface StartRecordingOptions {
+  cameras?: Array<{ id: string; name: string; position: string; enabled: boolean }>;
+  audioDevice?: string;
+}
+
+export async function startRecording(opts?: StartRecordingOptions): Promise<{
   success: boolean;
   recordingId?: string;
+  warnings?: string;
   error?: string;
 }> {
   if (activeRecording) {
@@ -428,106 +554,33 @@ export async function startRecording(): Promise<{
     const recDir = recordingPath(id);
     ensureDir(recDir);
 
-    // Get enabled cameras (auto-detected or configured)
-    let cameras = config.cameras.filter((c) => c.enabled);
-
-    // If no cameras configured, auto-detect all connected cameras
-    if (cameras.length === 0) {
-      const detected = await detectCameras();
-      cameras = detected.map((d, i) => ({
-        id: `cam_${i}`,
-        name: d.name,
-        position: (['front', 'side', 'overhead', 'extra'] as const)[i] || 'extra',
-        enabled: true,
-      }));
-    }
+    // Use pre-resolved cameras/audio from IPC handler — no detection here.
+    let cameras = opts?.cameras ?? config.cameras.filter((c) => c.enabled);
+    const defaultAudioDevice = opts?.audioDevice ?? (config as any).defaultAudioDevice;
 
     if (cameras.length === 0) {
       return {
         success: false,
-        error:
-          'No cameras detected (including built-in). Check that no other app is using the camera.',
+        error: 'No cameras available. Check that cameras are connected and click Refresh.',
       };
     }
 
-    // Auto-detect audio device (microphone) BEFORE starting any recordings
-    let defaultAudioDevice: string | undefined;
-    try {
-      const audioDevs = await detectAudioDevices();
-      if (audioDevs.length > 0) {
-        defaultAudioDevice = audioDevs[0].name;
-        console.log(`[studio] Using audio device: "${defaultAudioDevice}"`);
-      }
-    } catch {
-      /* best-effort */
-    }
+    console.log(
+      `[studio] startRecording: id=${id}, cameras=[${cameras.map((c) => c.name).join(', ')}], audio=${defaultAudioDevice ?? 'none'}`,
+    );
 
-    // Attach microphone to the real camera (not OBS Virtual Camera)
-    if (defaultAudioDevice) {
-      const realCam =
-        cameras.find(
-          (c) =>
-            !c.audioDevice &&
-            !c.name.toLowerCase().includes('obs') &&
-            !c.name.toLowerCase().includes('virtual'),
-        ) || cameras.find((c) => !c.audioDevice);
-      if (realCam) {
-        realCam.audioDevice = defaultAudioDevice;
-        console.log(`[studio] Attached mic to camera: "${realCam.name}" (${realCam.position})`);
-      }
-    }
+    // Audio goes to screen recording ONLY — never to cameras.
+    // dshow audio is exclusive on Windows: if a camera holds the mic,
+    // the screen recording blocks until the camera dies, making
+    // total time = camera_duration + screen_duration (serial, not parallel).
+    console.log(`[studio] Audio will be captured by screen recording only`);
 
     activeSessions = [];
     const files: Record<string, string> = {};
 
-    // Start all camera FFmpeg processes in parallel
-    const cameraResults = await Promise.all(
-      cameras.map(async (cam) => {
-        const outputFile = path.join(recDir, `${cam.position}.mkv`);
-        const args = buildCameraArgs(cam.name, cam.audioDevice, outputFile, config.useNvenc);
-        const session = spawnFFmpeg(args, cam.position, outputFile);
-
-        // Wait briefly to see if FFmpeg dies immediately (camera locked / I/O error)
-        const alive = await new Promise<boolean>((resolve) => {
-          const check = setTimeout(() => resolve(true), 1000);
-          session.process.on('exit', (code) => {
-            clearTimeout(check);
-            if (code !== 0) {
-              console.error(`[studio] Camera "${cam.name}" failed to start (code ${code})`);
-            }
-            resolve(code === 0);
-          });
-        });
-
-        return { cam, session, outputFile, alive };
-      }),
-    );
-
-    const failedCameras: string[] = [];
-    for (const r of cameraResults) {
-      if (r.alive) {
-        activeSessions.push(r.session);
-        files[r.cam.position] = r.outputFile;
-      } else {
-        failedCameras.push(r.cam.name);
-      }
-    }
-
-    if (failedCameras.length > 0) {
-      console.warn(
-        `[studio] ${failedCameras.length} camera(s) failed: ${failedCameras.join(', ')}`,
-      );
-    }
-
-    // If ALL cameras failed, report the error
-    if (activeSessions.length === 0 && !config.recordScreen) {
-      return {
-        success: false,
-        error: `All cameras failed to start: ${failedCameras.join(', ')}. They may be in use by another app.`,
-      };
-    }
-
-    // Start screen recording if enabled
+    // Start screen recording FIRST so audio capture begins immediately.
+    // Camera validation/warmup can take 1-2s, causing the screen to start
+    // late and be shorter than cameras if started after them.
     let screenFile: string | undefined;
     if (config.recordScreen) {
       const screenOutput = path.join(recDir, 'screen.mkv');
@@ -535,6 +588,99 @@ export async function startRecording(): Promise<{
       const session = spawnFFmpeg(args, 'screen', screenOutput);
       activeSessions.push(session);
       screenFile = screenOutput;
+      console.log(`[studio] Screen recording started (with audio: ${!!defaultAudioDevice})`);
+    }
+
+    // Cameras that must start with MJPEG (raw dshow fails on startup).
+    // NOTE: NexiGo was here but raw YUV actually works and is MORE stable
+    // long-term (760s proven). MJPEG 720p dies at 60-160s on USB 2.0.
+    // NexiGo now uses default-first with MJPEG fallback like other cameras.
+    const MJPEG_FIRST_CAMERAS: string[] = [];
+    const failedCameras: string[] = [];
+
+    console.log(`[studio] Starting ${cameras.length} cameras in parallel...`);
+    const cameraResults = await Promise.all(
+      cameras.map(async (cam) => {
+        console.log(`[studio] Starting camera: "${cam.name}" (${cam.position})`);
+        const outputFile = path.join(recDir, `${cam.position}.mkv`);
+        const needsMjpegFirst = MJPEG_FIRST_CAMERAS.some((n) => cam.name.includes(n));
+
+        const formatsToTry: Array<{ vcodec: string; videoSize: string } | undefined> =
+          needsMjpegFirst
+            ? [
+                { vcodec: 'mjpeg', videoSize: '1280x720' },
+                { vcodec: 'mjpeg', videoSize: '640x480' },
+              ]
+            : [
+                undefined, // default (raw) first
+                { vcodec: 'mjpeg', videoSize: '1280x720' },
+                { vcodec: 'mjpeg', videoSize: '640x480' },
+              ];
+
+        for (const fmt of formatsToTry) {
+          const fmtLabel = fmt ? `${fmt.vcodec} ${fmt.videoSize}` : 'default';
+          console.log(`[studio] Spawning ffmpeg for "${cam.name}" with ${fmtLabel}...`);
+          const args = buildCameraArgs(cam.name, cam.audioDevice, outputFile, config.useNvenc, fmt);
+          console.log(`[studio] ffmpeg args: ${args.join(' ')}`);
+          const session = spawnFFmpeg(args, cam.position, outputFile);
+          console.log(`[studio] ffmpeg spawned for "${cam.name}", pid=${session.process.pid}`);
+
+          // Brief alive check — if process dies within 1s, try next format
+          const alive = await new Promise<boolean>((resolve) => {
+            const check = setTimeout(() => {
+              console.log(`[studio] "${cam.name}" alive after 1s — OK`);
+              resolve(true);
+            }, 1000);
+            session.process.on('exit', (code) => {
+              console.log(`[studio] "${cam.name}" exited with code ${code} during alive check`);
+              clearTimeout(check);
+              resolve(code === 0);
+            });
+          });
+
+          if (alive) {
+            console.log(`[studio] Camera "${cam.name}" started with: ${fmtLabel}`);
+            return { cam, session, outputFile, alive: true };
+          }
+          console.warn(`[studio] Camera "${cam.name}" failed: ${fmtLabel}, trying next...`);
+        }
+
+        console.error(`[studio] Camera "${cam.name}" failed all formats`);
+        return { cam, session: null as unknown as FFmpegSession, outputFile, alive: false };
+      }),
+    );
+
+    for (const r of cameraResults) {
+      if (r.alive && r.session) {
+        activeSessions.push(r.session);
+        files[r.cam.position] = r.outputFile;
+
+        // Mid-recording health monitor: detect camera death during recording
+        r.session.process.on('exit', (code) => {
+          if (activeRecording && code !== 0 && code !== null) {
+            const elapsed = Number(process.hrtime.bigint() - r.session.startTime) / 1e9;
+            console.error(
+              `[studio] CAMERA DIED: "${r.cam.name}" (${r.cam.position}) exited with code ${code} after ${elapsed.toFixed(1)}s`,
+            );
+          }
+        });
+      } else {
+        failedCameras.push(r.cam.name);
+      }
+    }
+
+    let warnings: string | undefined;
+    if (failedCameras.length > 0) {
+      warnings = `${failedCameras.length} camera(s) failed: ${failedCameras.join(', ')}`;
+      console.warn(`[studio] ${warnings}`);
+    }
+
+    // If nothing is recording at all, report error
+    if (activeSessions.length === 0) {
+      return {
+        success: false,
+        error: `All sources failed to start: ${failedCameras.join(', ')}. They may be in use by another app.`,
+      };
     }
 
     activeRecording = {
@@ -548,7 +694,7 @@ export async function startRecording(): Promise<{
     };
 
     saveRecording(activeRecording);
-    return { success: true, recordingId: id };
+    return { success: true, recordingId: id, warnings };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
@@ -575,8 +721,30 @@ export async function stopRecording(): Promise<{
     const stop = new Date(activeRecording.stoppedAt).getTime();
     activeRecording.durationSeconds = Math.round((stop - start) / 1000);
 
-    // Remux all MKV files to MP4
-    for (const mkvPath of results) {
+    // Post-recording validation: remove missing or empty files
+    const MIN_FILE_SIZE = 1024; // Files under 1 KB are considered corrupt/empty
+    for (const [position, filePath] of Object.entries(activeRecording.files)) {
+      if (!fs.existsSync(filePath)) {
+        console.warn(`[studio] Post-validation: removing missing file for "${position}"`);
+        delete activeRecording.files[position];
+      } else {
+        const stat = fs.statSync(filePath);
+        if (stat.size < MIN_FILE_SIZE) {
+          console.warn(
+            `[studio] Post-validation: removing empty file for "${position}" (${stat.size} bytes)`,
+          );
+          delete activeRecording.files[position];
+        }
+      }
+    }
+
+    // Remux surviving MKV files to MP4 (cameras + screen)
+    const allMkvPaths = [
+      ...Object.values(activeRecording.files),
+      activeRecording.screenFile,
+    ].filter(Boolean) as string[];
+
+    for (const mkvPath of allMkvPaths) {
       if (mkvPath.endsWith('.mkv') && fs.existsSync(mkvPath)) {
         try {
           await remuxToMp4(mkvPath);
