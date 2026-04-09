@@ -12,6 +12,7 @@ import { listPersonas } from './personas';
 import { listProjects } from './projects';
 import { listTodos } from './todos';
 import { listCallRecords } from './calls';
+import { identifyCaller, loadContactsStore } from './caller-id';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -502,6 +503,20 @@ export async function buildVersionedSystemPrompt(
 ): Promise<string> {
   const parts: string[] = [];
 
+  // Caller identification (inbound calls only)
+  if (context.callDirection === 'inbound' && context.callerPhone) {
+    try {
+      const callerCtx = identifyCaller(context.callerPhone);
+      const store = loadContactsStore();
+      parts.push(callerCtx.systemPromptSection);
+      parts.push(
+        `\n> CALLER IDENTIFICATION SYSTEM ACTIVE. Keyword for unknown callers claiming to be Luke: "${store.keyword}"`,
+      );
+    } catch {
+      // non-critical
+    }
+  }
+
   // Identity
   if (context.personaInstructions?.trim()) {
     parts.push(context.personaInstructions.trim());
@@ -797,11 +812,13 @@ export async function buildDataSnapshot(): Promise<{
   amyVersion: number;
   timestamp: string;
   linkedinIntel: any;
+  contacts: any;
 }> {
   let projects: any[] = [];
   let todos: any[] = [];
   let recentCalls: any[] = [];
   let linkedinIntel: any = null;
+  let contacts: any = null;
 
   try {
     projects = await listProjects();
@@ -835,6 +852,12 @@ export async function buildDataSnapshot(): Promise<{
   } catch {
     /* ignore */
   }
+  try {
+    const { loadContactsStore } = await import('./caller-id');
+    contacts = loadContactsStore();
+  } catch {
+    /* ignore */
+  }
 
   const config = getConfig();
   return {
@@ -844,5 +867,6 @@ export async function buildDataSnapshot(): Promise<{
     amyVersion: (config as any).amyVersion ?? 2,
     timestamp: new Date().toISOString(),
     linkedinIntel,
+    contacts,
   };
 }

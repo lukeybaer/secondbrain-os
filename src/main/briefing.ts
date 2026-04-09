@@ -1,18 +1,15 @@
 // briefing.ts
-// Daily morning briefing generator — news, pending videos, call queue, channel stats.
+// Daily morning briefing generator — news, pending videos, Amy call activity, channel stats.
 // Delivers via Telegram. Called by the scheduler at 5:30 AM CT.
 //
 // Format:
-//   1. Good morning + date
-//   2. AI/TECH NEWS: 10 articles, per-article 2-3 sentence summaries with citation
-//   3. WORLD NEWS: 10 articles, same format
-//   4. Birthdays / upcoming dates (from memory files)
-//   5. LinkedIn engagement ops + network moves
-//   6. Relationships cooling (Mondays only)
-//   7. Reputation mentions (if configured)
-//   8. Videos pending approval
-//   9. Calls queued
-//   10. Today's focus
+//   1. Good morning + date + AI/TECH NEWS (10 articles)
+//   2. WORLD NEWS (10 articles)
+//   3. ONITY GROUP NEWS (up to 2 articles) + MORTGAGE INDUSTRY NEWS (up to 3 articles)
+//   4. Contact Intelligence + Reputation + Videos + Amy calls + LinkedIn (Saturdays)
+//
+// Dedup: articles are keyed by URL + title prefix. Onity and Mortgage are deduped
+//        against AI/World and against each other.
 //
 // Sent as multiple messages if total length exceeds 3800 chars.
 
@@ -24,6 +21,8 @@ import { getConfig } from './config';
 import { sendMessage } from './telegram';
 import { generateSermonBriefingSection } from './sermons';
 import { buildContactIntelSection, markContactEventsReported } from './linkedin-intel';
+import { listCallRecords } from './calls';
+import { runClaudeCode } from './claude-runner';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -40,14 +39,7 @@ interface VideoManifestEntry {
   title?: string;
   channel?: string;
   status?: string;
-}
-
-interface CallRecord {
-  id: string;
-  phoneNumber?: string;
-  instructions?: string;
-  status?: string;
-  completed?: boolean;
+  video_file?: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -316,33 +308,19 @@ async function fetchAITechArticles(): Promise<NewsArticle[]> {
   return articles;
 }
 
-// ── Per-article summarization via Groq ───────────────────────────────────────
-// Returns a formatted multi-line string for the entire section.
+// ── Per-article summarization via Claude (Max plan, free) ────────────────────
+// Uses claude-runner.ts (claude -p CLI) — zero marginal cost on Max plan.
+// Falls back to plain list if claude is unavailable.
 
 async function summarizeArticlesWithGroq(
   articles: NewsArticle[],
   sectionLabel: string,
 ): Promise<string> {
-  const cfg = getConfig();
-
   if (!articles.length) return `${sectionLabel}: no articles available`;
 
-  if (!cfg.groqApiKey) {
-    // No Groq — return plain list with citation
-    return articles
-      .map((a) => {
-        const citation = [a.source, a.publishedAt, a.author ? `By ${a.author}` : '']
-          .filter(Boolean)
-          .join(' | ');
-        return `**${a.title}**\n${a.description || '(no description available)'}\n${citation}${a.url ? '\n' + a.url : ''}`;
-      })
-      .join('\n\n');
-  }
-
-  // Build prompt asking Groq to summarize each article
   const articleBlocks = articles
     .map((a, i) => {
-      const lines = [
+      return [
         `--- ARTICLE ${i + 1} ---`,
         `Title: ${a.title}`,
         a.source ? `Source: ${a.source}` : '',
@@ -353,60 +331,24 @@ async function summarizeArticlesWithGroq(
       ]
         .filter(Boolean)
         .join('\n');
-      return lines;
     })
     .join('\n\n');
 
-  const systemPrompt = `You are a news briefing writer for an executive. Summarize each article in exactly 2-3 sentences. Be specific, factual, and mention key names and numbers. After the summary, always include a citation line in this exact format: Source: [Source] | [Date] | By [Author or "Staff"]${'\n'}Then the URL on its own line.${'\n\n'}Format each article as:${'\n'}**[Article Title]**${'\n'}[2-3 sentence summary]${'\n'}Source: [Source] | [Date] | By [Author]${'\n'}[URL]`;
+  const prompt =
+    `You are a news briefing writer for an executive. Summarize each article in exactly 2-3 sentences. ` +
+    `Be specific, factual, and mention key names and numbers. ` +
+    `Format each article as:\n**[Article Title]**\n[2-3 sentence summary]\nSource: [Source] | [Date] | By [Author]\n[URL]\n\n` +
+    `Summarize these ${articles.length} articles:\n\n${articleBlocks}`;
 
   try {
-    const body = JSON.stringify({
-      model: 'llama-3.1-8b-instant',
-      max_tokens: 2000,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        {
-          role: 'user',
-          content: `Summarize these ${articles.length} articles:\n\n${articleBlocks}`,
-        },
-      ],
-    });
-
-    const result = await new Promise<string>((resolve, reject) => {
-      const req = https.request(
-        'https://api.groq.com/openai/v1/chat/completions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${cfg.groqApiKey}`,
-            'Content-Length': Buffer.byteLength(body),
-          },
-        },
-        (res) => {
-          const chunks: Buffer[] = [];
-          res.on('data', (d: Buffer) => chunks.push(d));
-          res.on('end', () => {
-            try {
-              const data = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
-              resolve(data.choices?.[0]?.message?.content?.trim() ?? '');
-            } catch {
-              resolve('');
-            }
-          });
-        },
-      );
-      req.on('error', reject);
-      req.write(body);
-      req.end();
-    });
-
-    if (result) return result;
+    const { output, success } = await runClaudeCode(prompt, { timeoutMs: 60000 });
+    if (success && output.trim()) return output.trim();
+    console.warn('[briefing] claude-runner summarization failed — using plain list');
   } catch (err) {
-    console.warn('[briefing] Groq per-article summarization failed:', (err as Error).message);
+    console.warn('[briefing] claude-runner error:', (err as Error).message);
   }
 
-  // Groq failed — plain fallback
+  // Claude unavailable — plain fallback
   return articles
     .map((a) => {
       const citation = [a.source, a.publishedAt, a.author ? `By ${a.author}` : '']
@@ -415,6 +357,165 @@ async function summarizeArticlesWithGroq(
       return `**${a.title}**\n${a.description || ''}\n${citation}${a.url ? '\n' + a.url : ''}`;
     })
     .join('\n\n');
+}
+
+// ── Dedup helper — key = url || title-prefix ─────────────────────────────────
+
+function articleKey(a: NewsArticle): string {
+  return (a.url || a.title.toLowerCase().slice(0, 50)).trim();
+}
+
+function deduplicateAgainst(
+  articles: NewsArticle[],
+  seen: Set<string>,
+  limit: number,
+): NewsArticle[] {
+  const result: NewsArticle[] = [];
+  for (const a of articles) {
+    if (result.length >= limit) break;
+    const key = articleKey(a);
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(a);
+    }
+  }
+  return result;
+}
+
+// ── News fetch — Onity Group Inc. ─────────────────────────────────────────────
+
+async function fetchOnityArticles(): Promise<NewsArticle[]> {
+  const cfg = getConfig();
+
+  if (cfg.newsApiKey) {
+    try {
+      const query = encodeURIComponent('"Onity Group" OR "Onity Group Inc"');
+      const url = `https://newsapi.org/v2/everything?q=${query}&sortBy=publishedAt&pageSize=5&language=en&apiKey=${cfg.newsApiKey}`;
+      const raw = await fetchUrl(url);
+      const data = JSON.parse(raw) as {
+        articles: Array<{
+          title: string;
+          author?: string;
+          publishedAt?: string;
+          url?: string;
+          description?: string;
+          source?: { name?: string };
+        }>;
+      };
+      if (data.articles?.length) {
+        return data.articles.slice(0, 5).map((a) => ({
+          title: a.title,
+          author: a.author || a.source?.name,
+          publishedAt: a.publishedAt?.slice(0, 10),
+          url: a.url,
+          description: a.description ?? undefined,
+          source: a.source?.name,
+        }));
+      }
+    } catch (err) {
+      console.warn(
+        '[briefing] NewsAPI Onity failed, trying Google News RSS:',
+        (err as Error).message,
+      );
+    }
+  }
+
+  // RSS fallback — Google News search for Onity Group
+  try {
+    const query = encodeURIComponent('Onity Group Inc');
+    const xml = await fetchUrl(
+      `https://news.google.com/rss/search?q=${query}&hl=en-US&gl=US&ceid=US:en`,
+    );
+    const items = parseRssItems(xml, 5);
+    return items.map((i) => ({
+      title: i.title,
+      author: i.author,
+      publishedAt: i.pubDate,
+      url: i.link,
+      description: i.description,
+      source: 'Google News',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// ── News fetch — Mortgage Industry ───────────────────────────────────────────
+
+async function fetchMortgageArticles(): Promise<NewsArticle[]> {
+  const cfg = getConfig();
+
+  if (cfg.newsApiKey) {
+    try {
+      const query = encodeURIComponent(
+        'mortgage rates OR "mortgage servicing" OR "mortgage origination" OR FHFA OR "Fannie Mae" OR "Freddie Mac" OR "MBA mortgage" OR "housing market" OR "mortgage industry"',
+      );
+      const url = `https://newsapi.org/v2/everything?q=${query}&sortBy=publishedAt&pageSize=10&language=en&apiKey=${cfg.newsApiKey}`;
+      const raw = await fetchUrl(url);
+      const data = JSON.parse(raw) as {
+        articles: Array<{
+          title: string;
+          author?: string;
+          publishedAt?: string;
+          url?: string;
+          description?: string;
+          source?: { name?: string };
+        }>;
+      };
+      if (data.articles?.length) {
+        return data.articles.slice(0, 10).map((a) => ({
+          title: a.title,
+          author: a.author || a.source?.name,
+          publishedAt: a.publishedAt?.slice(0, 10),
+          url: a.url,
+          description: a.description ?? undefined,
+          source: a.source?.name,
+        }));
+      }
+    } catch (err) {
+      console.warn(
+        '[briefing] NewsAPI mortgage failed, falling back to RSS:',
+        (err as Error).message,
+      );
+    }
+  }
+
+  // RSS fallback — HousingWire + Mortgage News Daily + MBA
+  const feeds = [
+    { url: 'https://www.housingwire.com/feed/', source: 'HousingWire' },
+    { url: 'https://www.mortgagenewsdaily.com/rss/news', source: 'Mortgage News Daily' },
+    {
+      url: 'https://news.google.com/rss/search?q=mortgage+rates+OR+mortgage+servicing+OR+FHFA&hl=en-US&gl=US&ceid=US:en',
+      source: 'Google News',
+    },
+  ];
+
+  const seen = new Set<string>();
+  const articles: NewsArticle[] = [];
+
+  for (const feed of feeds) {
+    if (articles.length >= 10) break;
+    try {
+      const xml = await fetchUrl(feed.url);
+      for (const item of parseRssItems(xml, 10)) {
+        const key = item.title.toLowerCase().slice(0, 50);
+        if (!seen.has(key) && articles.length < 10) {
+          seen.add(key);
+          articles.push({
+            title: item.title,
+            author: item.author,
+            publishedAt: item.pubDate,
+            url: item.link,
+            description: item.description,
+            source: feed.source,
+          });
+        }
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  return articles;
 }
 
 // ── Reputation monitoring ─────────────────────────────────────────────────────
@@ -439,42 +540,63 @@ async function fetchReputationMentions(): Promise<string[]> {
 // ── Pending videos ────────────────────────────────────────────────────────────
 
 function loadPendingVideos(): VideoManifestEntry[] {
-  const manifestPath = path.join(
-    app.getPath('userData'),
+  // Read from the repo's content-review/pending/manifest.json (actual rendered videos).
+  // The userData pipeline manifest only contains scheduled templates without real video files.
+  const repoManifestPath = path.join(
+    app.getAppPath(),
     'content-review',
     'pending',
     'manifest.json',
   );
+  const manifestPath = fs.existsSync(repoManifestPath)
+    ? repoManifestPath
+    : path.join(app.getPath('userData'), 'content-review', 'pending', 'manifest.json');
+
   if (!fs.existsSync(manifestPath)) return [];
   try {
     const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-    const entries: VideoManifestEntry[] = Array.isArray(raw) ? raw : Object.values(raw);
-    return entries.filter((e) => e.status === 'pending_approval');
+    // Handle both flat array and { videos: [...] } formats
+    const entries: VideoManifestEntry[] = Array.isArray(raw)
+      ? raw
+      : Array.isArray(raw.videos)
+        ? raw.videos
+        : [];
+    const pendingDir = path.dirname(manifestPath);
+    return entries.filter((e) => {
+      if (e.status !== 'pending_approval') return false;
+      if (!e.video_file) return false;
+      return fs.existsSync(path.join(pendingDir, e.video_file));
+    });
   } catch {
     return [];
   }
 }
 
-// ── Queued calls ─────────────────────────────────────────────────────────────
+// ── Recent inbound calls to Amy ───────────────────────────────────────────────
 
-function loadQueuedCalls(): CallRecord[] {
-  const callsDir = path.join(getConfig().dataDir, 'calls');
-  if (!fs.existsSync(callsDir)) return [];
+interface AmyInboundCall {
+  phoneNumber: string;
+  createdAt: string;
+  summary?: string;
+  transcript?: string;
+  completed?: boolean;
+  durationSeconds?: number;
+}
+
+function loadRecentInboundCalls(limit = 5): AmyInboundCall[] {
   try {
-    return fs
-      .readdirSync(callsDir)
-      .filter((f) => f.endsWith('.json'))
-      .map((f) => {
-        try {
-          return JSON.parse(fs.readFileSync(path.join(callsDir, f), 'utf-8')) as CallRecord;
-        } catch {
-          return null;
-        }
-      })
-      .filter(
-        (c): c is CallRecord =>
-          c !== null && !!c.phoneNumber && c.status === 'queued' && !c.completed,
-      );
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    return listCallRecords()
+      .filter((r) => r.isCallback === true && r.createdAt >= since)
+      .slice(0, limit)
+      .map((r) => ({
+        phoneNumber: r.phoneNumber,
+        createdAt: r.createdAt,
+        summary: r.summary,
+        transcript: r.transcript?.slice(0, 200),
+        completed: r.completed,
+        durationSeconds: r.durationSeconds,
+      }));
   } catch {
     return [];
   }
@@ -500,17 +622,42 @@ export async function sendDailyBriefing(): Promise<void> {
     return;
   }
 
-  const [aiArticles, worldArticles, pendingVideos, queuedCalls, mentions] = await Promise.all([
+  const [
+    aiArticlesRaw,
+    worldArticlesRaw,
+    onityArticlesRaw,
+    mortgageArticlesRaw,
+    pendingVideos,
+    inboundCalls,
+    mentions,
+  ] = await Promise.all([
     fetchAITechArticles(),
     fetchWorldNewsArticles(),
+    fetchOnityArticles(),
+    fetchMortgageArticles(),
     Promise.resolve(loadPendingVideos()),
-    Promise.resolve(loadQueuedCalls()),
+    Promise.resolve(loadRecentInboundCalls()),
     fetchReputationMentions(),
   ]);
 
-  const [aiSummary, worldSummary] = await Promise.all([
-    summarizeArticlesWithGroq(aiArticles, 'AI/TECH NEWS'),
-    summarizeArticlesWithGroq(worldArticles, 'WORLD NEWS'),
+  // Build a dedup set from AI + World articles, then filter Onity and Mortgage
+  const globalSeen = new Set<string>([
+    ...aiArticlesRaw.map(articleKey),
+    ...worldArticlesRaw.map(articleKey),
+  ]);
+
+  const onityArticles = deduplicateAgainst(onityArticlesRaw, globalSeen, 2);
+  const mortgageArticles = deduplicateAgainst(mortgageArticlesRaw, globalSeen, 3);
+
+  const [aiSummary, worldSummary, onitySummary, mortgageSummary] = await Promise.all([
+    summarizeArticlesWithGroq(aiArticlesRaw, 'AI/TECH NEWS'),
+    summarizeArticlesWithGroq(worldArticlesRaw, 'WORLD NEWS'),
+    onityArticles.length > 0
+      ? summarizeArticlesWithGroq(onityArticles, 'ONITY GROUP NEWS')
+      : Promise.resolve(''),
+    mortgageArticles.length > 0
+      ? summarizeArticlesWithGroq(mortgageArticles, 'MORTGAGE INDUSTRY NEWS')
+      : Promise.resolve(''),
   ]);
 
   // ── Message 1: Header + AI/Tech news ───────────────────────────────────────
@@ -525,53 +672,93 @@ export async function sendDailyBriefing(): Promise<void> {
   msg2Lines.push('WORLD NEWS:');
   msg2Lines.push(worldSummary);
 
-  // ── Message 3: Operational ─────────────────────────────────────────────────
+  // ── Message 3: Onity + Mortgage industry ──────────────────────────────────
   const msg3Lines: string[] = [];
+  if (onityArticles.length > 0) {
+    msg3Lines.push(
+      `ONITY GROUP NEWS (${onityArticles.length} article${onityArticles.length !== 1 ? 's' : ''}):`,
+    );
+    msg3Lines.push(onitySummary);
+    msg3Lines.push('');
+  } else {
+    msg3Lines.push('ONITY GROUP NEWS: no articles found today');
+    msg3Lines.push('');
+  }
 
-  // Contact intelligence — ranked events from linkedin-intel.json
+  if (mortgageArticles.length > 0) {
+    msg3Lines.push(
+      `MORTGAGE INDUSTRY NEWS (${mortgageArticles.length} article${mortgageArticles.length !== 1 ? 's' : ''}):`,
+    );
+    msg3Lines.push(mortgageSummary);
+  } else {
+    msg3Lines.push('MORTGAGE INDUSTRY NEWS: no articles found today');
+  }
+
+  // ── Message 4: Operational ─────────────────────────────────────────────────
+  const msg4Lines: string[] = [];
+  const isSaturday = new Date().getDay() === 6;
+
+  // Contact intelligence — ranked events from linkedin-intel.json (daily)
   const { text: contactIntel, reportedIds: contactReportedIds } = buildContactIntelSection();
   if (contactIntel) {
-    msg3Lines.push(contactIntel);
-    msg3Lines.push('');
+    msg4Lines.push(contactIntel);
+    msg4Lines.push('');
   }
 
   if (mentions.length > 0) {
-    msg3Lines.push('REPUTATION MENTIONS:');
-    for (const m of mentions) msg3Lines.push(`  • ${m}`);
-    msg3Lines.push('');
+    msg4Lines.push('REPUTATION MENTIONS:');
+    for (const m of mentions) msg4Lines.push(`  • ${m}`);
+    msg4Lines.push('');
   }
 
   if (pendingVideos.length === 0) {
-    msg3Lines.push('Videos: no pending approvals');
+    msg4Lines.push('Videos: no pending approvals');
   } else {
-    msg3Lines.push(`Videos (${pendingVideos.length} pending approval):`);
+    msg4Lines.push(`Videos (${pendingVideos.length} pending approval):`);
     for (const v of pendingVideos) {
-      msg3Lines.push(`  • ${v.title ?? '(untitled)'} [${v.channel ?? 'unknown channel'}]`);
+      msg4Lines.push(`  • ${v.title ?? '(untitled)'} [${v.channel ?? 'unknown channel'}]`);
     }
   }
-  msg3Lines.push('');
+  msg4Lines.push('');
 
-  if (queuedCalls.length === 0) {
-    msg3Lines.push('Calls: no queued calls');
+  // Amy — inbound calls received in the last 24h
+  if (inboundCalls.length === 0) {
+    msg4Lines.push('Amy: no inbound calls in the last 24h');
   } else {
-    msg3Lines.push(`Calls (${queuedCalls.length} queued):`);
-    for (const c of queuedCalls) {
-      const goal = c.instructions
-        ? c.instructions.slice(0, 60) + (c.instructions.length > 60 ? '…' : '')
-        : 'no instructions';
-      msg3Lines.push(`  • ${c.phoneNumber} — ${goal}`);
+    msg4Lines.push(
+      `Amy (${inboundCalls.length} inbound call${inboundCalls.length !== 1 ? 's' : ''} in last 24h):`,
+    );
+    for (const c of inboundCalls) {
+      const time = new Date(c.createdAt).toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZone: 'America/Chicago',
+        hour12: true,
+      });
+      const dur = c.durationSeconds ? ` (${Math.round(c.durationSeconds / 60)}m)` : '';
+      const status = c.completed ? '✓' : '—';
+      const summary = c.summary ? ` — ${c.summary.slice(0, 80)}` : '';
+      msg4Lines.push(`  ${status} ${c.phoneNumber} @ ${time}${dur}${summary}`);
     }
   }
-  msg3Lines.push('');
-  msg3Lines.push("Today's focus: [no focus set]");
+  msg4Lines.push('');
+
+  // LinkedIn engagement ops — Saturdays only
+  if (isSaturday) {
+    msg4Lines.push('LINKEDIN (weekly):');
+    msg4Lines.push(
+      '  Review warm network — any new job changes or published posts to engage with?',
+    );
+    msg4Lines.push('');
+  }
 
   try {
     // Saturday: add sermon section before the operational block
-    if (new Date().getDay() === 6) {
+    if (isSaturday) {
       try {
         const sermonSection = generateSermonBriefingSection();
         if (sermonSection) {
-          msg3Lines.unshift(sermonSection, '');
+          msg4Lines.unshift(sermonSection, '');
         }
       } catch {
         /* non-critical */
@@ -580,12 +767,13 @@ export async function sendDailyBriefing(): Promise<void> {
 
     await sendTelegramSplit(cfg.telegramChatId, msg1Lines.join('\n'));
     await sendTelegramSplit(cfg.telegramChatId, msg2Lines.join('\n'));
-    if (msg3Lines.length > 0) {
-      await sendTelegramSplit(cfg.telegramChatId, msg3Lines.join('\n'));
+    await sendTelegramSplit(cfg.telegramChatId, msg3Lines.join('\n'));
+    if (msg4Lines.length > 0) {
+      await sendTelegramSplit(cfg.telegramChatId, msg4Lines.join('\n'));
     }
 
     writeFlag(FLAG);
-    console.log('[briefing] daily briefing sent successfully (3-message format)');
+    console.log('[briefing] daily briefing sent successfully (4-message format)');
 
     // Mark contact events as reported so they won't repeat tomorrow
     if (contactReportedIds.length > 0) {

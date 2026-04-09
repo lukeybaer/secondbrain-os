@@ -461,8 +461,15 @@ export function buildContactIntelSection(): { text: string; reportedIds: string[
   const reportedIds = loadReportedIds();
   const fresh = store.events.filter((e) => !reportedIds.has(e.id));
 
-  const pastWeek = fresh.filter((e) => new Date(e.detectedAt) >= sevenDaysAgo).slice(0, 3);
+  // pastWeek: 7d–48h window (excludes recent 48h to avoid duplicate entries)
+  const pastWeek = fresh
+    .filter((e) => {
+      const d = new Date(e.detectedAt);
+      return d >= sevenDaysAgo && d < fortyEightHoursAgo;
+    })
+    .slice(0, 3);
 
+  // past48h: most recent 48h only (non-overlapping with pastWeek)
   const past48h = fresh.filter((e) => new Date(e.detectedAt) >= fortyEightHoursAgo).slice(0, 3);
 
   const lines: string[] = [];

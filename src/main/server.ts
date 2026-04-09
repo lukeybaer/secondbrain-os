@@ -285,13 +285,36 @@ route('POST', '/vapi/webhook', async (_req, res, body) => {
     }
   }
 
-  if (type === 'status-update') {
+  if (type === 'status-update' || type === 'end-of-call-report') {
     const msg = (event.message ?? event) as Record<string, unknown>;
     const status = msg?.status as string | undefined;
-    if (status === 'ended') {
-      const callId = (msg?.call as Record<string, unknown>)?.id as string | undefined;
-      console.log(`[server] call ended: ${callId ?? 'unknown'}`);
-      // Transcript ingest can be wired here when the transcript pipeline is ready.
+    const isEnded = type === 'end-of-call-report' || status === 'ended';
+    if (isEnded) {
+      const callObj = (msg?.call ?? {}) as Record<string, unknown>;
+      const callId = callObj.id as string | undefined;
+      const callerPhone = (callObj.customer as Record<string, unknown>)?.number as
+        | string
+        | undefined;
+      const durationSeconds = (() => {
+        const s = callObj.startedAt as string | undefined;
+        const e = callObj.endedAt as string | undefined;
+        if (s && e) return Math.round((new Date(e).getTime() - new Date(s).getTime()) / 1000);
+        return 0;
+      })();
+      console.log(
+        `[server] call ended: ${callId ?? 'unknown'} (${durationSeconds}s) from ${callerPhone ?? 'unknown'}`,
+      );
+
+      // Notify renderer so UI can refresh the call list
+      const win = BrowserWindow.getAllWindows()[0];
+      if (win) {
+        win.webContents.send('call:ended', {
+          callId,
+          callerPhone,
+          durationSeconds,
+          summary: (msg?.summary as string) ?? undefined,
+        });
+      }
     }
   }
 
