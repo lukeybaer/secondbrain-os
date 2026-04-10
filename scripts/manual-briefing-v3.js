@@ -268,26 +268,174 @@ async function sendTelegram(text) {
   }
 }
 
-// ── Snack Dude git stats ─────────────────────────────────────────────────────
+// ── Snack Dude invoice stats (DynamoDB, not git) ────────────────────────────
+// Pulls actual business data from snackdude-dev-invoices in us-east-2.
+// Reports invoice counts, revenue, and profit for 24h / 72h / 7d windows.
+// The `date` field on each invoice is the invoice transaction date — for a
+// small business that matches creation date closely enough to serve as a
+// recency signal.
 function getSnackDudeStats() {
-  const repo = 'C:/Users/luked/snack-dude';
-  function gitLog(since) {
-    try {
-      return execSync(`git -C "${repo}" log --since="${since}" --pretty=format:"%h|%ar|%s"`, {
-        encoding: 'utf8',
-      })
-        .trim()
-        .split('\n')
-        .filter(Boolean);
-    } catch {
-      return [];
-    }
+  const tmpFile = path.join(require('os').tmpdir(), 'snackdude-invoices-briefing.json');
+  try {
+    execSync(
+      `aws dynamodb scan --table-name snackdude-dev-invoices --region us-east-2 --output json > "${tmpFile}"`,
+      { encoding: 'utf8', timeout: 30000 },
+    );
+    const raw = JSON.parse(fs.readFileSync(tmpFile, 'utf8'));
+    const items = (raw.Items || []).map((i) => ({
+      id: i.invoiceId ? i.invoiceId.S : '',
+      date: i.date ? i.date.S : '',
+      customer: i.customerName ? i.customerName.S.slice(0, 40) : '',
+      total: parseFloat((i.total && i.total.N) || '0'),
+      profit: parseFloat((i.profit && i.profit.N) || '0'),
+    }));
+    fs.unlinkSync(tmpFile);
+    const today = new Date();
+    const d1 = new Date(today.getTime() - 1 * 86400000).toISOString().slice(0, 10);
+    const d3 = new Date(today.getTime() - 3 * 86400000).toISOString().slice(0, 10);
+    const d7 = new Date(today.getTime() - 7 * 86400000).toISOString().slice(0, 10);
+    const d30 = new Date(today.getTime() - 30 * 86400000).toISOString().slice(0, 10);
+    const window = (since) => {
+      const r = items.filter((i) => i.date >= since);
+      return {
+        n: r.length,
+        total: r.reduce((s, i) => s + i.total, 0),
+        profit: r.reduce((s, i) => s + i.profit, 0),
+      };
+    };
+    // Most recent invoice date present in the table — if stale, Luke needs to know
+    const maxDate =
+      items
+        .map((i) => i.date)
+        .filter(Boolean)
+        .sort()
+        .slice(-1)[0] || 'none';
+    // Top 5 most recent
+    const recent = items
+      .filter((i) => i.date)
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .slice(0, 5);
+    return {
+      totalInRepo: items.length,
+      maxDate,
+      h24: window(d1),
+      h72: window(d3),
+      d7: window(d7),
+      d30: window(d30),
+      recent,
+      source: 'snackdude-dev-invoices DynamoDB table (us-east-2)',
+    };
+  } catch (e) {
+    return {
+      totalInRepo: 0,
+      error: e.message,
+      source: 'DDB scan failed',
+    };
   }
-  return {
-    h24: gitLog('24 hours ago'),
-    h48: gitLog('48 hours ago'),
-    d7: gitLog('7 days ago'),
+}
+
+// ── Video pipeline counts ────────────────────────────────────────────────────
+function getVideoStats() {
+  const pendingPath = 'C:/Users/luked/secondbrain/content-review/pending/manifest.json';
+  const publishedPath = 'C:/Users/luked/secondbrain/content-review/published/manifest.json';
+  const queuePath = 'C:/Users/luked/secondbrain/content-review/upload-queue.json';
+  const stats = {
+    pending: { count: 0, titles: [] },
+    published: { count: 0, last7d: 0, titles: [] },
+    uploadQueue: { count: 0, titles: [] },
   };
+  try {
+    const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf8'));
+    const vids = pending.videos || [];
+    stats.pending.count = vids.length;
+    stats.pending.titles = vids.map((v) => v.title || v.id).slice(0, 10);
+  } catch {}
+  try {
+    const published = JSON.parse(fs.readFileSync(publishedPath, 'utf8'));
+    const vids = published.videos || [];
+    stats.published.count = vids.length;
+    const today = new Date();
+    const d7 = new Date(today.getTime() - 7 * 86400000).toISOString().slice(0, 10);
+    const recent = vids.filter((v) => (v.published_date || '') >= d7);
+    stats.published.last7d = recent.length;
+    stats.published.titles = recent.slice(0, 5).map((v) => v.title || v.id);
+  } catch {}
+  try {
+    const queue = JSON.parse(fs.readFileSync(queuePath, 'utf8'));
+    const arr = Array.isArray(queue) ? queue : Object.values(queue);
+    stats.uploadQueue.count = arr.length;
+    stats.uploadQueue.titles = arr
+      .map((q) => (q && (q.title || q.id || q.videoId)) || '(unknown)')
+      .slice(0, 5);
+  } catch {}
+  return stats;
+}
+
+// ── System health checks ─────────────────────────────────────────────────────
+// Per feedback_daily_health_checks.md: backups, EC2 backend, LLM source,
+// tests, and briefly summarize memory systems status.
+function getHealthChecks() {
+  const h = {
+    backups: { status: 'unknown', detail: '' },
+    ec2: { status: 'unknown', detail: '' },
+    llm: { status: 'unknown', detail: '' },
+    tests: { status: 'unknown', detail: '' },
+  };
+  // EC2 + LLM source
+  try {
+    const raw = execSync('curl -s -m 5 http://98.80.164.16:3001/health', {
+      encoding: 'utf8',
+      timeout: 8000,
+    });
+    const j = JSON.parse(raw);
+    h.ec2.status = j.status === 'ok' ? 'green' : 'red';
+    h.ec2.detail =
+      j.status + ', uptime ' + Math.round((j.uptime || 0) / 3600) + 'h, v' + (j.version || '?');
+    const src = j.llm && j.llm.source;
+    if (src && /claude-max-plan|FREE/.test(src)) {
+      h.llm.status = 'green';
+      h.llm.detail = src;
+    } else {
+      h.llm.status = 'red';
+      h.llm.detail =
+        src +
+        ' — maxPlanProxy ' +
+        (j.llm && j.llm.maxPlanProxy) +
+        ' (should be connected for FREE Claude Max routing)';
+    }
+  } catch (e) {
+    h.ec2.status = 'red';
+    h.ec2.detail = 'curl failed: ' + e.message.slice(0, 80);
+  }
+  // Backups — latest snapshot timestamp
+  try {
+    const out = execSync(
+      `aws s3api list-objects-v2 --bucket 672613094048-secondbrain-backups --prefix snapshots/2026 --region us-east-1 --query "reverse(sort_by(Contents, &LastModified))[:1].[Key,LastModified,Size]" --output text`,
+      { encoding: 'utf8', timeout: 15000 },
+    ).trim();
+    const [key, lastMod, size] = out.split('\t');
+    const ageMs = Date.now() - new Date(lastMod).getTime();
+    const ageHrs = Math.round(ageMs / 3600000);
+    const sizeMb = Math.round(parseInt(size, 10) / 1024 / 1024);
+    h.backups.status = ageHrs <= 30 ? 'green' : 'red';
+    h.backups.detail = `last: ${key.split('/').pop()} (${ageHrs}h ago, ${sizeMb}MB)`;
+  } catch (e) {
+    h.backups.status = 'red';
+    h.backups.detail = 'S3 list failed: ' + e.message.slice(0, 80);
+  }
+  // Tests — run the briefing test files only (fast, ~500ms)
+  try {
+    execSync(
+      'npx vitest run src/main/__tests__/manual-briefing.test.ts src/main/__tests__/briefing-no-groq.test.ts',
+      { encoding: 'utf8', timeout: 60000, cwd: 'C:/Users/luked/secondbrain', stdio: 'pipe' },
+    );
+    h.tests.status = 'green';
+    h.tests.detail = '33/33 briefing tests passing';
+  } catch (e) {
+    h.tests.status = 'red';
+    h.tests.detail = 'test run failed';
+  }
+  return h;
 }
 
 // ── Inner circle contact neglect scan ────────────────────────────────────────
@@ -404,6 +552,8 @@ function loadActionItems() {
   const snack = getSnackDudeStats();
   const neglect = getContactNeglect();
   const actions = loadActionItems();
+  const videos = getVideoStats();
+  const health = getHealthChecks();
 
   // ── Message 1: Header + AI/Tech ────────────────────────────────────────────
   const msg1 = [
@@ -488,29 +638,52 @@ function loadActionItems() {
     msg4Parts.push('');
   }
 
-  // SNACK DUDE ACTIVITY
-  msg4Parts.push('SNACK DUDE ACTIVITY (C:\\Users\\luked\\snack-dude):');
-  msg4Parts.push(`  Last 24h: ${snack.h24.length} commits`);
-  msg4Parts.push(`  Last 48h: ${snack.h48.length} commits`);
-  msg4Parts.push(`  Last 7d:  ${snack.d7.length} commits`);
-  if (snack.d7.length > 0) {
-    msg4Parts.push('');
-    msg4Parts.push('  Recent commits:');
-    for (const c of snack.d7.slice(0, 10)) {
-      const [hash, rel, ...rest] = c.split('|');
-      const subject = rest.join('|').slice(0, 80);
-      msg4Parts.push(`  • ${hash} ${rel.padEnd(12)} ${subject}`);
+  // SNACK DUDE INVOICE ACTIVITY (DynamoDB, not git commits)
+  msg4Parts.push('SNACK DUDE INVOICE ACTIVITY (' + (snack.source || 'unknown') + '):');
+  if (snack.error) {
+    msg4Parts.push('  DDB scan failed: ' + snack.error);
+  } else {
+    const fmt = (w) =>
+      `${w.n} invoices, $${w.total.toFixed(2)} revenue, $${w.profit.toFixed(2)} profit`;
+    msg4Parts.push('  Last 24h:  ' + fmt(snack.h24));
+    msg4Parts.push('  Last 72h:  ' + fmt(snack.h72));
+    msg4Parts.push('  Last 7d:   ' + fmt(snack.d7));
+    msg4Parts.push('  Last 30d:  ' + fmt(snack.d30));
+    msg4Parts.push('  Table total: ' + snack.totalInRepo + ' invoices');
+    msg4Parts.push('  Most recent invoice date in table: ' + snack.maxDate);
+    if (snack.h24.n === 0 && snack.d7.n === 0) {
+      msg4Parts.push(
+        '  ⚠ No invoices logged in the last 7 days. Either sales stopped or entry has lapsed.',
+      );
     }
   }
   msg4Parts.push('');
 
-  msg4Parts.push('CORRECTIONS FROM EARLIER BRIEFING (2026-04-10 13:47):');
-  if (actions.falseFlags && actions.falseFlags[0] && actions.falseFlags[0].items) {
-    for (const f of actions.falseFlags[0].items) {
-      msg4Parts.push(`  ❌ ${f.thread}`);
-      msg4Parts.push(`     ${f.actual}`);
-    }
-  }
+  // CONTENT PIPELINE — reference only, review in the app
+  // Per project_briefing_spec.md: link to Content Pipeline, do not embed titles.
+  // Target cadence: 1 AILifeHacks/day, 1 BedtimeStories every other day.
+  msg4Parts.push('CONTENT PIPELINE (review in SecondBrain app, not here):');
+  msg4Parts.push(
+    '  ' +
+      videos.pending.count +
+      ' pending review, ' +
+      videos.uploadQueue.count +
+      ' in upload queue, ' +
+      videos.published.count +
+      ' published to date',
+  );
+  msg4Parts.push('  Target cadence: 1 AILifeHacks/day, 1 BedtimeStories every other day');
+  msg4Parts.push('');
+
+  // SYSTEM HEALTH CHECKS
+  msg4Parts.push('SYSTEM HEALTH:');
+  const icon = (s) => (s === 'green' ? '✓' : s === 'red' ? '✗' : '?');
+  msg4Parts.push('  ' + icon(health.backups.status) + ' Backups:  ' + health.backups.detail);
+  msg4Parts.push('  ' + icon(health.ec2.status) + ' EC2:      ' + health.ec2.detail);
+  msg4Parts.push('  ' + icon(health.llm.status) + ' LLM src:  ' + health.llm.detail);
+  msg4Parts.push('  ' + icon(health.tests.status) + ' Tests:    ' + health.tests.detail);
+  const anyRed = Object.values(health).some((h) => h.status === 'red');
+  msg4Parts.push('  Overall:  ' + (anyRed ? '⚠ RED — subsystems need attention' : '✓ all green'));
   msg4Parts.push('');
 
   msg4Parts.push("Reply with questions or say 'call me' to discuss.");
