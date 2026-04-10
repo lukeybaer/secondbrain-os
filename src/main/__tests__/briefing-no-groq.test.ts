@@ -63,4 +63,71 @@ describe('ec2-server.js — briefing uses local claude CLI', () => {
       expect(claudeFnMatch[0]).not.toContain('api.groq.com');
     }
   });
+
+  it('summarizeWithClaude detects auth failure and falls back to raw headlines', () => {
+    // Regression: claude CLI on EC2 was unauthenticated and returning
+    // "Not logged in · Please run /login" as stdout — which was then shipped
+    // to Luke as the briefing content. The function must detect login failure
+    // strings and fall back to raw numbered headlines.
+    if (!src) return;
+    const claudeFnMatch = src.match(/async function summarizeWithClaude[\s\S]{0,1200}/);
+    expect(claudeFnMatch).toBeTruthy();
+    if (claudeFnMatch) {
+      expect(claudeFnMatch[0]).toMatch(/not logged in|please run/i);
+      expect(claudeFnMatch[0]).toContain('falling back');
+    }
+  });
+});
+
+describe('ec2-server.js — briefing MUST include news sections', () => {
+  // Regression 2026-04-10: sendDailyBriefing was refactored into a "6-section"
+  // format on Apr 6 and the news fetching was silently dropped. The briefing
+  // on 2026-04-10 shipped as 119 characters ("Good morning... Reply with questions")
+  // because every section was conditional and all conditions were false.
+  // This test guarantees sendDailyBriefing ALWAYS wires up world + AI news.
+  let src: string;
+
+  beforeAll(() => {
+    const serverPath = path.resolve(__dirname, '..', '..', '..', '..', 'ec2-server.js');
+    src = fs.existsSync(serverPath) ? fs.readFileSync(serverPath, 'utf-8') : '';
+  });
+
+  it('sendDailyBriefing calls fetchNewsHeadlines', () => {
+    if (!src) return;
+    const fn = src.match(/async function sendDailyBriefing[\s\S]*?\n\}\n/);
+    expect(fn).toBeTruthy();
+    if (fn) expect(fn[0]).toContain('fetchNewsHeadlines(');
+  });
+
+  it('sendDailyBriefing calls fetchAITechNews', () => {
+    if (!src) return;
+    const fn = src.match(/async function sendDailyBriefing[\s\S]*?\n\}\n/);
+    if (fn) expect(fn[0]).toContain('fetchAITechNews(');
+  });
+
+  it('sendDailyBriefing pushes a WORLD NEWS section', () => {
+    if (!src) return;
+    const fn = src.match(/async function sendDailyBriefing[\s\S]*?\n\}\n/);
+    if (fn) expect(fn[0]).toMatch(/sections\.push\(['"`]\s*\\n?WORLD NEWS/);
+  });
+
+  it('sendDailyBriefing pushes an AI & TECH section', () => {
+    if (!src) return;
+    const fn = src.match(/async function sendDailyBriefing[\s\S]*?\n\}\n/);
+    if (fn) expect(fn[0]).toMatch(/sections\.push\(['"`]\s*\\n?AI & TECH/);
+  });
+
+  it('fetchNewsHeadlines is not dead code — it has a caller', () => {
+    if (!src) return;
+    // Count non-definition references to fetchNewsHeadlines
+    const refs = (src.match(/fetchNewsHeadlines\(/g) || []).length;
+    // Should be at least 2: the definition call-position + at least one caller
+    expect(refs).toBeGreaterThanOrEqual(2);
+  });
+
+  it('fetchAITechNews is not dead code — it has a caller', () => {
+    if (!src) return;
+    const refs = (src.match(/fetchAITechNews\(/g) || []).length;
+    expect(refs).toBeGreaterThanOrEqual(2);
+  });
 });
