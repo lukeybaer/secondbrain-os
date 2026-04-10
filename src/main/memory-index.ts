@@ -22,6 +22,26 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { app } from 'electron';
+// Graphiti cascade: every Tier 2 write also fires addEpisode() so the
+// knowledge graph stays in sync with the filesystem. Imported lazily to
+// avoid circular deps and because Graphiti may be unavailable (SSH tunnel
+// down) — failures are silent by design.
+// Reference: AMY_DEEP_RESEARCH.md section 1.
+let _graphitiAddEpisode:
+  | ((ep: {
+      name: string;
+      content: string;
+      sourceType: string;
+      sourceDescription?: string;
+      referenceTime?: string;
+    }) => Promise<boolean>)
+  | null = null;
+try {
+  const gc = require('./graphiti-client');
+  _graphitiAddEpisode = gc.addEpisode;
+} catch {
+  /* graphiti-client not available in this runtime (e.g. tests) */
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -199,6 +219,19 @@ export function upsertMemory(
   index.entries.push(entry);
   index.hashes.push(hash);
   saveIndex(index);
+
+  // Graphiti cascade — fire and forget, failures silent
+  if (_graphitiAddEpisode) {
+    _graphitiAddEpisode({
+      name: `tier2:${topic}`,
+      content,
+      sourceType: 'memory_upsert',
+      sourceDescription: `Tier 2 memory: ${topic}`,
+      referenceTime: entry.valid_at,
+    }).catch(() => {
+      /* silent — graphiti may be unavailable */
+    });
+  }
 
   return entry;
 }
