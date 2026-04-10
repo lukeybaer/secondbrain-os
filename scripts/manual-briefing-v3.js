@@ -35,20 +35,33 @@ if (!BOT || !CHAT) {
 // Summarization goes through `claude` CLI only (Claude Max plan).
 
 // ── Claude CLI summarization ─────────────────────────────────────────────────
+// CRITICAL: spawnSync with shell:true on Windows uses cmd.exe which mangles
+// multi-line prompts (truncates at whitespace, strips quotes). Calling claude.cmd
+// directly fails with EINVAL. The only reliable path is to invoke the underlying
+// cli.js with the current node binary and pass the prompt as a proper argv[]
+// element with NO shell involved.
+const CLAUDE_CLI_JS =
+  'C:/Users/luked/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/cli.js';
+
 function claudeSummarize(prompt) {
   const env = { ...process.env };
-  delete env.CLAUDECODE;
-  const result = spawnSync('claude', ['--model', 'claude-haiku-4-5-20251001', '-p', prompt], {
-    env,
-    encoding: 'utf8',
-    timeout: 60000,
-    shell: true,
-  });
-  if (result.status !== 0) {
-    console.warn('[claude] exit', result.status, (result.stderr || '').slice(0, 200));
+  delete env.CLAUDECODE; // bypass nested-session guard
+  const result = spawnSync(
+    process.execPath,
+    [CLAUDE_CLI_JS, '--model', 'claude-haiku-4-5-20251001', '-p', prompt],
+    {
+      env,
+      encoding: 'utf8',
+      timeout: 120000,
+      maxBuffer: 10 * 1024 * 1024,
+    },
+  );
+  if (result.status !== 0 || !result.stdout) {
+    const err = (result.error && result.error.message) || (result.stderr || '').slice(0, 200);
+    console.warn('[claude] exit', result.status, 'err:', err);
     return '';
   }
-  return (result.stdout || '').trim();
+  return result.stdout.trim();
 }
 
 // ── HTTP fetch helper ────────────────────────────────────────────────────────
@@ -115,21 +128,81 @@ async function fetchFeed(url, source) {
   }
 }
 
+// ── Fetch full article body and strip HTML ──────────────────────────────────
+async function fetchArticleBody(url) {
+  if (!url) return '';
+  try {
+    const html = await fetchUrl(url);
+    // Strip script, style, nav, header, footer, aside
+    let text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+      .replace(/<header[\s\S]*?<\/header>/gi, '')
+      .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+      .replace(/<aside[\s\S]*?<\/aside>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '');
+    // Try to extract article body from common containers
+    const artMatch =
+      text.match(/<article[\s\S]*?<\/article>/i) ||
+      text.match(/<main[\s\S]*?<\/main>/i) ||
+      text.match(/<div[^>]*class="[^"]*(?:article|post|content|entry)[^"]*"[\s\S]*?<\/div>/i);
+    if (artMatch) text = artMatch[0];
+    // Strip all remaining tags
+    text = text
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&#8217;/g, "'")
+      .replace(/&#8220;/g, '"')
+      .replace(/&#8221;/g, '"')
+      .replace(/&#[0-9]+;/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return text.slice(0, 6000);
+  } catch (e) {
+    return '';
+  }
+}
+
 // ── 3-paragraph summarization via Claude CLI ─────────────────────────────────
-function summarizeArticle(a) {
+async function summarizeArticle(a) {
+  // Fetch full article body FIRST — RSS descriptions alone are too thin for
+  // honest 3-paragraph summaries. Claude correctly refuses to fabricate from
+  // metadata only, so we must give it real content.
+  const body = await fetchArticleBody(a.link);
+  const contextText = body || a.desc || '';
+
+  if (!contextText || contextText.length < 200) {
+    // Not enough real content — return a truthful placeholder instead of fabricating
+    return (
+      '(insufficient article content available — RSS description was ' +
+      (a.desc ? a.desc.length : 0) +
+      ' chars, full fetch returned ' +
+      body.length +
+      ' chars. Click the URL above to read the source.)'
+    );
+  }
+
   const prompt =
     'Write a 3-paragraph summary of this news article for a busy executive briefing. ' +
-    'Each paragraph must contain specific facts (names, numbers, dates, quoted figures). ' +
-    'No filler, no hedging, no preamble, no headers. ' +
-    'Output ONLY the 3 paragraphs separated by a blank line.\n\n' +
+    'Each paragraph must contain specific facts (names, numbers, dates, direct quotes) drawn ONLY from the article content provided below. ' +
+    'Do not invent facts. Do not hedge. Do not add preambles, apologies, meta-commentary, headers, or bullet points. ' +
+    'If the content is promotional or lacks substance, write what you can in fewer paragraphs rather than refusing. ' +
+    'Output ONLY the prose paragraphs separated by blank lines.\n\n' +
+    '=== ARTICLE METADATA ===\n' +
     `Title: ${a.title}\n` +
     (a.source ? `Source: ${a.source}\n` : '') +
     (a.author ? `Author: ${a.author}\n` : '') +
     (a.date ? `Date: ${a.date}\n` : '') +
     (a.link ? `URL: ${a.link}\n` : '') +
-    (a.desc ? `Description: ${a.desc}\n` : '');
+    '\n=== ARTICLE CONTENT ===\n' +
+    contextText;
+
   const out = claudeSummarize(prompt);
-  if (!out) return a.desc || '(summary unavailable — claude CLI returned empty)';
+  if (!out) return '(summary unavailable — claude CLI returned empty)';
   return out;
 }
 
@@ -305,26 +378,27 @@ function loadActionItems() {
   const totalArticles = tech.length + world.length + onityFiltered.length + mortgageTop.length;
   console.log(`summarizing ${totalArticles} articles via claude CLI (Claude Max plan)...`);
 
-  // Claude CLI is a subprocess per call — run sequentially to avoid contention
+  // Claude CLI is a subprocess per call — run sequentially to avoid contention.
+  // summarizeArticle is async because it fetches the full article body first.
   const techSummaries = [];
   for (let i = 0; i < tech.length; i++) {
-    console.log(`  tech ${i + 1}/${tech.length}`);
-    techSummaries.push(summarizeArticle(tech[i]));
+    console.log(`  tech ${i + 1}/${tech.length}: ${tech[i].title.slice(0, 50)}`);
+    techSummaries.push(await summarizeArticle(tech[i]));
   }
   const worldSummaries = [];
   for (let i = 0; i < world.length; i++) {
-    console.log(`  world ${i + 1}/${world.length}`);
-    worldSummaries.push(summarizeArticle(world[i]));
+    console.log(`  world ${i + 1}/${world.length}: ${world[i].title.slice(0, 50)}`);
+    worldSummaries.push(await summarizeArticle(world[i]));
   }
   const onitySummaries = [];
   for (let i = 0; i < onityFiltered.length; i++) {
     console.log(`  onity ${i + 1}/${onityFiltered.length}`);
-    onitySummaries.push(summarizeArticle(onityFiltered[i]));
+    onitySummaries.push(await summarizeArticle(onityFiltered[i]));
   }
   const mortgageSummaries = [];
   for (let i = 0; i < mortgageTop.length; i++) {
     console.log(`  mortgage ${i + 1}/${mortgageTop.length}`);
-    mortgageSummaries.push(summarizeArticle(mortgageTop[i]));
+    mortgageSummaries.push(await summarizeArticle(mortgageTop[i]));
   }
 
   const snack = getSnackDudeStats();
@@ -443,11 +517,18 @@ function loadActionItems() {
 
   const msg4 = msg4Parts.join('\n');
 
-  // ── Write to Desktop ───────────────────────────────────────────────────────
-  const desktopPath = `C:/Users/luked/Desktop/briefing-${todayIso}.md`;
+  // ── Write to Desktop + home dir + secondbrain data dir ────────────────────
   const fullBriefing = [msg1, msg2, msg3, msg4].join('\n\n---\n\n');
-  fs.writeFileSync(desktopPath, fullBriefing, 'utf8');
-  console.log(`wrote ${fullBriefing.length} chars to ${desktopPath}`);
+  const outputs = [
+    `C:/Users/luked/Desktop/briefing-${todayIso}.md`,
+    `C:/Users/luked/briefing-${todayIso}.md`,
+    `C:/Users/luked/secondbrain/data/briefings/briefing-${todayIso}.md`,
+  ];
+  for (const p of outputs) {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, fullBriefing, 'utf8');
+    console.log(`wrote ${fullBriefing.length} chars to ${p}`);
+  }
 
   // ── Send to Telegram ───────────────────────────────────────────────────────
   console.log('msg1:', msg1.length);
