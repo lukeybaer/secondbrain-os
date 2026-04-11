@@ -88,6 +88,22 @@ describe('LLM routing guard — no paid hosts in source', () => {
     walkSourceFiles(full, files);
   }
 
+  // Read each file once and cache the content. Without this, the four
+  // FORBIDDEN_ENDPOINTS tests below read every file four times, and when
+  // the full suite runs in parallel on Windows the disk contention pushes
+  // each test over the 5000ms default timeout. 117ms in isolation, flaky
+  // under parallel load. Cache once, regex many times, flake goes away.
+  const fileContents: Array<{ rel: string; content: string }> = [];
+  for (const file of files) {
+    try {
+      const content = fs.readFileSync(file, 'utf-8');
+      const rel = path.relative(REPO_ROOT, file).replace(/\\/g, '/');
+      fileContents.push({ rel, content });
+    } catch {
+      /* unreadable */
+    }
+  }
+
   it('finds at least one source file to scan', () => {
     expect(files.length).toBeGreaterThan(10);
   });
@@ -95,17 +111,9 @@ describe('LLM routing guard — no paid hosts in source', () => {
   for (const endpoint of FORBIDDEN_ENDPOINTS) {
     it(`no source file contains forbidden endpoint ${endpoint.source}`, () => {
       const violators: string[] = [];
-      for (const file of files) {
-        try {
-          const content = fs.readFileSync(file, 'utf-8');
-          if (endpoint.test(content)) {
-            const rel = path.relative(REPO_ROOT, file).replace(/\\/g, '/');
-            if (!LEGACY_MIGRATION_ALLOWLIST.has(rel)) {
-              violators.push(rel);
-            }
-          }
-        } catch {
-          /* unreadable */
+      for (const { rel, content } of fileContents) {
+        if (endpoint.test(content) && !LEGACY_MIGRATION_ALLOWLIST.has(rel)) {
+          violators.push(rel);
         }
       }
       if (violators.length > 0) {
