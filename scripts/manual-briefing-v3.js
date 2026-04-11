@@ -467,12 +467,48 @@ function getContactNeglect() {
 }
 
 // ── Action items loaded from external JSON (no hardcoded strings) ────────────
+// openCommitments are filtered by thread supersession: if any item has a
+// lastThreadMessageAt strictly greater than its committedAt, someone moved the
+// thread forward after Luke's commitment and we should NOT resurface it without
+// human re-verification. The item falls out of the live list and can be logged
+// for audit. This prevents the "Angel Hyden — Ed said hold off" regression
+// where a static JSON file shipped a stale promise to the 5:30 AM briefing.
 function loadActionItems() {
   const p = 'C:/Users/luked/secondbrain/data/briefing-action-items.json';
   if (!fs.existsSync(p)) {
     return { unansweredEmails: [], openCommitments: [], generatedAt: 'never' };
   }
-  return JSON.parse(fs.readFileSync(p, 'utf8'));
+  const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+
+  // Filter openCommitments: drop any where the thread was touched after
+  // committedAt unless explicitly marked stillOpen:true by a verified operator.
+  if (Array.isArray(data.openCommitments)) {
+    const dropped = [];
+    data.openCommitments = data.openCommitments.filter((c) => {
+      if (c.stillOpen === true) return true;
+      if (!c.committedAt || !c.lastThreadMessageAt) {
+        // Missing supersession metadata — not safe to surface. Log and drop.
+        dropped.push({ ...c, dropReason: 'missing committedAt or lastThreadMessageAt' });
+        return false;
+      }
+      const committed = new Date(c.committedAt).getTime();
+      const lastMsg = new Date(c.lastThreadMessageAt).getTime();
+      if (Number.isFinite(committed) && Number.isFinite(lastMsg) && lastMsg > committed) {
+        dropped.push({
+          ...c,
+          dropReason: `thread moved forward ${new Date(lastMsg).toISOString()} > commitment ${new Date(committed).toISOString()}`,
+        });
+        return false;
+      }
+      return true;
+    });
+    if (dropped.length > 0) {
+      console.log(`[action-items] dropped ${dropped.length} superseded openCommitments:`);
+      for (const d of dropped) console.log(`  - ${d.person}: ${d.dropReason}`);
+    }
+  }
+
+  return data;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -701,6 +737,27 @@ function loadActionItems() {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, fullBriefing, 'utf8');
     console.log(`wrote ${fullBriefing.length} chars to ${p}`);
+  }
+
+  // Also produce a Word .docx on the Desktop. Luke reviews the briefing on his
+  // desktop and prefers Word over raw markdown. This is part of the canonical
+  // delivery per project_briefing_spec.md and guarded by the briefing-output
+  // regression test.
+  try {
+    const mdPath = `C:/Users/luked/Desktop/briefing-${todayIso}.md`;
+    const docxPath = `C:/Users/luked/Desktop/briefing-${todayIso}.docx`;
+    const scriptPath = path.join(__dirname, 'briefing-to-docx.py');
+    const res = spawnSync('python', [scriptPath, mdPath, docxPath], {
+      encoding: 'utf8',
+      timeout: 30000,
+    });
+    if (res.status !== 0) {
+      console.error('docx conversion failed:', res.stderr || res.stdout);
+    } else {
+      console.log(`wrote ${docxPath}`);
+    }
+  } catch (e) {
+    console.error('docx conversion error:', e && e.message);
   }
 
   // ── Send to Telegram ───────────────────────────────────────────────────────

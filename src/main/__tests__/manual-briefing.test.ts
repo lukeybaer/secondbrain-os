@@ -176,4 +176,62 @@ describe('action items JSON — structure', () => {
       expect(item.gmailUrl).toMatch(/^https:\/\/mail\.google\.com/);
     }
   });
+
+  // Regression: 2026-04-11 #gap — Angel Hyden commitment shipped in the 5:30
+  // briefing even though Ed replied Apr 9 "I'll jump into ADP" which paused
+  // Luke's promise. The openCommitments schema had no supersession check.
+  // These tests enforce that every openCommitment carries enough metadata
+  // for the briefing script to verify it is still live.
+  it('every openCommitment has committedAt + lastThreadMessageAt for supersession check', () => {
+    if (!data || !data.openCommitments) return;
+    for (const c of data.openCommitments) {
+      expect(c.committedAt, `openCommitment for ${c.person} missing committedAt`).toBeDefined();
+      // stillOpen:true is the operator override — otherwise lastThreadMessageAt
+      // must be present so the script can decide whether the thread moved on.
+      if (c.stillOpen !== true) {
+        expect(
+          c.lastThreadMessageAt,
+          `openCommitment for ${c.person} missing lastThreadMessageAt (use stillOpen:true to override)`,
+        ).toBeDefined();
+      }
+    }
+  });
+
+  it('no openCommitment has lastThreadMessageAt strictly greater than committedAt (without explicit override)', () => {
+    if (!data || !data.openCommitments) return;
+    for (const c of data.openCommitments) {
+      if (c.stillOpen === true) continue;
+      if (!c.committedAt || !c.lastThreadMessageAt) continue;
+      const committed = new Date(c.committedAt).getTime();
+      const lastMsg = new Date(c.lastThreadMessageAt).getTime();
+      expect(
+        lastMsg > committed,
+        `openCommitment for ${c.person} is superseded: thread message at ${c.lastThreadMessageAt} > commitment at ${c.committedAt}. Move to supersededCommitments or set stillOpen:true.`,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('manual-briefing-v3.js — openCommitment supersession filter', () => {
+  let src: string;
+  beforeAll(() => {
+    src = fs.existsSync(SCRIPT_PATH) ? fs.readFileSync(SCRIPT_PATH, 'utf-8') : '';
+  });
+
+  it('loadActionItems filters openCommitments by lastThreadMessageAt vs committedAt', () => {
+    // The filter must live inside loadActionItems so every call site benefits.
+    const fn = src.match(/function loadActionItems[\s\S]{0,3000}/);
+    expect(fn).toBeTruthy();
+    if (fn) {
+      expect(fn[0]).toContain('lastThreadMessageAt');
+      expect(fn[0]).toContain('committedAt');
+      expect(fn[0]).toMatch(/lastMsg\s*>\s*committed/);
+    }
+  });
+
+  it('loadActionItems respects stillOpen:true as an operator override', () => {
+    const fn = src.match(/function loadActionItems[\s\S]{0,3000}/);
+    expect(fn).toBeTruthy();
+    if (fn) expect(fn[0]).toContain('stillOpen');
+  });
 });
