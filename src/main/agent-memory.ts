@@ -28,6 +28,7 @@ import {
   readWorkingMemory,
 } from './memory-index';
 import { buildKnowledgeContext, ingestCallTranscript } from './graphiti-client';
+import { buildSessionArchiveContext } from './session-archive';
 import { readCanonicalMemory } from './memory-sync';
 
 // ── Agent registry ────────────────────────────────────────────────────────────
@@ -558,6 +559,22 @@ export async function buildUnifiedContext(
     }
   } catch {
     /* Non-critical */
+  }
+
+  // Source 4: Session archive search — prior Claude Code conversations
+  // with Luke that mention this query. Closes the "you forgot what I
+  // wanted" problem by surfacing the actual prior claims and answers
+  // from the session history. Falls back silently if the local FTS
+  // index doesn't exist yet (backfill hasn't run) or the query is empty.
+  if (query) {
+    try {
+      const sessionContext = buildSessionArchiveContext(query, Math.floor(maxChars * 0.2));
+      if (sessionContext.trim()) {
+        parts.push(sessionContext);
+      }
+    } catch {
+      /* Non-critical — session archive is an optional retrieval tier */
+    }
   }
 
   return parts.join('\n\n');
