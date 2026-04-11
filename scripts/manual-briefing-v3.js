@@ -277,6 +277,81 @@ async function sendTelegram(text) {
 // table under the `snackdude` AWS profile. We MUST use that profile here or
 // the briefing will silently read 0 invoices for the real business.
 // Reports invoice counts, revenue, and profit for 24h / 72h / 7d windows.
+// ── Overnight enhancement self-heal ─────────────────────────────────────────
+// When the jsonl is stale (no run in window), instead of just warning we fire
+// a detached `claude -p` subprocess that executes the nightly SKILL.md task.
+// Today's briefing still reports the stale state + "self-heal triggered at
+// {ts}"; tomorrow's briefing reflects the backfilled run.
+//
+// One self-heal per calendar day: marker file prevents repeated triggering if
+// the briefing is regenerated multiple times (e.g. during development).
+const SELFHEAL_MARKER_DIR = path.join(process.env.APPDATA || '', 'secondbrain', 'data', 'agent');
+const SELFHEAL_LOG = path.join(SELFHEAL_MARKER_DIR, 'nightly-enhancement-selfheal.log');
+
+function triggerOvernightSelfHeal() {
+  try {
+    fs.mkdirSync(SELFHEAL_MARKER_DIR, { recursive: true });
+  } catch {
+    /* ignore */
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const marker = path.join(SELFHEAL_MARKER_DIR, `selfheal-${today}.marker`);
+  if (fs.existsSync(marker)) {
+    return { triggered: false, reason: 'already triggered today', marker };
+  }
+  const skillPaths = [
+    path.join('C:/Users/luked/.claude/scheduled-tasks/secondbrain-nightly-enhancement/SKILL.md'),
+    path.join('C:/Users/luked/Documents/Claude/Scheduled/secondbrain-nightly-enhancement/SKILL.md'),
+  ];
+  let skillBody = null;
+  for (const p of skillPaths) {
+    if (fs.existsSync(p)) {
+      try {
+        skillBody = fs.readFileSync(p, 'utf8');
+        break;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  if (!skillBody) {
+    return { triggered: false, reason: 'no SKILL.md found in any scheduled-tasks path' };
+  }
+  const prompt =
+    `You are Amy. The morning briefing detected that the nightly-enhancement loop has not run recently. Execute the following SKILL.md task NOW as a self-heal. Do not ask permission. Ship real commits. Log to BOTH C:\\Users\\luked\\AppData\\Roaming\\secondbrain\\data\\agent\\nightly-enhancements.jsonl AND C:\\Users\\luked\\secondbrain\\data\\agent\\nightly-enhancements.jsonl with task="secondbrain-enhancement-selfheal" and notes explaining that this was triggered by the morning briefing stale-detection path.\n\n--- SKILL.md ---\n` +
+    skillBody;
+  try {
+    const logStream = fs.openSync(SELFHEAL_LOG, 'a');
+    fs.writeSync(
+      logStream,
+      `\n[${new Date().toISOString()}] self-heal triggered by manual-briefing-v3.js\n`,
+    );
+    const env = { ...process.env };
+    delete env.CLAUDECODE;
+    const child = require('child_process').spawn(
+      process.execPath,
+      [
+        'C:/Users/luked/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/cli.js',
+        '--model',
+        'claude-opus-4-6',
+        '-p',
+        prompt,
+        '--dangerously-skip-permissions',
+      ],
+      {
+        env,
+        detached: true,
+        stdio: ['ignore', logStream, logStream],
+      },
+    );
+    child.unref();
+    fs.writeFileSync(marker, String(child.pid || 'unknown') + '\n' + new Date().toISOString());
+    return { triggered: true, pid: child.pid, marker };
+  } catch (e) {
+    return { triggered: false, reason: 'spawn failed: ' + (e && e.message) };
+  }
+}
+
 // ── Overnight enhancements ───────────────────────────────────────────────────
 // Reads nightly-enhancements.jsonl from both the AppData location (where
 // skills historically wrote) and the repo-tracked location. Returns the runs
@@ -368,9 +443,25 @@ function formatOvernightSection(enh) {
           enh.freshest.timestamp.slice(0, 10) +
           ').',
       );
-      lines.push('  The nightly-enhancement scheduled task is not firing. Investigate.');
     } else {
       lines.push('  ⚠ no runs logged ever — nightly-enhancements.jsonl is empty or missing.');
+    }
+    // Self-heal: fire a detached claude CLI run of the nightly SKILL.md
+    const heal = triggerOvernightSelfHeal();
+    if (heal.triggered) {
+      lines.push(
+        '  🔁 self-heal triggered at ' +
+          new Date().toISOString() +
+          ' — background pid ' +
+          heal.pid +
+          ', log: ' +
+          SELFHEAL_LOG,
+      );
+      lines.push(
+        "  Tomorrow's briefing will show the backfilled run. Check the log tail if you want progress.",
+      );
+    } else {
+      lines.push('  self-heal not fired: ' + heal.reason);
     }
     lines.push('');
     return lines;
@@ -405,6 +496,144 @@ function formatOvernightSection(enh) {
   }
   lines.push('');
   return lines;
+}
+
+// ── LinkedIn network intelligence (spec §7) ─────────────────────────────────
+// Reads linkedin-intel.json from AppData. Surfaces warmth-signal events from
+// the daily LinkedIn crawl so Luke can act on engagement opportunities.
+function getLinkedInIntel(hours = 30) {
+  const p = path.join(
+    process.env.APPDATA || '',
+    'secondbrain',
+    'data',
+    'agent',
+    'linkedin-intel.json',
+  );
+  if (!fs.existsSync(p)) return { available: false, reason: 'linkedin-intel.json missing' };
+  try {
+    const obj = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const cutoff = Date.now() - hours * 3600 * 1000;
+    const events = Array.isArray(obj.events) ? obj.events : [];
+    const fresh = events.filter((e) => {
+      const t = Date.parse(e.detectedAt || '');
+      return !isNaN(t) && t >= cutoff;
+    });
+    return {
+      available: true,
+      lastCrawlAt: obj.lastCrawlAt || null,
+      totalContacts: obj.totalContacts || 0,
+      queried: obj.totalContactsQueried || 0,
+      events: fresh,
+      staleness:
+        obj.lastCrawlAt && Date.now() - Date.parse(obj.lastCrawlAt) > 30 * 3600 * 1000
+          ? 'stale'
+          : 'fresh',
+    };
+  } catch (e) {
+    return { available: false, reason: 'parse failed: ' + (e && e.message) };
+  }
+}
+
+// ── Communications summary (spec §8) ─────────────────────────────────────────
+// Exec-level filter of what needs Luke's attention across Gmail/Telegram/
+// WhatsApp vs what was already handled. For now the data source is
+// briefing-action-items.json + a handled counter derived from it. Full
+// Gmail/Telegram handled-since-last-briefing is a near-term TODO but this
+// section must still fire per spec — never silent.
+function getCommunicationsSummary(actions) {
+  const needsAttention = [];
+  if (actions && Array.isArray(actions.unansweredEmails)) {
+    for (const item of actions.unansweredEmails.slice(0, 5)) {
+      needsAttention.push({
+        channel: 'gmail',
+        person: item.person,
+        subject: item.subject,
+        daysOld: item.daysOld,
+        url: item.gmailUrl,
+      });
+    }
+  }
+  // Handled-since-last-briefing tracking not yet wired. Surface the gap loudly.
+  return {
+    needsAttention,
+    handledSinceLast: null,
+    note: 'Handled-since-last-briefing tracking not yet wired. Until it is, this section only shows new unanswered items flagged by the gmail scan.',
+  };
+}
+
+// ── Reputation mentions (spec §11) ───────────────────────────────────────────
+// Google Alerts / social search for Luke, PixSeat, Onity, AILifeHacks, BAI/ITM.
+// No monitoring source is currently configured. The spec requires this section
+// to fire anyway — if data is missing it must say so explicitly, not omit.
+function getReputationMentions() {
+  const p = path.join(
+    process.env.APPDATA || '',
+    'secondbrain',
+    'data',
+    'agent',
+    'reputation-mentions.jsonl',
+  );
+  if (!fs.existsSync(p)) {
+    return {
+      available: false,
+      reason:
+        'reputation-mentions.jsonl does not exist. Google Alerts + social monitoring ingest not yet wired.',
+    };
+  }
+  try {
+    const lines = fs.readFileSync(p, 'utf8').split(/\r?\n/).filter(Boolean);
+    const cutoff = Date.now() - 30 * 3600 * 1000;
+    const mentions = [];
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        const t = Date.parse(obj.detectedAt || obj.timestamp || '');
+        if (!isNaN(t) && t >= cutoff) mentions.push(obj);
+      } catch {
+        /* ignore */
+      }
+    }
+    return { available: true, mentions };
+  } catch (e) {
+    return { available: false, reason: 'parse failed: ' + (e && e.message) };
+  }
+}
+
+// ── Weekly sermon briefing (spec §13, Saturdays only) ───────────────────────
+// Consolidated Peter Millar teachings from the week. Data source is
+// %APPDATA%\secondbrain\data\sermons\ per project_book_of_sermons.md.
+function getWeeklySermonBriefing(today) {
+  if (today.getDay() !== 6) return { isSaturday: false };
+  const dir = path.join(process.env.APPDATA || '', 'secondbrain', 'data', 'sermons');
+  if (!fs.existsSync(dir)) {
+    return {
+      isSaturday: true,
+      available: false,
+      reason:
+        'sermons/ directory does not exist. Peter sermon auto-detection from otter-ingest is either not firing or has produced nothing this week.',
+    };
+  }
+  const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+  const sermons = [];
+  try {
+    const ids = fs.readdirSync(dir);
+    for (const id of ids) {
+      const sermonDir = path.join(dir, id);
+      const metaFile = path.join(sermonDir, 'sermon.json');
+      if (!fs.existsSync(metaFile)) continue;
+      try {
+        const obj = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+        const t = Date.parse(obj.date || obj.createdAt || '');
+        if (isNaN(t) || t < cutoff) continue;
+        sermons.push(obj);
+      } catch {
+        /* ignore */
+      }
+    }
+    return { isSaturday: true, available: true, sermons };
+  } catch (e) {
+    return { isSaturday: true, available: false, reason: 'scan failed: ' + (e && e.message) };
+  }
 }
 
 function getSnackDudeStats() {
@@ -724,27 +953,39 @@ function loadActionItems() {
   const videos = getVideoStats();
   const health = getHealthChecks();
   const overnight = getOvernightEnhancements(30);
+  const linkedIn = getLinkedInIntel(30);
+  const comms = getCommunicationsSummary(actions);
+  const reputation = getReputationMentions();
+  const sermon = getWeeklySermonBriefing(new Date());
 
-  // ── Message 1: Header + AI/Tech ────────────────────────────────────────────
-  const msg1 = [
+  // Note on ordering (2026-04-11): Luke wants news sections (AI/Tech + World +
+  // Industry) to live at the BOTTOM of the briefing, below personal/operational
+  // sections and below reputation mentions. The rationale is that news is
+  // context, not actionable. Personal, money, health, and reputation come
+  // first. So the header lives alone, personal/ops comes next, then the three
+  // news blocks trail.
+
+  // ── Header only (no news on top) ───────────────────────────────────────────
+  const msgHeader = [
     `Good morning Luke — ${today}`,
     `Daily Executive Briefing`,
     `Generated: ${new Date().toISOString()}`,
     `LLM: claude-haiku-4-5 via Claude Max plan (claude CLI subprocess)`,
-    '',
+  ].join('\n');
+
+  // ── News blocks built here, sent after personal/ops ────────────────────────
+  const msgTech = [
     `AI & TECH NEWS (${tech.length}):`,
     '',
     ...tech.map((a, i) => formatArticle(a, i, techSummaries[i])),
   ].join('\n');
 
-  // ── Message 2: World ───────────────────────────────────────────────────────
-  const msg2 = [
+  const msgWorld = [
     `WORLD NEWS (${world.length}):`,
     '',
     ...world.map((a, i) => formatArticle(a, i, worldSummaries[i])),
   ].join('\n');
 
-  // ── Message 3: Industry ────────────────────────────────────────────────────
   const msg3Parts = [];
   if (onityFiltered.length > 0) {
     msg3Parts.push(`ONITY GROUP NEWS (${onityFiltered.length}):`, '');
@@ -759,7 +1000,7 @@ function loadActionItems() {
     msg3Parts.push(`MORTGAGE INDUSTRY NEWS (${mortgageTop.length}):`, '');
     msg3Parts.push(...mortgageTop.map((a, i) => formatArticle(a, i, mortgageSummaries[i])));
   }
-  const msg3 = msg3Parts.join('\n');
+  const msgIndustry = msg3Parts.join('\n');
 
   // ── Message 4: Personal + Operational ──────────────────────────────────────
   const msg4Parts = [];
@@ -836,6 +1077,51 @@ function loadActionItems() {
     msg4Parts.push(line);
   }
 
+  // LINKEDIN NETWORK INTELLIGENCE (spec §7) — added 2026-04-11 #gap round 3
+  msg4Parts.push('LINKEDIN NETWORK INTELLIGENCE (last 30h):');
+  if (!linkedIn.available) {
+    msg4Parts.push('  ⚠ ' + linkedIn.reason);
+  } else {
+    msg4Parts.push(
+      '  last crawl: ' +
+        (linkedIn.lastCrawlAt
+          ? linkedIn.lastCrawlAt.slice(0, 16).replace('T', ' ') + 'Z'
+          : 'never') +
+        ' (' +
+        linkedIn.staleness +
+        ')',
+    );
+    msg4Parts.push(
+      '  crawled ' + linkedIn.queried + ' / ' + linkedIn.totalContacts + ' warm contacts',
+    );
+    if (linkedIn.events.length === 0) {
+      msg4Parts.push('  no engagement opportunities surfaced in window');
+    } else {
+      for (const ev of linkedIn.events.slice(0, 10)) {
+        msg4Parts.push(
+          '  • ' + (ev.contactName || 'unknown') + ' — ' + (ev.headline || ev.eventType),
+        );
+        if (ev.detail) msg4Parts.push('    ' + ev.detail.slice(0, 260));
+      }
+    }
+  }
+  msg4Parts.push('');
+
+  // COMMUNICATIONS SUMMARY (spec §8) — added 2026-04-11 #gap round 3
+  msg4Parts.push('COMMUNICATIONS SUMMARY (exec-level):');
+  if (comms.needsAttention.length === 0) {
+    msg4Parts.push('  no high-priority inbound requiring Luke since last briefing');
+  } else {
+    msg4Parts.push('  NEEDS ATTENTION:');
+    for (const n of comms.needsAttention) {
+      msg4Parts.push(
+        '   • [' + n.channel + '] ' + n.person + ' — ' + n.subject + ' (' + n.daysOld + 'd old)',
+      );
+    }
+  }
+  msg4Parts.push('  ⚠ ' + comms.note);
+  msg4Parts.push('');
+
   // CONTENT PIPELINE — reference only, review in the app
   // Per project_briefing_spec.md: link to Content Pipeline, do not embed titles.
   // Target cadence: 1 AILifeHacks/day, 1 BedtimeStories every other day.
@@ -863,12 +1149,55 @@ function loadActionItems() {
   msg4Parts.push('  Overall:  ' + (anyRed ? '⚠ RED — subsystems need attention' : '✓ all green'));
   msg4Parts.push('');
 
+  // REPUTATION MENTIONS (spec §11) — added 2026-04-11 #gap round 3
+  msg4Parts.push('REPUTATION MENTIONS (last 30h):');
+  if (!reputation.available) {
+    msg4Parts.push('  ⚠ ' + reputation.reason);
+    msg4Parts.push(
+      '  Searches needed: "Luke Baer", "PixSeat", "Onity Group", "AILifeHacks", "BAI/ITM"',
+    );
+  } else if (reputation.mentions.length === 0) {
+    msg4Parts.push('  no new mentions in window');
+  } else {
+    for (const m of reputation.mentions.slice(0, 10)) {
+      msg4Parts.push(
+        '  • ' + (m.source || 'unknown') + ': ' + (m.title || m.snippet || '').slice(0, 160),
+      );
+      if (m.url) msg4Parts.push('    ' + m.url);
+    }
+  }
+  msg4Parts.push('');
+
+  // WEEKLY SERMON BRIEFING (spec §13) — Saturdays only. Added 2026-04-11 #gap round 3.
+  if (sermon.isSaturday) {
+    msg4Parts.push('WEEKLY SERMON BRIEFING — Peter Millar teachings this week:');
+    if (!sermon.available) {
+      msg4Parts.push('  ⚠ ' + sermon.reason);
+    } else if (sermon.sermons.length === 0) {
+      msg4Parts.push(
+        "  No new sermons detected this week from otter-ingest. Either Peter hasn't preached to a conversation that got transcribed, or sermon auto-detection missed it.",
+      );
+    } else {
+      for (const s of sermon.sermons) {
+        msg4Parts.push(
+          '  • ' +
+            (s.date || '').slice(0, 10) +
+            ' — ' +
+            (s.title || s.topic || 'untitled') +
+            (s.summary ? ': ' + s.summary.slice(0, 240) : ''),
+        );
+      }
+    }
+    msg4Parts.push('');
+  }
+
   msg4Parts.push("Reply with questions or say 'call me' to discuss.");
 
-  const msg4 = msg4Parts.join('\n');
+  const msgPersonal = msg4Parts.join('\n');
 
   // ── Write to Desktop + home dir + secondbrain data dir ────────────────────
-  const fullBriefing = [msg1, msg2, msg3, msg4].join('\n\n---\n\n');
+  // Ship order: header → personal/ops → AI/tech → world → industry
+  const fullBriefing = [msgHeader, msgPersonal, msgTech, msgWorld, msgIndustry].join('\n\n---\n\n');
   const outputs = [
     `C:/Users/luked/Desktop/briefing-${todayIso}.md`,
     `C:/Users/luked/briefing-${todayIso}.md`,
@@ -902,16 +1231,17 @@ function loadActionItems() {
   }
 
   // ── Send to Telegram ───────────────────────────────────────────────────────
-  console.log('msg1:', msg1.length);
-  console.log('msg2:', msg2.length);
-  console.log('msg3:', msg3.length);
-  console.log('msg4:', msg4.length);
+  console.log('header:', msgHeader.length);
+  console.log('personal:', msgPersonal.length);
+  console.log('tech:', msgTech.length);
+  console.log('world:', msgWorld.length);
+  console.log('industry:', msgIndustry.length);
   console.log('total:', fullBriefing.length);
   console.log('sending to telegram...');
-  await sendTelegram(msg1);
-  await sendTelegram(msg2);
-  await sendTelegram(msg3);
-  await sendTelegram(msg4);
+  await sendTelegram(msgHeader + '\n\n' + msgPersonal);
+  await sendTelegram(msgTech);
+  await sendTelegram(msgWorld);
+  await sendTelegram(msgIndustry);
   console.log('done');
 })().catch((e) => {
   console.error('fatal:', e);
