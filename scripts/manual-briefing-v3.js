@@ -269,16 +269,19 @@ async function sendTelegram(text) {
 }
 
 // ── Snack Dude invoice stats (DynamoDB, not git) ────────────────────────────
-// Pulls actual business data from snackdude-dev-invoices in us-east-2.
+// Pulls actual business data from snackdude-invoices (PROD) in us-east-2.
+// CRITICAL: Snack Dude has TWO DynamoDB tables in us-east-2:
+//   - snackdude-dev-invoices     -> default profile (luke-admin), stale
+//   - snackdude-invoices         -> snackdude profile, LIVE production data
+// The production web app at d2i5ku6m411t9h.cloudfront.net writes to the prod
+// table under the `snackdude` AWS profile. We MUST use that profile here or
+// the briefing will silently read 0 invoices for the real business.
 // Reports invoice counts, revenue, and profit for 24h / 72h / 7d windows.
-// The `date` field on each invoice is the invoice transaction date — for a
-// small business that matches creation date closely enough to serve as a
-// recency signal.
 function getSnackDudeStats() {
   const tmpFile = path.join(require('os').tmpdir(), 'snackdude-invoices-briefing.json');
   try {
     execSync(
-      `aws dynamodb scan --table-name snackdude-dev-invoices --region us-east-2 --output json > "${tmpFile}"`,
+      `aws dynamodb scan --table-name snackdude-invoices --profile snackdude --region us-east-2 --output json > "${tmpFile}"`,
       { encoding: 'utf8', timeout: 30000 },
     );
     const raw = JSON.parse(fs.readFileSync(tmpFile, 'utf8'));
@@ -323,7 +326,7 @@ function getSnackDudeStats() {
       d7: window(d7),
       d30: window(d30),
       recent,
-      source: 'snackdude-dev-invoices DynamoDB table (us-east-2)',
+      source: 'snackdude-invoices DynamoDB table (us-east-2, snackdude profile)',
     };
   } catch (e) {
     return {
