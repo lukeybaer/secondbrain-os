@@ -439,6 +439,45 @@ async function main(): Promise<void> {
     return;
   }
 
+  // --sync-orphaned: upload any local snapshots that are missing from S3.
+  // Used by health-self-heal.js to retroactively fill S3 gaps after upload
+  // failures (e.g. the Apr 9-10 maxBuffer issue). Only syncs the 2 most recent
+  // orphans to bound runtime; remaining orphans are low priority.
+  if (args.includes('--sync-orphaned')) {
+    const manifest = loadManifest();
+    const s3Files = new Set(s3List());
+    const sorted = [...manifest.snapshots].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    const orphans = sorted.filter((s) => !s3Files.has(`${s.id}.zip`));
+    if (orphans.length === 0) {
+      console.log('S3 parity OK — no orphaned snapshots.');
+      return;
+    }
+    console.log(`Found ${orphans.length} local snapshot(s) missing from S3. Syncing top 2...`);
+    let synced = 0;
+    for (const snap of orphans.slice(0, 2)) {
+      const snapshotPath = path.join(BACKUPS_ROOT, snap.id);
+      if (!fs.existsSync(snapshotPath)) {
+        console.warn(`  skip ${snap.id}: local dir missing (pruned?)`);
+        continue;
+      }
+      try {
+        console.log(`  Syncing ${snap.id} (${formatBytes(snap.dataBytes)})...`);
+        const { archiveSize } = await syncToS3(snap.id);
+        console.log(`    Done: ${formatBytes(archiveSize)} compressed`);
+        synced++;
+      } catch (e: any) {
+        console.error(`  S3 sync failed for ${snap.id}: ${e.message}`);
+      }
+    }
+    try {
+      s3Upload(MANIFEST_PATH, 'manifest.json');
+    } catch {
+      /* best-effort */
+    }
+    console.log(`Orphan sync complete: ${synced} uploaded, ${orphans.length - synced} skipped.`);
+    return;
+  }
+
   // Default: prune old → create new → S3 sync
   // Prune BEFORE creating so the new snapshot can't be accidentally deleted.
   console.log(`SecondBrain backup starting at ${new Date().toISOString()}`);

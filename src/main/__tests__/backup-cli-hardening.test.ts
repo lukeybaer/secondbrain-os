@@ -55,6 +55,13 @@ describe('scripts/backup-cli.ts hardening (drift detector)', () => {
     expect(src).toMatch(/pruneSnapshots/);
   });
 
+  it('--sync-orphaned mode exists to retroactively upload local-only snapshots', () => {
+    // health-self-heal.js calls backup-cli.ts --sync-orphaned when probeS3Parity()
+    // returns yellow. If this mode is removed, orphaned snapshots are never uploaded.
+    expect(src).toMatch(/--sync-orphaned/);
+    expect(src).toMatch(/orphans/);
+  });
+
   it('s3Upload uses --no-progress and sets maxBuffer + timeout on execSync', () => {
     // Root cause of S3 upload silent failures Apr 9-10 2026: aws s3 cp streams
     // one progress line per MiB to stdout; for an 11 GB archive that is ~11,000

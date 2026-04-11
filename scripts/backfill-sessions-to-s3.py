@@ -147,8 +147,10 @@ def main() -> int:
         mtime = datetime.fromtimestamp(jsonl_path.stat().st_mtime, tz=timezone.utc)
         date_prefix = mtime.strftime("%Y-%m-%d")
 
-        s3_key_jsonl = f"{REPO}/{date_prefix}/{session_id}.jsonl"
-        s3_key_meta = f"{REPO}/{date_prefix}/{session_id}.meta.json"
+        # Separate prefixes so Athena can point at meta/ cleanly without
+        # the transcript lines parsing as malformed JsonSerDe rows.
+        s3_key_jsonl = f"transcripts/{REPO}/{date_prefix}/{session_id}.jsonl"
+        s3_key_meta = f"meta/{REPO}/{date_prefix}/{session_id}.json"
 
         # Small files can be sub-1KB transcripts with no real content. Skip empties.
         if jsonl_path.stat().st_size < 200:

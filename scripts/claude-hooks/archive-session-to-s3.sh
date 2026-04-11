@@ -61,8 +61,11 @@ if [[ ! -f "$TRANSCRIPT_FILE" ]]; then
 fi
 
 DATE=$(date -u +"%Y-%m-%d")
-S3_KEY_JSONL="$REPO_NAME/$DATE/$SESSION_ID.jsonl"
-S3_KEY_META="$REPO_NAME/$DATE/$SESSION_ID.meta.json"
+# Separate prefixes so Athena can point at meta/ only without parsing
+# transcript rows as malformed table entries. Transcripts live alongside
+# under transcripts/ for full-fidelity archival.
+S3_KEY_JSONL="transcripts/$REPO_NAME/$DATE/$SESSION_ID.jsonl"
+S3_KEY_META="meta/$REPO_NAME/$DATE/$SESSION_ID.json"
 
 # Build metadata using a small Python helper. Reads the jsonl, pulls
 # first user prompt, last assistant response, counts, timestamps, and
