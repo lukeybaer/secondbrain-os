@@ -74,16 +74,50 @@ function saveManifest(m: BackupManifest): void {
   fs.writeFileSync(MANIFEST_PATH, JSON.stringify(m, null, 2));
 }
 
+// Paths we NEVER back up — transient, large, rebuildable browser cache that
+// Chromium (whatsapp-web.js, puppeteer) keeps locked while the app is running.
+// Backing these up is both pointless (regenerated on next launch) and fatal
+// (EBUSY on sqldb0 killed nightly backups Apr 8-11 2026 until excluded).
+const COPY_EXCLUDE_PATTERNS: RegExp[] = [
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]Cache([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]Code Cache([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]GPUCache([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]Service Worker[\\/]CacheStorage([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]DawnCache([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]ShaderCache([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]GrShaderCache([\\/]|$)/i,
+];
+
+function shouldExcludeFromBackup(fullPath: string): boolean {
+  return COPY_EXCLUDE_PATTERNS.some((re) => re.test(fullPath));
+}
+
+// Skip-on-lock copy. If a file is held by another process (EBUSY/EPERM/EACCES),
+// log a warning and continue so a single locked cache file cannot kill the
+// whole backup. Real user data lives outside the excluded browser cache dirs.
+let copySkipCount = 0;
 async function copyDir(src: string, dest: string): Promise<void> {
+  if (shouldExcludeFromBackup(src)) return;
   await fsp.mkdir(dest, { recursive: true });
   const entries = await fsp.readdir(src, { withFileTypes: true });
   for (const entry of entries) {
     const s = path.join(src, entry.name);
     const d = path.join(dest, entry.name);
+    if (shouldExcludeFromBackup(s)) continue;
     if (entry.isDirectory()) {
       await copyDir(s, d);
     } else {
-      await fsp.copyFile(s, d);
+      try {
+        await fsp.copyFile(s, d);
+      } catch (err: any) {
+        const code = err && err.code;
+        if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') {
+          copySkipCount++;
+          console.warn(`  skip-locked: ${s} (${code})`);
+          continue;
+        }
+        throw err;
+      }
     }
   }
 }
@@ -320,11 +354,30 @@ async function pruneSnapshots(): Promise<string[]> {
 
   const toDelete = [...regular.filter((s) => !keep.has(s.id)), ...preRestoreToDelete];
 
+  // Prune is skip-on-lock: if Windows Search Indexer / Defender / the live
+  // Electron app has a handle on a file inside an old snapshot dir, one stuck
+  // directory used to kill the whole run. Now we log and defer — next run will
+  // try again. The manifest entry is kept for stuck snapshots so we re-attempt.
   for (const s of toDelete) {
     const dir = path.join(BACKUPS_ROOT, s.id);
-    if (fs.existsSync(dir)) await fsp.rm(dir, { recursive: true, force: true });
-    deleteFromS3(s.id);
-    deleted.push(s.id);
+    let rmSucceeded = true;
+    if (fs.existsSync(dir)) {
+      try {
+        await fsp.rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+      } catch (err: any) {
+        const code = err && err.code;
+        if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') {
+          console.warn(`  skip-prune-locked: ${s.id} (${code}) — will retry next run`);
+          rmSucceeded = false;
+        } else {
+          throw err;
+        }
+      }
+    }
+    if (rmSucceeded) {
+      deleteFromS3(s.id);
+      deleted.push(s.id);
+    }
   }
 
   manifest.snapshots = manifest.snapshots.filter((s) => !deleted.includes(s.id));
