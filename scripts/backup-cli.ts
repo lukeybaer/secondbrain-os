@@ -160,10 +160,15 @@ function formatBytes(bytes: number): string {
 
 function s3Upload(localPath: string, s3Key: string): void {
   const winPath = localPath.replace(/\//g, '\\');
+  // --no-progress suppresses per-MiB progress lines that flooded execSync's
+  // 1 MB default maxBuffer on 11 GB archives (Apr 11 2026 postmortem).
+  // maxBuffer set to 10 MB as a defensive ceiling; timeout 90 min for large archives.
   const result = execSync(
-    `aws s3 cp "${winPath}" "s3://${S3_BUCKET}/${s3Key}" --region us-east-1 2>&1`,
+    `aws s3 cp "${winPath}" "s3://${S3_BUCKET}/${s3Key}" --region us-east-1 --no-progress`,
     {
       encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 90 * 60 * 1000, // 90 minutes
     },
   );
   if (result) console.log(`    S3: ${result.trim()}`);

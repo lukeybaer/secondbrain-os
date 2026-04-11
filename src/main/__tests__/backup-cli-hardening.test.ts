@@ -54,4 +54,17 @@ describe('scripts/backup-cli.ts hardening (drift detector)', () => {
     expect(src).toMatch(/skip-prune-locked/);
     expect(src).toMatch(/pruneSnapshots/);
   });
+
+  it('s3Upload uses --no-progress and sets maxBuffer + timeout on execSync', () => {
+    // Root cause of S3 upload silent failures Apr 9-10 2026: aws s3 cp streams
+    // one progress line per MiB to stdout; for an 11 GB archive that is ~11,000
+    // lines (~880 KB) which blew execSync's default 1 MB maxBuffer. The upload
+    // threw silently (caught by try/catch), leaving snapshots with S3: "-" even
+    // when the local backup succeeded.
+    // --no-progress suppresses the per-MiB lines entirely.
+    // maxBuffer + timeout are defensive ceilings.
+    expect(src).toMatch(/--no-progress/);
+    expect(src).toMatch(/maxBuffer/);
+    expect(src).toMatch(/timeout.*90|90.*timeout/);
+  });
 });
