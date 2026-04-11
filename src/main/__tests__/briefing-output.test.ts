@@ -41,6 +41,26 @@ describe('briefing output wiring', () => {
     expect(existsSync(DOCX_SCRIPT)).toBe(true);
   });
 
+  // 2026-04-11 #gap round 2: the briefing silently omitted section 10
+  // "Overnight agent activity" from project_briefing_spec.md. The
+  // manual-briefing-v3.js script had no code reading nightly-enhancements.jsonl
+  // at all. These assertions lock the section in place.
+  it('manual-briefing-v3.js has an overnight enhancements section', () => {
+    const src = readFileSync(SCRIPT, 'utf8');
+    expect(src).toContain('getOvernightEnhancements');
+    expect(src).toContain('nightly-enhancements.jsonl');
+    expect(src).toContain('OVERNIGHT ENHANCEMENTS');
+  });
+
+  it('latest briefing .md on disk contains OVERNIGHT ENHANCEMENTS header', () => {
+    const briefingsDir = join(REPO_ROOT, 'data', 'briefings');
+    if (!existsSync(briefingsDir)) return; // dev machine without generated briefing
+    const latest = join(briefingsDir, `briefing-${todayIso}.md`);
+    if (!existsSync(latest)) return; // briefing not yet generated today
+    const content = readFileSync(latest, 'utf8');
+    expect(content).toContain('OVERNIGHT ENHANCEMENTS');
+  });
+
   // Run-time gate: when CI env var BRIEFING_FRESHNESS_CHECK=1 is set (or run
   // on Luke's PC after the scheduled task fires), the two Desktop artifacts
   // for today's date must exist. Off by default so dev runs aren't red.

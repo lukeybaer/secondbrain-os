@@ -277,6 +277,136 @@ async function sendTelegram(text) {
 // table under the `snackdude` AWS profile. We MUST use that profile here or
 // the briefing will silently read 0 invoices for the real business.
 // Reports invoice counts, revenue, and profit for 24h / 72h / 7d windows.
+// ── Overnight enhancements ───────────────────────────────────────────────────
+// Reads nightly-enhancements.jsonl from both the AppData location (where
+// skills historically wrote) and the repo-tracked location. Returns the runs
+// within the last `hours` hours (default 30 — covers last night's window) with
+// enough detail for the briefing section.
+//
+// Guarded by briefing-output.test.ts (asserts OVERNIGHT ENHANCEMENTS section
+// exists) and project_briefing_spec.md section 10. Added 2026-04-11 after #gap.
+function getOvernightEnhancements(hours = 30) {
+  const paths = [
+    path.join(
+      process.env.APPDATA || '',
+      'secondbrain',
+      'data',
+      'agent',
+      'nightly-enhancements.jsonl',
+    ),
+    'C:/Users/luked/secondbrain/data/agent/nightly-enhancements.jsonl',
+  ];
+  const cutoff = Date.now() - hours * 3600 * 1000;
+  const runs = [];
+  const seen = new Set();
+  for (const p of paths) {
+    if (!fs.existsSync(p)) continue;
+    let text;
+    try {
+      text = fs.readFileSync(p, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let obj;
+      try {
+        obj = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      if (!obj.timestamp) continue;
+      const ts = Date.parse(obj.timestamp);
+      if (isNaN(ts) || ts < cutoff) continue;
+      const key = `${obj.timestamp}::${obj.task || ''}::${obj.run_number || ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      runs.push(obj);
+    }
+  }
+  runs.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+  // Also surface the freshest run ever, so if nothing ran last night the
+  // briefing still says "last run was N days ago" instead of silently empty.
+  let freshest = null;
+  for (const p of paths) {
+    if (!fs.existsSync(p)) continue;
+    const lines = fs.readFileSync(p, 'utf8').split(/\r?\n/).filter(Boolean);
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        if (!obj.timestamp) continue;
+        if (!freshest || Date.parse(obj.timestamp) > Date.parse(freshest.timestamp)) {
+          freshest = obj;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return { runs, freshest, hoursWindow: hours };
+}
+
+function formatOvernightSection(enh) {
+  const lines = [];
+  lines.push('OVERNIGHT ENHANCEMENTS (last ' + enh.hoursWindow + 'h):');
+  if (enh.runs.length === 0) {
+    if (enh.freshest) {
+      const ageDays = Math.floor(
+        (Date.now() - Date.parse(enh.freshest.timestamp)) / (24 * 3600 * 1000),
+      );
+      lines.push(
+        '  ⚠ no runs in the last ' +
+          enh.hoursWindow +
+          'h. Last run was ' +
+          ageDays +
+          'd ago (' +
+          (enh.freshest.task || 'unknown') +
+          ' run ' +
+          (enh.freshest.run_number || '?') +
+          ' on ' +
+          enh.freshest.timestamp.slice(0, 10) +
+          ').',
+      );
+      lines.push('  The nightly-enhancement scheduled task is not firing. Investigate.');
+    } else {
+      lines.push('  ⚠ no runs logged ever — nightly-enhancements.jsonl is empty or missing.');
+    }
+    lines.push('');
+    return lines;
+  }
+  for (const run of enh.runs) {
+    const when = run.timestamp.slice(0, 16).replace('T', ' ');
+    const task = run.task || 'unknown';
+    const n = run.run_number ? ' run ' + run.run_number : '';
+    lines.push('• ' + when + 'Z — ' + task + n);
+    const tools = Array.isArray(run.tools_created) ? run.tools_created : [];
+    for (const t of tools) {
+      const name = t.name || t.path || 'tool';
+      const summary = (t.summary || '').slice(0, 260);
+      lines.push('   · ' + name + (summary ? ' — ' + summary : ''));
+    }
+    if (run.rubric_update && typeof run.rubric_update.automation_percentage === 'number') {
+      const before = run.rubric_update.automated_before;
+      const after = run.rubric_update.automated_after;
+      lines.push(
+        '   rubric: ' +
+          before +
+          ' → ' +
+          after +
+          ' criteria automated (' +
+          run.rubric_update.automation_percentage +
+          '%)',
+      );
+    }
+    if (run.notes) {
+      lines.push('   notes: ' + run.notes.slice(0, 360));
+    }
+  }
+  lines.push('');
+  return lines;
+}
+
 function getSnackDudeStats() {
   const tmpFile = path.join(require('os').tmpdir(), 'snackdude-invoices-briefing.json');
   try {
@@ -593,6 +723,7 @@ function loadActionItems() {
   const actions = loadActionItems();
   const videos = getVideoStats();
   const health = getHealthChecks();
+  const overnight = getOvernightEnhancements(30);
 
   // ── Message 1: Header + AI/Tech ────────────────────────────────────────────
   const msg1 = [
@@ -697,6 +828,13 @@ function loadActionItems() {
     }
   }
   msg4Parts.push('');
+
+  // OVERNIGHT ENHANCEMENTS — per project_briefing_spec.md section 10.
+  // Was missing entirely until 2026-04-11 #gap. Reads nightly-enhancements.jsonl
+  // from AppData + repo-tracked locations, windowed to last 30h.
+  for (const line of formatOvernightSection(overnight)) {
+    msg4Parts.push(line);
+  }
 
   // CONTENT PIPELINE — reference only, review in the app
   // Per project_briefing_spec.md: link to Content Pipeline, do not embed titles.

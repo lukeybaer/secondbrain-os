@@ -11,6 +11,7 @@
     "preview": "electron-vite preview",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "verify:foundation": "vitest run src/main/__tests__/tier1-discipline.test.ts",
     "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "build": {

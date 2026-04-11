@@ -107,12 +107,16 @@ class DocxBuilder(HTMLParser):
             run.font.underline = True
 
 
-def convert(md_path: Path, out_path: Path) -> None:
+def convert(md_path: Path, out_path: Path) -> Path:
+    """Render markdown to docx. Returns the actual path written.
+
+    If `out_path` is locked (e.g. Word has it open), falls back to writing
+    `<stem>.new.docx` alongside so the briefing still ships a fresh copy.
+    """
     text = md_path.read_text(encoding="utf-8")
     html = md_lib.markdown(text, extensions=["extra", "sane_lists", "nl2br"])
     doc = Document()
 
-    # Default font
     style = doc.styles["Normal"]
     style.font.name = "Calibri"
     style.font.size = Pt(11)
@@ -121,15 +125,25 @@ def convert(md_path: Path, out_path: Path) -> None:
     builder.feed(html)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    doc.save(out_path)
+    try:
+        doc.save(out_path)
+        return out_path
+    except PermissionError:
+        fallback = out_path.with_name(out_path.stem + ".new" + out_path.suffix)
+        doc.save(fallback)
+        print(
+            f"warning: {out_path} locked (likely open in Word), wrote {fallback} instead",
+            file=sys.stderr,
+        )
+        return fallback
 
 
 def main():
     if len(sys.argv) != 3:
         print("Usage: briefing-to-docx.py <input.md> <output.docx>", file=sys.stderr)
         sys.exit(2)
-    convert(Path(sys.argv[1]), Path(sys.argv[2]))
-    print(f"wrote {sys.argv[2]}")
+    actual = convert(Path(sys.argv[1]), Path(sys.argv[2]))
+    print(f"wrote {actual}")
 
 
 if __name__ == "__main__":

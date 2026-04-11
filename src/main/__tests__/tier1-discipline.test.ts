@@ -15,8 +15,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { execSync } from 'child_process';
+import { parseStateLocationsTable, classifyTracked, StateRow } from './parse-state-locations-table';
 
-const MEMORY_MD = path.resolve(__dirname, '..', '..', '..', 'memory', 'MEMORY.md');
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+const MEMORY_MD = path.resolve(REPO_ROOT, 'memory', 'MEMORY.md');
 const STATE_LOCATIONS = path.resolve(
   __dirname,
   '..',
@@ -118,6 +121,189 @@ describe('MEMORY.md Tier 1 discipline', () => {
     expect(lastTwoKB).toMatch(/If you read nothing else/i);
   });
 });
+
+describe('MEMORY.md State locations table is a contract, not a description', () => {
+  let src: string;
+  let rows: StateRow[];
+  // Cache git ls-files output once at the describe level. Subprocess calls
+  // inside every it() block cause the test to time out at 5s when vitest
+  // runs this file in parallel with the other 25 suites on Windows. Cache
+  // once, membership-test in-memory.
+  let gitIndex: Set<string>;
+
+  beforeAll(() => {
+    src = fs.readFileSync(MEMORY_MD, 'utf-8');
+    rows = parseStateLocationsTable(src);
+    const lsOutput = execSync('git ls-files', { cwd: REPO_ROOT }).toString();
+    gitIndex = new Set(lsOutput.split('\n').filter((l) => l.length > 0));
+  });
+
+  it('parses at least 15 rows out of the State locations table', () => {
+    // If this falls below 15 the table has been gutted and someone should notice
+    expect(rows.length).toBeGreaterThanOrEqual(15);
+  });
+
+  it('NO row is flagged pending migration (table must reflect reality)', () => {
+    const pending = rows.filter((r) => classifyTracked(r.tracked) === 'pending-migration');
+    if (pending.length > 0) {
+      const lines = pending.map((r) => `  - "${r.what}" — tracked="${r.tracked}"`).join('\n');
+      throw new Error(
+        `State locations table has ${pending.length} row(s) flagged "needs migration":\n${lines}\n\n` +
+          `Either finish the migration, or update the Tracked column to reflect reality.\n` +
+          `This test is the guard from plans/dazzling-rolling-moler.md #gap response: commit messages must match the State table.`,
+      );
+    }
+  });
+
+  it('every tracked row references at least one resolvable path', () => {
+    const trackedRows = rows.filter((r) => {
+      const kind = classifyTracked(r.tracked);
+      return kind === 'git-direct' || kind === 'git-linked';
+    });
+
+    const failures: string[] = [];
+    for (const row of trackedRows) {
+      if (row.paths.length === 0) {
+        failures.push(`"${row.what}": Where column has no backtick-wrapped path`);
+        continue;
+      }
+
+      // For each path in the row, try to resolve it. At least ONE must exist.
+      let anyExists = false;
+      const attempts: string[] = [];
+      for (const raw of row.paths) {
+        const resolved = resolveStateTablePath(raw);
+        if (resolved === null) {
+          attempts.push(`${raw} (skipped — not a local path)`);
+          continue;
+        }
+        if (pathOrGlobExists(resolved)) {
+          anyExists = true;
+          break;
+        }
+        attempts.push(`${raw} -> ${resolved} (missing)`);
+      }
+      if (!anyExists) {
+        failures.push(
+          `"${row.what}": no path in Where column exists on disk — tried:\n      ${attempts.join('\n      ')}`,
+        );
+      }
+    }
+
+    if (failures.length > 0) {
+      throw new Error(
+        `State locations table has ${failures.length} tracked row(s) whose paths do not exist on disk:\n  - ${failures.join('\n  - ')}\n\n` +
+          `Either correct the path, delete the row, or restore the file.`,
+      );
+    }
+  });
+
+  it('every "git-direct" row has a path that git knows about', () => {
+    const trackedRows = rows.filter((r) => classifyTracked(r.tracked) === 'git-direct');
+
+    const failures: string[] = [];
+    for (const row of trackedRows) {
+      // Find the first path that looks like a repo-relative path (starts with secondbrain/)
+      // and check that git has something at that path.
+      let verified = false;
+      for (const raw of row.paths) {
+        if (!raw.startsWith('secondbrain/')) continue;
+        // Strip any brace-expansion or glob tail so the cached git index can
+        // match a concrete directory prefix (e.g. data/{otter,gmail}/raw/ -> data)
+        const stripped = stripGlobTail(raw.slice('secondbrain/'.length)).replace(/\/$/, '');
+        if (stripped.length > 0 && isPathInGitIndex(stripped, gitIndex)) {
+          verified = true;
+          break;
+        }
+      }
+      if (!verified) {
+        failures.push(`"${row.what}": no path in Where column is known to git ls-files`);
+      }
+    }
+
+    if (failures.length > 0) {
+      throw new Error(
+        `State locations table claims "git" tracking for ${failures.length} row(s) that git does not know about:\n  - ${failures.join('\n  - ')}\n\n` +
+          `Either git add the file, change tracking to "git via hardlink/symlink" if appropriate, or fix the path.`,
+      );
+    }
+  });
+});
+
+/**
+ * Resolve a raw path from the State locations table into an absolute
+ * filesystem path, or null if it's clearly not a local-disk path (URL,
+ * EC2 path, etc.).
+ */
+function resolveStateTablePath(raw: string): string | null {
+  // Strip any trailing /*.jsonl or /*/SKILL.md glob — we check the parent dir
+  const cleaned = raw.replace(/\s*\(\d+ files\).*$/, '');
+
+  if (/^https?:\/\//.test(cleaned)) return null;
+  if (cleaned.startsWith('/opt/')) return null;
+
+  // Secondbrain project-relative path (including brace expansion etc)
+  if (cleaned.startsWith('secondbrain/')) {
+    const relative = cleaned.slice('secondbrain/'.length);
+    return path.join(REPO_ROOT, stripGlobTail(relative));
+  }
+
+  // Home-relative
+  if (cleaned.startsWith('~/')) {
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    return path.join(home, stripGlobTail(cleaned.slice(2)));
+  }
+
+  // AppData, Documents, etc — relative to %USERPROFILE%
+  if (/^(AppData|Documents)\//.test(cleaned)) {
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    return path.join(home, stripGlobTail(cleaned));
+  }
+
+  // Absolute Windows path
+  if (/^[A-Za-z]:[\\/]/.test(cleaned)) {
+    return stripGlobTail(cleaned);
+  }
+
+  // Anything else (remote URIs, SSH tunnels, etc.) — not validatable locally
+  return null;
+}
+
+/**
+ * Trim glob stars and brace expansions down to the longest static prefix.
+ * `secondbrain/data/{otter,gmail}/raw/` -> `secondbrain/data`
+ * `~/.claude/scheduled-tasks/*\/SKILL.md` -> `~/.claude/scheduled-tasks`
+ */
+function stripGlobTail(p: string): string {
+  const firstGlob = p.search(/[*{]/);
+  if (firstGlob === -1) return p;
+  const prefix = p.slice(0, firstGlob);
+  // Drop to the last full directory separator before the glob
+  const lastSep = Math.max(prefix.lastIndexOf('/'), prefix.lastIndexOf('\\'));
+  return lastSep === -1 ? prefix : prefix.slice(0, lastSep);
+}
+
+function pathOrGlobExists(p: string): boolean {
+  try {
+    return fs.existsSync(p);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check whether a repo-relative path is present in the cached git index.
+ * Matches either as a direct file or as a directory prefix so that
+ * `data/briefings` matches `data/briefings/briefing-2026-04-11.md`.
+ */
+function isPathInGitIndex(repoRelative: string, gitIndex: Set<string>): boolean {
+  if (gitIndex.has(repoRelative)) return true;
+  const prefix = repoRelative.endsWith('/') ? repoRelative : repoRelative + '/';
+  for (const entry of gitIndex) {
+    if (entry.startsWith(prefix)) return true;
+  }
+  return false;
+}
 
 describe('reference_amy_state_locations.md discipline', () => {
   let src: string;
