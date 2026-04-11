@@ -77,23 +77,53 @@ async function ensureSession(): Promise<string | null> {
     });
 
     const sessionId = res.headers.get('mcp-session-id');
-    if (sessionId) {
-      _sessionId = sessionId;
-      console.log(`[graphiti] MCP session initialized: ${sessionId.slice(0, 8)}...`);
-      return _sessionId;
+    if (!sessionId) {
+      // Try to extract from SSE response body (some servers return inline)
+      const text = await res.text();
+      const dataMatch = text.match(/data:\s*(\{.*\})/);
+      if (dataMatch) {
+        _sessionId = 'no-header-session';
+        return _sessionId;
+      }
+      console.warn('[graphiti] Failed to get session ID');
+      return null;
     }
 
-    // Try to extract from SSE response body
-    const text = await res.text();
-    const dataMatch = text.match(/data:\s*(\{.*\})/);
-    if (dataMatch) {
-      // Session established even without header
-      _sessionId = 'no-header-session';
-      return _sessionId;
+    _sessionId = sessionId;
+
+    // MCP protocol requires a notifications/initialized after the handshake
+    // before the server will accept tools/call requests. Without this, every
+    // subsequent call returns an error. Discovered 2026-04-10 during seeding.
+    // Read the body of the initialize response first (may be SSE or JSON,
+    // doesn't matter for functionality).
+    try {
+      await res.text();
+    } catch {
+      /* already consumed is fine */
     }
 
-    console.warn('[graphiti] Failed to get session ID');
-    return null;
+    try {
+      await fetch(`${graphitiUrl()}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'Mcp-Session-Id': _sessionId,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notifications/initialized',
+          params: {},
+        }),
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch (notifyErr: any) {
+      console.warn(`[graphiti] initialized notification failed: ${notifyErr.message}`);
+      /* continue — some servers still work without the notification */
+    }
+
+    console.log(`[graphiti] MCP session initialized: ${sessionId.slice(0, 8)}...`);
+    return _sessionId;
   } catch (err: any) {
     console.warn(`[graphiti] Session init failed: ${err.message}`);
     return null;

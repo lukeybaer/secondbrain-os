@@ -61,10 +61,9 @@ async function seedMemoryFiles(): Promise<number> {
 
     const ok = await addEpisode({
       name: file.rel,
-      content,
-      sourceType: 'memory_file',
-      sourceDescription: `Memory file: ${file.rel}`,
-      referenceTime: file.mtime.toISOString(),
+      episode_body: content,
+      source_description: `Memory file: ${file.rel}`,
+      reference_time: file.mtime.toISOString(),
     });
     if (ok) {
       ingested++;
@@ -89,10 +88,9 @@ async function seedContactFiles(): Promise<number> {
     const slug = path.basename(file.rel, '.md');
     const ok = await addEpisode({
       name: `contact:${slug}`,
-      content,
-      sourceType: 'contact_file',
-      sourceDescription: `Contact: ${slug}`,
-      referenceTime: file.mtime.toISOString(),
+      episode_body: content,
+      source_description: `Contact: ${slug}`,
+      reference_time: file.mtime.toISOString(),
     });
     if (ok) {
       ingested++;
@@ -113,10 +111,9 @@ async function seedPastBriefings(): Promise<number> {
     const content = fs.readFileSync(file.full, 'utf-8');
     const ok = await addEpisode({
       name: path.basename(file.rel),
-      content: content.slice(0, 8000), // cap large briefings
-      sourceType: 'briefing',
-      sourceDescription: `Past briefing: ${file.rel}`,
-      referenceTime: file.mtime.toISOString(),
+      episode_body: content.slice(0, 8000), // cap large briefings
+      source_description: `Past briefing: ${file.rel}`,
+      reference_time: file.mtime.toISOString(),
     });
     if (ok) ingested++;
   }
@@ -139,10 +136,9 @@ async function seedNightlyEnhancements(): Promise<number> {
       const entry = JSON.parse(line);
       const ok = await addEpisode({
         name: `nightly-${entry.task || 'unknown'}-run${entry.run_number || 0}`,
-        content: JSON.stringify(entry, null, 2),
-        sourceType: 'nightly_enhancement',
-        sourceDescription: `Nightly ${entry.task} run #${entry.run_number}`,
-        referenceTime: entry.timestamp,
+        episode_body: JSON.stringify(entry, null, 2),
+        source_description: `Nightly ${entry.task} run #${entry.run_number}`,
+        reference_time: entry.timestamp,
       });
       if (ok) ingested++;
     } catch {
