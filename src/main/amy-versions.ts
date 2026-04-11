@@ -490,6 +490,69 @@ When a caller asks to speak with Luke:
   return sections.join('\n');
 }
 
+/**
+ * Load the canonical Amy persona file (memory/AMY.md) and return its body
+ * without the YAML frontmatter. This is THE source of truth for Amy's
+ * identity, behavior, and rules on every surface. It's injected at the top
+ * of every Vapi system prompt so the voice persona matches Tier 1 memory.
+ *
+ * Cached in memory and re-read on a 60-second TTL so edits to AMY.md take
+ * effect for the next call without restarting the app. If the file is
+ * missing (e.g. during tests), returns an empty string and the prompt
+ * builder falls back to version.identity.
+ */
+let amyPersonaCache: { content: string; loadedAt: number } | null = null;
+const AMY_PERSONA_TTL_MS = 60_000;
+
+function loadAmyPersonaFile(overrideRepoRoot?: string): string {
+  const now = Date.now();
+  if (amyPersonaCache && now - amyPersonaCache.loadedAt < AMY_PERSONA_TTL_MS) {
+    return amyPersonaCache.content;
+  }
+
+  let repoRoot: string;
+  if (overrideRepoRoot) {
+    repoRoot = overrideRepoRoot;
+  } else {
+    try {
+      repoRoot = app.getAppPath();
+    } catch {
+      // Running outside Electron (e.g. vitest). Fall back to the tests' CWD.
+      repoRoot = process.cwd();
+    }
+  }
+
+  const candidates = [
+    path.join(repoRoot, 'memory', 'AMY.md'),
+    path.join(repoRoot, '..', 'memory', 'AMY.md'),
+  ];
+
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const raw = fs.readFileSync(p, 'utf-8');
+      // Strip YAML frontmatter: --- ... ---
+      const body = raw.replace(/^---\n[\s\S]*?\n---\n/, '').trim();
+      amyPersonaCache = { content: body, loadedAt: now };
+      return body;
+    } catch {
+      continue;
+    }
+  }
+
+  // File not found — cache empty to avoid repeated fs probes
+  amyPersonaCache = { content: '', loadedAt: now };
+  return '';
+}
+
+/**
+ * Test-only: reset the cache so a test can verify the reader probes the
+ * filesystem after a TTL expiry.
+ */
+export function __resetAmyPersonaCache(): void {
+  amyPersonaCache = null;
+}
+
 export async function buildVersionedSystemPrompt(
   version: AmyVersion,
   context: {
@@ -502,6 +565,15 @@ export async function buildVersionedSystemPrompt(
   },
 ): Promise<string> {
   const parts: string[] = [];
+
+  // Canonical Amy persona file at memory/AMY.md anchors every surface.
+  // Loaded before any version-specific or call-specific sections so
+  // identity stays consistent across Vapi calls, briefings, Telegram,
+  // and Claude Code. Phase 10 of plans/dazzling-rolling-moler.md.
+  const amyPersona = loadAmyPersonaFile();
+  if (amyPersona) {
+    parts.push('# Canonical Amy persona (memory/AMY.md)\n\n' + amyPersona);
+  }
 
   // Caller identification (inbound calls only)
   if (context.callDirection === 'inbound' && context.callerPhone) {
@@ -517,7 +589,7 @@ export async function buildVersionedSystemPrompt(
     }
   }
 
-  // Identity
+  // Identity (version-specific, supplements AMY.md)
   if (context.personaInstructions?.trim()) {
     parts.push(context.personaInstructions.trim());
     if (context.callDirection === 'inbound') {
