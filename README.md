@@ -298,6 +298,8 @@ src/
 5. **Raw archival.** Every data source saves the full raw payload before processing. You can always reprocess historical data with better models later.
 6. **Graceful degradation.** External service down? Fall back to local data. No hard failures, no blocking dependencies.
 
+**Patterns cheat sheet:** the architectural patterns behind SecondBrain (3-tier personal memory, hashtag hooks, daily briefing as contract, foundation invariants, session archive to S3, subagent quarterback, raw archival) are documented with file-path citations in [`docs/patterns.md`](docs/patterns.md). Lift whatever's useful for your own projects.
+
 ---
 
 ## Teaching the Agent About You
