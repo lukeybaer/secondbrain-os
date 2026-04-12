@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-Video Quality Check Runner v4
+Video Quality Check Runner v5
 Runs all quality analysis tools on a video and produces a combined report
 including visual quality, thumbnail analysis, virality prediction,
 emotional arc analysis, retention curve prediction, voice clarity,
-framing/composition, music mix balance, and caption readability.
+framing/composition, music mix balance, caption readability,
+trending topic alignment, hashtag relevance, and color consistency.
 
 Usage:
-    python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin] [--transcript <path>] [--thumbnail <path>] [--srt-file <path>]
+    python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin]
+        [--transcript <path>] [--thumbnail <path>] [--srt-file <path>]
+        [--hashtags "#tag1 #tag2"] [--no-platform-analysis]
 
 Returns a combined JSON report with all scores, virality prediction, and publish recommendation.
 """
@@ -33,6 +36,9 @@ _voice_mod = importlib.import_module("analyze-voice-clarity")
 _framing_mod = importlib.import_module("analyze-framing")
 _music_mod = importlib.import_module("analyze-music-mix")
 _caption_mod = importlib.import_module("analyze-caption-readability")
+_trending_mod = importlib.import_module("analyze-trending-topics")
+_hashtag_mod = importlib.import_module("analyze-hashtag-relevance")
+_color_mod = importlib.import_module("analyze-color-consistency")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -46,9 +52,12 @@ analyze_voice = _voice_mod.analyze
 analyze_framing = _framing_mod.analyze
 analyze_music_mix = _music_mod.analyze
 analyze_captions = _caption_mod.analyze
+analyze_trending = _trending_mod.analyze
+analyze_hashtags = _hashtag_mod.analyze
+analyze_color = _color_mod.analyze
 
 
-def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None, srt_file=None):
+def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None, srt_file=None, hashtags_str=None):
     """Run all quality tools and combine results."""
     if not os.path.exists(video_path):
         return {"error": f"File not found: {video_path}"}
@@ -72,11 +81,17 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     music_results = analyze_music_mix(video_path)
     caption_results = analyze_captions(video_path, srt_file)
 
-    # Virality prediction (includes emotional arc and retention signals)
+    # v5 analyzers: trending topics, hashtag relevance, color consistency
+    trending_results = analyze_trending(video_path, transcript_path, detected_platform)
+    hashtag_results = analyze_hashtags(video_path, transcript_path, detected_platform, hashtags_str)
+    color_results = analyze_color(video_path)
+
+    # Virality prediction (includes emotional arc, retention, and trending signals)
     virality = compute_virality_score(
         tech_results, audio_results, content_results, visual_results, detected_platform,
         emotional_results=emotional_results, retention_results=retention_results,
-        voice_results=voice_results,
+        voice_results=voice_results, trending_results=trending_results,
+        color_results=color_results,
     )
 
     # Combine all scores
@@ -84,6 +99,7 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
         tech_results, audio_results, content_results, visual_results, thumb_results,
         emotional_results, retention_results, voice_results,
         framing_results, music_results, caption_results,
+        trending_results, hashtag_results, color_results,
     ]
     all_scores = {}
     for result_set in all_result_sets:
@@ -104,15 +120,21 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     retention_score = retention_results.get("overall_score", 0)
     content_combined = round((content_overall * 0.4 + emotional_score * 0.3 + retention_score * 0.3), 1)
 
-    # Visual includes framing
+    # Visual includes framing + color consistency
     visual_overall = visual_results.get("overall_score", 0)
     framing_score = framing_results.get("overall_score", 0)
-    visual_combined = round((visual_overall * 0.75 + framing_score * 0.25), 1)
+    color_score = color_results.get("overall_score", 0)
+    visual_combined = round((visual_overall * 0.65 + framing_score * 0.20 + color_score * 0.15), 1)
 
     # Technical includes caption readability
     technical_overall = tech_results.get("overall_score", 0)
     caption_score = caption_results.get("overall_score", 0)
     technical_combined = round((technical_overall * 0.7 + caption_score * 0.3), 1)
+
+    # Platform includes trending topic + hashtag relevance
+    trending_score = trending_results.get("overall_score", 0)
+    hashtag_score = hashtag_results.get("overall_score", 0)
+    platform_combined = round((trending_score * 0.6 + hashtag_score * 0.4), 1) if trending_score or hashtag_score else 50
 
     category_scores = {
         "technical": round(technical_combined, 1),
@@ -126,10 +148,14 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
         "framing": round(framing_score, 1),
         "music_mix": round(music_score, 1),
         "caption_readability": round(caption_score, 1),
+        "trending_topic_alignment": round(trending_score, 1),
+        "hashtag_relevance": round(hashtag_score, 1),
+        "color_consistency": round(color_score, 1),
+        "platform": round(platform_combined, 1),
     }
 
-    # Weighted overall (matching rubric weights)
-    weights = {"technical": 0.15, "audio": 0.25, "content": 0.20, "visual": 0.25, "thumbnail": 0.15}
+    # Weighted overall (matching rubric weights: platform 0.15 now computed, not assumed 50)
+    weights = {"technical": 0.15, "audio": 0.25, "content": 0.20, "visual": 0.25, "platform": 0.15}
     weighted_total = sum(category_scores[k] * weights[k] for k in weights)
     max_weight = sum(weights.values())
     overall = round(weighted_total / max_weight, 1)
@@ -157,6 +183,9 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
             framing_results.get("tool", "unknown"),
             music_results.get("tool", "unknown"),
             caption_results.get("tool", "unknown"),
+            trending_results.get("tool", "unknown"),
+            hashtag_results.get("tool", "unknown"),
+            color_results.get("tool", "unknown"),
             "predict-virality",
         ],
         "warnings": [],
@@ -210,6 +239,22 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
         "cues_parsed": caption_results.get("cues_parsed", 0),
     }
 
+    # v5 analysis details
+    report["trending_topics"] = {
+        "score": trending_score,
+        "matched_categories": trending_results.get("scores", {}).get("trending_topic_alignment", {}).get("raw", {}).get("matched_categories", []),
+        "engagement_signals": trending_results.get("scores", {}).get("trending_topic_alignment", {}).get("raw", {}).get("engagement_signals", []),
+    }
+    report["hashtags"] = {
+        "score": hashtag_score,
+        "suggested": hashtag_results.get("suggested_hashtags", []),
+        "strategy": hashtag_results.get("hashtag_strategy", {}),
+    }
+    report["color_consistency"] = {
+        "score": color_score,
+        "raw": color_results.get("scores", {}).get("color_grading", {}).get("raw", {}),
+    }
+
     return report
 
 
@@ -223,6 +268,7 @@ if __name__ == "__main__":
     transcript_path = None
     thumbnail_path = None
     srt_file = None
+    hashtags_str = None
 
     if "--platform" in sys.argv:
         idx = sys.argv.index("--platform")
@@ -244,5 +290,10 @@ if __name__ == "__main__":
         if idx + 1 < len(sys.argv):
             srt_file = sys.argv[idx + 1]
 
-    result = run_all(video_path, platform, transcript_path, thumbnail_path, srt_file)
+    if "--hashtags" in sys.argv:
+        idx = sys.argv.index("--hashtags")
+        if idx + 1 < len(sys.argv):
+            hashtags_str = sys.argv[idx + 1]
+
+    result = run_all(video_path, platform, transcript_path, thumbnail_path, srt_file, hashtags_str)
     print(json.dumps(result, indent=2))

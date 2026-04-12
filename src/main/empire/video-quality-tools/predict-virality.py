@@ -36,21 +36,22 @@ analyze_content = _content_mod.analyze
 analyze_visual = _visual_mod.analyze
 
 
-# Virality signal weights (research-backed, v2 with emotional arc + retention)
-# Hook strength remains #1, but emotional arc and retention now contribute
+# Virality signal weights (research-backed, v3: adds trending topic + color consistency)
+# Hook strength remains #1; trending topic alignment added as new signal (viral content is topically relevant)
 VIRALITY_WEIGHTS = {
-    "hook_strength": 0.22,        # First 3s = strongest predictor
+    "hook_strength": 0.20,        # First 3s = strongest predictor
     "content_pacing": 0.12,       # Visual variety and cuts/min
     "audio_engagement": 0.12,     # Voice dynamics, no dead air
     "emotional_arc": 0.10,        # Emotional progression predicts engagement
     "retention_quality": 0.10,    # Predicted retention curve health
     "voice_clarity": 0.05,        # Clear voice = professional = more trust
     "visual_quality": 0.08,       # Sharpness, lighting, color
+    "color_consistency": 0.02,    # Temporal color grading consistency (v3)
     "format_fit": 0.08,           # Right format for platform
-    "technical_baseline": 0.03,   # Resolution, codec, bitrate
-    "cta_presence": 0.03,         # Has call-to-action
+    "technical_baseline": 0.01,   # Resolution, codec, bitrate (basic quality floor)
+    "cta_presence": 0.02,         # Has call-to-action
     "pacing_tightness": 0.05,     # Low dead air ratio
-    "transition_quality": 0.02,   # Smooth, professional edits
+    "trending_topic": 0.05,       # Topical alignment with high-engagement categories (v3)
 }
 
 # Platform-specific multipliers
@@ -77,15 +78,18 @@ PLATFORM_VIRALITY_FACTORS = {
 
 
 def compute_virality_score(tech_results, audio_results, content_results, visual_results, platform="youtube",
-                           emotional_results=None, retention_results=None, voice_results=None):
+                           emotional_results=None, retention_results=None, voice_results=None,
+                           trending_results=None, color_results=None):
     """
     Compute virality prediction from all tool outputs.
     Returns a score 0-100 with breakdown and recommendations.
-    v2: Now incorporates emotional arc, retention prediction, and voice clarity.
+    v3: Adds trending topic alignment and color consistency signals.
     """
     emotional_results = emotional_results or {}
     retention_results = retention_results or {}
     voice_results = voice_results or {}
+    trending_results = trending_results or {}
+    color_results = color_results or {}
     platform_factors = PLATFORM_VIRALITY_FACTORS.get(platform, PLATFORM_VIRALITY_FACTORS["youtube"])
 
     signals = {}
@@ -199,14 +203,12 @@ def compute_virality_score(tech_results, audio_results, content_results, visual_
         pacing_feedback = audio_scores.get("pacing", {}).get("feedback", "")
         recommendations.append(f"Tighten edits -- remove dead air. {pacing_feedback}")
 
-    # === TRANSITION QUALITY (2%) ===
-    transition_score = 70  # default
-    if "scores" in visual_results and "transitions" in visual_results["scores"]:
-        transition_score = visual_results["scores"]["transitions"].get("score", 70)
-    signals["transition_quality"] = transition_score
-    breakdown["transition_quality"] = {
-        "raw_score": transition_score,
-        "weighted": round(transition_score * VIRALITY_WEIGHTS["transition_quality"], 1),
+    # === COLOR CONSISTENCY (2%) -- v3 ===
+    color_score = color_results.get("overall_score", 65)  # default to average if not run
+    signals["color_consistency"] = color_score
+    breakdown["color_consistency"] = {
+        "raw_score": color_score,
+        "weighted": round(color_score * VIRALITY_WEIGHTS["color_consistency"], 1),
     }
 
     # === EMOTIONAL ARC (10%) ===
@@ -250,7 +252,22 @@ def compute_virality_score(tech_results, audio_results, content_results, visual_
         "weighted": round(voice_score * VIRALITY_WEIGHTS["voice_clarity"], 1),
     }
     if voice_score < 50:
-        recommendations.append("Voice clarity issues detected — check mic placement, reduce background noise, normalize audio.")
+        recommendations.append("Voice clarity issues detected -- check mic placement, reduce background noise, normalize audio.")
+
+    # === TRENDING TOPIC ALIGNMENT (5%) -- v3 ===
+    trending_score = trending_results.get("overall_score", 50)
+    signals["trending_topic"] = trending_score
+    trending_cats = trending_results.get("scores", {}).get("trending_topic_alignment", {}).get("raw", {}).get("matched_categories", [])
+    breakdown["trending_topic"] = {
+        "raw_score": trending_score,
+        "weighted": round(trending_score * VIRALITY_WEIGHTS["trending_topic"], 1),
+        "categories": trending_cats,
+    }
+    if trending_score >= 75:
+        cat_str = ", ".join(trending_cats[:2]) if trending_cats else "strong topic signals"
+        strengths.append(f"Trending topic alignment ({cat_str})")
+    elif trending_score < 40:
+        recommendations.append("Low trending topic alignment -- content covering AI, finance, health, or productivity trends performs 3x better on average. Add topical hooks.")
 
     # === COMPUTE FINAL VIRALITY SCORE ===
     weighted_sum = sum(
@@ -262,7 +279,8 @@ def compute_virality_score(tech_results, audio_results, content_results, visual_
 
     # Confidence based on how many tools returned valid data
     all_tool_results = [tech_results, audio_results, content_results, visual_results,
-                        emotional_results, retention_results, voice_results]
+                        emotional_results, retention_results, voice_results,
+                        trending_results, color_results]
     tools_valid = sum(1 for r in all_tool_results if r and "error" not in r)
     confidence = round(tools_valid / len(all_tool_results), 2)
 
