@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Video Quality Check Runner v3
+Video Quality Check Runner v4
 Runs all quality analysis tools on a video and produces a combined report
 including visual quality, thumbnail analysis, virality prediction,
-emotional arc analysis, retention curve prediction, and voice clarity.
+emotional arc analysis, retention curve prediction, voice clarity,
+framing/composition, music mix balance, and caption readability.
 
 Usage:
-    python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin] [--transcript <path>] [--thumbnail <path>]
+    python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin] [--transcript <path>] [--thumbnail <path>] [--srt-file <path>]
 
 Returns a combined JSON report with all scores, virality prediction, and publish recommendation.
 """
@@ -29,6 +30,9 @@ _virality_mod = importlib.import_module("predict-virality")
 _emotional_mod = importlib.import_module("analyze-emotional-arc")
 _retention_mod = importlib.import_module("analyze-retention-curve")
 _voice_mod = importlib.import_module("analyze-voice-clarity")
+_framing_mod = importlib.import_module("analyze-framing")
+_music_mod = importlib.import_module("analyze-music-mix")
+_caption_mod = importlib.import_module("analyze-caption-readability")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -39,9 +43,12 @@ compute_virality_score = _virality_mod.compute_virality_score
 analyze_emotional_arc = _emotional_mod.analyze
 analyze_retention = _retention_mod.analyze
 analyze_voice = _voice_mod.analyze
+analyze_framing = _framing_mod.analyze
+analyze_music_mix = _music_mod.analyze
+analyze_captions = _caption_mod.analyze
 
 
-def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None):
+def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None, srt_file=None):
     """Run all quality tools and combine results."""
     if not os.path.exists(video_path):
         return {"error": f"File not found: {video_path}"}
@@ -55,12 +62,17 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
 
     detected_platform = platform or tech_results.get("platform", "youtube")
 
-    # New v3 analyzers
+    # v3 analyzers
     emotional_results = analyze_emotional_arc(video_path, transcript_path)
     retention_results = analyze_retention(video_path, detected_platform)
     voice_results = analyze_voice(video_path)
 
-    # Virality prediction (now includes emotional arc and retention signals)
+    # v4 analyzers: framing, music mix, caption readability
+    framing_results = analyze_framing(video_path)
+    music_results = analyze_music_mix(video_path)
+    caption_results = analyze_captions(video_path, srt_file)
+
+    # Virality prediction (includes emotional arc and retention signals)
     virality = compute_virality_score(
         tech_results, audio_results, content_results, visual_results, detected_platform,
         emotional_results=emotional_results, retention_results=retention_results,
@@ -68,31 +80,52 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     )
 
     # Combine all scores
+    all_result_sets = [
+        tech_results, audio_results, content_results, visual_results, thumb_results,
+        emotional_results, retention_results, voice_results,
+        framing_results, music_results, caption_results,
+    ]
     all_scores = {}
-    for result_set in [tech_results, audio_results, content_results, visual_results, thumb_results, emotional_results, retention_results, voice_results]:
+    for result_set in all_result_sets:
         if "scores" in result_set:
             all_scores.update(result_set["scores"])
 
-    # Category averages (audio now includes voice clarity)
+    # Category averages -- audio includes voice clarity + music mix
     audio_overall = audio_results.get("overall_score", 0)
     voice_score = voice_results.get("overall_score", 0)
-    audio_combined = round((audio_overall * 0.6 + voice_score * 0.4), 1) if voice_score > 0 else audio_overall
+    music_score = music_results.get("overall_score", 0)
+    audio_combined = round(
+        (audio_overall * 0.5 + voice_score * 0.3 + music_score * 0.2), 1
+    ) if voice_score > 0 or music_score > 0 else audio_overall
 
-    # Content now includes emotional arc and retention
+    # Content includes emotional arc and retention
     content_overall = content_results.get("overall_score", 0)
     emotional_score = emotional_results.get("overall_score", 0)
     retention_score = retention_results.get("overall_score", 0)
     content_combined = round((content_overall * 0.4 + emotional_score * 0.3 + retention_score * 0.3), 1)
 
+    # Visual includes framing
+    visual_overall = visual_results.get("overall_score", 0)
+    framing_score = framing_results.get("overall_score", 0)
+    visual_combined = round((visual_overall * 0.75 + framing_score * 0.25), 1)
+
+    # Technical includes caption readability
+    technical_overall = tech_results.get("overall_score", 0)
+    caption_score = caption_results.get("overall_score", 0)
+    technical_combined = round((technical_overall * 0.7 + caption_score * 0.3), 1)
+
     category_scores = {
-        "technical": round(tech_results.get("overall_score", 0), 1),
+        "technical": round(technical_combined, 1),
         "audio": audio_combined,
         "content": content_combined,
-        "visual": round(visual_results.get("overall_score", 0), 1),
+        "visual": round(visual_combined, 1),
         "thumbnail": round(thumb_results.get("overall_score", 0), 1),
         "emotional_arc": round(emotional_score, 1),
         "retention": round(retention_score, 1),
         "voice_clarity": round(voice_score, 1),
+        "framing": round(framing_score, 1),
+        "music_mix": round(music_score, 1),
+        "caption_readability": round(caption_score, 1),
     }
 
     # Weighted overall (matching rubric weights)
@@ -121,12 +154,15 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
             emotional_results.get("tool", "unknown"),
             retention_results.get("tool", "unknown"),
             voice_results.get("tool", "unknown"),
+            framing_results.get("tool", "unknown"),
+            music_results.get("tool", "unknown"),
+            caption_results.get("tool", "unknown"),
             "predict-virality",
         ],
         "warnings": [],
     }
 
-    for result_set in [tech_results, audio_results, content_results, visual_results, thumb_results, emotional_results, retention_results, voice_results]:
+    for result_set in all_result_sets:
         report["warnings"].extend(result_set.get("warnings", []))
 
     # Thumbnail best candidate info
@@ -144,7 +180,7 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     # Add virality-specific recommendations
     report["virality_recommendations"] = virality.get("top_recommendations", [])
 
-    # Add new v3 analysis details
+    # Add v3 analysis details
     report["emotional_arc"] = {
         "shape": emotional_results.get("arc_shape", "unknown"),
         "score": emotional_results.get("overall_score", 0),
@@ -159,17 +195,34 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
         "frequency_bands": voice_results.get("frequency_bands", {}),
     }
 
+    # Add v4 analysis details
+    report["framing"] = {
+        "score": framing_score,
+        "raw": framing_results.get("scores", {}).get("framing", {}).get("raw", {}),
+    }
+    report["music_mix"] = {
+        "score": music_score,
+        "raw": music_results.get("scores", {}).get("music_mix", {}).get("raw", {}),
+    }
+    report["captions"] = {
+        "score": caption_score,
+        "subtitle_streams": caption_results.get("subtitle_streams_found", 0),
+        "cues_parsed": caption_results.get("cues_parsed", 0),
+    }
+
     return report
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin] [--transcript <path>]")
+        print("Usage: python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin] [--transcript <path>] [--thumbnail <path>] [--srt-file <path>]")
         sys.exit(1)
 
     video_path = sys.argv[1]
     platform = None
     transcript_path = None
+    thumbnail_path = None
+    srt_file = None
 
     if "--platform" in sys.argv:
         idx = sys.argv.index("--platform")
@@ -181,11 +234,15 @@ if __name__ == "__main__":
         if idx + 1 < len(sys.argv):
             transcript_path = sys.argv[idx + 1]
 
-    thumbnail_path = None
     if "--thumbnail" in sys.argv:
         idx = sys.argv.index("--thumbnail")
         if idx + 1 < len(sys.argv):
             thumbnail_path = sys.argv[idx + 1]
 
-    result = run_all(video_path, platform, transcript_path, thumbnail_path)
+    if "--srt-file" in sys.argv:
+        idx = sys.argv.index("--srt-file")
+        if idx + 1 < len(sys.argv):
+            srt_file = sys.argv[idx + 1]
+
+    result = run_all(video_path, platform, transcript_path, thumbnail_path, srt_file)
     print(json.dumps(result, indent=2))
