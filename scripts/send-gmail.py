@@ -33,7 +33,7 @@ JSON schema (one email per file):
     "bcc": "optional@example.com",
     "subject": "Email subject",
     "body": "Plain text body",
-    "reply_to": "owner.d.baer@gmail.com"
+    "reply_to": "owner@example.com"
   }
 
 On success, the script moves the sent JSON file into a .sent/ subdirectory
@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Iterable
 
 APP_PASSWORD_FILE = Path(r"${USERPROFILE:-~}/.secrets/gmail_app_password.txt")
-SENDER_ADDRESS = "owner.d.baer@gmail.com"
+SENDER_ADDRESS = "owner@example.com"
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 

@@ -19,6 +19,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 
 const SCRIPT_PATH = path.resolve(__dirname, '..', '..', '..', 'scripts', 'manual-briefing-v3.js');
 
@@ -69,6 +70,31 @@ describe('manual-briefing-v3.js — no paid LLM calls', () => {
   it('unsets CLAUDECODE env var before spawning claude CLI', () => {
     // The nested-session guard must be bypassed for the subprocess to succeed
     expect(src).toContain('delete env.CLAUDECODE');
+  });
+});
+
+// Regression: 2026-04-12 #gap — script had bash-style ${VARNAME:-default} syntax
+// embedded in JS template literals, causing SyntaxError at startup. Node.js cannot
+// run a file that fails to parse. This suite catches any future syntax breakage
+// before it reaches the scheduled task runner.
+describe('manual-briefing-v3.js — JavaScript syntax validity', () => {
+  it('parses without syntax errors (node --check)', () => {
+    const result = spawnSync(process.execPath, ['--check', SCRIPT_PATH], {
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    expect(result.status, `node --check failed:\n${result.stderr}`).toBe(0);
+  });
+
+  it('contains no bash-style ${VAR:-default} expansion syntax', () => {
+    const src = fs.existsSync(SCRIPT_PATH) ? fs.readFileSync(SCRIPT_PATH, 'utf-8') : '';
+    // ${VARNAME:-anything} is bash default-value syntax. In JS template literals it
+    // causes SyntaxError; in quoted strings it silently produces wrong paths.
+    const bashExpansion = /\$\{[A-Z_]+:-/;
+    expect(
+      bashExpansion.test(src),
+      'Found bash-style ${VAR:-default} syntax in a JS file. Use process.env.VAR || fallback instead.',
+    ).toBe(false);
   });
 });
 

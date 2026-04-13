@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Video Quality Check Runner v5
+Video Quality Check Runner v6
 Runs all quality analysis tools on a video and produces a combined report
 including visual quality, thumbnail analysis, virality prediction,
 emotional arc analysis, retention curve prediction, voice clarity,
 framing/composition, music mix balance, caption readability,
-trending topic alignment, hashtag relevance, and color consistency.
+trending topic alignment, hashtag relevance, color consistency,
+camera stability, audio dynamics/mastering quality, and scene variety.
 
 Usage:
     python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin]
@@ -39,6 +40,9 @@ _caption_mod = importlib.import_module("analyze-caption-readability")
 _trending_mod = importlib.import_module("analyze-trending-topics")
 _hashtag_mod = importlib.import_module("analyze-hashtag-relevance")
 _color_mod = importlib.import_module("analyze-color-consistency")
+_stability_mod = importlib.import_module("analyze-camera-stability")
+_dynamics_mod = importlib.import_module("analyze-audio-dynamics")
+_variety_mod = importlib.import_module("analyze-scene-variety")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -55,6 +59,9 @@ analyze_captions = _caption_mod.analyze
 analyze_trending = _trending_mod.analyze
 analyze_hashtags = _hashtag_mod.analyze
 analyze_color = _color_mod.analyze
+analyze_stability = _stability_mod.analyze
+analyze_audio_dynamics = _dynamics_mod.analyze
+analyze_scene_variety = _variety_mod.analyze
 
 
 def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None, srt_file=None, hashtags_str=None):
@@ -86,6 +93,11 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     hashtag_results = analyze_hashtags(video_path, transcript_path, detected_platform, hashtags_str)
     color_results = analyze_color(video_path)
 
+    # v6 analyzers: camera stability, audio dynamics, scene variety
+    stability_results = analyze_stability(video_path)
+    dynamics_results = analyze_audio_dynamics(video_path)
+    variety_results = analyze_scene_variety(video_path)
+
     # Virality prediction (includes emotional arc, retention, and trending signals)
     virality = compute_virality_score(
         tech_results, audio_results, content_results, visual_results, detected_platform,
@@ -100,6 +112,7 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
         emotional_results, retention_results, voice_results,
         framing_results, music_results, caption_results,
         trending_results, hashtag_results, color_results,
+        stability_results, dynamics_results, variety_results,
     ]
     all_scores = {}
     for result_set in all_result_sets:
@@ -114,22 +127,25 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
         (audio_overall * 0.5 + voice_score * 0.3 + music_score * 0.2), 1
     ) if voice_score > 0 or music_score > 0 else audio_overall
 
-    # Content includes emotional arc and retention
+    # Content includes emotional arc, retention, and scene variety
     content_overall = content_results.get("overall_score", 0)
     emotional_score = emotional_results.get("overall_score", 0)
     retention_score = retention_results.get("overall_score", 0)
-    content_combined = round((content_overall * 0.4 + emotional_score * 0.3 + retention_score * 0.3), 1)
+    variety_score = variety_results.get("overall_score", 0)
+    content_combined = round((content_overall * 0.35 + emotional_score * 0.25 + retention_score * 0.25 + variety_score * 0.15), 1)
 
-    # Visual includes framing + color consistency
+    # Visual includes framing + color consistency + camera stability
     visual_overall = visual_results.get("overall_score", 0)
     framing_score = framing_results.get("overall_score", 0)
     color_score = color_results.get("overall_score", 0)
-    visual_combined = round((visual_overall * 0.65 + framing_score * 0.20 + color_score * 0.15), 1)
+    stability_score = stability_results.get("overall_score", 0)
+    visual_combined = round((visual_overall * 0.55 + framing_score * 0.18 + color_score * 0.12 + stability_score * 0.15), 1)
 
-    # Technical includes caption readability
+    # Technical includes caption readability + audio dynamics
     technical_overall = tech_results.get("overall_score", 0)
     caption_score = caption_results.get("overall_score", 0)
-    technical_combined = round((technical_overall * 0.7 + caption_score * 0.3), 1)
+    dynamics_score = dynamics_results.get("overall_score", 0)
+    technical_combined = round((technical_overall * 0.55 + caption_score * 0.25 + dynamics_score * 0.20), 1)
 
     # Platform includes trending topic + hashtag relevance
     trending_score = trending_results.get("overall_score", 0)
@@ -152,6 +168,9 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
         "hashtag_relevance": round(hashtag_score, 1),
         "color_consistency": round(color_score, 1),
         "platform": round(platform_combined, 1),
+        "camera_stability": round(stability_score, 1),
+        "audio_dynamics": round(dynamics_score, 1),
+        "scene_variety": round(variety_score, 1),
     }
 
     # Weighted overall (matching rubric weights: platform 0.15 now computed, not assumed 50)
@@ -187,6 +206,9 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
             hashtag_results.get("tool", "unknown"),
             color_results.get("tool", "unknown"),
             "predict-virality",
+        stability_results.get("tool", "unknown"),
+        dynamics_results.get("tool", "unknown"),
+        variety_results.get("tool", "unknown"),
         ],
         "warnings": [],
     }
@@ -237,6 +259,20 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
         "score": caption_score,
         "subtitle_streams": caption_results.get("subtitle_streams_found", 0),
         "cues_parsed": caption_results.get("cues_parsed", 0),
+    }
+
+    # v6 analysis details
+    report["camera_stability"] = {
+        "score": stability_score,
+        "raw": stability_results.get("scores", {}).get("camera_stability", {}).get("raw", {}),
+    }
+    report["audio_dynamics"] = {
+        "score": dynamics_score,
+        "raw": dynamics_results.get("scores", {}).get("audio_dynamics", {}).get("raw", {}),
+    }
+    report["scene_variety"] = {
+        "score": variety_score,
+        "raw": variety_results.get("scores", {}).get("scene_variety", {}).get("raw", {}),
     }
 
     # v5 analysis details

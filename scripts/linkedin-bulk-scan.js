@@ -195,17 +195,21 @@ function updateContactFile(contact, recentPosts) {
     }
     text = text.replace(fmMatch[0], `${fmMatch[1]}${fm}${fmMatch[3]}`);
   }
-  // If we found recent posts, append a History entry
+  // If we found recent posts, append a History entry (idempotent: one entry per day)
   if (recentPosts.length > 0) {
     const histMatch = text.match(/^## History.*$/m);
     if (histMatch) {
-      const summary = recentPosts
-        .map((p, i) => `(${i + 1}) ${p.age} ago: ${p.text.slice(0, 140).replace(/\s+/g, ' ')}`)
-        .join(' ');
-      const entry = `\n- ${today} (LinkedIn bulk-scan): ${recentPosts.length} recent post(s) found. ${summary}`;
-      const idx = text.indexOf(histMatch[0]);
-      const insertPoint = text.indexOf('\n', idx) + 1;
-      text = text.slice(0, insertPoint) + entry + '\n' + text.slice(insertPoint);
+      // Skip if we already wrote a LinkedIn bulk-scan entry for today
+      const alreadyWritten = new RegExp(`^- ${today} \\(LinkedIn bulk-scan\\)`, 'm').test(text);
+      if (!alreadyWritten) {
+        const summary = recentPosts
+          .map((p, i) => `(${i + 1}) ${p.age} ago: ${p.text.slice(0, 140).replace(/\s+/g, ' ')}`)
+          .join(' ');
+        const entry = `\n- ${today} (LinkedIn bulk-scan): ${recentPosts.length} recent post(s) found. ${summary}`;
+        const idx = text.indexOf(histMatch[0]);
+        const insertPoint = text.indexOf('\n', idx) + 1;
+        text = text.slice(0, insertPoint) + entry + '\n' + text.slice(insertPoint);
+      }
     }
   }
   try {

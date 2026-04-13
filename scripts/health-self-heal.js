@@ -186,7 +186,48 @@ function probeSchedDispatch() {
   return parseSchedDispatchLog(tail, Date.now());
 }
 
-module.exports = { parseSchedDispatchLog };
+// Checks nightly-enhancements.jsonl for a recent entry.
+// Catches ANY failure mode that causes a nightly task to produce no output:
+// rate limits, dispatch-stuck, API crash, context overflow, etc.
+// Threshold: 36h (scheduled at 1:30 AM, checked at 4:00 AM, 2.5h window +
+// a full day for weekends/holiday slack).
+// appDataOverride is optional — used by tests to inject a temp directory.
+// Production callers omit it and get the module-level APPDATA constant.
+function probeNightlyEnhancements(thresholdHours = 36, appDataOverride) {
+  const root = appDataOverride || APPDATA;
+  const logPath = path.join(root, 'secondbrain', 'data', 'agent', 'nightly-enhancements.jsonl');
+  if (!root || !fs.existsSync(logPath)) {
+    return { status: 'red', detail: 'nightly-enhancements.jsonl not found', lastRunTs: null };
+  }
+  try {
+    const content = fs.readFileSync(logPath, 'utf8').trim();
+    const lines = content.split('\n').filter(Boolean);
+    if (lines.length === 0) {
+      return { status: 'red', detail: 'nightly-enhancements.jsonl is empty', lastRunTs: null };
+    }
+    const lastLine = lines[lines.length - 1];
+    const entry = JSON.parse(lastLine);
+    const ts = entry.timestamp || entry.ts;
+    if (!ts) {
+      return { status: 'red', detail: 'last entry has no timestamp field', lastRunTs: null };
+    }
+    const ageMs = Date.now() - new Date(ts).getTime();
+    const ageHrs = Math.round(ageMs / 3600000);
+    const isStale = ageHrs > thresholdHours;
+    return {
+      status: isStale ? 'red' : 'green',
+      detail: isStale
+        ? `last nightly run was ${ageHrs}h ago (threshold ${thresholdHours}h) — check for rate limit or dispatch failure`
+        : `last nightly run ${ageHrs}h ago (run #${entry.run_number || '?'})`,
+      lastRunTs: ts,
+      ageHrs,
+    };
+  } catch (e) {
+    return { status: 'red', detail: `parse failed: ${e.message.slice(0, 80)}`, lastRunTs: null };
+  }
+}
+
+module.exports = { parseSchedDispatchLog, probeNightlyEnhancements };
 
 // ── Healers ──────────────────────────────────────────────────────────────────
 
@@ -254,6 +295,7 @@ function main() {
   report.before.ec2 = probeEc2();
   report.before.llm = probeLlm();
   report.before.schedDispatch = probeSchedDispatch();
+  report.before.nightlyEnhancements = probeNightlyEnhancements();
 
   console.log('before:');
   for (const [k, v] of Object.entries(report.before)) {
@@ -324,6 +366,17 @@ function main() {
       report.after.schedDispatch = probeSchedDispatch();
     } else {
       report.after.schedDispatch = report.before.schedDispatch;
+    }
+
+    // nightlyEnhancements is read-only probe — no heal action, surface loudly in briefing.
+    report.after.nightlyEnhancements = report.before.nightlyEnhancements;
+    if (report.before.nightlyEnhancements.status === 'red') {
+      report.heals.push({
+        target: 'nightlyEnhancements',
+        healed: false,
+        action: 'no-op (requires manual catch-up run)',
+        note: report.before.nightlyEnhancements.detail,
+      });
     }
 
     // EC2 self-heal is handled by a separate remote PM2 script; we just re-probe.

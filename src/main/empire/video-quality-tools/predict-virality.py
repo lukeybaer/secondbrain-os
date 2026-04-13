@@ -36,8 +36,8 @@ analyze_content = _content_mod.analyze
 analyze_visual = _visual_mod.analyze
 
 
-# Virality signal weights (research-backed, v3: adds trending topic + color consistency)
-# Hook strength remains #1; trending topic alignment added as new signal (viral content is topically relevant)
+# Virality signal weights (research-backed, v4: adds scene_variety + camera_stability)
+# Hook strength remains #1; scene variety and camera stability added as production quality signals
 VIRALITY_WEIGHTS = {
     "hook_strength": 0.20,        # First 3s = strongest predictor
     "content_pacing": 0.12,       # Visual variety and cuts/min
@@ -46,12 +46,14 @@ VIRALITY_WEIGHTS = {
     "retention_quality": 0.10,    # Predicted retention curve health
     "voice_clarity": 0.05,        # Clear voice = professional = more trust
     "visual_quality": 0.08,       # Sharpness, lighting, color
-    "color_consistency": 0.02,    # Temporal color grading consistency (v3)
+    "color_consistency": 0.01,    # Temporal color grading consistency
     "format_fit": 0.08,           # Right format for platform
     "technical_baseline": 0.01,   # Resolution, codec, bitrate (basic quality floor)
-    "cta_presence": 0.02,         # Has call-to-action
-    "pacing_tightness": 0.05,     # Low dead air ratio
-    "trending_topic": 0.05,       # Topical alignment with high-engagement categories (v3)
+    "cta_presence": 0.01,         # Has call-to-action
+    "pacing_tightness": 0.04,     # Low dead air ratio
+    "trending_topic": 0.03,       # Topical alignment with high-engagement categories
+    "scene_variety": 0.03,        # Shot diversity + B-roll coverage (v4)
+    "camera_stability": 0.02,     # Steady camera = professional look (v4)
 }
 
 # Platform-specific multipliers
@@ -79,17 +81,20 @@ PLATFORM_VIRALITY_FACTORS = {
 
 def compute_virality_score(tech_results, audio_results, content_results, visual_results, platform="youtube",
                            emotional_results=None, retention_results=None, voice_results=None,
-                           trending_results=None, color_results=None):
+                           trending_results=None, color_results=None,
+                           stability_results=None, variety_results=None):
     """
     Compute virality prediction from all tool outputs.
     Returns a score 0-100 with breakdown and recommendations.
-    v3: Adds trending topic alignment and color consistency signals.
+    v4: Adds scene variety and camera stability signals.
     """
     emotional_results = emotional_results or {}
     retention_results = retention_results or {}
     voice_results = voice_results or {}
     trending_results = trending_results or {}
     color_results = color_results or {}
+    stability_results = stability_results or {}
+    variety_results = variety_results or {}
     platform_factors = PLATFORM_VIRALITY_FACTORS.get(platform, PLATFORM_VIRALITY_FACTORS["youtube"])
 
     signals = {}
@@ -254,7 +259,7 @@ def compute_virality_score(tech_results, audio_results, content_results, visual_
     if voice_score < 50:
         recommendations.append("Voice clarity issues detected -- check mic placement, reduce background noise, normalize audio.")
 
-    # === TRENDING TOPIC ALIGNMENT (5%) -- v3 ===
+    # === TRENDING TOPIC ALIGNMENT (3%) -- v3 ===
     trending_score = trending_results.get("overall_score", 50)
     signals["trending_topic"] = trending_score
     trending_cats = trending_results.get("scores", {}).get("trending_topic_alignment", {}).get("raw", {}).get("matched_categories", [])
@@ -269,6 +274,33 @@ def compute_virality_score(tech_results, audio_results, content_results, visual_
     elif trending_score < 40:
         recommendations.append("Low trending topic alignment -- content covering AI, finance, health, or productivity trends performs 3x better on average. Add topical hooks.")
 
+    # === SCENE VARIETY (3%) -- v4 ===
+    variety_score = variety_results.get("overall_score", 55)
+    signals["scene_variety"] = variety_score
+    variety_raw = variety_results.get("scores", {}).get("scene_variety", {}).get("raw", {})
+    breakdown["scene_variety"] = {
+        "raw_score": variety_score,
+        "weighted": round(variety_score * VIRALITY_WEIGHTS["scene_variety"], 1),
+        "num_shots": variety_raw.get("num_shots", 0),
+        "avg_color_distance": variety_raw.get("avg_color_distance", 0),
+    }
+    if variety_score >= 75:
+        strengths.append("Strong visual variety and B-roll coverage")
+    elif variety_score < 45:
+        recommendations.append("Low scene variety -- add B-roll or multiple camera angles. Static talking-head reduces retention by ~22%.")
+
+    # === CAMERA STABILITY (2%) -- v4 ===
+    stability_score = stability_results.get("overall_score", 65)
+    signals["camera_stability"] = stability_score
+    stability_raw = stability_results.get("scores", {}).get("camera_stability", {}).get("raw", {})
+    breakdown["camera_stability"] = {
+        "raw_score": stability_score,
+        "weighted": round(stability_score * VIRALITY_WEIGHTS["camera_stability"], 1),
+        "label": stability_raw.get("label", "unknown"),
+    }
+    if stability_score < 45:
+        recommendations.append("Camera shake detected -- use a tripod or gimbal. Unstable footage reduces perceived production quality.")
+
     # === COMPUTE FINAL VIRALITY SCORE ===
     weighted_sum = sum(
         min(signals[k], 100) * VIRALITY_WEIGHTS[k]
@@ -280,7 +312,7 @@ def compute_virality_score(tech_results, audio_results, content_results, visual_
     # Confidence based on how many tools returned valid data
     all_tool_results = [tech_results, audio_results, content_results, visual_results,
                         emotional_results, retention_results, voice_results,
-                        trending_results, color_results]
+                        trending_results, color_results, stability_results, variety_results]
     tools_valid = sum(1 for r in all_tool_results if r and "error" not in r)
     confidence = round(tools_valid / len(all_tool_results), 2)
 
