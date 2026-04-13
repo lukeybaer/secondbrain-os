@@ -20,7 +20,7 @@
  * Commit 16 of 18 in plans/dazzling-rolling-moler.md.
  */
 
-import Database from 'better-sqlite3';
+import * as Database from 'better-sqlite3';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
