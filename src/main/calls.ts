@@ -1,8 +1,21 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { EventEmitter } from 'events';
 import { getConfig } from './config';
 import { listPersonas } from './personas';
+
+// ── Call status push emitter ──────────────────────────────────────────────────
+// Fires 'status' with the updated CallRecord every time a record is written.
+// ipc-handlers.ts subscribes and pushes 'calls:statusPush' to the renderer
+// so the Calls page gets real-time updates without polling.
+// Inspired by CrewAI's streaming tool call events pattern.
+export const callStatusEmitter = new EventEmitter();
 import { getAgentMemory } from './agent-memory';
+import {
+  appendCallPattern,
+  getCallScriptContext,
+  formatCallScriptContextBlock,
+} from './call-script-memory';
 import { createApproval, createReputationEvent } from './database-sqlite';
 import { sendApprovalRequest, sendMessage } from './telegram';
 import {
@@ -75,6 +88,54 @@ function getCallsDir(): string {
   return path.join(getConfig().dataDir, 'calls');
 }
 
+// ── Call script memory helpers ────────────────────────────────────────────────
+
+const CALL_TYPE_KEYWORDS: Record<string, string[]> = {
+  dentist: ['dentist', 'dental', 'cleaning', 'x-ray', 'xray'],
+  vendor: ['vendor', 'supplier', 'quote', 'pricing', 'invoice'],
+  contractor: ['contractor', 'plumber', 'electrician', 'handyman', 'repair'],
+  appointment: ['appointment', 'schedule', 'book', 'reservation'],
+  followup: ['follow up', 'following up', 'checking in', 'last week', 'previously'],
+};
+
+function deriveCallType(instructions: string): string {
+  const lower = instructions.toLowerCase();
+  for (const [type, keywords] of Object.entries(CALL_TYPE_KEYWORDS)) {
+    if (keywords.some((kw) => lower.includes(kw))) return type;
+  }
+  return 'general';
+}
+
+async function extractAndStoreCallPattern(
+  userData: string,
+  instructions: string,
+  transcript: string,
+  completed: boolean,
+): Promise<void> {
+  // Simple heuristic extraction — no LLM cost, just pattern matching on the transcript.
+  // Pull first substantive Amy turn as the opening, collect lines that resolve objections.
+  const lines = transcript.split('\n').filter((l) => l.trim().length > 10);
+  const amyLines = lines
+    .filter((l) => /^(Amy|Assistant|AI):/i.test(l))
+    .map((l) => l.replace(/^[^:]+:\s*/i, '').trim());
+  const opening = amyLines[0] ?? instructions.slice(0, 120);
+  const objectionHandlers = amyLines
+    .filter((l) => /\b(understand|concern|actually|instead|alternative|happy to)\b/i.test(l))
+    .slice(0, 4);
+
+  appendCallPattern(userData, {
+    call_type: deriveCallType(instructions),
+    outcome: completed ? 'success' : 'partial',
+    opening,
+    objection_handlers: objectionHandlers,
+    success_signals: completed ? ['goal accomplished per auto-detection'] : [],
+    notes: completed
+      ? `Completed call. Instructions: ${instructions.slice(0, 80)}`
+      : `Partial/failed call. Instructions: ${instructions.slice(0, 80)}`,
+    weight: completed ? 0.7 : 0.4,
+  });
+}
+
 function ensureCallsDir(): void {
   const dir = getCallsDir();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -87,6 +148,8 @@ function saveCallRecord(record: CallRecord): void {
     JSON.stringify(record, null, 2),
     'utf-8',
   );
+  // Push to renderer immediately via ipc-handlers subscription — no polling needed
+  callStatusEmitter.emit('status', record);
 }
 
 export function loadCallRecord(callId: string): CallRecord | null {
@@ -248,9 +311,17 @@ export async function initiateCall(
     ? (getAmyVersion(options.amyVersion) ?? getActiveAmyVersion())
     : getActiveAmyVersion();
 
+  // Inject procedural memory: learned call patterns for this call type
+  const callType = deriveCallType(instructions);
+  const userData = getConfig().dataDir ?? '';
+  const scriptCtx = userData ? getCallScriptContext(userData, callType) : null;
+  const enrichedContext = scriptCtx
+    ? `${personalContext}\n\n${formatCallScriptContextBlock(scriptCtx)}`
+    : personalContext;
+
   const assistantConfig = await buildVapiAssistantConfig(version, {
     instructions,
-    personalContext,
+    personalContext: enrichedContext,
     personaId,
     callDirection: 'outbound',
     leaveVoicemail: leaveVoicemail ?? false,
@@ -398,6 +469,15 @@ export async function refreshCallStatus(
         const fresh = loadCallRecord(updated.id);
         if (fresh && fresh.completed === undefined) {
           saveCallRecord({ ...fresh, completed });
+        }
+        // Extract and store call script patterns for future calls of the same type
+        const cfgDir = getConfig().dataDir ?? '';
+        if (cfgDir && transcript) {
+          extractAndStoreCallPattern(cfgDir, existing.instructions, transcript, completed).catch(
+            () => {
+              /* best-effort, never block */
+            },
+          );
         }
         // Always update callback assistant so it has latest context for this number
         syncCallbackAssistant(existing.phoneNumber);
@@ -768,7 +848,9 @@ export async function handleVapiFunctionCall(
         topic,
       );
       if (result.success) {
-        return { result: `Calling the owner now — ${callerName}, please hold while I connect you.` };
+        return {
+          result: `Calling the owner now — ${callerName}, please hold while I connect you.`,
+        };
       }
       return {
         result: `I wasn't able to reach the owner right now (${result.error ?? 'unavailable'}). I'll let him know you called.`,

@@ -309,3 +309,134 @@ export function pendingVideoCount(): number {
   const entries = loadManifest();
   return entries.filter((e) => e.status === 'pending_approval').length;
 }
+
+// ── Rejected video regeneration ───────────────────────────────────────────────
+
+export interface RegenResult {
+  videoId: string;
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Rebuild a single rejected video with its rejection feedback baked in.
+ * Passes REJECTION_NOTE and REGEN_VIDEO_ID env vars to build_video.py so the
+ * script can incorporate the feedback into the generation prompt.
+ */
+export async function buildRejectedVideo(
+  videoId: string,
+  channel: string,
+  originalTitle: string,
+  rejectionNote: string,
+  outputBaseDir: string,
+): Promise<RegenResult> {
+  const empire = empireDir();
+  const buildScript = path.join(empire, 'build_video.py');
+  const qcScript = path.join(empire, 'qc_agent.py');
+  const outputDir = path.join(outputBaseDir, videoId);
+
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+
+  if (!fs.existsSync(buildScript)) {
+    return {
+      videoId,
+      success: false,
+      error: 'build_video.py not found — rebuild must run on the production VM',
+    };
+  }
+
+  const description = [
+    `REGEN: ${originalTitle}`,
+    rejectionNote ? `REJECTION FEEDBACK (fix these issues): ${rejectionNote}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const buildResult = await runPython(
+    buildScript,
+    [
+      '--channel',
+      channel,
+      '--style',
+      'auto',
+      '--output-dir',
+      outputDir,
+      '--description',
+      description,
+    ],
+    { REJECTION_NOTE: rejectionNote, REGEN_VIDEO_ID: videoId },
+  );
+
+  if (!buildResult.success) {
+    return {
+      videoId,
+      success: false,
+      error: `Build failed (exit ${buildResult.exitCode}): ${buildResult.stderr.slice(0, 300)}`,
+    };
+  }
+
+  // Run QC if available
+  const files = fs.existsSync(outputDir) ? fs.readdirSync(outputDir) : [];
+  const videoFile = files.find((f) => f.endsWith('.mp4'));
+  if (videoFile && fs.existsSync(qcScript)) {
+    await runPython(qcScript, [path.join(outputDir, videoFile)]);
+  }
+
+  return { videoId, success: true };
+}
+
+/**
+ * Scan the content-review manifest for videos marked video_needs_regen or
+ * thumbnail_needs_regen and trigger a rebuild for each one.
+ */
+export async function regenRejectedVideos(contentRoot: string): Promise<RegenResult[]> {
+  const pendingManifestPath = path.join(contentRoot, 'content-review', 'pending', 'manifest.json');
+  if (!fs.existsSync(pendingManifestPath)) return [];
+
+  const manifest = JSON.parse(fs.readFileSync(pendingManifestPath, 'utf-8'));
+  const videos: any[] = Array.isArray(manifest.videos) ? manifest.videos : [];
+  const flagged = videos.filter(
+    (v) => v.video_needs_regen === true || v.thumbnail_needs_regen === true,
+  );
+
+  if (flagged.length === 0) return [];
+
+  const results: RegenResult[] = [];
+  const outputBaseDir = path.join(contentRoot, 'content-review', 'pending');
+
+  for (const video of flagged) {
+    const rejectionNote = video.video_rejection_note || video.thumbnail_rejection_note || '';
+
+    // Mark regen in progress so UI shows status
+    video.regen_status = 'in_progress';
+    video.regen_started_at = new Date().toISOString();
+    fs.writeFileSync(pendingManifestPath, JSON.stringify(manifest, null, 2));
+
+    const result = await buildRejectedVideo(
+      video.id,
+      video.channel || process.env.YT_CHANNEL_PRIMARY || '',
+      video.title || video.id,
+      rejectionNote,
+      outputBaseDir,
+    );
+
+    if (result.success) {
+      // Clear regen flags — video is back in pending_approval
+      video.video_needs_regen = false;
+      video.thumbnail_needs_regen = false;
+      video.regen_status = 'done';
+      video.regen_completed_at = new Date().toISOString();
+      video.status = 'pending_approval';
+      // Preserve rejection note for reference
+      video.previous_rejection_note = rejectionNote;
+    } else {
+      video.regen_status = 'failed';
+      video.regen_error = result.error;
+    }
+
+    fs.writeFileSync(pendingManifestPath, JSON.stringify(manifest, null, 2));
+    results.push(result);
+  }
+
+  return results;
+}

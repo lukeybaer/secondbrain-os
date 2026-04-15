@@ -46,7 +46,7 @@ function nowIso() {
 function probeBackups() {
   try {
     const out = execSync(
-      `aws s3api list-objects-v2 --bucket 000000000000-secondbrain-backups --prefix snapshots/2026 --region us-east-1 --query "reverse(sort_by(Contents, &LastModified))[:1].[Key,LastModified,Size]" --output text`,
+      `aws s3api list-objects-v2 --bucket ${process.env.SECONDBRAIN_BACKUP_BUCKET} --prefix snapshots/2026 --region us-east-1 --query "reverse(sort_by(Contents, &LastModified))[:1].[Key,LastModified,Size]" --output text`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim();
     const [key, lastMod, size] = out.split('\t');
@@ -75,7 +75,7 @@ function probeS3Parity() {
       ),
     );
     const s3Out = execSync(
-      `aws s3 ls s3://000000000000-secondbrain-backups/snapshots/ --region us-east-1`,
+      `aws s3 ls s3://${process.env.SECONDBRAIN_BACKUP_BUCKET}/snapshots/ --region us-east-1`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim();
     const s3Files = new Set(
@@ -227,7 +227,82 @@ function probeNightlyEnhancements(thresholdHours = 36, appDataOverride) {
   }
 }
 
-module.exports = { parseSchedDispatchLog, probeNightlyEnhancements };
+/**
+ * probeVideoPipeline — checks that the daily video pipeline is alive.
+ * RED if: no video has been added to content-review/pending in the last 48h
+ *         OR the queue is empty (no upcoming videos planned).
+ * YELLOW if: last video is 24-48h old.
+ * GREEN if: a video was added in the last 24h.
+ *
+ * Gap guard (2026-04-13): the pipeline was silently dead for weeks — the
+ * ipc-handler set video_needs_regen but nothing on EC2 ever acted on it.
+ * This probe fires every morning BEFORE the 5:30 AM briefing so the Amy
+ * Health section says "red — no video in 48h" instead of green.
+ */
+function probeVideoPipeline(thresholdHours = 48) {
+  const path = require('path');
+  const fs = require('fs');
+  const REPO_ROOT = path.resolve(__dirname, '..');
+  const manifestPath = path.join(REPO_ROOT, 'content-review', 'pending', 'manifest.json');
+  const queuePath = path.join(REPO_ROOT, 'scripts', 'ec2-build-queue.json');
+
+  try {
+    // Check queue has upcoming videos
+    let queueSize = 0;
+    if (fs.existsSync(queuePath)) {
+      const q = JSON.parse(fs.readFileSync(queuePath, 'utf8'));
+      queueSize = (q.videos || []).length;
+    }
+    if (queueSize === 0) {
+      return { status: 'red', detail: 'ec2-build-queue.json is empty — no videos queued' };
+    }
+
+    // Check manifest freshness
+    if (!fs.existsSync(manifestPath)) {
+      return { status: 'red', detail: 'content-review/pending/manifest.json missing' };
+    }
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const videos = manifest.videos || [];
+
+    // Find most recently added or synced video
+    const timestamps = videos
+      .map((v) => v.synced_at || v.regen_completed_at || v.generated_date)
+      .filter(Boolean)
+      .map((t) => new Date(t).getTime())
+      .filter((t) => !isNaN(t));
+
+    if (timestamps.length === 0) {
+      return { status: 'yellow', detail: 'manifest has no timestamped videos' };
+    }
+
+    const latestTs = Math.max(...timestamps);
+    const ageHours = (Date.now() - latestTs) / 3600000;
+
+    if (ageHours > thresholdHours) {
+      return {
+        status: 'red',
+        detail: `newest video is ${Math.round(ageHours)}h old (threshold ${thresholdHours}h) — daily pipeline may be dead`,
+        lastVideoTs: new Date(latestTs).toISOString(),
+      };
+    }
+    if (ageHours > thresholdHours / 2) {
+      return {
+        status: 'yellow',
+        detail: `newest video is ${Math.round(ageHours)}h old`,
+        lastVideoTs: new Date(latestTs).toISOString(),
+      };
+    }
+    return {
+      status: 'green',
+      detail: `newest video ${Math.round(ageHours)}h ago, queue has ${queueSize} videos`,
+      lastVideoTs: new Date(latestTs).toISOString(),
+    };
+  } catch (e) {
+    return { status: 'red', detail: `probe failed: ${e.message.slice(0, 80)}` };
+  }
+}
+
+module.exports = { parseSchedDispatchLog, probeNightlyEnhancements, probeVideoPipeline };
 
 // ── Healers ──────────────────────────────────────────────────────────────────
 
@@ -296,6 +371,7 @@ function main() {
   report.before.llm = probeLlm();
   report.before.schedDispatch = probeSchedDispatch();
   report.before.nightlyEnhancements = probeNightlyEnhancements();
+  report.before.videoPipeline = probeVideoPipeline();
 
   console.log('before:');
   for (const [k, v] of Object.entries(report.before)) {

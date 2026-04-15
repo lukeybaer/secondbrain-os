@@ -352,7 +352,20 @@ export default function Calls({ active, pendingCall, autoListen }: {
 
   useEffect(() => {
     load();
+    // Subscribe to real-time call status push events from main process.
+    // callStatusEmitter in calls.ts fires every time a record is saved —
+    // this replaces the 2s polling loop with instant updates.
+    window.api.calls.onStatusPush((record: CallRecord) => {
+      setCalls((prev) => {
+        const idx = prev.findIndex((c) => c.id === record.id);
+        if (idx === -1) return [record, ...prev];
+        const next = [...prev];
+        next[idx] = record;
+        return next;
+      });
+    });
     return () => {
+      window.api.calls.offStatusPush();
       if (pollRef.current) clearInterval(pollRef.current);
       pcMap.current.forEach((conn) => conn.cleanup());
       pendingListenRef.current.clear();
@@ -371,13 +384,14 @@ export default function Calls({ active, pendingCall, autoListen }: {
     );
   }, [active]);
 
-  // Refresh call list every 2s while active — picks up calls placed by the workflow
-  // mid-session when active never changes (page stays on calls between workflow tasks)
+  // Fallback polling every 30s (was 2s) — catches calls initiated externally
+  // that bypass the push emitter (e.g. webhook-triggered records written directly).
+  // Primary updates come from onStatusPush above.
   useEffect(() => {
     if (!active) return;
     const id = setInterval(() => {
       window.api.calls.list().then(setCalls);
-    }, 2000);
+    }, 30000);
     return () => clearInterval(id);
   }, [active]);
 

@@ -316,6 +316,257 @@ function AssetRejectPanel({
 const SHORTS_HEIGHT = 400;
 const SHORTS_WIDTH = Math.round((SHORTS_HEIGHT * 9) / 16); // 225px
 
+// ---------------------------------------------------------------------------
+// Custom video player — replaces broken native controls at 225px width.
+// Chromium's native <video controls> collapse at narrow widths: the progress
+// bar becomes undraggable, seek buttons overlap, and forward sometimes
+// triggers backward. This component provides a working scrubber + skip.
+// ---------------------------------------------------------------------------
+
+function ShortsPlayer({
+  src,
+  width = SHORTS_WIDTH,
+  height = SHORTS_HEIGHT,
+}: {
+  src: string;
+  width?: number;
+  height?: number;
+}) {
+  const ref = useRef<HTMLVideoElement>(null);
+  const scrubRef = useRef<HTMLDivElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.muted = muted;
+  }, [muted]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onTime = () => {
+      if (!dragging) setCurrentTime(el.currentTime);
+    };
+    const onMeta = () => setDuration(el.duration || 0);
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    el.addEventListener('timeupdate', onTime);
+    el.addEventListener('loadedmetadata', onMeta);
+    el.addEventListener('play', onPlay);
+    el.addEventListener('pause', onPause);
+    return () => {
+      el.removeEventListener('timeupdate', onTime);
+      el.removeEventListener('loadedmetadata', onMeta);
+      el.removeEventListener('play', onPlay);
+      el.removeEventListener('pause', onPause);
+    };
+  }, [dragging]);
+
+  function togglePlay() {
+    const el = ref.current;
+    if (!el) return;
+    if (el.paused) el.play();
+    else el.pause();
+  }
+
+  function skip(seconds: number) {
+    const el = ref.current;
+    if (!el) return;
+    el.currentTime = Math.max(0, Math.min(el.duration || 0, el.currentTime + seconds));
+    setCurrentTime(el.currentTime);
+  }
+
+  function seekFromEvent(e: React.MouseEvent<HTMLDivElement>) {
+    const bar = scrubRef.current;
+    const el = ref.current;
+    if (!bar || !el || !el.duration) return;
+    const rect = bar.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    el.currentTime = pct * el.duration;
+    setCurrentTime(el.currentTime);
+  }
+
+  function onScrubDown(e: React.MouseEvent<HTMLDivElement>) {
+    setDragging(true);
+    seekFromEvent(e);
+
+    const onMove = (ev: MouseEvent) => {
+      const bar = scrubRef.current;
+      const el = ref.current;
+      if (!bar || !el || !el.duration) return;
+      const rect = bar.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+      el.currentTime = pct * el.duration;
+      setCurrentTime(el.currentTime);
+    };
+    const onUp = () => {
+      setDragging(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
+
+  const pct = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  function fmt(t: number) {
+    const m = Math.floor(t / 60);
+    const sec = Math.floor(t % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+  }
+
+  return (
+    <div style={{ width }}>
+      {/* Video element — no native controls */}
+      <video
+        ref={ref}
+        preload="metadata"
+        onClick={togglePlay}
+        style={{
+          width,
+          height,
+          borderRadius: 6,
+          background: '#000',
+          display: 'block',
+          cursor: 'pointer',
+        }}
+        src={src}
+      />
+
+      {/* Scrubber bar — click or drag to seek */}
+      <div
+        ref={scrubRef}
+        onMouseDown={onScrubDown}
+        style={{
+          width,
+          height: 14,
+          background: '#1a1a1a',
+          borderRadius: 3,
+          marginTop: 4,
+          cursor: 'pointer',
+          position: 'relative',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Progress fill */}
+        <div
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            height: '100%',
+            width: `${pct}%`,
+            background: '#7c3aed',
+            borderRadius: 3,
+            transition: dragging ? 'none' : 'width 0.15s linear',
+          }}
+        />
+        {/* Thumb dot */}
+        <div
+          style={{
+            position: 'absolute',
+            top: 1,
+            left: `calc(${pct}% - 6px)`,
+            width: 12,
+            height: 12,
+            borderRadius: '50%',
+            background: '#a78bfa',
+            border: '2px solid #1a1a1a',
+            transition: dragging ? 'none' : 'left 0.15s linear',
+          }}
+        />
+      </div>
+
+      {/* Time display */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          fontSize: 9,
+          fontFamily: 'monospace',
+          color: '#555',
+          marginTop: 2,
+          width,
+        }}
+      >
+        <span>{fmt(currentTime)}</span>
+        <span>{fmt(duration)}</span>
+      </div>
+
+      {/* Control buttons */}
+      <div style={{ display: 'flex', gap: 4, marginTop: 4, width }}>
+        <button
+          onClick={togglePlay}
+          style={{
+            flex: 1,
+            padding: '4px 0',
+            fontSize: 11,
+            background: '#1a1a2e',
+            color: '#a5b4fc',
+            border: '1px solid #2e2e4e',
+            borderRadius: 4,
+            cursor: 'pointer',
+            fontFamily: 'monospace',
+          }}
+        >
+          {playing ? '⏸ Pause' : '▶ Play'}
+        </button>
+        <button
+          onClick={() => setMuted((m) => !m)}
+          style={{
+            padding: '4px 8px',
+            fontSize: 11,
+            background: muted ? '#7f1d1d' : '#1a2e1a',
+            color: muted ? '#fca5a5' : '#86efac',
+            border: `1px solid ${muted ? '#991b1b' : '#166534'}`,
+            borderRadius: 4,
+            cursor: 'pointer',
+            fontFamily: 'monospace',
+          }}
+        >
+          {muted ? '🔇' : '🔊'}
+        </button>
+        <button
+          onClick={() => skip(-10)}
+          style={{
+            padding: '4px 6px',
+            fontSize: 11,
+            background: '#1a1a2e',
+            color: '#a5b4fc',
+            border: '1px solid #2e2e4e',
+            borderRadius: 4,
+            cursor: 'pointer',
+            fontFamily: 'monospace',
+          }}
+        >
+          -10s
+        </button>
+        <button
+          onClick={() => skip(10)}
+          style={{
+            padding: '4px 6px',
+            fontSize: 11,
+            background: '#1a1a2e',
+            color: '#a5b4fc',
+            border: '1px solid #2e2e4e',
+            borderRadius: 4,
+            cursor: 'pointer',
+            fontFamily: 'monospace',
+          }}
+        >
+          +10s
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function VideoCard({
   video,
   onApprove,
@@ -433,145 +684,7 @@ function VideoCard({
             Video
           </div>
           {video.video_path ? (
-            <>
-              <video
-                ref={videoRef}
-                controls
-                preload="metadata"
-                style={{
-                  width: SHORTS_WIDTH,
-                  height: SHORTS_HEIGHT,
-                  borderRadius: 6,
-                  background: '#000',
-                  display: 'block',
-                }}
-                src={localFileUrl(video.video_path)}
-              />
-              {/* Mute/Unmute + skip buttons — Chromium collapses native volume control at 225px */}
-              <div style={{ display: 'flex', gap: 4, marginTop: 4, width: SHORTS_WIDTH }}>
-                <button
-                  onClick={() => setMuted((m) => !m)}
-                  style={{
-                    flex: 1,
-                    padding: '4px 0',
-                    fontSize: 11,
-                    background: muted ? '#7f1d1d' : '#1a2e1a',
-                    color: muted ? '#fca5a5' : '#86efac',
-                    border: `1px solid ${muted ? '#991b1b' : '#166534'}`,
-                    borderRadius: 4,
-                    cursor: 'pointer',
-                    fontFamily: 'monospace',
-                    letterSpacing: '0.05em',
-                  }}
-                >
-                  {muted ? 'UNMUTE' : 'MUTE'}
-                </button>
-                <button
-                  onClick={() => {
-                    if (videoRef.current) videoRef.current.currentTime -= 10;
-                  }}
-                  style={{
-                    padding: '4px 0',
-                    width: Math.round(SHORTS_WIDTH * 0.35),
-                    fontSize: 11,
-                    background: '#1a1a2e',
-                    color: '#a5b4fc',
-                    border: '1px solid #2e2e4e',
-                    borderRadius: 4,
-                    cursor: 'pointer',
-                    fontFamily: 'monospace',
-                    letterSpacing: '0.03em',
-                  }}
-                >
-                  ⏪ -10s
-                </button>
-                <button
-                  onClick={() => {
-                    if (videoRef.current) videoRef.current.currentTime += 10;
-                  }}
-                  style={{
-                    padding: '4px 0',
-                    width: Math.round(SHORTS_WIDTH * 0.35),
-                    fontSize: 11,
-                    background: '#1a1a2e',
-                    color: '#a5b4fc',
-                    border: '1px solid #2e2e4e',
-                    borderRadius: 4,
-                    cursor: 'pointer',
-                    fontFamily: 'monospace',
-                    letterSpacing: '0.03em',
-                  }}
-                >
-                  +10s ⏩
-                </button>
-              </div>
-              {/* Diagnostic overlay — proves video loaded, shows actual DOM state */}
-              {videoDiag && (
-                <div
-                  style={{
-                    fontSize: 9,
-                    fontFamily: 'monospace',
-                    marginTop: 3,
-                    padding: '4px 6px',
-                    background: '#0a0a0a',
-                    borderRadius: 4,
-                    border: '1px solid #222',
-                    lineHeight: 1.6,
-                  }}
-                >
-                  <span style={{ color: videoDiag.readyState >= 2 ? '#4ade80' : '#facc15' }}>
-                    ready={videoDiag.readyState}
-                  </span>
-                  {' | '}
-                  <span style={{ color: videoDiag.videoWidth > 0 ? '#4ade80' : '#f87171' }}>
-                    {videoDiag.videoWidth}×{videoDiag.videoHeight}
-                  </span>
-                  {' | '}
-                  <span style={{ color: videoDiag.muted ? '#f87171' : '#4ade80' }}>
-                    {videoDiag.muted ? 'MUTED' : `vol=${videoDiag.volume.toFixed(2)}`}
-                  </span>
-                  {' | '}
-                  <span
-                    style={{
-                      color:
-                        videoDiag.hasAudio === false
-                          ? '#f87171'
-                          : videoDiag.hasAudio === true
-                            ? '#4ade80'
-                            : '#666',
-                    }}
-                  >
-                    {videoDiag.hasAudio === false
-                      ? 'NO AUDIO TRACK'
-                      : videoDiag.hasAudio === true
-                        ? 'audio OK'
-                        : 'audio?'}
-                  </span>
-                  {videoDiag.hasAudio === false && (
-                    <span style={{ color: '#f87171', display: 'block', fontWeight: 700 }}>
-                      ⚠ This file has no audio — silence is expected
-                    </span>
-                  )}
-                  {videoDiag.error && (
-                    <span style={{ color: '#f87171', display: 'block' }}>
-                      ERR: {videoDiag.error}
-                    </span>
-                  )}
-                  <span
-                    style={{
-                      color: '#555',
-                      display: 'block',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                      maxWidth: SHORTS_WIDTH,
-                    }}
-                  >
-                    {videoDiag.src.slice(0, 60)}
-                  </span>
-                </div>
-              )}
-            </>
+            <ShortsPlayer src={localFileUrl(video.video_path)} />
           ) : (
             <div
               style={{
@@ -1032,76 +1145,7 @@ function UploadRow({
 
       {expanded && video.video_path && (
         <div style={{ marginTop: 12 }}>
-          <video
-            ref={videoRef}
-            controls
-            preload="none"
-            style={{
-              width: SHORTS_WIDTH,
-              height: SHORTS_HEIGHT,
-              borderRadius: 6,
-              background: '#000',
-              display: 'block',
-            }}
-            src={localFileUrl(video.video_path)}
-          />
-          <div style={{ display: 'flex', gap: 4, marginTop: 4, width: SHORTS_WIDTH }}>
-            <button
-              onClick={() => setMuted((m) => !m)}
-              style={{
-                flex: 1,
-                padding: '4px 0',
-                fontSize: 11,
-                background: muted ? '#7f1d1d' : '#1a2e1a',
-                color: muted ? '#fca5a5' : '#86efac',
-                border: `1px solid ${muted ? '#991b1b' : '#166534'}`,
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontFamily: 'monospace',
-                letterSpacing: '0.05em',
-              }}
-            >
-              {muted ? 'UNMUTE' : 'MUTE'}
-            </button>
-            <button
-              onClick={() => {
-                if (videoRef.current) videoRef.current.currentTime -= 10;
-              }}
-              style={{
-                padding: '4px 0',
-                width: Math.round(SHORTS_WIDTH * 0.35),
-                fontSize: 11,
-                background: '#1a1a2e',
-                color: '#a5b4fc',
-                border: '1px solid #2e2e4e',
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontFamily: 'monospace',
-                letterSpacing: '0.03em',
-              }}
-            >
-              ⏪ -10s
-            </button>
-            <button
-              onClick={() => {
-                if (videoRef.current) videoRef.current.currentTime += 10;
-              }}
-              style={{
-                padding: '4px 0',
-                width: Math.round(SHORTS_WIDTH * 0.35),
-                fontSize: 11,
-                background: '#1a1a2e',
-                color: '#a5b4fc',
-                border: '1px solid #2e2e4e',
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontFamily: 'monospace',
-                letterSpacing: '0.03em',
-              }}
-            >
-              +10s ⏩
-            </button>
-          </div>
+          <ShortsPlayer src={localFileUrl(video.video_path)} />
         </div>
       )}
 
@@ -1135,7 +1179,13 @@ function UploadRow({
 // Rejected row — awaiting regeneration (read-only)
 // ---------------------------------------------------------------------------
 
-function RejectedRow({ video }: { video: PendingVideo }) {
+function RejectedRow({
+  video,
+  onRegenComplete,
+}: {
+  video: PendingVideo;
+  onRegenComplete?: () => void;
+}) {
   const notes: string[] = [];
   if (video.video_rejection_note) notes.push(`Video: ${video.video_rejection_note}`);
   if (video.thumbnail_rejection_note) notes.push(`Thumbnail: ${video.thumbnail_rejection_note}`);
@@ -1143,11 +1193,43 @@ function RejectedRow({ video }: { video: PendingVideo }) {
 
   const [expanded, setExpanded] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [regenState, setRegenState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [regenError, setRegenError] = useState<string | null>(null);
   const videoRef = React.useRef<HTMLVideoElement>(null);
 
   React.useEffect(() => {
     if (videoRef.current) videoRef.current.muted = muted;
   }, [muted]);
+
+  async function handleRegenNow() {
+    setRegenState('running');
+    setRegenError(null);
+    try {
+      const result = (await ipcInvoke('empire:regenRejected')) as {
+        success: boolean;
+        queued: number;
+        succeeded: string[];
+        failed: { id: string; error: string }[];
+        error?: string;
+      };
+      if (!result.success) {
+        setRegenState('error');
+        setRegenError(result.error || 'Unknown error');
+      } else {
+        const thisFailed = result.failed?.find((f) => f.id === video.id);
+        if (thisFailed) {
+          setRegenState('error');
+          setRegenError(thisFailed.error);
+        } else {
+          setRegenState('done');
+          if (onRegenComplete) onRegenComplete();
+        }
+      }
+    } catch (e: any) {
+      setRegenState('error');
+      setRegenError(e.message);
+    }
+  }
 
   return (
     <div
@@ -1211,83 +1293,34 @@ function RejectedRow({ video }: { video: PendingVideo }) {
               {expanded ? 'Hide' : '▶ Play'}
             </button>
           )}
-          <span style={{ fontSize: 11, color: '#7a6a00', fontFamily: 'monospace' }}>
-            Working on it…
-          </span>
+          {regenState === 'idle' && (
+            <button
+              style={{ ...s.btnSmall, fontSize: 11, background: '#1a2a1a', color: '#4ade80' }}
+              onClick={handleRegenNow}
+            >
+              Regen Now
+            </button>
+          )}
+          {regenState === 'running' && (
+            <span style={{ fontSize: 11, color: '#7a6a00', fontFamily: 'monospace' }}>
+              Rebuilding…
+            </span>
+          )}
+          {regenState === 'done' && (
+            <span style={{ fontSize: 11, color: '#4ade80', fontFamily: 'monospace' }}>
+              Rebuild queued
+            </span>
+          )}
+          {regenState === 'error' && (
+            <span style={{ fontSize: 11, color: '#f87171', fontFamily: 'monospace' }}>
+              {regenError || 'Regen failed'}
+            </span>
+          )}
         </div>
       </div>
       {expanded && video.video_path && (
         <div style={{ marginTop: 12 }}>
-          <video
-            ref={videoRef}
-            controls
-            preload="none"
-            style={{
-              width: SHORTS_WIDTH,
-              height: SHORTS_HEIGHT,
-              borderRadius: 6,
-              background: '#000',
-              display: 'block',
-            }}
-            src={localFileUrl(video.video_path)}
-          />
-          <div style={{ display: 'flex', gap: 4, marginTop: 4, width: SHORTS_WIDTH }}>
-            <button
-              onClick={() => setMuted((m) => !m)}
-              style={{
-                flex: 1,
-                padding: '4px 0',
-                fontSize: 11,
-                background: muted ? '#7f1d1d' : '#1a2e1a',
-                color: muted ? '#fca5a5' : '#86efac',
-                border: `1px solid ${muted ? '#991b1b' : '#166534'}`,
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontFamily: 'monospace',
-                letterSpacing: '0.05em',
-              }}
-            >
-              {muted ? 'UNMUTE' : 'MUTE'}
-            </button>
-            <button
-              onClick={() => {
-                if (videoRef.current) videoRef.current.currentTime -= 10;
-              }}
-              style={{
-                padding: '4px 0',
-                width: Math.round(SHORTS_WIDTH * 0.35),
-                fontSize: 11,
-                background: '#1a1a2e',
-                color: '#a5b4fc',
-                border: '1px solid #2e2e4e',
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontFamily: 'monospace',
-                letterSpacing: '0.03em',
-              }}
-            >
-              ⏪ -10s
-            </button>
-            <button
-              onClick={() => {
-                if (videoRef.current) videoRef.current.currentTime += 10;
-              }}
-              style={{
-                padding: '4px 0',
-                width: Math.round(SHORTS_WIDTH * 0.35),
-                fontSize: 11,
-                background: '#1a1a2e',
-                color: '#a5b4fc',
-                border: '1px solid #2e2e4e',
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontFamily: 'monospace',
-                letterSpacing: '0.03em',
-              }}
-            >
-              +10s ⏩
-            </button>
-          </div>
+          <ShortsPlayer src={localFileUrl(video.video_path)} />
         </div>
       )}
     </div>
@@ -1389,19 +1422,7 @@ function PublishedRow({ video }: { video: PublishedVideo }) {
       </div>
       {expanded && video.video_path && (
         <div style={{ marginTop: 12 }}>
-          <video
-            ref={videoRef}
-            controls
-            preload="none"
-            style={{
-              width: SHORTS_WIDTH,
-              height: SHORTS_HEIGHT,
-              borderRadius: 6,
-              background: '#000',
-              display: 'block',
-            }}
-            src={localFileUrl(video.video_path)}
-          />
+          <ShortsPlayer src={localFileUrl(video.video_path)} />
         </div>
       )}
     </div>
@@ -1890,6 +1911,8 @@ function YouTubeVideosTab() {
   const [loading, setLoading] = useState(true);
   const [usingDemo, setUsingDemo] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [syncState, setSyncState] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const nextUpload = nextUploadTime();
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -1927,6 +1950,31 @@ function YouTubeVideosTab() {
     } catch {
       /* best-effort */
     }
+  }
+
+  async function handleSyncFromEC2() {
+    setSyncState('running');
+    setSyncMsg(null);
+    try {
+      const result = (await ipcInvoke('empire:syncFromEC2')) as {
+        success: boolean;
+        stdout?: string;
+        error?: string;
+      };
+      if (result.success) {
+        setSyncState('done');
+        const match = result.stdout?.match(/(\d+) new videos? synced/);
+        setSyncMsg(match ? match[0] : 'Sync complete');
+        await load();
+      } else {
+        setSyncState('error');
+        setSyncMsg(result.error || 'Sync failed');
+      }
+    } catch (e: any) {
+      setSyncState('error');
+      setSyncMsg(e.message);
+    }
+    setTimeout(() => setSyncState('idle'), 6000);
   }
 
   async function handleApprove(id: string) {
@@ -2025,13 +2073,36 @@ function YouTubeVideosTab() {
             marginBottom: 12,
           }}
         >
-          <div style={s.sectionTitle}>
-            Pending Review ({pending.length})
-            {pending.length > 0 && (
-              <span style={{ fontWeight: 400, color: '#444', marginLeft: 8 }}>
-                {clampedIndex + 1} of {pending.length}
-              </span>
-            )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={s.sectionTitle}>
+              Pending Review ({pending.length})
+              {pending.length > 0 && (
+                <span style={{ fontWeight: 400, color: '#444', marginLeft: 8 }}>
+                  {clampedIndex + 1} of {pending.length}
+                </span>
+              )}
+            </div>
+            <button
+              style={{
+                ...s.btnSmall,
+                fontSize: 11,
+                background: syncState === 'running' ? '#1a1a2a' : '#1a2a1a',
+                color:
+                  syncState === 'error' ? '#f87171' : syncState === 'done' ? '#4ade80' : '#7dd3fc',
+                opacity: syncState === 'running' ? 0.7 : 1,
+              }}
+              disabled={syncState === 'running'}
+              onClick={handleSyncFromEC2}
+              title="Pull new built videos from EC2"
+            >
+              {syncState === 'running'
+                ? 'Syncing…'
+                : syncState === 'done'
+                  ? syncMsg || 'Synced'
+                  : syncState === 'error'
+                    ? syncMsg || 'Error'
+                    : '↓ Sync EC2'}
+            </button>
           </div>
           {pending.length > 1 && (
             <div style={{ display: 'flex', gap: 6 }}>

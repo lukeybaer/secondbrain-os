@@ -11,8 +11,12 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { app } from 'electron';
 
-const CONTACTS_DIR =
-  'C:\\Users\\USER\\.claude\\projects\\C--Users-USER-secondbrain\\memory\\contacts';
+function getContactsDir(): string {
+  const root = app.isPackaged
+    ? (process.env.SECONDBRAIN_ROOT ?? path.resolve(app.getAppPath()))
+    : path.resolve(app.getAppPath());
+  return path.join(root, 'memory', 'contacts');
+}
 
 // Priority: lower number = more important in briefing
 const EVENT_PRIORITY: Record<string, number> = {
@@ -106,11 +110,11 @@ export function markContactEventsReported(ids: string[]): void {
 // ── Contact list from contacts dir ────────────────────────────────────────────
 
 function loadContactList(): Array<{ name: string; linkedinUrl?: string }> {
-  if (!fs.existsSync(CONTACTS_DIR)) return [];
+  if (!fs.existsSync(getContactsDir())) return [];
   const contacts: Array<{ name: string; linkedinUrl?: string }> = [];
   try {
     const files = fs
-      .readdirSync(CONTACTS_DIR)
+      .readdirSync(getContactsDir())
       .filter(
         (f) =>
           f.endsWith('.md') &&
@@ -120,7 +124,7 @@ function loadContactList(): Array<{ name: string; linkedinUrl?: string }> {
       );
     for (const file of files) {
       try {
-        const content = fs.readFileSync(path.join(CONTACTS_DIR, file), 'utf-8');
+        const content = fs.readFileSync(path.join(getContactsDir(), file), 'utf-8');
         const nameMatch = content.match(/^name:\s*(.+)/m);
         const linkedinMatch = content.match(/linkedin:\s*(https?:\/\/[^\s\n]+)/i);
         if (nameMatch) {
@@ -143,7 +147,7 @@ function loadContactList(): Array<{ name: string; linkedinUrl?: string }> {
 
 function parseLinkedInIntelFile(reportedIds: Set<string>): ContactEvent[] {
   const events: ContactEvent[] = [];
-  const intelFile = path.join(CONTACTS_DIR, '_linkedin-daily-intel.md');
+  const intelFile = path.join(getContactsDir(), '_linkedin-daily-intel.md');
   if (!fs.existsSync(intelFile)) return events;
 
   try {
@@ -274,7 +278,7 @@ function parseLinkedInIntelFile(reportedIds: Set<string>): ContactEvent[] {
 
 function parseGmailIntelFile(reportedIds: Set<string>): ContactEvent[] {
   const events: ContactEvent[] = [];
-  const gmailFile = path.join(CONTACTS_DIR, '_gmail-daily-intel.md');
+  const gmailFile = path.join(getContactsDir(), '_gmail-daily-intel.md');
   if (!fs.existsSync(gmailFile)) return events;
 
   try {
@@ -407,7 +411,7 @@ export async function runLinkedInNightlyCrawl(): Promise<void> {
   });
 
   // Count contacts with LinkedIn profile in the most-recent daily scan
-  const intelFile = path.join(CONTACTS_DIR, '_linkedin-daily-intel.md');
+  const intelFile = path.join(getContactsDir(), '_linkedin-daily-intel.md');
   let queriedCount = 8; // default inner-circle rotation
   if (fs.existsSync(intelFile)) {
     try {

@@ -98,12 +98,14 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     dynamics_results = analyze_audio_dynamics(video_path)
     variety_results = analyze_scene_variety(video_path)
 
-    # Virality prediction (includes emotional arc, retention, and trending signals)
+    # Virality prediction (v2: now passes all tool results including framing)
     virality = compute_virality_score(
         tech_results, audio_results, content_results, visual_results, detected_platform,
         emotional_results=emotional_results, retention_results=retention_results,
         voice_results=voice_results, trending_results=trending_results,
         color_results=color_results,
+        stability_results=stability_results, variety_results=variety_results,
+        framing_results=framing_results,
     )
 
     # Combine all scores

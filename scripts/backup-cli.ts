@@ -19,7 +19,7 @@ const Database: any = require('better-sqlite3');
 
 // ── S3 Configuration ─────────────────────────────────────────────────────────
 
-const S3_BUCKET = '000000000000-secondbrain-backups';
+const S3_BUCKET = process.env.SECONDBRAIN_BACKUP_BUCKET || (() => { throw new Error('SECONDBRAIN_BACKUP_BUCKET env var not set'); })();
 const S3_PREFIX = 'snapshots/'; // all archives under snapshots/
 
 // ── Paths (mirror backups.ts but without Electron app module) ────────────────

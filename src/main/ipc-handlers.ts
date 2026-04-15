@@ -48,6 +48,7 @@ import {
   syncCallbackAssistant,
   linkCallbackAssistantToPhoneNumber,
   fetchAndSyncInboundCalls,
+  callStatusEmitter,
 } from './calls';
 import { listPersonas, savePersona, deletePersona, summarizePersona } from './personas';
 import { listFacts, saveFact, deleteFact } from './user-profile';
@@ -119,11 +120,22 @@ import {
   runDailyBackup,
 } from './backups';
 import { processRejectionLearning } from './rejection-skill-learning';
+import { regenRejectedVideos, RegenResult } from './video-pipeline';
+
+import { makeTracedHandle } from './ipc-trace-middleware';
 
 const AUDIO_DIAG_FILE = path.join(app.getPath('userData'), 'audio-diag.log');
 
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   const send = (channel: string, data: any) => mainWindow.webContents.send(channel, data);
+  const tracedHandle = makeTracedHandle(app.getPath('userData'));
+
+  // Push call status changes to renderer immediately (no polling required).
+  // callStatusEmitter fires 'status' every time saveCallRecord runs in calls.ts.
+  // The renderer subscribes via window.api.calls.onStatusPush.
+  callStatusEmitter.on('status', (record) => {
+    if (!mainWindow.isDestroyed()) send('calls:statusPush', record);
+  });
 
   ipcMain.handle('diag:writeAudio', (_e, line: string, firstFrameHex?: string) => {
     const timestamp = new Date().toISOString();
@@ -359,7 +371,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('conversations:get', (_e, id: string) => loadConversation(id));
 
   // Chat
-  ipcMain.handle('chat:send', async (_e, question: string, history: ChatMessage[]) => {
+  tracedHandle('chat:send', async (_e, question: string, history: ChatMessage[]) => {
     try {
       const result = await chat(question, history, (delta) => {
         send('chat:delta', delta);
@@ -457,7 +469,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('personas:summarize', async (_e, id: string) => summarizePersona(id));
 
   // Phone calls (Vapi)
-  ipcMain.handle(
+  tracedHandle(
     'calls:initiate',
     async (
       _e,
@@ -474,7 +486,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     ) =>
       initiateCall(phoneNumber, instructions, personalContext, personaId, leaveVoicemail, options),
   );
-  ipcMain.handle('calls:refresh', async (_e, callId: string) => refreshCallStatus(callId));
+  tracedHandle('calls:refresh', async (_e, callId: string) => refreshCallStatus(callId));
   ipcMain.handle('calls:get', (_e, callId: string) => loadCallRecord(callId));
   ipcMain.handle('calls:list', () => listCallRecords());
   ipcMain.handle('calls:markComplete', (_e, callId: string, completed: boolean) =>
@@ -691,6 +703,56 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       }
     },
   );
+
+  // Regen: find all videos marked video_needs_regen/thumbnail_needs_regen and rebuild them
+  ipcMain.handle('empire:regenRejected', async () => {
+    try {
+      const results: RegenResult[] = await regenRejectedVideos(contentRoot);
+      const succeeded = results.filter((r) => r.success).map((r) => r.videoId);
+      const failed = results
+        .filter((r) => !r.success)
+        .map((r) => ({ id: r.videoId, error: r.error }));
+      return { success: true, queued: succeeded.length, succeeded, failed };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  // Sync new videos from EC2 into local content-review/pending
+  ipcMain.handle('empire:syncFromEC2', async () => {
+    const { spawn } = require('child_process');
+    const syncScript = path.join(contentRoot, 'scripts', 'sync-videos-from-ec2.js');
+    if (!fs.existsSync(syncScript)) {
+      return { success: false, error: 'sync-videos-from-ec2.js not found' };
+    }
+    return new Promise((resolve) => {
+      const node = process.platform === 'win32' ? 'node' : 'node';
+      const proc = spawn(node, [syncScript], {
+        cwd: contentRoot,
+        env: { ...process.env, SECONDBRAIN_ROOT: contentRoot },
+        timeout: 5 * 60 * 1000,
+      });
+      let stdout = '';
+      let stderr = '';
+      proc.stdout.on('data', (d: Buffer) => {
+        stdout += d.toString();
+      });
+      proc.stderr.on('data', (d: Buffer) => {
+        stderr += d.toString();
+      });
+      proc.on('close', (code: number | null) => {
+        resolve({
+          success: code === 0,
+          stdout: stdout.slice(0, 1000),
+          stderr: stderr.slice(0, 500),
+          exitCode: code,
+        });
+      });
+      proc.on('error', (err: Error) => {
+        resolve({ success: false, error: err.message });
+      });
+    });
+  });
 
   // Published videos — historical OpenClaw published videos
   ipcMain.handle('empire:getPublishedVideos', () => {

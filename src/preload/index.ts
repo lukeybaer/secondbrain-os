@@ -144,6 +144,12 @@ const api = {
       ipcRenderer.invoke('calls:syncInbound'),
     hangUp: (callId: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('calls:hangUp', callId),
+    // Push-based status updates — eliminates renderer polling for active calls.
+    // Fires whenever any call record changes (initiated, status refresh, ended).
+    onStatusPush: (cb: (record: any) => void) => {
+      ipcRenderer.on('calls:statusPush', (_e, record) => cb(record));
+    },
+    offStatusPush: () => ipcRenderer.removeAllListeners('calls:statusPush'),
   },
 
   projects: {

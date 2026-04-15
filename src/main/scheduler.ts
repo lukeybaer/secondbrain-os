@@ -8,6 +8,7 @@ import { acquireLock, lockExists } from './database-sqlite';
 import { runNightlyDecay } from './memory-index';
 import { runDailyBackup } from './backups';
 import { runLinkedInNightlyCrawl } from './linkedin-intel';
+import { runSleepTimeConsolidation } from './sleep-time-consolidation';
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
@@ -88,6 +89,23 @@ async function tick(): Promise<void> {
       } catch (err) {
         console.error('[scheduler] runNightlyDecay error:', err);
       }
+    }
+  }
+
+  // 2:30–2:32 AM CT — sleep-time core memory block consolidation (Letta pattern)
+  if (inWindow(time, 2, 30)) {
+    const consolidateKey = `sleep-consolidation-${todayKey()}`;
+    if (acquireLock(consolidateKey)) {
+      runSleepTimeConsolidation()
+        .then((result) => {
+          console.log(
+            `[scheduler] sleep-time consolidation — checked:${result.blocksChecked} consolidated:${result.blocksConsolidated} saved:${result.bytesSaved}b`,
+          );
+          if (result.errors.length > 0) {
+            console.warn('[scheduler] consolidation errors:', result.errors);
+          }
+        })
+        .catch((err) => console.error('[scheduler] runSleepTimeConsolidation error:', err));
     }
   }
 

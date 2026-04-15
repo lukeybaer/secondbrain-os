@@ -45,9 +45,47 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
 
   // Ensure Claude Code can find git-bash on Windows (custom Git install path)
   if (isWindows && !childEnv['CLAUDE_CODE_GIT_BASH_PATH']) {
-    childEnv['CLAUDE_CODE_GIT_BASH_PATH'] =
-      'C:\\Users\\USER\\Desktop\\the owner\\Dev\\Git\\usr\\bin\\bash.exe';
+    const username = process.env.USERNAME || process.env.USER || process.env.LOGNAME || 'user';
+    const candidates = [
+      `C:\\Users\\${username}\\Desktop\\Luke\\Dev\\Git\\usr\\bin\\bash.exe`,
+      `C:\\Program Files\\Git\\usr\\bin\\bash.exe`,
+      `C:\\Users\\${username}\\scoop\\apps\\git\\current\\usr\\bin\\bash.exe`,
+    ];
+    for (const p of candidates) {
+      try {
+        require('fs').accessSync(p);
+        childEnv['CLAUDE_CODE_GIT_BASH_PATH'] = p;
+        break;
+      } catch {
+        /* try next */
+      }
+    }
   }
+
+  // On Windows, resolve the absolute path to claude.cmd so cmd.exe can find it
+  // even when Electron is launched from Git Bash (which puts Unix-style paths in
+  // process.env.PATH that cmd.exe can't interpret).
+  function findClaudeCmd(): string {
+    if (!isWindows) return 'claude';
+    const candidates = [
+      // npm global bin (most common install location)
+      process.env.APPDATA ? `${process.env.APPDATA}\\npm\\claude.cmd` : null,
+      // npm prefix via env var (set by some installers)
+      process.env.npm_config_prefix ? `${process.env.npm_config_prefix}\\claude.cmd` : null,
+      // Scoop
+      process.env.USERPROFILE ? `${process.env.USERPROFILE}\\scoop\\shims\\claude.cmd` : null,
+    ].filter(Boolean) as string[];
+    for (const c of candidates) {
+      try {
+        require('fs').accessSync(c);
+        return c;
+      } catch {
+        /* try next */
+      }
+    }
+    return 'claude.cmd'; // fallback — rely on PATH
+  }
+  const claudeAbsPath = findClaudeCmd();
 
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
@@ -58,7 +96,9 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
       const claudeArgs = [...args.slice(0, pIdx), '--print', ...args.slice(pIdx + 2)];
       // Use full path to cmd.exe — Electron's PATH may not include System32 when launched from Git Bash
       const cmdExe = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
-      child = spawn(cmdExe, ['/d', '/s', '/c', `claude.cmd ${claudeArgs.join(' ')}`], {
+      // Quote the absolute path in case it contains spaces
+      const quotedPath = claudeAbsPath.includes(' ') ? `"${claudeAbsPath}"` : claudeAbsPath;
+      child = spawn(cmdExe, ['/d', '/s', '/c', `${quotedPath} ${claudeArgs.join(' ')}`], {
         cwd,
         env: childEnv,
         shell: false,
@@ -67,7 +107,7 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
       child.stdin!.write(promptContent, 'utf-8');
       child.stdin!.end();
     } else {
-      child = spawn(isWindows ? 'claude.cmd' : 'claude', args, {
+      child = spawn(claudeAbsPath, args, {
         cwd,
         env: childEnv,
         shell: isWindows,
@@ -109,7 +149,7 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
   });
 }
 
-const CLAUDE_MODEL = 'claude-haiku-4-5-20251001';
+const CLAUDE_MODEL = 'claude-sonnet-4-6';
 
 /** Spawn a fresh claude -p session */
 export function runClaudeCode(prompt: string, options?: RunOptions): Promise<RunResult> {
