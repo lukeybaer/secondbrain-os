@@ -27,6 +27,7 @@ import {
   getLlmConfigForVersion,
   type AmyVersion,
 } from './amy-versions';
+import { identifyCaller } from './caller-id';
 
 async function detectCompletion(instructions: string, transcript: string): Promise<boolean> {
   const config = getConfig();
@@ -526,17 +527,33 @@ async function buildCallbackAssistantConfig(callerPhone: string): Promise<object
   const incomplete = history.filter((r) => !r.completed);
   const latest = history.length > 0 ? history[0] : null;
 
+  // Is this the owner calling? Owner inbound calls are NOT outbound
+  // callbacks. Never inherit the last outbound dentist / research / sales
+  // goal as Amy's goal for this inbound call. The owner is calling to
+  // interact with Amy as his assistant, not to be handled as the target
+  // of a campaign. See memory/feedback_owner_inbound_never_inherits_outbound_goal.md.
+  const callerCtx = (() => {
+    try {
+      return identifyCaller(callerPhone);
+    } catch {
+      return null;
+    }
+  })();
+  const callerIsOwner = callerCtx?.mode === 'owner';
+
   // Build persona identity section
   const personaInstructions = latest?.personaId
     ? listPersonas().find((p) => p.id === latest.personaId)?.instructions
     : undefined;
-  const identitySection = personaInstructions?.trim()
-    ? `## Your identity (persona)\n${personaInstructions.trim()}\n\n> IMPORTANT: You are RECEIVING this call, not making it. Do NOT use language like "I'm calling on behalf of..." — answer naturally as if you picked up the phone.`
-    : undefined;
+  const identitySection =
+    !callerIsOwner && personaInstructions?.trim()
+      ? `## Your identity (persona)\n${personaInstructions.trim()}\n\n> IMPORTANT: You are RECEIVING this call, not making it. Do NOT use language like "I'm calling on behalf of..." — answer naturally as if you picked up the phone.`
+      : undefined;
 
-  // Build call history text
+  // Build call history text — hide outbound campaign history from the owner,
+  // it is noise for him and pollutes his prompt with dentist scripts.
   const historyText =
-    history.length > 0
+    !callerIsOwner && history.length > 0
       ? history
           .map((r, i) => {
             const date = new Date(r.createdAt).toLocaleString();
@@ -549,16 +566,23 @@ async function buildCallbackAssistantConfig(callerPhone: string): Promise<object
           .join('\n\n')
       : undefined;
 
-  // Build goal instruction
-  const goalInstruction =
-    incomplete.length > 0
+  // Build goal instruction — only for non-owner callbacks. Owner inbound
+  // gets NO "goal" injected so Amy behaves as a general-purpose EA.
+  const goalInstruction = callerIsOwner
+    ? undefined
+    : incomplete.length > 0
       ? `Continue working toward the original goal: "${incomplete[0].instructions.trim()}"`
       : latest
         ? `The original goal ("${latest.instructions.trim()}") was already completed. Be friendly and helpful with whatever they need.`
         : undefined;
 
-  const firstMessage =
-    incomplete.length > 0
+  // Owner gets a personal greeting by name, not a generic desk-phone pickup.
+  const ownerName = getConfig().ownerName?.trim();
+  const firstMessage = callerIsOwner
+    ? ownerName
+      ? `Hey ${ownerName}, what's going on?`
+      : `Hey, what's going on?`
+    : incomplete.length > 0
       ? 'Hey, thanks for calling back!'
       : history.length > 0
         ? 'Hey there! Good to hear from you.'
@@ -672,10 +696,18 @@ export async function fetchAndSyncInboundCalls(): Promise<void> {
               saveCallRecord({ ...origFresh, completed: true });
             }
           }
-          // Update callback assistant to reflect completion
-          syncCallbackAssistant(callerPhone);
         }
       });
+    }
+
+    // Always re-sync the callback assistant after any inbound call lands.
+    // This is load-bearing: without it, the Vapi prompt drifts from the
+    // current memory / contacts / config state and goes stale — the owner
+    // noticed on 2026-04-15 that Amy didn't know who he was because the
+    // prompt was three days stale. Sync fires on EVERY new inbound call,
+    // not only on completion detection.
+    if (record.status === 'ended') {
+      syncCallbackAssistant(callerPhone);
     }
   }
 }

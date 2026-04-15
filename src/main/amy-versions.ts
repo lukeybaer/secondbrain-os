@@ -799,15 +799,35 @@ export function getToolsForVersion(version: AmyVersion): any[] {
 }
 
 export function getLlmConfigForVersion(version: AmyVersion): any {
-  if (version.llm.provider === 'custom-llm' && version.llm.customEndpoint) {
-    return {
-      provider: 'custom-llm',
-      model: version.llm.model,
-      url: version.llm.customEndpoint,
-    };
+  if (version.llm.provider === 'custom-llm') {
+    // Prefer explicit customEndpoint on the version. Fall back to the
+    // ec2BaseUrl + /chat/completions so v3 works out-of-the-box as soon
+    // as the Claude Max proxy + SSH reverse tunnel come online — without
+    // needing a manual saved version override. Rule: Claude Max only for
+    // production call paths (memory/feedback_no_fabrication_in_briefings.md,
+    // src/main/__tests__/llm-routing-guard.test.ts).
+    const fallback = getConfig().ec2BaseUrl
+      ? `${getConfig().ec2BaseUrl}/chat/completions`
+      : undefined;
+    const url = version.llm.customEndpoint || fallback;
+    if (url) {
+      return {
+        provider: 'custom-llm',
+        model: version.llm.model,
+        url,
+      };
+    }
+    // No endpoint anywhere — last-resort fall back to openai so Amy stays
+    // on the air. Telegram alert + llm-routing-guard test will notice.
+    console.warn(
+      '[amy-versions] v' +
+        version.version +
+        ' is custom-llm but no endpoint is configured. Falling back to openai gpt-4o.',
+    );
+    return { provider: 'openai', model: 'gpt-4o' };
   }
   return {
-    provider: version.llm.provider === 'custom-llm' ? 'openai' : version.llm.provider,
+    provider: version.llm.provider,
     model: version.llm.model,
   };
 }
