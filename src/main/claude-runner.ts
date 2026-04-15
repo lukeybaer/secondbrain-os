@@ -2,9 +2,11 @@
 // Spawns `claude -p "prompt"` as a subprocess in the project working directory
 // and returns the output. Used by the command queue worker.
 //
-// Supports three execution modes:
-//   runClaudeCode()          → new session (claude -p)
+// Supports four execution modes:
+//   runClaudeCode()          → new session (claude -p), full Tier 1 context load
 //   runClaudeCodeContinue()  → continue most recent session (claude --continue -p)
+//   runClaudeCodeIngest()    → new session marked as ingest mode, routes SessionStart
+//                              to the ~400-token stub hook instead of ~10K Tier 1 load
 //   runClaudeCodeAndSummarize() → runs either mode + summarizes result for Telegram
 
 import { spawn } from 'child_process';
@@ -16,6 +18,10 @@ const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
 export interface RunOptions {
   cwd?: string;
   timeoutMs?: number;
+  /** Extra environment variables merged into the child process env. Used by
+   *  runClaudeCodeIngest to set SECONDBRAIN_SESSION_MODE=ingest, which routes
+   *  SessionStart to the ~400-token stub hook instead of the full Tier 1 load. */
+  extraEnv?: Record<string, string>;
 }
 
 export interface RunResult {
@@ -42,6 +48,15 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
   // it, `claude -p` sees itself as nested and exits with an error.
   const childEnv = { ...process.env };
   delete childEnv['CLAUDECODE'];
+
+  // Merge any caller-supplied env vars. Used by runClaudeCodeIngest to set
+  // SECONDBRAIN_SESSION_MODE=ingest so the SessionStart hook routes to the
+  // stub variant.
+  if (options.extraEnv) {
+    for (const [k, v] of Object.entries(options.extraEnv)) {
+      childEnv[k] = v;
+    }
+  }
 
   // Ensure Claude Code can find git-bash on Windows (custom Git install path)
   if (isWindows && !childEnv['CLAUDE_CODE_GIT_BASH_PATH']) {
@@ -159,6 +174,30 @@ export function runClaudeCode(prompt: string, options?: RunOptions): Promise<Run
 /** Continue the most recent Claude Code session (claude --continue -p "prompt") */
 export function runClaudeCodeContinue(prompt: string, options?: RunOptions): Promise<RunResult> {
   return spawnClaude(['--continue', '--model', CLAUDE_MODEL, '-p', prompt], options ?? {});
+}
+
+/** Spawn a claude -p session in INGEST mode.
+ *
+ *  Sets SECONDBRAIN_SESSION_MODE=ingest in the child environment, which causes
+ *  session-start-inject.sh to route SessionStart to the stub variant
+ *  (session-start-inject-ingest.sh) and emit a ~400-token lightweight context
+ *  instead of the ~10K Tier 1 load. Use for batched ingest drains,
+ *  enrichment passes, and any automated work that does not need full identity
+ *  context.
+ *
+ *  Do NOT use for interactive commands, briefing generation, or anything the
+ *  user will see the output of verbatim — the stub instructs the session to
+ *  drain-and-exit and does not load voice/tone rules.
+ */
+export function runClaudeCodeIngest(prompt: string, options?: RunOptions): Promise<RunResult> {
+  const merged: RunOptions = {
+    ...options,
+    extraEnv: {
+      ...(options?.extraEnv ?? {}),
+      SECONDBRAIN_SESSION_MODE: 'ingest',
+    },
+  };
+  return spawnClaude(['--model', CLAUDE_MODEL, '-p', prompt], merged);
 }
 
 export async function runClaudeCodeAndSummarize(

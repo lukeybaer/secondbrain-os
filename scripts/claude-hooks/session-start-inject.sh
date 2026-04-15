@@ -14,6 +14,33 @@
 # junctioned to ~/.claude/hooks/session-start-inject.sh (or direct ref).
 
 SECONDBRAIN="${SECONDBRAIN_ROOT:-/path/to/secondbrain}"
+# Normalize backslash paths (C:\Users\foo) to forward-slash (C:/Users/foo).
+# Node on Windows reads forward-slash paths fine, and the JS string literal
+# inside the node -e call below would otherwise interpret \U, \s, etc as
+# escape sequences. Required for cross-shell compatibility (Git Bash, WSL,
+# test harnesses that use Node's path.resolve which emits backslashes).
+SECONDBRAIN="${SECONDBRAIN//\\//}"
+
+# Early route: if this is an ingest session, delegate to the stub variant.
+# Ingest sessions drain secondbrain/data/ingest-queue/ and do not need Tier 1
+# context (~10K tokens) — they use a ~200-400 token stub instead. Env var is
+# set by runClaudeCodeIngest in src/main/claude-runner.ts or by
+# scripts/ingest-queue-drain.ts before spawning the claude subprocess.
+if [ "${SECONDBRAIN_SESSION_MODE:-}" = "ingest" ]; then
+  # Prefer the in-tree path when SECONDBRAIN_ROOT resolves to a real repo;
+  # otherwise fall back to the junctioned path under ~/.claude/hooks/.
+  INGEST_HOOK="$SECONDBRAIN/scripts/claude-hooks/session-start-inject-ingest.sh"
+  if [ ! -f "$INGEST_HOOK" ]; then
+    INGEST_HOOK="$HOME/.claude/hooks/session-start-inject-ingest.sh"
+  fi
+  if [ -f "$INGEST_HOOK" ]; then
+    exec bash "$INGEST_HOOK"
+  fi
+  # If the ingest hook is missing, fall through to the full load rather than
+  # leave the session with no context at all. Fail loud via stderr.
+  echo "[session-start-inject] WARNING: SECONDBRAIN_SESSION_MODE=ingest but ingest stub hook not found; falling through to full Tier 1 load" >&2
+fi
+
 MEMORY="$SECONDBRAIN/memory/MEMORY.md"
 STATE_LOCATIONS="$SECONDBRAIN/memory/reference_amy_state_locations.md"
 REQUIREMENTS="$SECONDBRAIN/memory/AMY_REQUIREMENTS.md"
