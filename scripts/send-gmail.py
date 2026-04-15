@@ -16,8 +16,14 @@ Setup (one time, the owner):
   2. Click "Select app" -> "Mail", "Select device" -> "Other (Custom name)"
      -> type "Amy" -> Create
   3. Copy the 16-character password that appears
-  4. Save it to ${USERPROFILE:-~}/.secrets/gmail_app_password.txt
+  4. Save it to ~/.secrets/gmail_app_password.txt
      (create the .secrets folder first if it doesn't exist)
+  5. Save the sender address to ~/.secrets/gmail_sender.txt
+     (one line, just the email address -- e.g. "alice@example.com")
+
+PII note: neither the sender address nor the password is in this script.
+Both are read at runtime from ~/.secrets/ (outside any repo) or env vars.
+This keeps the script git-clean under the no-pii-in-source test.
 
 Usage (Amy):
   # Send one email from a JSON file:
@@ -33,8 +39,14 @@ JSON schema (one email per file):
     "bcc": "optional@example.com",
     "subject": "Email subject",
     "body": "Plain text body",
-    "reply_to": "owner@example.com"
+    "reply_to": "optional-reply-to@example.com",
+    "in_reply_to": "<original-msg-id@example.com>",
+    "references": "<original-msg-id@example.com>"
   }
+
+The in_reply_to and references fields are optional. Set them when replying
+to an existing thread so Gmail renders the reply inside the original thread.
+Get the Message-ID header via gmail_read_message on the target message.
 
 On success, the script moves the sent JSON file into a .sent/ subdirectory
 alongside the outbound dir and writes a one-line confirmation to stdout. If
@@ -54,8 +66,9 @@ from email.utils import formatdate, make_msgid
 from pathlib import Path
 from typing import Iterable
 
-APP_PASSWORD_FILE = Path(r"${USERPROFILE:-~}/.secrets/gmail_app_password.txt")
-SENDER_ADDRESS = "owner@example.com"
+SECRETS_DIR = Path.home() / ".secrets"
+APP_PASSWORD_FILE = SECRETS_DIR / "gmail_app_password.txt"
+SENDER_FILE = SECRETS_DIR / "gmail_sender.txt"
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 
@@ -76,6 +89,25 @@ def load_app_password() -> str:
     return text
 
 
+def load_sender() -> str:
+    env = os.environ.get("GMAIL_SENDER")
+    if env:
+        text = env.strip()
+    elif SENDER_FILE.exists():
+        text = SENDER_FILE.read_text(encoding="utf-8").strip()
+    else:
+        sys.exit(
+            f"ERROR: no GMAIL_SENDER env var and no file at {SENDER_FILE}.\n"
+            "       Create the file with the sender email address on a single line.\n"
+            "       This file lives in ~/.secrets/ (outside any repo) to keep PII out of source."
+        )
+    if not text or "@" not in text:
+        sys.exit(
+            f"ERROR: sender '{text}' is not a valid email address (from {'env' if os.environ.get('GMAIL_SENDER') else SENDER_FILE})."
+        )
+    return text
+
+
 def iter_payload_files(target: Path) -> Iterable[Path]:
     if target.is_file():
         yield target
@@ -86,14 +118,14 @@ def iter_payload_files(target: Path) -> Iterable[Path]:
         yield path
 
 
-def build_message(payload: dict) -> EmailMessage:
+def build_message(payload: dict, sender: str) -> EmailMessage:
     required = ("to", "subject", "body")
     missing = [k for k in required if not payload.get(k)]
     if missing:
         raise ValueError(f"payload missing required fields: {missing}")
 
     msg = EmailMessage()
-    msg["From"] = f"the owner <{SENDER_ADDRESS}>"
+    msg["From"] = sender
     msg["To"] = payload["to"]
     if payload.get("cc"):
         msg["Cc"] = payload["cc"]
@@ -104,20 +136,24 @@ def build_message(payload: dict) -> EmailMessage:
     msg["Message-ID"] = make_msgid(domain="gmail.com")
     if payload.get("reply_to"):
         msg["Reply-To"] = payload["reply_to"]
+    if payload.get("in_reply_to"):
+        msg["In-Reply-To"] = payload["in_reply_to"]
+    if payload.get("references"):
+        msg["References"] = payload["references"]
     msg.set_content(payload["body"])
     return msg
 
 
-def send_one(smtp: smtplib.SMTP, path: Path) -> bool:
+def send_one(smtp: smtplib.SMTP, path: Path, sender: str) -> bool:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        msg = build_message(payload)
+        msg = build_message(payload, sender)
         recipients = [msg["To"]]
         if msg["Cc"]:
             recipients.extend([a.strip() for a in str(msg["Cc"]).split(",")])
         if msg["Bcc"]:
             recipients.extend([a.strip() for a in str(msg["Bcc"]).split(",")])
-        smtp.send_message(msg, from_addr=SENDER_ADDRESS, to_addrs=recipients)
+        smtp.send_message(msg, from_addr=sender, to_addrs=recipients)
         sent_dir = path.parent / ".sent"
         sent_dir.mkdir(exist_ok=True)
         path.rename(sent_dir / path.name)
@@ -134,23 +170,24 @@ def main(argv: list[str]) -> int:
         return 2
 
     target = Path(argv[1]).resolve()
+    sender = load_sender()
     app_password = load_app_password()
     payloads = list(iter_payload_files(target))
     if not payloads:
         print(f"no .json files found under {target}", file=sys.stderr)
         return 1
 
-    print(f"connecting to {SMTP_HOST}:{SMTP_PORT} as {SENDER_ADDRESS}")
+    print(f"connecting to {SMTP_HOST}:{SMTP_PORT} as {sender}")
     ctx = ssl.create_default_context()
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
         smtp.ehlo()
         smtp.starttls(context=ctx)
         smtp.ehlo()
-        smtp.login(SENDER_ADDRESS, app_password)
+        smtp.login(sender, app_password)
         sent = 0
         failed = 0
         for path in payloads:
-            if send_one(smtp, path):
+            if send_one(smtp, path, sender):
                 sent += 1
             else:
                 failed += 1
