@@ -58,6 +58,15 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
     }
   }
 
+  // Ensure SECONDBRAIN_ROOT is always set for child sessions so the
+  // SessionStart hook can find canonical memory files. When Electron is
+  // launched from Start Menu or a desktop shortcut, user-level env vars may
+  // not be inherited by the process tree.
+  if (!childEnv['SECONDBRAIN_ROOT']) {
+    const username = process.env.USERNAME || process.env.USER || process.env.LOGNAME || 'user';
+    childEnv['SECONDBRAIN_ROOT'] = `C:/Users/${username}/secondbrain`;
+  }
+
   // Ensure Claude Code can find git-bash on Windows (custom Git install path)
   if (isWindows && !childEnv['CLAUDE_CODE_GIT_BASH_PATH']) {
     const username = process.env.USERNAME || process.env.USER || process.env.LOGNAME || 'user';

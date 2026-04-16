@@ -52,13 +52,14 @@ describe('briefing output wiring', () => {
     expect(src).toContain('OVERNIGHT ENHANCEMENTS');
   });
 
-  it('latest briefing .md on disk contains OVERNIGHT ENHANCEMENTS header', () => {
+  it('latest briefing .md on disk contains section 10 (backlog or enhancements)', () => {
     const briefingsDir = join(REPO_ROOT, 'data', 'briefings');
     if (!existsSync(briefingsDir)) return; // dev machine without generated briefing
     const latest = join(briefingsDir, `briefing-${todayIso}.md`);
     if (!existsSync(latest)) return; // briefing not yet generated today
     const content = readFileSync(latest, 'utf8');
-    expect(content).toContain('OVERNIGHT ENHANCEMENTS');
+    const hasSection10 = content.includes('FEATURE BACKLOG') || content.includes('OVERNIGHT ENHANCEMENTS');
+    expect(hasSection10).toBe(true);
   });
 
   // 2026-04-11 #gap round 3: the briefing silently omitted FOUR spec sections
@@ -73,7 +74,7 @@ describe('briefing output wiring', () => {
   const SPEC_SECTIONS = [
     { n: 7, header: 'LINKEDIN NETWORK INTELLIGENCE', fn: 'getLinkedInIntel' },
     { n: 8, header: 'COMMUNICATIONS SUMMARY', fn: 'getCommunicationsSummary' },
-    { n: 10, header: 'OVERNIGHT ENHANCEMENTS', fn: 'getOvernightEnhancements' },
+    { n: 10, header: 'FEATURE BACKLOG', fn: 'getFeatureBacklog' },
     { n: 11, header: 'REPUTATION MENTIONS', fn: 'getReputationMentions' },
     { n: 13, header: 'WEEKLY SERMON BRIEFING', fn: 'getWeeklySermonBriefing' },
   ];
@@ -157,5 +158,28 @@ describe('briefing output wiring', () => {
     expect(existsSync(desktopDocx)).toBe(true);
     const size = statSync(desktopDocx).size;
     expect(size).toBeGreaterThan(10000);
+  });
+
+  // 2026-04-16 #gap: Feature Backlog section used padEnd(42) truncation that
+  // cut off feature titles. Content Pipeline and System Health added verbose
+  // multi-line details that cluttered the briefing. This test locks concise
+  // formatting: no fixed-width table columns, no per-item detail dumps.
+  it('formatFeatureBacklogSection uses bullet format, not fixed-width table', () => {
+    const src = readFileSync(SCRIPT, 'utf8');
+    // Must NOT contain padEnd or fixed-width header rows
+    expect(src).not.toMatch(/padEnd\(\d+\).*feature/i);
+    expect(src).not.toMatch(/---+\s+---+\s+---+/); // no table divider lines
+  });
+
+  it('CONTENT PIPELINE section stays concise (no per-video detail dumps)', () => {
+    const src = readFileSync(SCRIPT, 'utf8');
+    // Must not dump individual video feedback lines into the briefing
+    expect(src).not.toMatch(/for\s*\(.*videoFeedback\.details/);
+  });
+
+  it('SYSTEM HEALTH section does not dump individual heal actions', () => {
+    const src = readFileSync(SCRIPT, 'utf8');
+    // Must not iterate healResults.heals with per-item lines
+    expect(src).not.toMatch(/for\s*\(.*healResults\.heals/);
   });
 });

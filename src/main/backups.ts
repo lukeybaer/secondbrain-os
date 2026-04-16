@@ -90,13 +90,34 @@ function saveManifest(m: BackupManifest): void {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// Paths we NEVER back up — must stay in sync with COPY_EXCLUDE_PATTERNS in
+// scripts/backup-cli.ts. Drift detector lives at
+// src/main/__tests__/backup-cli-hardening.test.ts.
+const COPY_EXCLUDE_PATTERNS: RegExp[] = [
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]Cache([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]Code Cache([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]GPUCache([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]Service Worker[\\/]CacheStorage([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]DawnCache([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]ShaderCache([\\/]|$)/i,
+  /[\\/]whatsapp-web[\\/][^\\/]+[\\/]GrShaderCache([\\/]|$)/i,
+  /[\\/]studio[\\/]recordings([\\/]|$)/i,
+  /[\\/]sms[\\/]raw([\\/]|$)/i,
+];
+
+function shouldExcludeFromBackup(fullPath: string): boolean {
+  return COPY_EXCLUDE_PATTERNS.some((re) => re.test(fullPath));
+}
+
 /** Recursively copy a directory. Skips files locked by another process (EBUSY/EPERM). */
 async function copyDir(src: string, dest: string, skipped?: string[]): Promise<void> {
+  if (shouldExcludeFromBackup(src)) return;
   await fsp.mkdir(dest, { recursive: true });
   const entries = await fsp.readdir(src, { withFileTypes: true });
   for (const entry of entries) {
     const s = path.join(src, entry.name);
     const d = path.join(dest, entry.name);
+    if (shouldExcludeFromBackup(s)) continue;
     if (entry.isDirectory()) {
       await copyDir(s, d, skipped);
     } else {

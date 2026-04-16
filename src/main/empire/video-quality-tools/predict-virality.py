@@ -50,6 +50,13 @@ _color_mod = importlib.import_module("analyze-color-consistency")
 _stability_mod = importlib.import_module("analyze-camera-stability")
 _variety_mod = importlib.import_module("analyze-scene-variety")
 _framing_mod = importlib.import_module("analyze-framing")
+# v3: dedicated enhanced tools for lowest-accuracy criteria
+_clarity_v3_mod = importlib.import_module("analyze-clarity-v3")
+_transitions_v3_mod = importlib.import_module("analyze-transitions-v3")
+_cta_v3_mod = importlib.import_module("analyze-cta-v3")
+# v4 (predict-virality): use framing-v3 and stability-v2 for those signals
+_framing_v3_mod = importlib.import_module("analyze-framing-v3")
+_stability_v2_mod = importlib.import_module("analyze-camera-stability-v2")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -63,6 +70,11 @@ analyze_color = _color_mod.analyze
 analyze_stability = _stability_mod.analyze
 analyze_scene_variety = _variety_mod.analyze
 analyze_framing = _framing_mod.analyze
+analyze_clarity_v3 = _clarity_v3_mod.analyze
+analyze_transitions_v3 = _transitions_v3_mod.analyze
+analyze_cta_v3 = _cta_v3_mod.analyze
+analyze_framing_v3 = _framing_v3_mod.analyze
+analyze_stability_v2 = _stability_v2_mod.analyze
 
 
 # Virality signal weights (v2: adds framing_quality, reduces camera_stability)
@@ -429,6 +441,28 @@ def analyze(video_path, platform=None, transcript_path=None):
     variety_results = analyze_scene_variety(video_path)
     framing_results = analyze_framing(video_path)
 
+    # v3: run dedicated tools and override lowest-accuracy criteria scores
+    clarity_v3_results = analyze_clarity_v3(video_path)
+    transitions_v3_results = analyze_transitions_v3(video_path)
+    cta_v3_results = analyze_cta_v3(video_path, transcript_path)
+    # v4: override framing and stability with higher-accuracy dedicated tools
+    framing_v3_results = analyze_framing_v3(video_path)
+    stability_v2_results = analyze_stability_v2(video_path)
+
+    if "scores" in clarity_v3_results and "clarity" in clarity_v3_results["scores"]:
+        visual_results.setdefault("scores", {})["clarity"] = clarity_v3_results["scores"]["clarity"]
+    if "scores" in transitions_v3_results and "transitions" in transitions_v3_results["scores"]:
+        visual_results.setdefault("scores", {})["transitions"] = transitions_v3_results["scores"]["transitions"]
+    if "scores" in cta_v3_results and "cta_placement" in cta_v3_results["scores"]:
+        content_results.setdefault("scores", {})["cta_placement"] = cta_v3_results["scores"]["cta_placement"]
+    # v4 overrides
+    if "scores" in framing_v3_results and "framing" in framing_v3_results["scores"]:
+        framing_results.setdefault("scores", {})["framing"] = framing_v3_results["scores"]["framing"]
+        framing_results["overall_score"] = framing_v3_results["overall_score"]
+    if "scores" in stability_v2_results and "camera_stability" in stability_v2_results["scores"]:
+        stability_results.setdefault("scores", {})["camera_stability"] = stability_v2_results["scores"]["camera_stability"]
+        stability_results["overall_score"] = stability_v2_results["overall_score"]
+
     virality = compute_virality_score(
         tech_results, audio_results, content_results, visual_results, detected_platform,
         emotional_results=emotional_results,
@@ -443,7 +477,7 @@ def analyze(video_path, platform=None, transcript_path=None):
 
     return {
         "tool": "predict-virality",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "video_path": video_path,
         **virality,
     }

@@ -78,6 +78,11 @@ function saveManifest(m: BackupManifest): void {
 // Chromium (whatsapp-web.js, puppeteer) keeps locked while the app is running.
 // Backing these up is both pointless (regenerated on next launch) and fatal
 // (EBUSY on sqldb0 killed nightly backups Apr 8-11 2026 until excluded).
+//
+// Also excludes data/studio/recordings/ — large media files (5 GB+) that are
+// the original raw assets, not derived state. Excluded per Luke's 2026-04-16
+// directive: not backed up locally, not uploaded to S3. Daily storage was
+// growing ~10 GB/day from the recordings dir alone.
 const COPY_EXCLUDE_PATTERNS: RegExp[] = [
   /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]Cache([\\/]|$)/i,
   /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]Code Cache([\\/]|$)/i,
@@ -86,6 +91,8 @@ const COPY_EXCLUDE_PATTERNS: RegExp[] = [
   /[\\/]whatsapp-web[\\/][^\\/]+[\\/]Default[\\/]DawnCache([\\/]|$)/i,
   /[\\/]whatsapp-web[\\/][^\\/]+[\\/]ShaderCache([\\/]|$)/i,
   /[\\/]whatsapp-web[\\/][^\\/]+[\\/]GrShaderCache([\\/]|$)/i,
+  /[\\/]studio[\\/]recordings([\\/]|$)/i,
+  /[\\/]sms[\\/]raw([\\/]|$)/i,
 ];
 
 function shouldExcludeFromBackup(fullPath: string): boolean {
@@ -162,16 +169,32 @@ function s3Upload(localPath: string, s3Key: string): void {
   const winPath = localPath.replace(/\//g, '\\');
   // --no-progress suppresses per-MiB progress lines that flooded execSync's
   // 1 MB default maxBuffer on 11 GB archives (Apr 11 2026 postmortem).
-  // maxBuffer set to 10 MB as a defensive ceiling; timeout 90 min for large archives.
-  const result = execSync(
-    `aws s3 cp "${winPath}" "s3://${S3_BUCKET}/${s3Key}" --region us-east-1 --no-progress`,
-    {
-      encoding: 'utf-8',
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 90 * 60 * 1000, // 90 minutes
-    },
-  );
-  if (result) console.log(`    S3: ${result.trim()}`);
+  // maxBuffer set to 10 MB as a defensive ceiling; timeout 90 min per attempt.
+  // Retry up to 3 times for SSL EOF drops mid-multipart-upload (seen Apr 2026).
+  const MAX_ATTEMPTS = 3;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const result = execSync(
+        `aws s3 cp "${winPath}" "s3://${S3_BUCKET}/${s3Key}" --region us-east-1 --no-progress`,
+        {
+          encoding: 'utf-8',
+          maxBuffer: 10 * 1024 * 1024,
+          timeout: 90 * 60 * 1000, // 90 minutes
+        },
+      );
+      if (result) console.log(`    S3: ${result.trim()}`);
+      return;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < MAX_ATTEMPTS) {
+        const waitSec = attempt * 30; // 30s, 60s
+        console.warn(`    S3 upload attempt ${attempt} failed — retrying in ${waitSec}s: ${(e as Error).message?.slice(0, 120)}`);
+        execSync(`ping -n ${waitSec + 1} 127.0.0.1 > nul`, { stdio: 'ignore' });
+      }
+    }
+  }
+  throw lastErr;
 }
 
 function s3Delete(s3Key: string): void {
@@ -220,8 +243,10 @@ async function syncToS3(snapshotId: string): Promise<{ archiveSize: number }> {
   const archiveName = `${snapshotId}.zip`;
   const archivePath = path.join(BACKUPS_ROOT, archiveName);
 
-  // Compress
-  compressSnapshot(snapshotPath, archivePath);
+  // Compress (skip if zip already exists from a prior interrupted attempt)
+  if (!fs.existsSync(archivePath)) {
+    compressSnapshot(snapshotPath, archivePath);
+  }
   const archiveSize = fs.statSync(archivePath).size;
 
   // Upload archive
@@ -455,15 +480,24 @@ async function main(): Promise<void> {
     console.log(`Found ${orphans.length} local snapshot(s) missing from S3. Syncing top 2...`);
     let synced = 0;
     for (const snap of orphans.slice(0, 2)) {
-      const snapshotPath = path.join(BACKUPS_ROOT, snap.id);
-      if (!fs.existsSync(snapshotPath)) {
-        console.warn(`  skip ${snap.id}: local dir missing (pruned?)`);
+      const snapshotDir = path.join(BACKUPS_ROOT, snap.id);
+      const snapshotZip = path.join(BACKUPS_ROOT, `${snap.id}.zip`);
+      if (!fs.existsSync(snapshotDir) && !fs.existsSync(snapshotZip)) {
+        console.warn(`  skip ${snap.id}: neither dir nor zip found locally (fully pruned?)`);
         continue;
       }
       try {
-        console.log(`  Syncing ${snap.id} (${formatBytes(snap.dataBytes)})...`);
-        const { archiveSize } = await syncToS3(snap.id);
-        console.log(`    Done: ${formatBytes(archiveSize)} compressed`);
+        if (!fs.existsSync(snapshotDir) && fs.existsSync(snapshotZip)) {
+          // Directory already pruned — upload pre-existing zip directly.
+          const zipSize = fs.statSync(snapshotZip).size;
+          console.log(`  Uploading pre-zipped ${snap.id} (${formatBytes(zipSize)})...`);
+          s3Upload(snapshotZip, `${S3_PREFIX}${snap.id}.zip`);
+          console.log(`    Done: ${formatBytes(zipSize)} uploaded`);
+        } else {
+          console.log(`  Syncing ${snap.id} (${formatBytes(snap.dataBytes)})...`);
+          const { archiveSize } = await syncToS3(snap.id);
+          console.log(`    Done: ${formatBytes(archiveSize)} compressed`);
+        }
         synced++;
       } catch (e: any) {
         console.error(`  S3 sync failed for ${snap.id}: ${e.message}`);

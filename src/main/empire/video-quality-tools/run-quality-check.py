@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Video Quality Check Runner v6
+Video Quality Check Runner v8
 Runs all quality analysis tools on a video and produces a combined report
 including visual quality, thumbnail analysis, virality prediction,
 emotional arc analysis, retention curve prediction, voice clarity,
 framing/composition, music mix balance, caption readability,
 trending topic alignment, hashtag relevance, color consistency,
 camera stability, audio dynamics/mastering quality, and scene variety.
+v8: dedicated v3 tools for framing (72->80), camera stability (72->80), hashtag relevance (72->80).
 
 Usage:
     python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin]
@@ -43,6 +44,14 @@ _color_mod = importlib.import_module("analyze-color-consistency")
 _stability_mod = importlib.import_module("analyze-camera-stability")
 _dynamics_mod = importlib.import_module("analyze-audio-dynamics")
 _variety_mod = importlib.import_module("analyze-scene-variety")
+# v7: dedicated enhanced tools for lowest-accuracy criteria
+_clarity_v3_mod = importlib.import_module("analyze-clarity-v3")
+_transitions_v3_mod = importlib.import_module("analyze-transitions-v3")
+_cta_v3_mod = importlib.import_module("analyze-cta-v3")
+# v8: dedicated enhanced tools for next 3 lowest-accuracy criteria (framing, stability, hashtags)
+_framing_v3_mod = importlib.import_module("analyze-framing-v3")
+_stability_v2_mod = importlib.import_module("analyze-camera-stability-v2")
+_hashtag_v3_mod = importlib.import_module("analyze-hashtag-relevance-v3")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -62,6 +71,12 @@ analyze_color = _color_mod.analyze
 analyze_stability = _stability_mod.analyze
 analyze_audio_dynamics = _dynamics_mod.analyze
 analyze_scene_variety = _variety_mod.analyze
+analyze_clarity_v3 = _clarity_v3_mod.analyze
+analyze_transitions_v3 = _transitions_v3_mod.analyze
+analyze_cta_v3 = _cta_v3_mod.analyze
+analyze_framing_v3 = _framing_v3_mod.analyze
+analyze_stability_v2 = _stability_v2_mod.analyze
+analyze_hashtags_v3 = _hashtag_v3_mod.analyze
 
 
 def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None, srt_file=None, hashtags_str=None):
@@ -97,6 +112,34 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     stability_results = analyze_stability(video_path)
     dynamics_results = analyze_audio_dynamics(video_path)
     variety_results = analyze_scene_variety(video_path)
+
+    # v7: dedicated tools for lowest-accuracy criteria (clarity, transitions, cta_placement)
+    clarity_v3_results = analyze_clarity_v3(video_path)
+    transitions_v3_results = analyze_transitions_v3(video_path)
+    cta_v3_results = analyze_cta_v3(video_path, transcript_path)
+
+    # v8: dedicated tools for next 3 lowest-accuracy criteria (framing, camera_stability, hashtag_relevance)
+    framing_v3_results = analyze_framing_v3(video_path)
+    stability_v2_results = analyze_stability_v2(video_path)
+    hashtag_v3_results = analyze_hashtags_v3(video_path, transcript_path, detected_platform, hashtags_str)
+
+    # Override specific criterion scores with higher-accuracy dedicated tools
+    if "scores" in clarity_v3_results and "clarity" in clarity_v3_results["scores"]:
+        visual_results.setdefault("scores", {})["clarity"] = clarity_v3_results["scores"]["clarity"]
+    if "scores" in transitions_v3_results and "transitions" in transitions_v3_results["scores"]:
+        visual_results.setdefault("scores", {})["transitions"] = transitions_v3_results["scores"]["transitions"]
+    if "scores" in cta_v3_results and "cta_placement" in cta_v3_results["scores"]:
+        content_results.setdefault("scores", {})["cta_placement"] = cta_v3_results["scores"]["cta_placement"]
+    # v8 overrides
+    if "scores" in framing_v3_results and "framing" in framing_v3_results["scores"]:
+        framing_results.setdefault("scores", {})["framing"] = framing_v3_results["scores"]["framing"]
+        framing_results["overall_score"] = framing_v3_results["overall_score"]
+    if "scores" in stability_v2_results and "camera_stability" in stability_v2_results["scores"]:
+        stability_results.setdefault("scores", {})["camera_stability"] = stability_v2_results["scores"]["camera_stability"]
+        stability_results["overall_score"] = stability_v2_results["overall_score"]
+    if "scores" in hashtag_v3_results and "hashtag_relevance" in hashtag_v3_results["scores"]:
+        hashtag_results.setdefault("scores", {})["hashtag_relevance"] = hashtag_v3_results["scores"]["hashtag_relevance"]
+        hashtag_results["overall_score"] = hashtag_v3_results["overall_score"]
 
     # Virality prediction (v2: now passes all tool results including framing)
     virality = compute_virality_score(

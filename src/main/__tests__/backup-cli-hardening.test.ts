@@ -22,6 +22,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const CLI_PATH = path.join(__dirname, '..', '..', '..', 'scripts', 'backup-cli.ts');
+const ELECTRON_PATH = path.join(__dirname, '..', 'backups.ts');
+
+describe('src/main/backups.ts hardening (drift parity with backup-cli.ts)', () => {
+  const electronSrc = fs.readFileSync(ELECTRON_PATH, 'utf8');
+
+  it('excludes data/studio/recordings/ — must mirror backup-cli.ts', () => {
+    // Both backup codepaths must agree. If only one excludes recordings, the
+    // other will silently bloat by 5 GB+ per snapshot.
+    expect(electronSrc).toMatch(/studio[^\n]*recordings/);
+    expect(electronSrc).toMatch(/COPY_EXCLUDE_PATTERNS/);
+  });
+
+  it('excludes data/sms/raw/ — must mirror backup-cli.ts', () => {
+    // Raw SMS payloads (~6 GB) are archive, not derived state needed for
+    // restore. Excluded per Luke's 2026-04-16 directive.
+    expect(electronSrc).toMatch(/sms[^\n]*raw/);
+  });
+});
 
 describe('scripts/backup-cli.ts hardening (drift detector)', () => {
   const src = fs.readFileSync(CLI_PATH, 'utf8');
@@ -45,6 +63,19 @@ describe('scripts/backup-cli.ts hardening (drift detector)', () => {
     // and fatal while the Electron client is running.
     expect(src).toMatch(/whatsapp-web[^\n]*Default[^\n]*Cache/);
     expect(src).toMatch(/COPY_EXCLUDE_PATTERNS/);
+  });
+
+  it('excludes data/studio/recordings/ (large media, never local, never S3)', () => {
+    // Per Luke's 2026-04-16 directive: recordings are 5 GB+ raw media that
+    // are not derived state. Excluding them from both local snapshots and S3
+    // upload is the fix for the ~10 GB/day backup storage growth.
+    expect(src).toMatch(/studio[^\n]*recordings/);
+  });
+
+  it('excludes data/sms/raw/ (large raw payloads, never local, never S3)', () => {
+    // Per Luke's 2026-04-16 directive: SMS raw payloads (~6 GB) are archive,
+    // not derived state needed for restore.
+    expect(src).toMatch(/sms[^\n]*raw/);
   });
 
   it('prune tolerates EBUSY on rmdir and defers to next run', () => {

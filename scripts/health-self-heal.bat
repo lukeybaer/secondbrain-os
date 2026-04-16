@@ -1,10 +1,9 @@
 @echo off
-REM SecondBrain Health Self-Heal — runs via Windows Task Scheduler at 4:00 AM CT.
-REM Probes the same subsystems the morning briefing checks, and for every red
-REM item attempts a remediation inline. Logs every action to
+REM SecondBrain Health Self-Heal -- runs via Windows Task Scheduler at 3:00 AM CT.
+REM Probes all subsystems, attempts remediation for red items, logs to
 REM %APPDATA%\secondbrain\data\agent\health-heal.jsonl.
 REM
-REM Window: 4:00 AM (after 3 AM backup finishes, before 5:30 AM briefing starts).
+REM Window: 3:00 AM (after 2:45 AM diagnostic, 2.5h before 5:30 AM briefing).
 
 set LOGFILE=%APPDATA%\secondbrain\backups\health-self-heal.log
 echo. >> "%LOGFILE%"
