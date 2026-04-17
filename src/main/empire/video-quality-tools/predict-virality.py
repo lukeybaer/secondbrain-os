@@ -57,6 +57,8 @@ _cta_v3_mod = importlib.import_module("analyze-cta-v3")
 # v4 (predict-virality): use framing-v3 and stability-v2 for those signals
 _framing_v3_mod = importlib.import_module("analyze-framing-v3")
 _stability_v2_mod = importlib.import_module("analyze-camera-stability-v2")
+# v5 (predict-virality): use color-consistency-v2 for color_consistency signal (75->82)
+_color_v2_mod = importlib.import_module("analyze-color-consistency-v2")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -75,6 +77,7 @@ analyze_transitions_v3 = _transitions_v3_mod.analyze
 analyze_cta_v3 = _cta_v3_mod.analyze
 analyze_framing_v3 = _framing_v3_mod.analyze
 analyze_stability_v2 = _stability_v2_mod.analyze
+analyze_color_v2 = _color_v2_mod.analyze
 
 
 # Virality signal weights (v2: adds framing_quality, reduces camera_stability)
@@ -448,6 +451,8 @@ def analyze(video_path, platform=None, transcript_path=None):
     # v4: override framing and stability with higher-accuracy dedicated tools
     framing_v3_results = analyze_framing_v3(video_path)
     stability_v2_results = analyze_stability_v2(video_path)
+    # v5: override color_consistency with Lab-based v2 tool (75->82)
+    color_v2_results = analyze_color_v2(video_path)
 
     if "scores" in clarity_v3_results and "clarity" in clarity_v3_results["scores"]:
         visual_results.setdefault("scores", {})["clarity"] = clarity_v3_results["scores"]["clarity"]
@@ -462,6 +467,9 @@ def analyze(video_path, platform=None, transcript_path=None):
     if "scores" in stability_v2_results and "camera_stability" in stability_v2_results["scores"]:
         stability_results.setdefault("scores", {})["camera_stability"] = stability_v2_results["scores"]["camera_stability"]
         stability_results["overall_score"] = stability_v2_results["overall_score"]
+    if "scores" in color_v2_results and "color_grading" in color_v2_results["scores"]:
+        color_results.setdefault("scores", {})["color_grading"] = color_v2_results["scores"]["color_grading"]
+        color_results["overall_score"] = color_v2_results["overall_score"]
 
     virality = compute_virality_score(
         tech_results, audio_results, content_results, visual_results, detected_platform,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Video Quality Check Runner v8
+Video Quality Check Runner v9
 Runs all quality analysis tools on a video and produces a combined report
 including visual quality, thumbnail analysis, virality prediction,
 emotional arc analysis, retention curve prediction, voice clarity,
@@ -8,6 +8,7 @@ framing/composition, music mix balance, caption readability,
 trending topic alignment, hashtag relevance, color consistency,
 camera stability, audio dynamics/mastering quality, and scene variety.
 v8: dedicated v3 tools for framing (72->80), camera stability (72->80), hashtag relevance (72->80).
+v9: dedicated v2/v3 tools for color_grading (75->82), music_mix (75->82), thumbnail_appeal (75->82).
 
 Usage:
     python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin]
@@ -52,6 +53,10 @@ _cta_v3_mod = importlib.import_module("analyze-cta-v3")
 _framing_v3_mod = importlib.import_module("analyze-framing-v3")
 _stability_v2_mod = importlib.import_module("analyze-camera-stability-v2")
 _hashtag_v3_mod = importlib.import_module("analyze-hashtag-relevance-v3")
+# v9: dedicated v2/v3 tools for color_grading (75->82), music_mix (75->82), thumbnail_appeal (75->82)
+_color_v2_mod = importlib.import_module("analyze-color-consistency-v2")
+_music_v3_mod = importlib.import_module("analyze-music-mix-v3")
+_thumb_v3_mod = importlib.import_module("analyze-thumbnail-v3")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -77,6 +82,9 @@ analyze_cta_v3 = _cta_v3_mod.analyze
 analyze_framing_v3 = _framing_v3_mod.analyze
 analyze_stability_v2 = _stability_v2_mod.analyze
 analyze_hashtags_v3 = _hashtag_v3_mod.analyze
+analyze_color_v2 = _color_v2_mod.analyze
+analyze_music_v3 = _music_v3_mod.analyze
+analyze_thumb_v3 = _thumb_v3_mod.analyze
 
 
 def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None, srt_file=None, hashtags_str=None):
@@ -122,6 +130,10 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     framing_v3_results = analyze_framing_v3(video_path)
     stability_v2_results = analyze_stability_v2(video_path)
     hashtag_v3_results = analyze_hashtags_v3(video_path, transcript_path, detected_platform, hashtags_str)
+    # v9: dedicated tools for color_grading, music_mix, thumbnail_appeal (75->82 each)
+    color_v2_results = analyze_color_v2(video_path)
+    music_v3_results = analyze_music_v3(video_path)
+    thumb_v3_results = analyze_thumb_v3(video_path, thumbnail_path)
 
     # Override specific criterion scores with higher-accuracy dedicated tools
     if "scores" in clarity_v3_results and "clarity" in clarity_v3_results["scores"]:
@@ -140,6 +152,16 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     if "scores" in hashtag_v3_results and "hashtag_relevance" in hashtag_v3_results["scores"]:
         hashtag_results.setdefault("scores", {})["hashtag_relevance"] = hashtag_v3_results["scores"]["hashtag_relevance"]
         hashtag_results["overall_score"] = hashtag_v3_results["overall_score"]
+    # v9 overrides
+    if "scores" in color_v2_results and "color_grading" in color_v2_results["scores"]:
+        color_results.setdefault("scores", {})["color_grading"] = color_v2_results["scores"]["color_grading"]
+        color_results["overall_score"] = color_v2_results["overall_score"]
+    if "scores" in music_v3_results and "music_mix" in music_v3_results["scores"]:
+        music_results.setdefault("scores", {})["music_mix"] = music_v3_results["scores"]["music_mix"]
+        music_results["overall_score"] = music_v3_results["overall_score"]
+    if "scores" in thumb_v3_results and "thumbnail_appeal" in thumb_v3_results["scores"]:
+        thumb_results.setdefault("scores", {})["thumbnail_appeal"] = thumb_v3_results["scores"]["thumbnail_appeal"]
+        thumb_results["overall_score"] = thumb_v3_results["overall_score"]
 
     # Virality prediction (v2: now passes all tool results including framing)
     virality = compute_virality_score(
