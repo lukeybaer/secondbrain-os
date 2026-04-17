@@ -59,6 +59,9 @@ _framing_v3_mod = importlib.import_module("analyze-framing-v3")
 _stability_v2_mod = importlib.import_module("analyze-camera-stability-v2")
 # v5 (predict-virality): use color-consistency-v2 for color_consistency signal (75->82)
 _color_v2_mod = importlib.import_module("analyze-color-consistency-v2")
+# v6 (predict-virality): use pacing-v2 and hook-strength-v3 for those signals (75->82)
+_pacing_v2_mod = importlib.import_module("analyze-pacing-v2")
+_hook_v3_mod = importlib.import_module("analyze-hook-strength-v3")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -78,6 +81,8 @@ analyze_cta_v3 = _cta_v3_mod.analyze
 analyze_framing_v3 = _framing_v3_mod.analyze
 analyze_stability_v2 = _stability_v2_mod.analyze
 analyze_color_v2 = _color_v2_mod.analyze
+analyze_pacing_v2 = _pacing_v2_mod.analyze
+analyze_hook_v3 = _hook_v3_mod.analyze
 
 
 # Virality signal weights (v2: adds framing_quality, reduces camera_stability)
@@ -453,6 +458,9 @@ def analyze(video_path, platform=None, transcript_path=None):
     stability_v2_results = analyze_stability_v2(video_path)
     # v5: override color_consistency with Lab-based v2 tool (75->82)
     color_v2_results = analyze_color_v2(video_path)
+    # v6: override pacing and hook_strength with higher-accuracy dedicated tools (75->82)
+    pacing_v2_results = analyze_pacing_v2(video_path)
+    hook_v3_results = analyze_hook_v3(video_path, transcript_path)
 
     if "scores" in clarity_v3_results and "clarity" in clarity_v3_results["scores"]:
         visual_results.setdefault("scores", {})["clarity"] = clarity_v3_results["scores"]["clarity"]
@@ -470,6 +478,11 @@ def analyze(video_path, platform=None, transcript_path=None):
     if "scores" in color_v2_results and "color_grading" in color_v2_results["scores"]:
         color_results.setdefault("scores", {})["color_grading"] = color_v2_results["scores"]["color_grading"]
         color_results["overall_score"] = color_v2_results["overall_score"]
+    # v6 overrides
+    if "scores" in pacing_v2_results and "pacing" in pacing_v2_results["scores"]:
+        audio_results.setdefault("scores", {})["pacing"] = pacing_v2_results["scores"]["pacing"]
+    if "scores" in hook_v3_results and "hook_strength" in hook_v3_results["scores"]:
+        content_results.setdefault("scores", {})["hook_strength"] = hook_v3_results["scores"]["hook_strength"]
 
     virality = compute_virality_score(
         tech_results, audio_results, content_results, visual_results, detected_platform,

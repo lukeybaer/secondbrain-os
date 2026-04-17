@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Video Quality Check Runner v9
+Video Quality Check Runner v10
 Runs all quality analysis tools on a video and produces a combined report
 including visual quality, thumbnail analysis, virality prediction,
 emotional arc analysis, retention curve prediction, voice clarity,
@@ -9,6 +9,7 @@ trending topic alignment, hashtag relevance, color consistency,
 camera stability, audio dynamics/mastering quality, and scene variety.
 v8: dedicated v3 tools for framing (72->80), camera stability (72->80), hashtag relevance (72->80).
 v9: dedicated v2/v3 tools for color_grading (75->82), music_mix (75->82), thumbnail_appeal (75->82).
+v10: dedicated v2/v3 tools for pacing (75->82), hook_strength (75->82), audio_dynamics (75->82).
 
 Usage:
     python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin]
@@ -57,6 +58,10 @@ _hashtag_v3_mod = importlib.import_module("analyze-hashtag-relevance-v3")
 _color_v2_mod = importlib.import_module("analyze-color-consistency-v2")
 _music_v3_mod = importlib.import_module("analyze-music-mix-v3")
 _thumb_v3_mod = importlib.import_module("analyze-thumbnail-v3")
+# v10: dedicated v2/v3 tools for pacing (75->82), hook_strength (75->82), audio_dynamics (75->82)
+_pacing_v2_mod = importlib.import_module("analyze-pacing-v2")
+_hook_v3_mod = importlib.import_module("analyze-hook-strength-v3")
+_dynamics_v2_mod = importlib.import_module("analyze-audio-dynamics-v2")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -85,6 +90,9 @@ analyze_hashtags_v3 = _hashtag_v3_mod.analyze
 analyze_color_v2 = _color_v2_mod.analyze
 analyze_music_v3 = _music_v3_mod.analyze
 analyze_thumb_v3 = _thumb_v3_mod.analyze
+analyze_pacing_v2 = _pacing_v2_mod.analyze
+analyze_hook_v3 = _hook_v3_mod.analyze
+analyze_dynamics_v2 = _dynamics_v2_mod.analyze
 
 
 def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None, srt_file=None, hashtags_str=None):
@@ -134,6 +142,10 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     color_v2_results = analyze_color_v2(video_path)
     music_v3_results = analyze_music_v3(video_path)
     thumb_v3_results = analyze_thumb_v3(video_path, thumbnail_path)
+    # v10: dedicated tools for pacing, hook_strength, audio_dynamics (75->82 each)
+    pacing_v2_results = analyze_pacing_v2(video_path)
+    hook_v3_results = analyze_hook_v3(video_path, transcript_path)
+    dynamics_v2_results = analyze_dynamics_v2(video_path, detected_platform)
 
     # Override specific criterion scores with higher-accuracy dedicated tools
     if "scores" in clarity_v3_results and "clarity" in clarity_v3_results["scores"]:
@@ -162,6 +174,14 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     if "scores" in thumb_v3_results and "thumbnail_appeal" in thumb_v3_results["scores"]:
         thumb_results.setdefault("scores", {})["thumbnail_appeal"] = thumb_v3_results["scores"]["thumbnail_appeal"]
         thumb_results["overall_score"] = thumb_v3_results["overall_score"]
+    # v10 overrides
+    if "scores" in pacing_v2_results and "pacing" in pacing_v2_results["scores"]:
+        audio_results.setdefault("scores", {})["pacing"] = pacing_v2_results["scores"]["pacing"]
+    if "scores" in hook_v3_results and "hook_strength" in hook_v3_results["scores"]:
+        content_results.setdefault("scores", {})["hook_strength"] = hook_v3_results["scores"]["hook_strength"]
+    if "scores" in dynamics_v2_results and "audio_dynamics" in dynamics_v2_results["scores"]:
+        dynamics_results.setdefault("scores", {})["audio_dynamics"] = dynamics_v2_results["scores"]["audio_dynamics"]
+        dynamics_results["overall_score"] = dynamics_v2_results["overall_score"]
 
     # Virality prediction (v2: now passes all tool results including framing)
     virality = compute_virality_score(
