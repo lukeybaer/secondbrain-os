@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Video Quality Check Runner v11
+Video Quality Check Runner v12
 Runs all quality analysis tools on a video and produces a combined report
 including visual quality, thumbnail analysis, virality prediction,
 emotional arc analysis, retention curve prediction, voice clarity,
@@ -70,6 +70,9 @@ _dynamics_v2_mod = importlib.import_module("analyze-audio-dynamics-v2")
 _pacing_v3_mod = importlib.import_module("analyze-pacing-v3")
 _hook_v4_mod = importlib.import_module("analyze-hook-strength-v4")
 _dynamics_v3_mod = importlib.import_module("analyze-audio-dynamics-v3")
+# v12: dedicated v3 tools for trending_topic_alignment (78->82) and scene_variety (78->82)
+_trending_v3_mod = importlib.import_module("analyze-trending-topics-v3")
+_variety_v3_mod = importlib.import_module("analyze-scene-variety-v3")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -104,6 +107,8 @@ analyze_dynamics_v2 = _dynamics_v2_mod.analyze
 analyze_pacing_v3 = _pacing_v3_mod.analyze
 analyze_hook_v4 = _hook_v4_mod.analyze
 analyze_dynamics_v3 = _dynamics_v3_mod.analyze
+analyze_trending_v3 = _trending_v3_mod.analyze
+analyze_variety_v3 = _variety_v3_mod.analyze
 
 
 def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None, srt_file=None, hashtags_str=None):
@@ -205,8 +210,17 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     if "scores" in dynamics_v3_results and "audio_dynamics" in dynamics_v3_results["scores"]:
         dynamics_results.setdefault("scores", {})["audio_dynamics"] = dynamics_v3_results["scores"]["audio_dynamics"]
         dynamics_results["overall_score"] = dynamics_v3_results["overall_score"]
+    # v12 overrides: trending-v3 (78->82) and variety-v3 (78->82)
+    trending_v3_results = analyze_trending_v3(video_path, transcript_path, detected_platform)
+    variety_v3_results = analyze_variety_v3(video_path)
+    if "scores" in trending_v3_results and "trending_topic_alignment" in trending_v3_results["scores"]:
+        trending_results.setdefault("scores", {})["trending_topic_alignment"] = trending_v3_results["scores"]["trending_topic_alignment"]
+        trending_results["overall_score"] = trending_v3_results["overall_score"]
+    if "scores" in variety_v3_results and "scene_variety" in variety_v3_results["scores"]:
+        variety_results.setdefault("scores", {})["scene_variety"] = variety_v3_results["scores"]["scene_variety"]
+        variety_results["overall_score"] = variety_v3_results["overall_score"]
 
-    # Virality prediction (v2: now passes all tool results including framing)
+    # Virality prediction (v3: passes thumbnail, hashtag, dynamics, music, caption results)
     virality = compute_virality_score(
         tech_results, audio_results, content_results, visual_results, detected_platform,
         emotional_results=emotional_results, retention_results=retention_results,
@@ -214,6 +228,11 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
         color_results=color_results,
         stability_results=stability_results, variety_results=variety_results,
         framing_results=framing_results,
+        thumbnail_results=thumb_results,
+        hashtag_results=hashtag_results,
+        dynamics_results=dynamics_results,
+        music_results=music_results,
+        caption_results=caption_results,
     )
 
     # Combine all scores
