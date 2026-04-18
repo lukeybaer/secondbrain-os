@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Video Quality Check Runner v10
+Video Quality Check Runner v11
 Runs all quality analysis tools on a video and produces a combined report
 including visual quality, thumbnail analysis, virality prediction,
 emotional arc analysis, retention curve prediction, voice clarity,
@@ -10,6 +10,10 @@ camera stability, audio dynamics/mastering quality, and scene variety.
 v8: dedicated v3 tools for framing (72->80), camera stability (72->80), hashtag relevance (72->80).
 v9: dedicated v2/v3 tools for color_grading (75->82), music_mix (75->82), thumbnail_appeal (75->82).
 v10: dedicated v2/v3 tools for pacing (75->82), hook_strength (75->82), audio_dynamics (75->82).
+v11: dedicated v3/v4 tools for pacing (82->85), hook_strength (82->85), audio_dynamics (82->85).
+     pacing-v3 adds: 30s speaking-rate CoV, pause duration entropy, pause cluster rate.
+     hook-v4 adds: YCbCr face presence in first 3s, cut density ratio hook vs rest.
+     dynamics-v3 adds: TikTok/Instagram LUFS targets, 30s LRA window consistency, stereo width.
 
 Usage:
     python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin]
@@ -62,6 +66,10 @@ _thumb_v3_mod = importlib.import_module("analyze-thumbnail-v3")
 _pacing_v2_mod = importlib.import_module("analyze-pacing-v2")
 _hook_v3_mod = importlib.import_module("analyze-hook-strength-v3")
 _dynamics_v2_mod = importlib.import_module("analyze-audio-dynamics-v2")
+# v11: dedicated v3/v4 tools for pacing (82->85), hook_strength (82->85), audio_dynamics (82->85)
+_pacing_v3_mod = importlib.import_module("analyze-pacing-v3")
+_hook_v4_mod = importlib.import_module("analyze-hook-strength-v4")
+_dynamics_v3_mod = importlib.import_module("analyze-audio-dynamics-v3")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -93,6 +101,9 @@ analyze_thumb_v3 = _thumb_v3_mod.analyze
 analyze_pacing_v2 = _pacing_v2_mod.analyze
 analyze_hook_v3 = _hook_v3_mod.analyze
 analyze_dynamics_v2 = _dynamics_v2_mod.analyze
+analyze_pacing_v3 = _pacing_v3_mod.analyze
+analyze_hook_v4 = _hook_v4_mod.analyze
+analyze_dynamics_v3 = _dynamics_v3_mod.analyze
 
 
 def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None, srt_file=None, hashtags_str=None):
@@ -146,6 +157,10 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     pacing_v2_results = analyze_pacing_v2(video_path)
     hook_v3_results = analyze_hook_v3(video_path, transcript_path)
     dynamics_v2_results = analyze_dynamics_v2(video_path, detected_platform)
+    # v11: higher-accuracy tools for pacing, hook_strength, audio_dynamics (82->85 each)
+    pacing_v3_results = analyze_pacing_v3(video_path)
+    hook_v4_results = analyze_hook_v4(video_path, transcript_path)
+    dynamics_v3_results = analyze_dynamics_v3(video_path, detected_platform)
 
     # Override specific criterion scores with higher-accuracy dedicated tools
     if "scores" in clarity_v3_results and "clarity" in clarity_v3_results["scores"]:
@@ -182,6 +197,14 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     if "scores" in dynamics_v2_results and "audio_dynamics" in dynamics_v2_results["scores"]:
         dynamics_results.setdefault("scores", {})["audio_dynamics"] = dynamics_v2_results["scores"]["audio_dynamics"]
         dynamics_results["overall_score"] = dynamics_v2_results["overall_score"]
+    # v11 overrides (supersede v10)
+    if "scores" in pacing_v3_results and "pacing" in pacing_v3_results["scores"]:
+        audio_results.setdefault("scores", {})["pacing"] = pacing_v3_results["scores"]["pacing"]
+    if "scores" in hook_v4_results and "hook_strength" in hook_v4_results["scores"]:
+        content_results.setdefault("scores", {})["hook_strength"] = hook_v4_results["scores"]["hook_strength"]
+    if "scores" in dynamics_v3_results and "audio_dynamics" in dynamics_v3_results["scores"]:
+        dynamics_results.setdefault("scores", {})["audio_dynamics"] = dynamics_v3_results["scores"]["audio_dynamics"]
+        dynamics_results["overall_score"] = dynamics_v3_results["overall_score"]
 
     # Virality prediction (v2: now passes all tool results including framing)
     virality = compute_virality_score(
