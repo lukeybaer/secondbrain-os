@@ -479,16 +479,20 @@ async function main(): Promise<void> {
     }
     console.log(`Found ${orphans.length} local snapshot(s) missing from S3. Syncing top 2...`);
     let synced = 0;
+    let prunedUnrecoverable = 0;
+    let skipped = 0;
+    const unrecoverableIds: string[] = [];
     for (const snap of orphans.slice(0, 2)) {
       const snapshotDir = path.join(BACKUPS_ROOT, snap.id);
       const snapshotZip = path.join(BACKUPS_ROOT, `${snap.id}.zip`);
       if (!fs.existsSync(snapshotDir) && !fs.existsSync(snapshotZip)) {
-        console.warn(`  skip ${snap.id}: neither dir nor zip found locally (fully pruned?)`);
+        console.warn(`  prune-unrecoverable ${snap.id}: neither dir nor zip found locally (retention-pruned before upload)`);
+        unrecoverableIds.push(snap.id);
+        prunedUnrecoverable++;
         continue;
       }
       try {
         if (!fs.existsSync(snapshotDir) && fs.existsSync(snapshotZip)) {
-          // Directory already pruned — upload pre-existing zip directly.
           const zipSize = fs.statSync(snapshotZip).size;
           console.log(`  Uploading pre-zipped ${snap.id} (${formatBytes(zipSize)})...`);
           s3Upload(snapshotZip, `${S3_PREFIX}${snap.id}.zip`);
@@ -501,14 +505,24 @@ async function main(): Promise<void> {
         synced++;
       } catch (e: any) {
         console.error(`  S3 sync failed for ${snap.id}: ${e.message}`);
+        skipped++;
       }
+    }
+    if (unrecoverableIds.length > 0) {
+      const fresh = loadManifest();
+      fresh.snapshots = fresh.snapshots.filter((s) => !unrecoverableIds.includes(s.id));
+      saveManifest(fresh);
+      console.log(`  Removed ${unrecoverableIds.length} unrecoverable entry/entries from manifest: ${unrecoverableIds.join(', ')}`);
     }
     try {
       s3Upload(MANIFEST_PATH, 'manifest.json');
     } catch {
       /* best-effort */
     }
-    console.log(`Orphan sync complete: ${synced} uploaded, ${orphans.length - synced} skipped.`);
+    console.log(`Orphan sync complete: ${synced} uploaded, ${prunedUnrecoverable} pruned unrecoverable, ${skipped} failed.`);
+    if (synced === 0 && prunedUnrecoverable === 0) {
+      process.exitCode = 2;
+    }
     return;
   }
 
