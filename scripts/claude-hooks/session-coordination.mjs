@@ -8,13 +8,19 @@
 //   pre-edit      -> block (exit 2) if another live session has claimed this file
 //   post-tool     -> claim the edited file + update heartbeat
 //
-// State: $(git rev-parse --git-common-dir)/claude-sessions/<session_id>.json
-// The common-dir scopes state per-repo (and is shared across worktrees of that repo).
+// State: <os-tmp>/claude-code-sessions/<repo-id>/<session_id>.json
+// repo-id is a stable hash of the git common dir, so all worktrees of the
+// same repo share state but unrelated repos don't collide. We deliberately
+// avoid `.git/…` and `.claude/…` — Claude Code hardcodes both as sensitive
+// paths and triggers a permission prompt on every write, regardless of
+// settings.permissions.allow. Anywhere outside those two dirs is fine.
 // Not tracked. If cwd isn't inside a git repo, the hook exits silently.
 
 import { readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { resolve, join, basename } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 
 const event = process.argv[2];
 const STALE_SECONDS = 2 * 60 * 60;
@@ -39,8 +45,25 @@ try {
   process.exit(0);
 }
 
-const sessionsDir = resolve(gitCommonDir, 'claude-sessions');
+const repoId = createHash('sha256').update(gitCommonDir.toLowerCase()).digest('hex').slice(0, 12);
+const sessionsDir = resolve(tmpdir(), 'claude-code-sessions', repoId);
 if (!existsSync(sessionsDir)) mkdirSync(sessionsDir, { recursive: true });
+
+// Migrate any legacy state that was living in `.git/claude-sessions/`. One-shot
+// best-effort copy so running sessions carry over the first time this hook fires
+// after the refactor. Once migrated, the old dir can be safely removed.
+const legacyDir = resolve(gitCommonDir, 'claude-sessions');
+if (existsSync(legacyDir)) {
+  try {
+    for (const f of readdirSync(legacyDir)) {
+      if (!f.endsWith('.json')) continue;
+      const src = join(legacyDir, f);
+      const dst = join(sessionsDir, f);
+      if (existsSync(dst)) continue;
+      try { writeFileSync(dst, readFileSync(src)); } catch {}
+    }
+  } catch {}
+}
 
 const now = () => Math.floor(Date.now() / 1000);
 
