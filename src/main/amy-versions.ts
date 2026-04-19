@@ -725,11 +725,11 @@ const BUILT_IN_VERSIONS: AmyVersion[] = [
   },
   {
     version: 3,
-    name: 'Amy v3 — Claude-Powered',
+    name: 'Amy v3 — Receptionist (gpt-4o voice + Claude dispatch)',
     createdAt: new Date().toISOString(),
     description:
-      'Claude as the LLM via custom endpoint. Same brain as Claude Code. Full skill catalog + unified agent core.',
-    llm: { provider: 'custom-llm', model: 'claude-sonnet-4-20250514', customEndpoint: '' },
+      'Receptionist pattern: gpt-4o for voice (1-2s first token, no cold start) + Claude Code backend for actual work via run_claude_code dispatch. Claude-on-voice (custom-llm) was reverted 2026-04-18 after it produced 10-15s per-turn cold start on live calls (voice went dead). Restore Claude-on-voice only after session pinning (claude --resume) is proven to keep cold start under 2s.',
+    llm: { provider: 'openai', model: 'gpt-4o' },
     voice: { provider: '11labs', voiceId: 'paula' },
     identity: AMY_IDENTITY,
     skills: SKILL_CATALOG,

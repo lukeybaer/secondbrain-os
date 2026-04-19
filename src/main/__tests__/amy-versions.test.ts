@@ -116,11 +116,11 @@ describe('Amy Versions', () => {
       expect(versions[2].version).toBe(3);
     });
 
-    it('v1 is Classic, v2 is Skill-Aware, v3 is Claude-Powered', () => {
+    it('v1 is Classic, v2 is Skill-Aware, v3 is Receptionist (gpt-4o voice + Claude dispatch)', () => {
       const versions = listAmyVersions();
       expect(versions[0].name).toContain('Classic');
       expect(versions[1].name).toContain('Skill-Aware');
-      expect(versions[2].name).toContain('Claude-Powered');
+      expect(versions[2].name).toContain('Receptionist');
     });
   });
 
@@ -218,11 +218,14 @@ describe('Amy Versions', () => {
       expect(v2Config.provider).toBe('openai');
     });
 
-    it('v3 uses custom-llm with Claude model (falls back to openai if no endpoint)', () => {
+    it('v3 uses openai/gpt-4o for voice — receptionist pattern dispatches work to Claude via run_claude_code', () => {
+      // Claude-on-voice (custom-llm) was reverted 2026-04-18: 10-15s per-turn
+      // cold start killed live calls. Restore only after session pinning
+      // (claude --resume) proves cold start <2s.
       const v3 = getAmyVersion(3)!;
       const config = getLlmConfigForVersion(v3);
-      // v3 has custom-llm but no endpoint set → falls back to openai provider
-      expect(config.model).toContain('claude');
+      expect(config.provider).toBe('openai');
+      expect(config.model).toBe('gpt-4o');
     });
   });
 
