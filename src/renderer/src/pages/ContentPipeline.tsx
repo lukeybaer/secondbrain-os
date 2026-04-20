@@ -14,6 +14,7 @@ export interface PendingVideo {
     | 'rejected'
     | 'video_rejected'
     | 'thumbnail_rejected'
+    | 'regen_queued'
     | 'trashed';
   generated_date: string;
   video_path?: string;
@@ -2048,7 +2049,11 @@ function YouTubeVideosTab() {
   ].sort((a, b) => (b.published_date ?? '').localeCompare(a.published_date ?? ''));
   const rejected = videos.filter(
     (v) =>
-      v.status === 'video_rejected' || v.status === 'thumbnail_rejected' || v.status === 'rejected',
+      v.status === 'video_rejected' ||
+      v.status === 'thumbnail_rejected' ||
+      v.status === 'rejected' ||
+      v.status === 'regen_queued' ||
+      v.status === 'trashed',
   );
 
   // Clamp activeIndex in case videos list shrinks

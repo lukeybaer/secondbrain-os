@@ -101,6 +101,31 @@ function main() {
     console.log(`  ${h.probe}: ${h.action} (~${h.estMinutes}min)`);
   }
   console.log(`\nwritten to ${outPath}`);
+
+  // Stale-RED escalation: any probe RED for 3+ consecutive days gets a
+  // separate, louder Gmail escalation beyond the daily briefing line.
+  // See feedback_canautoheal_false_is_not_a_heal.md for why.
+  try {
+    const { computeStaleRedProbes, hasExistingEscalation, logEscalation, draftGmailEscalation } =
+      require('./stale-red-escalation.js');
+    const REPO = path.resolve(__dirname, '..');
+    const ESC_LOG = path.join(OUTPUT_DIR, 'escalations.jsonl');
+    const result = computeStaleRedProbes(OUTPUT_DIR);
+    if (!result.error && result.stale && result.stale.length > 0) {
+      console.log(`\nstale-red escalation: ${result.stale.length} probe(s) RED 3+ days`);
+      for (const s of result.stale) {
+        if (hasExistingEscalation(ESC_LOG, s.probe)) {
+          console.log(`  [skip] ${s.probe} -- already escalated in last 24h`);
+          continue;
+        }
+        const drafted = draftGmailEscalation(s, { dryRun: false, repo: REPO });
+        logEscalation(ESC_LOG, { ts: new Date().toISOString(), ...s, drafted });
+        console.log(`  [escalate] ${s.probe} ${s.streakDays}d red -- drafted=${JSON.stringify(drafted)}`);
+      }
+    }
+  } catch (e) {
+    console.error('stale-red escalation failed:', (e && e.message) || e);
+  }
 }
 
 function canHeal(probeName, result) {
@@ -114,7 +139,7 @@ function canHeal(probeName, result) {
     // nightlyEnhancements: partially (can trigger catch-up run)
     // videoPipeline: false, // informational
     // videoFeedbackLoop: false, // cannot auto-regen
-    // staleUploads: false, // cannot auto-upload to YouTube
+    staleUploads: true, // 2026-04-20: now auto-heals by SCP + POST to /youtube/queue
     // apiAudit: false,    // informational
   };
   return healable[probeName] === true;
@@ -130,7 +155,7 @@ function getHealStrategy(probeName, result) {
     nightlyEnhancements: 'trigger catch-up nightly run',
     videoPipeline: 'investigate video build pipeline',
     videoFeedbackLoop: 'send alert -- videos need manual regen review',
-    staleUploads: 'send alert -- approved videos need upload',
+    staleUploads: 'SCP local file + POST to /youtube/queue on EC2',
     apiAudit: 'review flagged files for paid API usage',
   };
   return strategies[probeName] || 'unknown';
@@ -146,7 +171,7 @@ function estimateHealTime(probeName) {
     nightlyEnhancements: 15,
     videoPipeline: 0,
     videoFeedbackLoop: 0,
-    staleUploads: 0,
+    staleUploads: 10, // SCP + HTTP POST per stale item
     apiAudit: 0,
   };
   return estimates[probeName] || 0;

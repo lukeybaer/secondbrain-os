@@ -587,7 +587,71 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  ipcMain.handle('empire:approveVideo', (_e, id: string) => {
+  // Extracted helper: SCP a queued video to EC2 + POST its metadata to
+  // /youtube/queue. Used by empire:queueForUpload AND by empire:approveVideo
+  // so approval flows straight into the 9am/1pm/5pm scheduler. Before
+  // 2026-04-20, approval only wrote the local JSON, so videos sat forever
+  // waiting on a second manual click that Luke never made (18+ day stall).
+  async function pushVideoToEc2(id: string): Promise<{ success: boolean; error?: string; position?: number }> {
+    const { execSync } = require('child_process');
+    const queuePath = path.join(contentRoot, 'content-review', 'upload-queue.json');
+    const pendingDir = path.join(contentRoot, 'content-review', 'pending');
+    const SSH_KEY = '${HOME:-~}/.ssh/secondbrain-backend-key.pem';
+    const EC2_HOST = 'ec2-user@98.80.164.16';
+    const EC2_VIDEO_DIR = '/opt/secondbrain/data/youtube';
+    try {
+      const queue = fs.existsSync(queuePath) ? JSON.parse(fs.readFileSync(queuePath, 'utf8')) : [];
+      const item = queue.find((v: Record<string, unknown>) => v.id === id);
+      if (!item) return { success: false, error: 'Item not found in upload queue' };
+      const config = getConfig();
+      const ec2 = config.ec2BaseUrl;
+      if (!ec2) return { success: false, error: 'ec2BaseUrl not configured' };
+      const videoFile = item.video_file as string | undefined;
+      const thumbFile = item.thumbnail_file as string | undefined;
+      const videoPath = videoFile ? path.join(pendingDir, videoFile) : null;
+      const thumbPath = thumbFile ? path.join(pendingDir, thumbFile) : null;
+      if (!videoPath || !fs.existsSync(videoPath)) {
+        return { success: false, error: 'Video file not found: ' + (videoPath ?? 'none') };
+      }
+      const remoteVideoPath = `${EC2_VIDEO_DIR}/${id}.mp4`;
+      const scpOpts = `-i ${SSH_KEY} -o StrictHostKeyChecking=no`;
+      execSync(
+        `ssh ${scpOpts} ${EC2_HOST} "mkdir -p ${EC2_VIDEO_DIR}" && scp ${scpOpts} "${videoPath.replace(/\\/g, '/')}" ${EC2_HOST}:${remoteVideoPath}`,
+        { timeout: 120000 },
+      );
+      let remoteThumbnailPath: string | undefined;
+      if (thumbPath && fs.existsSync(thumbPath)) {
+        remoteThumbnailPath = `${EC2_VIDEO_DIR}/${id}_thumb.jpg`;
+        execSync(
+          `scp ${scpOpts} "${thumbPath.replace(/\\/g, '/')}" ${EC2_HOST}:${remoteThumbnailPath}`,
+          { timeout: 30000 },
+        );
+      }
+      const res = await fetch(`${ec2}/youtube/queue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: item.id,
+          title: item.title,
+          channel: item.channel || 'Channel1',
+          description: (item.description as string) || '',
+          tags: (item.tags as string[]) || [],
+          videoPath: remoteVideoPath,
+          thumbnailPath: remoteThumbnailPath,
+        }),
+      });
+      const result = await res.json();
+      if (!result.ok) return { success: false, error: JSON.stringify(result) };
+      item.upload_status = 'uploading';
+      item.queued_at = new Date().toISOString();
+      fs.writeFileSync(queuePath, JSON.stringify(queue, null, 2));
+      return { success: true, position: result.position };
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  ipcMain.handle('empire:approveVideo', async (_e, id: string) => {
     const pendingDir = path.join(contentRoot, 'content-review', 'pending');
     const manifestPath = path.join(pendingDir, 'manifest.json');
     const queuePath = path.join(contentRoot, 'content-review', 'upload-queue.json');
@@ -600,6 +664,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       const queue = fs.existsSync(queuePath) ? JSON.parse(fs.readFileSync(queuePath, 'utf8')) : [];
       queue.push({ ...video, approved_at: new Date().toISOString() });
       fs.writeFileSync(queuePath, JSON.stringify(queue, null, 2));
+      // Auto-push to EC2 uploader so approval flows straight into the next upload slot.
+      // Do not fail approval if the push fails -- self-heal will retry.
+      try {
+        const pushResult = await pushVideoToEc2(id);
+        console.log(`[approve] ${id} auto-pushed to EC2: ${pushResult.success ? 'ok' : 'deferred (' + pushResult.error + ')'}`);
+      } catch (pushErr) {
+        console.warn(`[approve] auto-push ${id} failed:`, pushErr);
+      }
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -785,80 +857,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  // Queue video for YouTube upload via EC2
+  // Queue video for YouTube upload via EC2. Now a thin wrapper -- approval
+  // auto-invokes pushVideoToEc2 too, so this handler mostly exists for the
+  // manual "Queue for Upload" button + retries.
   ipcMain.handle('empire:queueForUpload', async (_e, id: string) => {
-    const { execSync } = require('child_process');
-    const queuePath = path.join(contentRoot, 'content-review', 'upload-queue.json');
-    const pendingDir = path.join(contentRoot, 'content-review', 'pending');
-    const SSH_KEY = '${HOME:-~}/.ssh/secondbrain-backend-key.pem';
-    const EC2_HOST = 'ec2-user@98.80.164.16';
-    const EC2_VIDEO_DIR = '/opt/secondbrain/data/youtube';
-
-    try {
-      const queue = fs.existsSync(queuePath) ? JSON.parse(fs.readFileSync(queuePath, 'utf8')) : [];
-      const item = queue.find((v: Record<string, unknown>) => v.id === id);
-      if (!item) return { success: false, error: 'Item not found in upload queue' };
-
-      const config = getConfig();
-      const ec2 = config.ec2BaseUrl;
-      if (!ec2) return { success: false, error: 'ec2BaseUrl not configured' };
-
-      // Resolve local file paths
-      const videoFile = item.video_file as string | undefined;
-      const thumbFile = item.thumbnail_file as string | undefined;
-      const videoPath = videoFile ? path.join(pendingDir, videoFile) : null;
-      const thumbPath = thumbFile ? path.join(pendingDir, thumbFile) : null;
-
-      if (!videoPath || !fs.existsSync(videoPath)) {
-        return { success: false, error: 'Video file not found: ' + (videoPath ?? 'none') };
-      }
-
-      // SCP video to EC2
-      const remoteVideoPath = `${EC2_VIDEO_DIR}/${id}.mp4`;
-      const scpOpts = `-i ${SSH_KEY} -o StrictHostKeyChecking=no`;
-      console.log(`[upload] SCP ${videoPath} → ${EC2_HOST}:${remoteVideoPath}`);
-      execSync(
-        `ssh ${scpOpts} ${EC2_HOST} "mkdir -p ${EC2_VIDEO_DIR}" && scp ${scpOpts} "${videoPath.replace(/\\/g, '/')}" ${EC2_HOST}:${remoteVideoPath}`,
-        { timeout: 120000 },
-      );
-
-      // SCP thumbnail if present
-      let remoteThumbnailPath: string | undefined;
-      if (thumbPath && fs.existsSync(thumbPath)) {
-        remoteThumbnailPath = `${EC2_VIDEO_DIR}/${id}_thumb.jpg`;
-        execSync(
-          `scp ${scpOpts} "${thumbPath.replace(/\\/g, '/')}" ${EC2_HOST}:${remoteThumbnailPath}`,
-          { timeout: 30000 },
-        );
-      }
-
-      // POST metadata to EC2 YouTube queue
-      const res = await fetch(`${ec2}/youtube/queue`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: item.id,
-          title: item.title,
-          channel: item.channel || 'Channel1',
-          description: (item.description as string) || '',
-          tags: (item.tags as string[]) || [],
-          videoPath: remoteVideoPath,
-          thumbnailPath: remoteThumbnailPath,
-        }),
-      });
-
-      const result = await res.json();
-      if (!result.ok) return { success: false, error: JSON.stringify(result) };
-
-      // Mark as uploading in local queue
-      item.upload_status = 'uploading';
-      item.queued_at = new Date().toISOString();
-      fs.writeFileSync(queuePath, JSON.stringify(queue, null, 2));
-
-      return { success: true, position: result.position };
-    } catch (e: unknown) {
-      return { success: false, error: e instanceof Error ? e.message : String(e) };
-    }
+    return pushVideoToEc2(id);
   });
 
   ipcMain.handle('empire:markUploaded', (_e, id: string, youtubeUrl?: string) => {
