@@ -13,6 +13,7 @@ import Todos from './pages/Todos';
 import Backups from './pages/Backups';
 import Studio from './pages/Studio';
 import TimeMachine from './pages/TimeMachine';
+import Briefing from './pages/Briefing';
 import ClaudeChatOverlay from './components/ClaudeChatOverlay';
 import ToastProvider, { useToast } from './components/ToastProvider';
 
@@ -67,6 +68,7 @@ class ErrorBoundary extends React.Component<
 }
 
 type Page =
+  | 'briefing'
   | 'chat'
   | 'import'
   | 'conversations'
@@ -83,6 +85,7 @@ type Page =
   | 'settings';
 
 const NAV_ITEMS: { id: Page; label: string; hint: string }[] = [
+  { id: 'briefing', label: 'Briefing', hint: 'Daily executive briefing (last 3 days, right-click to dispatch)' },
   { id: 'chat', label: 'Chat', hint: 'Ask your meetings anything' },
   { id: 'import', label: 'Import', hint: 'Fetch & process from Otter.ai' },
   { id: 'conversations', label: 'Conversations', hint: 'Browse your library' },
@@ -125,7 +128,7 @@ export default function App() {
 }
 
 function AppContent() {
-  const [page, setPage] = useState<Page>('import');
+  const [page, setPage] = useState<Page>('briefing');
   const [convCount, setConvCount] = useState(0);
   const [pendingCall, setPendingCall] = useState<PendingCall | null>(null);
   const [autoListen, setAutoListen] = useState(false);
@@ -236,6 +239,9 @@ function AppContent() {
 
       {/* Main — all pages always mounted, only one visible */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+        <div style={show('briefing')}>
+          <Briefing />
+        </div>
         <div style={show('chat')}>
           <Chat onConversationSaved={refreshCount} />
         </div>

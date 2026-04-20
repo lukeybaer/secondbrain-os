@@ -7,6 +7,30 @@ const api = {
     save: (config: any): Promise<any> => ipcRenderer.invoke('config:save', config),
   },
 
+  briefing: {
+    listDays: (): Promise<
+      { date: string; filename: string; filePath: string; sizeBytes: number; mtimeMs: number }[]
+    > => ipcRenderer.invoke('briefing:listDays'),
+    get: (date: string): Promise<{
+      date: string;
+      filename: string;
+      generatedAt: string | null;
+      llm: string | null;
+      greeting: string;
+      sections: { id: string; title: string; body: string; startLine: number }[];
+      raw: string;
+    } | null> => ipcRenderer.invoke('briefing:get', date),
+    dispatch: (params: {
+      date: string;
+      sectionTitle: string;
+      comment: string;
+    }): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('briefing:dispatch', params),
+    export: (date: string): Promise<{ ok: boolean; filePath?: string; error?: string }> =>
+      ipcRenderer.invoke('briefing:export', date),
+    openExternal: (url: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('briefing:openExternal', url),
+  },
+
   otter: {
     testConnection: (): Promise<{ ok: boolean; message: string }> =>
       ipcRenderer.invoke('otter:testConnection'),

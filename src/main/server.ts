@@ -16,6 +16,11 @@ import {
   type DbApproval,
 } from './database-sqlite';
 import { ingestSmsWebhook } from './twilio-sms';
+import { listBriefingFiles, loadBriefingByDate, pruneOldBriefings } from './briefing-parser';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as cp from 'child_process';
+import { app } from 'electron';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -443,6 +448,313 @@ route('POST', '/twilio/webhook', async (req, res, _body) => {
   res.end('<Response></Response>');
 });
 
+// ── Briefing mobile routes ───────────────────────────────────────────────────
+// Exposes the latest briefings as a mobile-friendly HTML page + JSON API.
+// Luke opens http://<pc-lan-ip>:3002/briefing on his phone (same wifi) or via a
+// Cloudflare tunnel to see the daily briefing without opening the Electron app.
+// Right-click / long-press "Dispatch" button sends a #Amy email back to himself
+// which the Gmail scan processes on next pass.
+
+function htmlResponse(res: http.ServerResponse, status: number, body: string): void {
+  const buf = Buffer.from(body, 'utf-8');
+  res.writeHead(status, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': buf.length,
+    'Cache-Control': 'no-store',
+  });
+  res.end(buf);
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function linkify(s: string): string {
+  return s.replace(
+    /(https?:\/\/[^\s<>)]+)/g,
+    (u) =>
+      `<a href="${escapeHtml(u)}" target="_blank" rel="noopener" style="color:#c96442;word-break:break-all">${escapeHtml(u)}</a>`,
+  );
+}
+
+function renderBriefingHtml(date: string | null, availableDates: string[]): string {
+  const parsed = date ? loadBriefingByDate(date) : null;
+  const tabs = availableDates
+    .map(
+      (d) =>
+        `<a href="/briefing?date=${d}" class="tab${d === date ? ' tab-active' : ''}">${d}</a>`,
+    )
+    .join('');
+
+  const sectionsHtml = parsed
+    ? parsed.sections
+        .map((s, i) => {
+          const sid = 'sec-' + i;
+          const body = linkify(escapeHtml(s.body));
+          return `
+          <section class="sec" id="${sid}">
+            <header class="sec-h"><span class="sec-title">${escapeHtml(s.title)}</span>
+              <button type="button" class="dispatch-btn" data-section="${escapeHtml(s.title)}">Dispatch</button>
+            </header>
+            <pre class="sec-body">${body}</pre>
+          </section>
+        `;
+        })
+        .join('')
+    : '<p style="color:#aaa">No briefing found for ' + escapeHtml(date || 'today') + '.</p>';
+
+  const greeting = parsed
+    ? `<pre class="greeting">${linkify(escapeHtml(parsed.greeting))}</pre>`
+    : '';
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
+  <title>Briefing${parsed ? ' · ' + parsed.date : ''}</title>
+  <style>
+    :root { --copper:#c96442; --cream:#f4f3ee; --cream-dim:#bdbab2; --ink:#191817; --bg:#0f0f0f; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: #d0cfc8;
+      font-family: Georgia, 'Times New Roman', serif; font-size: 16px; line-height: 1.55; }
+    header.top { position: sticky; top: 0; background: #0b0b0b; border-bottom: 1px solid #1e1e1e;
+      padding: 12px 14px; display: flex; align-items: center; gap: 10px; z-index: 5; }
+    header.top h1 { font-size: 15px; font-weight: 600; color: var(--cream); margin: 0; flex: 1;
+      font-family: system-ui, sans-serif; letter-spacing: 0.3px; }
+    .tabs { display: flex; gap: 6px; overflow-x: auto; padding: 8px 14px; background: #0b0b0b;
+      border-bottom: 1px solid #1e1e1e; }
+    .tab { color: #888; text-decoration: none; padding: 6px 12px; border-radius: 999px;
+      border: 1px solid #222; font-size: 12px; font-family: system-ui, sans-serif; white-space: nowrap; }
+    .tab-active { color: var(--cream); border-color: var(--copper); background: #1a0f0b; }
+    main { padding: 16px 14px 80px; max-width: 820px; margin: 0 auto; }
+    .greeting { white-space: pre-wrap; color: var(--cream); font-size: 16px;
+      padding: 0 0 12px; margin: 0 0 18px; border-bottom: 1px solid #1e1e1e;
+      font-family: Georgia, serif; }
+    section.sec { margin-bottom: 16px; border: 1px solid #1e1e1e; border-radius: 6px; background: #141312; }
+    .sec-h { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      border-bottom: 1px solid #1e1e1e; }
+    .sec-title { color: #d9795a; font-family: system-ui, sans-serif; font-size: 12.5px;
+      font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase; flex: 1; }
+    .dispatch-btn { background: var(--copper); color: var(--cream); border: none;
+      border-radius: 4px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+      font-family: system-ui, sans-serif; }
+    .sec-body { white-space: pre-wrap; margin: 0; padding: 12px 14px; color: #d0cfc8;
+      font-family: Georgia, 'Times New Roman', serif; font-size: 14.5px; line-height: 1.6;
+      overflow-wrap: break-word; }
+    .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.78); display: none;
+      align-items: center; justify-content: center; padding: 16px; z-index: 99; }
+    .modal { width: 100%; max-width: 480px; background: var(--ink); border: 1px solid var(--copper);
+      border-radius: 8px; padding: 18px; }
+    .modal h2 { margin: 0 0 4px; font-size: 12px; color: var(--cream-dim);
+      font-family: system-ui, sans-serif; letter-spacing: 0.3px; }
+    .modal .section-name { color: #d9795a; font-size: 14px; font-weight: 700;
+      margin-bottom: 12px; font-family: system-ui, sans-serif; }
+    .modal textarea { width: 100%; min-height: 110px; background: #0f0f0f; color: var(--cream);
+      border: 1px solid #333; border-radius: 4px; padding: 9px; font-size: 14px;
+      font-family: inherit; resize: vertical; }
+    .modal .buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+    .modal button { padding: 8px 14px; border-radius: 4px; font-size: 13px; font-weight: 600;
+      cursor: pointer; font-family: system-ui, sans-serif; border: none; }
+    .btn-cancel { background: transparent; color: var(--cream-dim); border: 1px solid #333 !important; }
+    .btn-send { background: var(--copper); color: var(--cream); }
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: var(--ink); color: var(--cream); padding: 10px 18px; border: 1px solid var(--copper);
+      border-radius: 6px; font-size: 13px; z-index: 100; display: none; }
+    @media (max-width: 520px) {
+      header.top h1 { font-size: 14px; }
+      .sec-body { font-size: 14px; }
+      main { padding: 12px 10px 80px; }
+      .dispatch-btn { padding: 6px 10px; font-size: 11px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <h1>Daily Briefing</h1>
+    <a href="/briefing" style="color:#888;font-size:12px;text-decoration:none;font-family:system-ui,sans-serif">Refresh</a>
+  </header>
+  <div class="tabs">${tabs}</div>
+  <main>
+    ${greeting}
+    ${sectionsHtml}
+  </main>
+
+  <div class="modal-bg" id="modal-bg">
+    <div class="modal">
+      <h2>Dispatch to Amy (sent as #Amy email)</h2>
+      <div class="section-name" id="modal-section"></div>
+      <textarea id="modal-text" placeholder="What should Amy do about this section?"></textarea>
+      <div class="buttons">
+        <button type="button" class="btn-cancel" id="btn-cancel">Cancel</button>
+        <button type="button" class="btn-send" id="btn-send">Dispatch</button>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const bg = document.getElementById('modal-bg');
+    const modalSection = document.getElementById('modal-section');
+    const modalText = document.getElementById('modal-text');
+    const toast = document.getElementById('toast');
+    const briefingDate = ${JSON.stringify(parsed?.date || null)};
+    let currentSection = '';
+
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.style.display = 'block';
+      setTimeout(() => (toast.style.display = 'none'), 3500);
+    }
+
+    document.querySelectorAll('.dispatch-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        currentSection = btn.dataset.section || '';
+        modalSection.textContent = currentSection;
+        modalText.value = '';
+        bg.style.display = 'flex';
+        setTimeout(() => modalText.focus(), 60);
+      });
+    });
+
+    // Long-press on section body opens modal on mobile
+    document.querySelectorAll('section.sec').forEach((sec) => {
+      let timer = null;
+      sec.addEventListener('touchstart', () => {
+        timer = setTimeout(() => {
+          const title = sec.querySelector('.sec-title')?.textContent || '';
+          currentSection = title;
+          modalSection.textContent = title;
+          modalText.value = '';
+          bg.style.display = 'flex';
+          setTimeout(() => modalText.focus(), 60);
+        }, 500);
+      });
+      sec.addEventListener('touchend', () => { if (timer) clearTimeout(timer); });
+      sec.addEventListener('touchmove', () => { if (timer) clearTimeout(timer); });
+    });
+
+    document.getElementById('btn-cancel').addEventListener('click', () => {
+      bg.style.display = 'none';
+    });
+    bg.addEventListener('click', (e) => { if (e.target === bg) bg.style.display = 'none'; });
+
+    document.getElementById('btn-send').addEventListener('click', async () => {
+      const comment = modalText.value.trim();
+      if (!comment) { showToast('Add a comment first'); return; }
+      try {
+        const r = await fetch('/briefing/dispatch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: briefingDate, sectionTitle: currentSection, comment }),
+        });
+        const j = await r.json();
+        if (j.ok) { bg.style.display = 'none'; showToast('Dispatched to Amy'); }
+        else { showToast('Failed: ' + (j.error || 'unknown')); }
+      } catch (e) { showToast('Failed: ' + e.message); }
+    });
+  </script>
+</body>
+</html>`;
+}
+
+route('GET', '/briefing', async (req, res, _body) => {
+  pruneOldBriefings(3);
+  const urlObj = new URL(req.url ?? '/briefing', 'http://localhost');
+  const requested = urlObj.searchParams.get('date');
+  const days = listBriefingFiles();
+  const dates = days.map((d) => d.date);
+  const target = requested && dates.includes(requested) ? requested : dates[0] || null;
+  htmlResponse(res, 200, renderBriefingHtml(target, dates));
+});
+
+route('GET', '/briefing.json', async (req, res, _body) => {
+  const urlObj = new URL(req.url ?? '/briefing.json', 'http://localhost');
+  const requested = urlObj.searchParams.get('date');
+  const days = listBriefingFiles();
+  const dates = days.map((d) => d.date);
+  const target = requested && dates.includes(requested) ? requested : dates[0] || null;
+  const parsed = target ? loadBriefingByDate(target) : null;
+  jsonResponse(res, 200, { available: days, current: parsed });
+});
+
+route('POST', '/briefing/dispatch', async (_req, res, body) => {
+  const { date, sectionTitle, comment } = (body || {}) as {
+    date?: string;
+    sectionTitle?: string;
+    comment?: string;
+  };
+  if (!comment || !comment.trim()) {
+    jsonResponse(res, 400, { ok: false, error: 'empty comment' });
+    return;
+  }
+  const subject = `#Amy dashboard feedback: ${sectionTitle || 'unknown'} (${date || 'today'})`;
+  const bodyLines = [
+    '#Amy',
+    '',
+    `Section: ${sectionTitle || 'unknown'}`,
+    `Briefing date: ${date || 'unknown'}`,
+    '',
+    'Feedback:',
+    comment,
+    '',
+    '(Sent from mobile briefing page.)',
+  ];
+  const python = process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3');
+  const script = path.join(
+    process.env.SECONDBRAIN_ROOT || app.getAppPath(),
+    'scripts',
+    'send-gmail.py',
+  );
+  const proc = cp.spawn(
+    python,
+    [script, '--to', 'luke.d.baer@gmail.com', '--subject', subject, '--body', bodyLines.join('\n')],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let stderr = '';
+  proc.stderr.on('data', (d) => (stderr += d.toString()));
+  proc.on('close', (code) => {
+    if (code === 0) {
+      try {
+        const logPath = path.join(
+          process.env.SECONDBRAIN_ROOT || app.getAppPath(),
+          'data',
+          'agent',
+          'amy-dispatch-log.jsonl',
+        );
+        fs.appendFileSync(
+          logPath,
+          JSON.stringify({
+            thread_id: null,
+            subject,
+            sent_at: new Date().toISOString(),
+            source: 'mobile_briefing_long_press',
+            briefing_date: date,
+            section: sectionTitle,
+            comment,
+            action: 'self_dispatch',
+            action_summary: 'Queued as #Amy email to self for next Gmail scan to process',
+            status: 'queued',
+          }) + '\n',
+        );
+      } catch {
+        // logging failure should not break the response
+      }
+      jsonResponse(res, 200, { ok: true });
+    } else {
+      jsonResponse(res, 500, { ok: false, error: stderr.trim() || `send-gmail.py exit ${code}` });
+    }
+  });
+  proc.on('error', (e) => {
+    jsonResponse(res, 500, { ok: false, error: e.message });
+  });
+});
+
 // ── Server bootstrap ──────────────────────────────────────────────────────────
 
 export function startServer(): void {
@@ -465,8 +777,11 @@ export function startServer(): void {
     }
   });
 
-  server.listen(PORT, () => {
-    console.log(`[server] HTTP server listening on port ${PORT}`);
+  // Bind on 0.0.0.0 so phones on the same LAN can reach /briefing at
+  // http://<pc-local-ip>:3002/briefing. Loopback-only (127.0.0.1) would lock it
+  // to the PC itself.
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[server] HTTP server listening on 0.0.0.0:${PORT}`);
   });
 
   server.on('error', (err) => {

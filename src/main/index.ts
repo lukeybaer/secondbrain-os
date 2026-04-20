@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell, protocol, net, session } from 'electron';
 import { join } from 'path';
 import { electronApp, optimizer, is } from '@electron-toolkit/utils';
 import { registerIpcHandlers } from './ipc-handlers';
+import { registerBriefingIpc } from './briefing-api';
 import { loadConfig } from './config';
 import { startOtterPolling } from './otter-ingest';
 import { startCommandQueueWorker, setCommandStatusHandler } from './command-queue';
@@ -103,6 +104,7 @@ function createWindow(): BrowserWindow {
   }
 
   registerIpcHandlers(mainWindow);
+  registerBriefingIpc();
   return mainWindow;
 }
 

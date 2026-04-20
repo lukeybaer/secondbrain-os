@@ -765,15 +765,19 @@ export async function sendDailyBriefing(): Promise<void> {
       }
     }
 
-    await sendTelegramSplit(cfg.telegramChatId, msg1Lines.join('\n'));
-    await sendTelegramSplit(cfg.telegramChatId, msg2Lines.join('\n'));
-    await sendTelegramSplit(cfg.telegramChatId, msg3Lines.join('\n'));
-    if (msg4Lines.length > 0) {
-      await sendTelegramSplit(cfg.telegramChatId, msg4Lines.join('\n'));
-    }
+    // Morning briefing is no longer delivered via Telegram (policy changed 2026-04-20).
+    // Luke reads the daily briefing at the mobile dashboard URL (server.ts /briefing)
+    // or in the Electron Briefing page. Gmail draft + on-disk markdown remain the
+    // authoritative deliverables. See memory/feedback_telegram_policy.md for the
+    // current policy and memory/feedback_amy_email_dispatch_convention.md for the
+    // dispatch-from-anywhere architecture.
+    //
+    // Operational + security alerts still flow through sendMessage() elsewhere in
+    // this file and in health-self-heal.js; those are NOT briefings.
+    void msg1Lines; void msg2Lines; void msg3Lines; void msg4Lines;
 
     writeFlag(FLAG);
-    console.log('[briefing] daily briefing sent successfully (4-message format)');
+    console.log('[briefing] daily briefing rendered; Telegram send disabled by policy');
 
     // Mark contact events as reported so they won't repeat tomorrow
     if (contactReportedIds.length > 0) {
