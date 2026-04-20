@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Video Quality Check Runner v12
+Video Quality Check Runner v16
 Runs all quality analysis tools on a video and produces a combined report
 including visual quality, thumbnail analysis, virality prediction,
 emotional arc analysis, retention curve prediction, voice clarity,
@@ -14,6 +14,32 @@ v11: dedicated v3/v4 tools for pacing (82->85), hook_strength (82->85), audio_dy
      pacing-v3 adds: 30s speaking-rate CoV, pause duration entropy, pause cluster rate.
      hook-v4 adds: YCbCr face presence in first 3s, cut density ratio hook vs rest.
      dynamics-v3 adds: TikTok/Instagram LUFS targets, 30s LRA window consistency, stereo width.
+v13: dedicated v4/v3 tools for cta_placement (78->82), retention_curve (80->84), emotional_arc (80->84).
+     cta-v4 adds: CTA onset precision, vocal pitch contour, outro music injection detection.
+     retention-v3 adds: per-segment talking-head fraction, per-segment cut density, spectral novelty events.
+     emotional-arc-v3 adds: 16-segment analysis, valence shift events, prosodic stress consistency.
+v14: dedicated v2/v4/v3 tools for lighting (80->84), transitions (80->84), caption_readability (80->84).
+     lighting-v2 adds: subject-background zone ratio, color temperature consistency (R/B CoV), shadow
+       harshness via gradient density, temporal flicker index (delta CoV).
+     transitions-v4 adds: J/L-cut detection (audio-offset edits), cross-dissolve detection, transition
+       type diversity index (Shannon entropy of hard cut / dissolve / fade mix).
+     caption-readability-v3 adds: sentence boundary alignment fraction, speech-caption temporal alignment
+       via VAD silencedetect, hook/outro caption information density + CTA keyword fraction.
+v15: dedicated v4/v4/v3 tools for framing (80->84), hashtag_relevance (80->84), camera_stability (80->84).
+     framing-v4 adds: shot-type classification + adaptive headroom (ECU/CU/MS/WS), eye-line zone
+       detection (upper-third skin scan, Yarbus 1967), lead-room check for landscape (Mascelli 1965).
+     hashtag-v4 adds: keyword-to-hashtag coverage density, duration-informed count strategy (micro/short/
+       medium/long tiers), hashtag format quality (PascalCase + length + dedup).
+     stability-v3 adds: shake frequency DFT (2-15 Hz = hand tremor, Moschetti 2010), per-segment
+       stability CoV (4 segments, Wistia 2022), micro-jitter burst detection (Kim et al. 2014).
+v16: dedicated v4/v3 tools for clarity (82->85) and color_grading (82->85); predict-virality v7 (81->84).
+     clarity-v4 adds: zone-weighted Tenengrad (center 60%/mid 30%/edge 10%, Pertuz 2013), blur type
+       classifier via Sobel anisotropy (motion vs focus blur, Krishnan 2011), temporal luma MAD for
+       motion estimation (Shechtman & Irani 2007).
+     color-consistency-v3 adds: hue angle circular std (Hanbury 2008, Fairchild 2005), multi-segment
+       (4-quarter) palette drift (Reinhard 2010), color complexity CoV (Cutting 2015).
+     predict-virality v7 fixes: hashtag_results NameError bug, dynamics-v2 used instead of v3, old
+       caption tool used instead of v3; adds clarity-v4 and color-v3 overrides.
 
 Usage:
     python run-quality-check.py <video_path> [--platform shorts|youtube|linkedin]
@@ -73,6 +99,21 @@ _dynamics_v3_mod = importlib.import_module("analyze-audio-dynamics-v3")
 # v12: dedicated v3 tools for trending_topic_alignment (78->82) and scene_variety (78->82)
 _trending_v3_mod = importlib.import_module("analyze-trending-topics-v3")
 _variety_v3_mod = importlib.import_module("analyze-scene-variety-v3")
+# v13: dedicated v4/v3 tools for cta_placement (78->82), retention_curve (80->84), emotional_arc (80->84)
+_cta_v4_mod = importlib.import_module("analyze-cta-v4")
+_retention_v3_mod = importlib.import_module("analyze-retention-curve-v3")
+_arc_v3_mod = importlib.import_module("analyze-emotional-arc-v3")
+# v14: dedicated v2/v4/v3 tools for lighting (80->84), transitions (80->84), caption_readability (80->84)
+_lighting_v2_mod = importlib.import_module("analyze-lighting-v2")
+_transitions_v4_mod = importlib.import_module("analyze-transitions-v4")
+_captions_v3_mod = importlib.import_module("analyze-caption-readability-v3")
+# v15: dedicated v4/v4/v3 tools for framing (80->84), hashtag_relevance (80->84), camera_stability (80->84)
+_framing_v4_mod = importlib.import_module("analyze-framing-v4")
+_hashtag_v4_mod = importlib.import_module("analyze-hashtag-relevance-v4")
+_stability_v3_mod = importlib.import_module("analyze-camera-stability-v3")
+# v16: clarity-v4 (82->85), color-consistency-v3 (82->85)
+_clarity_v4_mod = importlib.import_module("analyze-clarity-v4")
+_color_v3_mod = importlib.import_module("analyze-color-consistency-v3")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -109,6 +150,17 @@ analyze_hook_v4 = _hook_v4_mod.analyze
 analyze_dynamics_v3 = _dynamics_v3_mod.analyze
 analyze_trending_v3 = _trending_v3_mod.analyze
 analyze_variety_v3 = _variety_v3_mod.analyze
+analyze_cta_v4 = _cta_v4_mod.analyze
+analyze_retention_v3 = _retention_v3_mod.analyze
+analyze_arc_v3 = _arc_v3_mod.analyze
+analyze_lighting_v2 = _lighting_v2_mod.analyze
+analyze_transitions_v4 = _transitions_v4_mod.analyze
+analyze_captions_v3 = _captions_v3_mod.analyze
+analyze_framing_v4 = _framing_v4_mod.analyze
+analyze_hashtags_v4 = _hashtag_v4_mod.analyze
+analyze_stability_v3 = _stability_v3_mod.analyze
+analyze_clarity_v4 = _clarity_v4_mod.analyze
+analyze_color_v3 = _color_v3_mod.analyze
 
 
 def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None, srt_file=None, hashtags_str=None):
@@ -219,6 +271,55 @@ def run_all(video_path, platform=None, transcript_path=None, thumbnail_path=None
     if "scores" in variety_v3_results and "scene_variety" in variety_v3_results["scores"]:
         variety_results.setdefault("scores", {})["scene_variety"] = variety_v3_results["scores"]["scene_variety"]
         variety_results["overall_score"] = variety_v3_results["overall_score"]
+    # v13 overrides: cta-v4 (78->82), retention-v3 (80->84), emotional-arc-v3 (80->84)
+    cta_v4_results = analyze_cta_v4(video_path, transcript_path)
+    retention_v3_results = analyze_retention_v3(video_path, detected_platform)
+    arc_v3_results = analyze_arc_v3(video_path, transcript_path)
+    if "scores" in cta_v4_results and "cta_placement" in cta_v4_results["scores"]:
+        content_results.setdefault("scores", {})["cta_placement"] = cta_v4_results["scores"]["cta_placement"]
+    if "scores" in retention_v3_results and "retention_curve" in retention_v3_results["scores"]:
+        retention_results.setdefault("scores", {})["retention_curve"] = retention_v3_results["scores"]["retention_curve"]
+        retention_results["overall_score"] = retention_v3_results["overall_score"]
+        retention_results["predicted_curve"] = retention_v3_results.get("predicted_curve", [])
+        retention_results["initial_retention_pct"] = retention_v3_results.get("initial_retention_pct", 0)
+    if "scores" in arc_v3_results and "emotional_arc" in arc_v3_results["scores"]:
+        emotional_results.setdefault("scores", {})["emotional_arc"] = arc_v3_results["scores"]["emotional_arc"]
+        emotional_results["overall_score"] = arc_v3_results["overall_score"]
+        emotional_results["arc_shape"] = arc_v3_results.get("arc_shape", "unknown")
+    # v14 overrides: lighting-v2 (80->84), transitions-v4 (80->84), caption-readability-v3 (80->84)
+    lighting_v2_results = analyze_lighting_v2(video_path)
+    transitions_v4_results = analyze_transitions_v4(video_path)
+    captions_v3_results = analyze_captions_v3(video_path, srt_file)
+    if "scores" in lighting_v2_results and "lighting" in lighting_v2_results["scores"]:
+        visual_results.setdefault("scores", {})["lighting"] = lighting_v2_results["scores"]["lighting"]
+    if "scores" in transitions_v4_results and "transitions" in transitions_v4_results["scores"]:
+        visual_results.setdefault("scores", {})["transitions"] = transitions_v4_results["scores"]["transitions"]
+    if "scores" in captions_v3_results and "caption_readability" in captions_v3_results["scores"]:
+        caption_results.setdefault("scores", {})["caption_readability"] = captions_v3_results["scores"]["caption_readability"]
+        caption_results["overall_score"] = captions_v3_results["overall_score"]
+        caption_results["cues_parsed"] = captions_v3_results.get("cues_parsed", 0)
+        caption_results["subtitle_streams_found"] = captions_v3_results.get("subtitle_streams_found", 0)
+    # v15 overrides: framing-v4 (80->84), hashtag-v4 (80->84), stability-v3 (80->84)
+    framing_v4_results = analyze_framing_v4(video_path)
+    hashtag_v4_results = analyze_hashtags_v4(video_path, transcript_path, detected_platform, hashtags_str)
+    stability_v3_results = analyze_stability_v3(video_path)
+    if "scores" in framing_v4_results and "framing" in framing_v4_results["scores"]:
+        framing_results.setdefault("scores", {})["framing"] = framing_v4_results["scores"]["framing"]
+        framing_results["overall_score"] = framing_v4_results["overall_score"]
+    if "scores" in hashtag_v4_results and "hashtag_relevance" in hashtag_v4_results["scores"]:
+        hashtag_results.setdefault("scores", {})["hashtag_relevance"] = hashtag_v4_results["scores"]["hashtag_relevance"]
+        hashtag_results["overall_score"] = hashtag_v4_results["overall_score"]
+    if "scores" in stability_v3_results and "camera_stability" in stability_v3_results["scores"]:
+        stability_results.setdefault("scores", {})["camera_stability"] = stability_v3_results["scores"]["camera_stability"]
+        stability_results["overall_score"] = stability_v3_results["overall_score"]
+    # v16 overrides: clarity-v4 (82->85), color-consistency-v3 (82->85)
+    clarity_v4_results = analyze_clarity_v4(video_path)
+    color_v3_results = analyze_color_v3(video_path)
+    if "scores" in clarity_v4_results and "clarity" in clarity_v4_results["scores"]:
+        visual_results.setdefault("scores", {})["clarity"] = clarity_v4_results["scores"]["clarity"]
+    if "scores" in color_v3_results and "color_grading" in color_v3_results["scores"]:
+        color_results.setdefault("scores", {})["color_grading"] = color_v3_results["scores"]["color_grading"]
+        color_results["overall_score"] = color_v3_results["overall_score"]
 
     # Virality prediction (v3: passes thumbnail, hashtag, dynamics, music, caption results)
     virality = compute_virality_score(

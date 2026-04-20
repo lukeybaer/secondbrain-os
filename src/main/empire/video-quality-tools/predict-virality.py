@@ -81,6 +81,18 @@ _music_v3_mod = importlib.import_module("analyze-music-mix-v3")
 _caption_mod = importlib.import_module("analyze-caption-readability")
 _trending_v3_mod = importlib.import_module("analyze-trending-topics-v3")
 _variety_v3_mod = importlib.import_module("analyze-scene-variety-v3")
+# v8 (predict-virality v4 - 2026-04-19): cta-v4, retention-v3, emotional-arc-v3
+_cta_v4_mod = importlib.import_module("analyze-cta-v4")
+_retention_v3_mod = importlib.import_module("analyze-retention-curve-v3")
+_arc_v3_mod = importlib.import_module("analyze-emotional-arc-v3")
+# v9 (predict-virality v5 - 2026-04-20): framing-v4, hashtag-v4, stability-v3 (80->84 each)
+_framing_v4_mod = importlib.import_module("analyze-framing-v4")
+_hashtag_v4_mod = importlib.import_module("analyze-hashtag-relevance-v4")
+_stability_v3_mod = importlib.import_module("analyze-camera-stability-v3")
+# v10 (predict-virality v7 - 2026-04-20): clarity-v4, color-v3, caption-v3; fix dynamics-v2 bug
+_clarity_v4_mod = importlib.import_module("analyze-clarity-v4")
+_color_v3_mod = importlib.import_module("analyze-color-consistency-v3")
+_captions_v3_mod = importlib.import_module("analyze-caption-readability-v3")
 
 analyze_technical = _tech_mod.analyze
 analyze_audio = _audio_mod.analyze
@@ -112,6 +124,15 @@ analyze_music_v3 = _music_v3_mod.analyze
 analyze_captions = _caption_mod.analyze
 analyze_trending_v3 = _trending_v3_mod.analyze
 analyze_variety_v3 = _variety_v3_mod.analyze
+analyze_cta_v4 = _cta_v4_mod.analyze
+analyze_retention_v3 = _retention_v3_mod.analyze
+analyze_arc_v3 = _arc_v3_mod.analyze
+analyze_framing_v4 = _framing_v4_mod.analyze
+analyze_hashtags_v4 = _hashtag_v4_mod.analyze
+analyze_stability_v3 = _stability_v3_mod.analyze
+analyze_clarity_v4 = _clarity_v4_mod.analyze
+analyze_color_v3 = _color_v3_mod.analyze
+analyze_captions_v3 = _captions_v3_mod.analyze
 
 
 # Virality signal weights v3: adds thumbnail_appeal, hashtag_relevance, audio_dynamics,
@@ -570,9 +591,11 @@ def analyze(video_path, platform=None, transcript_path=None):
     hashtag_v3_virality = analyze_hashtags_v3(video_path, transcript_path, detected_platform)
     dynamics_v2_virality = analyze_dynamics_v2(video_path, detected_platform)
     music_v3_virality = analyze_music_v3(video_path)
-    caption_virality = analyze_captions(video_path)
+    caption_virality = analyze_captions_v3(video_path)
     trending_v3_virality = analyze_trending_v3(video_path, transcript_path, detected_platform)
     variety_v3_virality = analyze_variety_v3(video_path)
+    # v7: initialize hashtag_results before override block (was NameError in v6)
+    hashtag_results = dict(hashtag_v3_virality)
 
     if "scores" in clarity_v3_results and "clarity" in clarity_v3_results["scores"]:
         visual_results.setdefault("scores", {})["clarity"] = clarity_v3_results["scores"]["clarity"]
@@ -609,6 +632,42 @@ def analyze(video_path, platform=None, transcript_path=None):
     if "scores" in variety_v3_virality and "scene_variety" in variety_v3_virality["scores"]:
         variety_results.setdefault("scores", {})["scene_variety"] = variety_v3_virality["scores"]["scene_variety"]
         variety_results["overall_score"] = variety_v3_virality["overall_score"]
+    # v4 (predict-virality) overrides: cta-v4, retention-v3, emotional-arc-v3 (78->82, 80->84, 80->84)
+    cta_v4_virality = analyze_cta_v4(video_path, transcript_path)
+    retention_v3_virality = analyze_retention_v3(video_path, detected_platform)
+    arc_v3_virality = analyze_arc_v3(video_path, transcript_path)
+    if "scores" in cta_v4_virality and "cta_placement" in cta_v4_virality["scores"]:
+        content_results.setdefault("scores", {})["cta_placement"] = cta_v4_virality["scores"]["cta_placement"]
+    if "scores" in retention_v3_virality and "retention_curve" in retention_v3_virality["scores"]:
+        retention_results.setdefault("scores", {})["retention_curve"] = retention_v3_virality["scores"]["retention_curve"]
+        retention_results["overall_score"] = retention_v3_virality["overall_score"]
+        retention_results["predicted_curve"] = retention_v3_virality.get("predicted_curve", [])
+        retention_results["initial_retention_pct"] = retention_v3_virality.get("initial_retention_pct", 0)
+    if "scores" in arc_v3_virality and "emotional_arc" in arc_v3_virality["scores"]:
+        emotional_results.setdefault("scores", {})["emotional_arc"] = arc_v3_virality["scores"]["emotional_arc"]
+        emotional_results["overall_score"] = arc_v3_virality["overall_score"]
+        emotional_results["arc_shape"] = arc_v3_virality.get("arc_shape", "unknown")
+    # v5 (predict-virality) overrides: framing-v4, hashtag-v4, stability-v3 (80->84 each)
+    framing_v4_virality = analyze_framing_v4(video_path)
+    hashtag_v4_virality = analyze_hashtags_v4(video_path, transcript_path, detected_platform)
+    stability_v3_virality = analyze_stability_v3(video_path)
+    if "scores" in framing_v4_virality and "framing" in framing_v4_virality["scores"]:
+        framing_results.setdefault("scores", {})["framing"] = framing_v4_virality["scores"]["framing"]
+        framing_results["overall_score"] = framing_v4_virality["overall_score"]
+    if "scores" in hashtag_v4_virality and "hashtag_relevance" in hashtag_v4_virality["scores"]:
+        hashtag_results.setdefault("scores", {})["hashtag_relevance"] = hashtag_v4_virality["scores"]["hashtag_relevance"]
+        hashtag_results["overall_score"] = hashtag_v4_virality["overall_score"]
+    if "scores" in stability_v3_virality and "camera_stability" in stability_v3_virality["scores"]:
+        stability_results.setdefault("scores", {})["camera_stability"] = stability_v3_virality["scores"]["camera_stability"]
+        stability_results["overall_score"] = stability_v3_virality["overall_score"]
+    # v7 overrides: clarity-v4 (82->85), color-v3 (82->85)
+    clarity_v4_virality = analyze_clarity_v4(video_path)
+    color_v3_virality = analyze_color_v3(video_path)
+    if "scores" in clarity_v4_virality and "clarity" in clarity_v4_virality["scores"]:
+        visual_results.setdefault("scores", {})["clarity"] = clarity_v4_virality["scores"]["clarity"]
+    if "scores" in color_v3_virality and "color_grading" in color_v3_virality["scores"]:
+        color_results.setdefault("scores", {})["color_grading"] = color_v3_virality["scores"]["color_grading"]
+        color_results["overall_score"] = color_v3_virality["overall_score"]
 
     virality = compute_virality_score(
         tech_results, audio_results, content_results, visual_results, detected_platform,
@@ -621,15 +680,15 @@ def analyze(video_path, platform=None, transcript_path=None):
         variety_results=variety_results,
         framing_results=framing_results,
         thumbnail_results=thumb_v3_virality,
-        hashtag_results=hashtag_v3_virality,
-        dynamics_results=dynamics_v2_virality,
+        hashtag_results=hashtag_results,
+        dynamics_results=dynamics_v3_virality,
         music_results=music_v3_virality,
         caption_results=caption_virality,
     )
 
     return {
         "tool": "predict-virality",
-        "version": "5.0.0",
+        "version": "7.0.0",
         "video_path": video_path,
         **virality,
     }
