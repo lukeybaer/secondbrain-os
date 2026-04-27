@@ -60,16 +60,30 @@ function escapeRegex(s) {
 }
 
 function buildPatterns(denylist) {
-  const namesEscaped = denylist.names.map(escapeRegex);
-  const tokensEscaped = denylist.tokens.map(escapeRegex);
-  const emailsEscaped = denylist.emails.map(escapeRegex);
-  const phones = denylist.phones;
+  // Distinct token list: tokens + ALL-LOWERCASE single-token names. These
+  // are the strings that should match even when embedded in identifiers
+  // (camelCase, snake_case). The pattern (?<![a-z])token(?![a-z]) catches
+  // identifiers like `tokenArticles`, `TokenLive`, and `token_dev` while
+  // still rejecting `monitoring` (substring match would over-flag).
+  const allTokens = new Set(denylist.tokens || []);
+  for (const n of denylist.names || []) {
+    if (n === n.toLowerCase() && /^[a-z][a-z0-9_-]*$/.test(n) && n.length >= 5) {
+      allTokens.add(n);
+    }
+  }
+  const namesEscaped = (denylist.names || []).map(escapeRegex);
+  const tokensEscaped = [...allTokens].map(escapeRegex);
+  const emailsEscaped = (denylist.emails || []).map(escapeRegex);
+  const phones = denylist.phones || [];
   const out = [];
   if (namesEscaped.length) {
     out.push({ kind: 'name', re: new RegExp('\\b(' + namesEscaped.join('|') + ')\\b', 'gi') });
   }
   if (tokensEscaped.length) {
-    out.push({ kind: 'token', re: new RegExp('\\b(' + tokensEscaped.join('|') + ')\\b', 'gi') });
+    out.push({
+      kind: 'token',
+      re: new RegExp('(?<![a-z])(' + tokensEscaped.join('|') + ')(?![a-z])', 'gi'),
+    });
   }
   if (emailsEscaped.length) {
     out.push({ kind: 'email', re: new RegExp('(' + emailsEscaped.join('|') + ')', 'gi') });

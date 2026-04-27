@@ -6,9 +6,8 @@
  * payload using Claude Haiku via the `claude` CLI subprocess (Claude Max plan,
  * zero per-call cost). Catches the class of leak that Layers 1 and 2 miss:
  * sentences that don't contain a denylisted token but still reveal personal
- * context about the owner ("Saturday edition includes a curated sermon
- * briefing" tells you the owner has someone close to them giving sermons,
- * even though no name appears).
+ * context about the owner -- the implication that the owner has a specific
+ * relationship, employer, or location, even when no name appears verbatim.
  *
  * Strategy:
  *   - Sample up to 200 prose lines from .md files in the payload that are
