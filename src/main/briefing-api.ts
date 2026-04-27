@@ -48,10 +48,11 @@ async function dispatchAmyComment(params: {
   comment: string;
 }): Promise<{ ok: boolean; error?: string }> {
   const { date, sectionTitle, comment } = params;
-  const subject = `#Amy dashboard feedback: ${sectionTitle} (${date})`;
+  // Plain notification email — NO #Amy tag. The Gmail #Amy scanner watches
+  // Luke-to-Luke emails with #Amy; this dashboard path is a separate
+  // direct-trigger channel and must not double-fire.
+  const subject = `Dashboard feedback: ${sectionTitle} (${date})`;
   const bodyLines = [
-    '#Amy',
-    '',
     `Section: ${sectionTitle}`,
     `Briefing date: ${date}`,
     '',
@@ -61,6 +62,22 @@ async function dispatchAmyComment(params: {
     '(Sent from briefing dashboard right-click dispatch.)',
   ];
   const body = bodyLines.join('\n');
+
+  const ts = new Date().toISOString();
+  // Direct-trigger queue first — guarantees the click persists even if Gmail fails.
+  try {
+    const queuePath = path.join(
+      process.env.SECONDBRAIN_ROOT || app.getAppPath(),
+      'data', 'agent', 'dispatch-queue.jsonl',
+    );
+    fs.mkdirSync(path.dirname(queuePath), { recursive: true });
+    fs.appendFileSync(queuePath, JSON.stringify({
+      ts, source: 'dashboard_electron', date, section: sectionTitle,
+      comment, status: 'queued',
+    }) + '\n');
+  } catch (qErr) {
+    console.error('[briefing-api] dispatch queue write failed:', (qErr as Error).message);
+  }
 
   const python = resolvePython();
   const script = SEND_GMAIL_PY();
@@ -81,13 +98,13 @@ async function dispatchAmyComment(params: {
         appendDispatchLog({
           thread_id: null,
           subject,
-          sent_at: new Date().toISOString(),
+          sent_at: ts,
           source: 'briefing_dashboard_right_click',
           briefing_date: date,
           section: sectionTitle,
           comment,
-          action: 'self_dispatch',
-          action_summary: 'Queued as #Amy email to self for next Gmail scan to process',
+          action: 'direct_trigger_queued',
+          action_summary: 'Written to data/agent/dispatch-queue.jsonl for immediate processing by process-dispatches.js',
           status: 'queued',
         });
         resolve({ ok: true });

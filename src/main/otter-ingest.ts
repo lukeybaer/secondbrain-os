@@ -166,7 +166,7 @@ export function extractBreadcrumbs(transcript: string | undefined): string | nul
     /the big (thing|deal|takeaway)/i,
     /i (need to|should|want to) remember/i,
     /note to self/i,
-    /between .+ and .+ is/i, // "between the owner and Evgeny is..."
+    /between .+ and .+ is/i, // "between the owner and X is..."
   ];
 
   const hasBreadcrumbSignal = breadcrumbSignals.some((pattern) => pattern.test(postGoodbye));
