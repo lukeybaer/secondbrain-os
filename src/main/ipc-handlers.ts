@@ -750,27 +750,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
             /* best-effort */
           });
         }
-
-        // 2026-04-26 Luke dispatch: "The comments shoudl trigger regen
-        // immediately. that's a health failure too." Spawn auto-regen as a
-        // detached background process so the IPC handler returns instantly.
-        // Idempotent -- if a previous run is still in flight, the node
-        // process just exits "no work to do."
-        try {
-          const { spawn } = require('child_process');
-          const scriptPath = path.join(contentRoot, 'scripts', 'auto-regen-rejected-videos.js');
-          if (fs.existsSync(scriptPath)) {
-            const proc = spawn('node', [scriptPath, '--id', id], {
-              cwd: contentRoot,
-              detached: true,
-              stdio: 'ignore',
-            });
-            proc.unref();
-            console.log(`[reject] spawned auto-regen for ${id} (pid ${proc.pid})`);
-          }
-        } catch (regenErr: any) {
-          console.warn('[reject] auto-regen spawn failed:', regenErr.message);
-        }
       }
 
       return { success: true };
@@ -975,24 +954,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         ).catch(() => {
           /* best-effort */
         });
-      }
-
-      // 2026-04-26 Luke dispatch: rejection-with-comment must trigger
-      // immediate regen, not wait for the next scheduled run.
-      try {
-        const { spawn } = require('child_process');
-        const scriptPath = path.join(contentRoot, 'scripts', 'auto-regen-rejected-videos.js');
-        if (fs.existsSync(scriptPath)) {
-          const proc = spawn('node', [scriptPath, '--id', id], {
-            cwd: contentRoot,
-            detached: true,
-            stdio: 'ignore',
-          });
-          proc.unref();
-          console.log(`[reject-uploaded] spawned auto-regen for ${id} (pid ${proc.pid})`);
-        }
-      } catch (regenErr: unknown) {
-        console.warn('[reject-uploaded] auto-regen spawn failed:', regenErr instanceof Error ? regenErr.message : String(regenErr));
       }
 
       return { success: true };

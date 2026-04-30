@@ -34,7 +34,7 @@ Connect your personal WhatsApp via QR code (whatsapp-web.js) or the Meta Busines
 
 ### Daily Briefing Generation
 
-Automated morning briefing delivered via Telegram at a fixed time daily. Pulls from multiple sources: curated news with AI summarization, contact intelligence (birthdays, LinkedIn moves, relationship warmth scores), reputation monitoring via keyword alerts, pending content approvals, and queued calls.
+Automated morning briefing delivered via Telegram at 5:30 AM CT. Pulls from multiple sources: curated news with AI summarization, contact intelligence (birthdays, LinkedIn moves, relationship warmth scores), reputation monitoring via keyword alerts, pending content approvals, and queued calls. Saturday edition includes a curated sermon briefing.
 
 ### Temporal Knowledge Graph (Graphiti)
 

@@ -92,28 +92,8 @@ function scp(remote, local) {
     const localThumb = path.join(PENDING_DIR, thumbFilename);
     const remoteThumb = `${EC2_YT_DIR}/${thumbFilename}`;
 
-    // Skip if local copy is at least as new as the EC2 copy. Otherwise pull
-    // the fresh build. Locked 2026-04-26 -- before this, the script only
-    // checked for file presence, so 10-day-old local copies persisted while
-    // EC2 built newer versions, and the videoPipeline probe correctly
-    // flagged "newest video 232h old" because synced_at never advanced.
-    let needsPull = !fs.existsSync(localMp4);
-    if (!needsPull) {
-      try {
-        const remoteMtimeRaw = ssh(`stat -c %Y "${remotePath}" 2>/dev/null`);
-        const remoteMtime = parseInt((remoteMtimeRaw || '').trim(), 10);
-        const localMtime = Math.floor(fs.statSync(localMp4).mtimeMs / 1000);
-        if (Number.isFinite(remoteMtime) && remoteMtime > localMtime + 5) {
-          needsPull = true;
-          console.log(`[sync] Refreshing ${videoId} (EC2 ${remoteMtime - localMtime}s newer)`);
-        }
-      } catch (e) { /* fall through to skip */ }
-    }
-    if (!needsPull) {
-      // Even when skipped, advance the manifest's synced_at so the
-      // videoPipeline probe doesn't false-red on a quiet day.
-      const entry = (manifest.videos || []).find((v) => v.id === videoId);
-      if (entry && !entry.synced_at) entry.synced_at = new Date().toISOString();
+    // Skip if already in pending and file exists
+    if (fs.existsSync(localMp4)) {
       skipped++;
       continue;
     }
@@ -160,68 +140,15 @@ function scp(remote, local) {
 
     // Add to manifest
     if (existingIds.has(videoId)) {
-      // Update existing entry. Honesty contract (locked 2026-04-26): do NOT
-      // unconditionally reset status to pending_approval. If the entry has
-      // an open rejection (video_needs_regen or thumbnail_needs_regen),
-      // only clear the matching flag when the synced file is genuinely
-      // newer than the most recent rejection of that target. Pre-fix, this
-      // script was clobbering status='pending_approval' even when the
-      // synced mp4 was the same file Luke had just rejected.
+      // Update existing entry
       const entry = manifest.videos.find((v) => v.id === videoId);
       if (entry) {
-        const wasVideoRejected = entry.video_needs_regen === true;
-        const wasThumbRejected = entry.thumbnail_needs_regen === true;
-        const nowMp4Mtime = fs.existsSync(localMp4) ? fs.statSync(localMp4).mtimeMs : 0;
-        const nowThumbMtime =
-          thumbOk && fs.existsSync(localThumb) ? fs.statSync(localThumb).mtimeMs : 0;
-
-        function lastRejectedAtMs(target) {
-          try {
-            const lines = fs
-              .readFileSync(
-                path.join(SECONDBRAIN_ROOT, 'content-review', 'rejections.jsonl'),
-                'utf8',
-              )
-              .split('\n')
-              .filter(Boolean);
-            for (let i = lines.length - 1; i >= 0; i--) {
-              try {
-                const r = JSON.parse(lines[i]);
-                if (r.id === videoId && (r.target === target || r.target === 'both')) {
-                  return new Date(r.rejectedAt).getTime();
-                }
-              } catch {}
-            }
-          } catch {}
-          return 0;
-        }
-
+        entry.status = 'pending_approval';
         entry.video_file = filename;
         entry.thumbnail_file = thumbOk ? thumbFilename : entry.thumbnail_file;
+        entry.video_needs_regen = false;
         entry.synced_at = new Date().toISOString();
         entry.fix_summary = (entry.fix_summary || '') + ' [synced from EC2]';
-
-        let allCleared = true;
-        if (wasVideoRejected) {
-          const rejectedMs = lastRejectedAtMs('video');
-          if (nowMp4Mtime > rejectedMs && rejectedMs > 0) {
-            entry.video_needs_regen = false;
-          } else {
-            allCleared = false;
-          }
-        }
-        if (wasThumbRejected) {
-          const rejectedMs = lastRejectedAtMs('thumbnail');
-          if (nowThumbMtime > rejectedMs && rejectedMs > 0) {
-            entry.thumbnail_needs_regen = false;
-          } else {
-            allCleared = false;
-          }
-        }
-
-        if (allCleared) {
-          entry.status = 'pending_approval';
-        }
       }
     } else {
       // New entry

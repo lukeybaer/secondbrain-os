@@ -196,38 +196,10 @@ describe('action items JSON — structure', () => {
 
   it('every unanswered email has a verifiable threadId + gmailUrl', () => {
     if (!data || !data.unansweredEmails) return;
-    // The briefing generator filters out system-issue rows (CI failures,
-    // deploy failures, broken pipelines) before rendering -- they belong in
-    // SYSTEM HEALTH, not in Luke's action-item to-do list. Apply the same
-    // filter here so the test reflects the actually-displayed contract.
-    // Locked 2026-04-26 per feedback_system_issues_are_health_probes_not_action_items.md.
-    let items;
-    try {
-      const ranker = require('../../../scripts/briefing-ranker.js');
-      items = ranker.filterSystemIssues
-        ? ranker.filterSystemIssues(data.unansweredEmails)
-        : data.unansweredEmails;
-    } catch {
-      items = data.unansweredEmails;
-    }
-    for (const item of items) {
+    for (const item of data.unansweredEmails) {
       expect(item.threadId).toBeDefined();
-      // Accept either a Gmail hex thread id (16-20 hex chars) or a slug
-      // identifier (subject-derived, used when the action item didn't
-      // originate from a Gmail thread). Both produce a working
-      // gmailUrl via gmailThreadUrl() in ec2-server.js -- hex routes to
-      // #inbox/<id>, slug routes to a #search/subject query.
-      expect(
-        item.threadId,
-        `${item.person}: threadId "${item.threadId}" must be hex (Gmail) or slug (subject)`,
-      ).toMatch(/^([a-f0-9]+|[a-z][a-z0-9-]+)$/);
-      // Action items can come from Gmail OR LinkedIn DMs (the linkedin-dm-scan
-      // pipeline). Both produce a clickable URL via the same channel-aware
-      // routing. Locked 2026-04-26.
-      expect(
-        item.gmailUrl,
-        `${item.person}: gmailUrl must point to Gmail or LinkedIn messaging`,
-      ).toMatch(/^https:\/\/(mail\.google\.com|www\.linkedin\.com)/);
+      expect(item.threadId).toMatch(/^[a-f0-9]+$/);
+      expect(item.gmailUrl).toMatch(/^https:\/\/mail\.google\.com/);
     }
   });
 
@@ -274,10 +246,7 @@ describe('manual-briefing-v3.js — openCommitment supersession filter', () => {
 
   it('loadActionItems filters openCommitments by lastThreadMessageAt vs committedAt', () => {
     // The filter must live inside loadActionItems so every call site benefits.
-    // Extended from 3000 chars to 8000 to cover the full function body --
-    // the dismissal-pass + supersession-pass + ranker logic now spans more
-    // than the original window. Locked 2026-04-26.
-    const fn = src.match(/function loadActionItems[\s\S]{0,8000}/);
+    const fn = src.match(/function loadActionItems[\s\S]{0,3000}/);
     expect(fn).toBeTruthy();
     if (fn) {
       expect(fn[0]).toContain('lastThreadMessageAt');
@@ -287,7 +256,7 @@ describe('manual-briefing-v3.js — openCommitment supersession filter', () => {
   });
 
   it('loadActionItems respects stillOpen:true as an operator override', () => {
-    const fn = src.match(/function loadActionItems[\s\S]{0,8000}/);
+    const fn = src.match(/function loadActionItems[\s\S]{0,3000}/);
     expect(fn).toBeTruthy();
     if (fn) expect(fn[0]).toContain('stillOpen');
   });

@@ -164,77 +164,9 @@ def send_one(smtp: smtplib.SMTP, path: Path, sender: str) -> bool:
         return False
 
 
-def send_inline(payload: dict) -> int:
-    """One-shot send from an in-memory payload (used by CLI flag mode)."""
-    sender = load_sender()
-    app_password = load_app_password()
-    msg = build_message(payload, sender)
-    recipients = [msg["To"]]
-    if msg["Cc"]:
-        recipients.extend([a.strip() for a in str(msg["Cc"]).split(",")])
-    if msg["Bcc"]:
-        recipients.extend([a.strip() for a in str(msg["Bcc"]).split(",")])
-    print(f"connecting to {SMTP_HOST}:{SMTP_PORT} as {sender}")
-    ctx = ssl.create_default_context()
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.ehlo()
-        smtp.starttls(context=ctx)
-        smtp.ehlo()
-        smtp.login(sender, app_password)
-        smtp.send_message(msg, from_addr=sender, to_addrs=recipients)
-    print(f"SENT  inline -> {payload['to']}")
-    return 0
-
-
-def parse_flag_args(argv: list[str]) -> dict | None:
-    """Parse --to / --subject / --body style flags into a payload dict.
-    Returns None if no recognized flags are present (falls back to file mode)."""
-    flags = {"--to", "--subject", "--body", "--cc", "--bcc", "--reply-to",
-             "--in-reply-to", "--references"}
-    if not any(a in flags for a in argv):
-        return None
-    payload: dict = {}
-    i = 1
-    while i < len(argv):
-        a = argv[i]
-        if a == "--to" and i + 1 < len(argv):
-            payload["to"] = argv[i + 1]; i += 2; continue
-        if a == "--cc" and i + 1 < len(argv):
-            payload["cc"] = argv[i + 1]; i += 2; continue
-        if a == "--bcc" and i + 1 < len(argv):
-            payload["bcc"] = argv[i + 1]; i += 2; continue
-        if a == "--subject" and i + 1 < len(argv):
-            payload["subject"] = argv[i + 1]; i += 2; continue
-        if a == "--body" and i + 1 < len(argv):
-            payload["body"] = argv[i + 1]; i += 2; continue
-        if a == "--body-file" and i + 1 < len(argv):
-            payload["body"] = Path(argv[i + 1]).read_text(encoding="utf-8"); i += 2; continue
-        if a == "--reply-to" and i + 1 < len(argv):
-            payload["reply_to"] = argv[i + 1]; i += 2; continue
-        if a == "--in-reply-to" and i + 1 < len(argv):
-            payload["in_reply_to"] = argv[i + 1]; i += 2; continue
-        if a == "--references" and i + 1 < len(argv):
-            payload["references"] = argv[i + 1]; i += 2; continue
-        i += 1
-    return payload
-
-
 def main(argv: list[str]) -> int:
-    flag_payload = parse_flag_args(argv)
-    if flag_payload is not None:
-        missing = [k for k in ("to", "subject", "body") if not flag_payload.get(k)]
-        if missing:
-            print(f"ERROR: flag mode missing required fields: {missing}", file=sys.stderr)
-            return 2
-        return send_inline(flag_payload)
-
     if len(argv) != 2:
-        print(
-            "usage:\n"
-            "  send-gmail.py <file.json | directory>\n"
-            "  send-gmail.py --to EMAIL --subject SUBJ --body TEXT [--cc ... --in-reply-to ... --references ...]",
-            file=sys.stderr,
-        )
+        print("usage: send-gmail.py <file.json | directory>", file=sys.stderr)
         return 2
 
     target = Path(argv[1]).resolve()

@@ -12,7 +12,6 @@ import { app } from 'electron';
 import { acquireLock, releaseLock } from './database-sqlite';
 
 import { getConfig } from './config';
-import { appendHeartbeat } from './pipeline-heartbeat';
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
@@ -37,10 +36,6 @@ function manifestPath(): string {
 
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
-}
-
-function heartbeatLogPath(): string {
-  return path.join(app.getPath('userData'), 'data', 'agent', 'pipeline-heartbeat.jsonl');
 }
 
 // ── Python runner ─────────────────────────────────────────────────────────────
@@ -218,27 +213,14 @@ async function buildSingleVideo(spec: VideoSpec, index: number): Promise<Manifes
   ]);
 
   if (!buildResult.success) {
-    const errSnip = buildResult.stderr.slice(0, 200);
-    console.error(`[video-pipeline] Build failed for ${videoId}:`, buildResult.stderr.slice(0, 500));
-    appendHeartbeat(heartbeatLogPath(), {
-      timestamp: new Date().toISOString(),
-      task: 'video-pipeline',
-      status: 'error',
-      video_id: videoId,
-      error_type: 'build_failed',
-      error: errSnip,
-    });
-    entry.qc_notes = `Build failed: ${errSnip}`;
+    console.error(
+      `[video-pipeline] Build failed for ${videoId}:`,
+      buildResult.stderr.slice(0, 500),
+    );
+    entry.qc_notes = `Build failed: ${buildResult.stderr.slice(0, 200)}`;
     addToManifest(entry);
     return entry;
   }
-
-  appendHeartbeat(heartbeatLogPath(), {
-    timestamp: new Date().toISOString(),
-    task: 'video-pipeline',
-    status: 'video_built',
-    video_id: videoId,
-  });
 
   // Try to find produced files
   const files = fs.existsSync(outputDir) ? fs.readdirSync(outputDir) : [];
@@ -253,13 +235,6 @@ async function buildSingleVideo(spec: VideoSpec, index: number): Promise<Manifes
     const qcResult = await runPython(qcScript, [entry.video_path]);
     entry.qc_passed = qcResult.success;
     entry.qc_notes = qcResult.stdout.slice(0, 500) || qcResult.stderr.slice(0, 500);
-    appendHeartbeat(heartbeatLogPath(), {
-      timestamp: new Date().toISOString(),
-      task: 'video-pipeline',
-      status: qcResult.success ? 'qc_passed' : 'qc_failed',
-      video_id: videoId,
-      ...(qcResult.success ? {} : { error_type: 'qc_failed', error: entry.qc_notes?.slice(0, 200) }),
-    });
   }
 
   // Try to extract title from build output
@@ -293,13 +268,6 @@ export async function runVideoPipeline(): Promise<PipelineResult> {
   const specs = getTodayVideoSpecs();
   const results: ManifestEntry[] = [];
 
-  appendHeartbeat(heartbeatLogPath(), {
-    timestamp: new Date().toISOString(),
-    task: 'video-pipeline',
-    status: 'started',
-    details: `building ${specs.length} videos`,
-  });
-
   console.log(`[video-pipeline] Starting — building ${specs.length} videos`);
 
   // Telegram is daily-briefing-only — log pipeline start to console instead
@@ -321,13 +289,6 @@ export async function runVideoPipeline(): Promise<PipelineResult> {
 
   const qcPassed = results.filter((r) => r.qc_passed).length;
   const built = results.length;
-
-  appendHeartbeat(heartbeatLogPath(), {
-    timestamp: new Date().toISOString(),
-    task: 'video-pipeline',
-    status: 'completed',
-    details: `${built} built, ${qcPassed} passed QC`,
-  });
 
   // Release lock on success (keep on failure so we can retry manually)
   if (built === specs.length) {
@@ -443,14 +404,6 @@ export async function regenRejectedVideos(contentRoot: string): Promise<RegenRes
   const results: RegenResult[] = [];
   const outputBaseDir = path.join(contentRoot, 'content-review', 'pending');
 
-  function mtimeOrZero(p: string): number {
-    try {
-      return fs.statSync(p).mtimeMs;
-    } catch {
-      return 0;
-    }
-  }
-
   for (const video of flagged) {
     const rejectionNote = video.video_rejection_note || video.thumbnail_rejection_note || '';
 
@@ -458,18 +411,6 @@ export async function regenRejectedVideos(contentRoot: string): Promise<RegenRes
     video.regen_status = 'in_progress';
     video.regen_started_at = new Date().toISOString();
     fs.writeFileSync(pendingManifestPath, JSON.stringify(manifest, null, 2));
-
-    // Honesty contract (locked 2026-04-26): capture pre-build mtimes so
-    // success can only be claimed when the artifact actually changed. The
-    // ad-hoc "marathon dispatch" Python flow that caused the gap wrote
-    // regen_completed_at without rewriting the thumbnail jpg, cycling the
-    // SAME bad artifact back into Luke's queue. Never again.
-    const mp4Path = path.join(outputBaseDir, video.id, `${video.id}.mp4`);
-    const thumbPath = path.join(outputBaseDir, video.id, `${video.id}_thumb.jpg`);
-    const flatMp4 = path.join(outputBaseDir, `${video.id}.mp4`);
-    const flatThumb = path.join(outputBaseDir, `${video.id}_thumb.jpg`);
-    const beforeMp4 = Math.max(mtimeOrZero(mp4Path), mtimeOrZero(flatMp4));
-    const beforeThumb = Math.max(mtimeOrZero(thumbPath), mtimeOrZero(flatThumb));
 
     const result = await buildRejectedVideo(
       video.id,
@@ -480,38 +421,9 @@ export async function regenRejectedVideos(contentRoot: string): Promise<RegenRes
     );
 
     if (result.success) {
-      const afterMp4 = Math.max(mtimeOrZero(mp4Path), mtimeOrZero(flatMp4));
-      const afterThumb = Math.max(mtimeOrZero(thumbPath), mtimeOrZero(flatThumb));
-      const videoChanged = afterMp4 > beforeMp4;
-      const thumbChanged = afterThumb > beforeThumb;
-
-      const failures: string[] = [];
-      if (video.video_needs_regen === true && !videoChanged) {
-        failures.push('mp4 mtime unchanged');
-      }
-      if (video.thumbnail_needs_regen === true && !thumbChanged) {
-        failures.push('thumb mtime unchanged');
-      }
-
-      if (failures.length > 0) {
-        // Build claimed success but artifact mtime didn't move --- the
-        // pipeline lied. Mark failed and leave the rejection state intact
-        // so this video does NOT cycle back into Luke's review queue.
-        video.regen_status = 'failed';
-        video.regen_error = 'mtime guard: ' + failures.join('; ');
-        video.regen_failed_at = new Date().toISOString();
-        results.push({
-          videoId: video.id,
-          success: false,
-          error: 'mtime guard: ' + failures.join('; '),
-        });
-        fs.writeFileSync(pendingManifestPath, JSON.stringify(manifest, null, 2));
-        continue;
-      }
-
-      // Real regen: clear only the flags for artifacts that actually moved.
-      if (videoChanged) video.video_needs_regen = false;
-      if (thumbChanged) video.thumbnail_needs_regen = false;
+      // Clear regen flags — video is back in pending_approval
+      video.video_needs_regen = false;
+      video.thumbnail_needs_regen = false;
       video.regen_status = 'done';
       video.regen_completed_at = new Date().toISOString();
       video.status = 'pending_approval';
@@ -520,7 +432,6 @@ export async function regenRejectedVideos(contentRoot: string): Promise<RegenRes
     } else {
       video.regen_status = 'failed';
       video.regen_error = result.error;
-      video.regen_failed_at = new Date().toISOString();
     }
 
     fs.writeFileSync(pendingManifestPath, JSON.stringify(manifest, null, 2));

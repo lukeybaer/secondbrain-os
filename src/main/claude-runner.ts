@@ -168,16 +168,7 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
 
     child.on('error', (err) => {
       clearTimeout(timer);
-      // Translate raw Node errors into a Luke-safe message. The previous
-      // format ("Process error: spawn claude ENOENT") was forwarded to Amy
-      // and TTS'd onto Luke's voicemail after a run_claude_code dispatch
-      // in call 019db811 (2026-04-22). Never ship raw errors to the owner.
-      const raw = err.message || String(err);
-      const isENOENT = /ENOENT/i.test(raw);
-      const cleanMsg = isENOENT
-        ? `Claude CLI not found at ${claudeAbsPath}. Dispatch could not run. Restart the Electron app on Luke's PC to re-resolve claude.cmd, or reinstall the CLI with "npm i -g @anthropic-ai/claude-code".`
-        : `Claude CLI could not start: ${raw.slice(0, 120)}`;
-      resolve({ output: cleanMsg, success: false, exitCode: -1 });
+      resolve({ output: `Process error: ${err.message}`, success: false, exitCode: -1 });
     });
   });
 }
