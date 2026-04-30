@@ -44,6 +44,11 @@ const INTEL_JSON_PATH = path.join(APPDATA, 'secondbrain', 'data', 'agent', 'link
 // scripts/linkedin-bulk-scan.js → ../memory/contacts
 const CONTACTS_DIR = path.resolve(__dirname, '..', 'memory', 'contacts');
 const INTEL_MD_PATH = path.join(CONTACTS_DIR, '_linkedin-daily-intel.md');
+// Raw scrape archive for the unified-brain ingest pipeline. Each contact's
+// scan lands here as JSON so scripts/ingest-linkedin-watcher.mjs can feed
+// Graphiti via the canonical funnel without coupling the scraper to the
+// Electron build path.
+const LINKEDIN_RAW_DIR = path.resolve(__dirname, '..', 'data', 'linkedin', 'raw');
 
 const ARGS = process.argv.slice(2);
 const LIMIT = (() => {
@@ -217,6 +222,45 @@ function updateContactFile(contact, recentPosts) {
     return true;
   } catch {
     return false;
+  }
+}
+
+// ── Raw scrape archive (ingest funnel input) ────────────────────────────────
+
+function safeContactSlug(name) {
+  return (name || 'unknown')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80) || 'unknown';
+}
+
+function archiveRawScrape(contact, recentPosts) {
+  // One file per contact per day, overwritten if rerun. Watcher dedupes by
+  // file id, so re-running the scan within a day is a no-op for ingest.
+  try {
+    ensureDir(LINKEDIN_RAW_DIR);
+    const today = new Date().toISOString().slice(0, 10);
+    const slug = safeContactSlug(contact.name);
+    const id = `${slug}-${today}`;
+    const fname = path.join(LINKEDIN_RAW_DIR, `${id}.json`);
+    const summary = (recentPosts || [])
+      .map((p, i) => `(${i + 1}) ${p.age} ago: ${p.text}`)
+      .join('\n');
+    const payload = {
+      id,
+      type: recentPosts && recentPosts.length > 0 ? 'profile' : 'profile',
+      contact_name: contact.name,
+      contact_url: contact.url,
+      category: contact.category,
+      warmth: contact.warmth,
+      scanned_at: new Date().toISOString(),
+      recent_posts: recentPosts || [],
+      body: summary || '(no recent activity)',
+    };
+    fs.writeFileSync(fname, JSON.stringify(payload, null, 2), 'utf8');
+  } catch (e) {
+    log(`archiveRawScrape failed for ${contact.name}: ${e.message}`);
   }
 }
 
@@ -412,6 +456,7 @@ function writeIntel(results, errors, elapsedMs) {
       log(`  ${res.posts.length} posts captured, ${recent.length} recent (<=30d)`);
       results.push({ contact: c, recentPosts: recent });
       updateContactFile(c, recent);
+      archiveRawScrape(c, recent);
     }
     // Rate limit
     if (i < queue.length - 1) {

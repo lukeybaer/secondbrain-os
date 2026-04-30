@@ -410,6 +410,31 @@ export async function runLinkedInNightlyCrawl(): Promise<void> {
     return true;
   });
 
+  // Fire each event into Graphiti via the canonical ingest funnel so
+  // dispatch / #recall / any retriever can find the event by meaning, not
+  // just by the briefing-history JSON. Fire-and-forget: ingest-hooks logs
+  // and swallows Graphiti failures so a tunnel outage cannot break the
+  // nightly crawl.
+  try {
+    const { onDataIngested, linkedinEvent } = await import('./ingest-hooks');
+    for (const e of events) {
+      const headerBody = `${e.headline}\n\n${e.detail || ''}`;
+      onDataIngested(
+        linkedinEvent({
+          id: e.id,
+          type: 'profile',
+          contactName: e.contactName,
+          body: headerBody,
+          timestamp: e.detectedAt,
+        }),
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[linkedin-intel] ingest-hooks fan-out failed: ${(err as Error).message}`,
+    );
+  }
+
   // Count contacts with LinkedIn profile in the most-recent daily scan
   const intelFile = path.join(getContactsDir(), '_linkedin-daily-intel.md');
   let queriedCount = 8; // default inner-circle rotation

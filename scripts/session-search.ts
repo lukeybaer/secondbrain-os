@@ -26,8 +26,30 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-const BUCKET = 'secondbrain-sessions-000000000000-us-east-1';
-const REGION = 'us-east-1';
+const REGION = process.env.SECONDBRAIN_AWS_REGION || 'us-east-1';
+
+// Account ID is intentionally not in source (PII strip 2f94cce, 2026-04-11).
+// Resolve at runtime via env or aws sts. Throws if neither is available.
+function resolveBucket(): string {
+  if (process.env.SECONDBRAIN_SESSIONS_BUCKET) return process.env.SECONDBRAIN_SESSIONS_BUCKET;
+  let accountId = process.env.AWS_ACCOUNT_ID;
+  if (!accountId) {
+    try {
+      accountId = execSync('aws sts get-caller-identity --query Account --output text', {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    } catch {
+      throw new Error('Cannot resolve AWS account: set SECONDBRAIN_SESSIONS_BUCKET, AWS_ACCOUNT_ID, or configure aws cli');
+    }
+  }
+  if (!accountId || accountId === '000000000000') {
+    throw new Error('Resolved account id is empty or placeholder');
+  }
+  return `secondbrain-sessions-${accountId}-${REGION}`;
+}
+
+const BUCKET = resolveBucket();
 const DB_DIR = path.join(os.homedir(), '.secondbrain');
 const DB_PATH = path.join(DB_DIR, 'sessions.db');
 const STAGING_DIR = path.join(DB_DIR, 'meta-cache');
@@ -42,6 +64,9 @@ interface SessionMeta {
   first_prompt?: string;
   last_response?: string;
   topic_guess?: string;
+  corpus_user?: string;
+  corpus_assistant?: string;
+  schema_version?: number;
 }
 
 function ensureDirs(): void {
@@ -53,6 +78,21 @@ function openDb(): Database.Database {
   ensureDirs();
   const db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
+
+  // v1 schema (pre-corpus) created sessions_fts without corpus_user /
+  // corpus_assistant columns. Drop and recreate when migrating to v2.
+  const ftsRow = db
+    .prepare("SELECT sql FROM sqlite_master WHERE name = 'sessions_fts' AND type = 'table'")
+    .get() as { sql?: string } | undefined;
+  if (ftsRow?.sql && !ftsRow.sql.includes('corpus_user')) {
+    db.exec(`
+      DROP TRIGGER IF EXISTS sessions_ai;
+      DROP TRIGGER IF EXISTS sessions_ad;
+      DROP TRIGGER IF EXISTS sessions_au;
+      DROP TABLE IF EXISTS sessions_fts;
+    `);
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       session_id TEXT PRIMARY KEY,
@@ -64,6 +104,8 @@ function openDb(): Database.Database {
       first_prompt TEXT,
       last_response TEXT,
       topic_guess TEXT,
+      corpus_user TEXT,
+      corpus_assistant TEXT,
       s3_date TEXT,
       indexed_at TEXT
     );
@@ -74,20 +116,29 @@ function openDb(): Database.Database {
       last_response,
       topic_guess,
       tool_calls,
+      corpus_user,
+      corpus_assistant,
       content='sessions',
       content_rowid='rowid'
     );
 
     CREATE TRIGGER IF NOT EXISTS sessions_ai AFTER INSERT ON sessions BEGIN
-      INSERT INTO sessions_fts(rowid, session_id, first_prompt, last_response, topic_guess, tool_calls)
-      VALUES (new.rowid, new.session_id, new.first_prompt, new.last_response, new.topic_guess, new.tool_calls);
+      INSERT INTO sessions_fts(rowid, session_id, first_prompt, last_response, topic_guess, tool_calls, corpus_user, corpus_assistant)
+      VALUES (new.rowid, new.session_id, new.first_prompt, new.last_response, new.topic_guess, new.tool_calls, new.corpus_user, new.corpus_assistant);
     END;
 
     CREATE TRIGGER IF NOT EXISTS sessions_ad AFTER DELETE ON sessions BEGIN
-      INSERT INTO sessions_fts(sessions_fts, rowid, session_id, first_prompt, last_response, topic_guess, tool_calls)
-      VALUES('delete', old.rowid, old.session_id, old.first_prompt, old.last_response, old.topic_guess, old.tool_calls);
+      INSERT INTO sessions_fts(sessions_fts, rowid, session_id, first_prompt, last_response, topic_guess, tool_calls, corpus_user, corpus_assistant)
+      VALUES('delete', old.rowid, old.session_id, old.first_prompt, old.last_response, old.topic_guess, old.tool_calls, old.corpus_user, old.corpus_assistant);
     END;
   `);
+
+  // Add corpus columns if migrating an existing v1 sessions table.
+  const cols = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+  const colNames = new Set(cols.map((c) => c.name));
+  if (!colNames.has('corpus_user')) db.exec("ALTER TABLE sessions ADD COLUMN corpus_user TEXT");
+  if (!colNames.has('corpus_assistant')) db.exec("ALTER TABLE sessions ADD COLUMN corpus_assistant TEXT");
+
   return db;
 }
 
@@ -131,11 +182,11 @@ function upsertSession(db: Database.Database, meta: SessionMeta, s3Date: string)
     INSERT OR REPLACE INTO sessions (
       session_id, repo, started_at, ended_at, message_count,
       tool_calls, first_prompt, last_response, topic_guess,
-      s3_date, indexed_at
+      corpus_user, corpus_assistant, s3_date, indexed_at
     ) VALUES (
       @session_id, @repo, @started_at, @ended_at, @message_count,
       @tool_calls, @first_prompt, @last_response, @topic_guess,
-      @s3_date, @indexed_at
+      @corpus_user, @corpus_assistant, @s3_date, @indexed_at
     )
   `);
   stmt.run({
@@ -148,6 +199,8 @@ function upsertSession(db: Database.Database, meta: SessionMeta, s3Date: string)
     first_prompt: meta.first_prompt || '',
     last_response: meta.last_response || '',
     topic_guess: meta.topic_guess || '',
+    corpus_user: (meta as any).corpus_user || '',
+    corpus_assistant: (meta as any).corpus_assistant || '',
     s3_date: s3Date,
     indexed_at: new Date().toISOString(),
   });

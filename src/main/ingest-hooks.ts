@@ -42,7 +42,11 @@ export type IngestSource =
   | 'telegram-message'
   | 'briefing-daily'
   | 'briefing-evening'
-  | 'chat-session';
+  | 'chat-session'
+  | 'gmail-inbound'
+  | 'gmail-outbound'
+  | 'linkedin-message'
+  | 'linkedin-profile';
 
 // ── Main hook ────────────────────────────────────────────────────────────────
 
@@ -196,5 +200,84 @@ export function chatSessionEvent(opts: {
     body: opts.transcript,
     source: 'chat-session',
     sourceId: opts.sessionId,
+  };
+}
+
+// HTML to text helper. Used by gmailEvent so Graphiti's entity extractor sees
+// plain prose, not anchor tags and CSS. Lightweight on purpose: there is no
+// html-to-text dep in package.json and the email bodies we care about are
+// rarely structured beyond paragraphs and links. If a future pass needs DOM
+// fidelity, swap in a real parser, but keep the same signature.
+export function stripHtmlToText(html: string): string {
+  if (!html) return '';
+  let s = html;
+  // Drop scripts and styles entirely so embedded JS or CSS does not bleed in.
+  s = s.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ');
+  s = s.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ');
+  // Replace block tags with newlines so paragraphs survive as line breaks.
+  s = s.replace(/<\/(p|div|li|tr|h[1-6]|br)>/gi, '\n');
+  s = s.replace(/<br\s*\/?>(?=)/gi, '\n');
+  // Strip remaining tags.
+  s = s.replace(/<[^>]+>/g, '');
+  // Decode the most common HTML entities. The rest fall through as-is which
+  // is fine for entity extraction.
+  s = s
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+  // Collapse whitespace runs and trim.
+  s = s.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n');
+  return s.trim();
+}
+
+/** Build an IngestEvent from a Gmail message. Body may be HTML. */
+export function gmailEvent(opts: {
+  messageId: string;
+  threadId?: string;
+  from: string;
+  to?: string;
+  subject: string;
+  body: string;
+  bodyIsHtml?: boolean;
+  direction: 'inbound' | 'outbound';
+  timestamp?: string;
+  contactName?: string;
+}): IngestEvent {
+  const plain = opts.bodyIsHtml ? stripHtmlToText(opts.body) : opts.body;
+  const headerLine = `From: ${opts.from}${opts.to ? ` | To: ${opts.to}` : ''} | Subject: ${opts.subject}`;
+  const composed = `${headerLine}\n\n${plain}`;
+  return {
+    name: `Gmail ${opts.direction}: ${opts.subject.slice(0, 80) || '(no subject)'}`,
+    body: composed,
+    source: opts.direction === 'inbound' ? 'gmail-inbound' : 'gmail-outbound',
+    sourceId: opts.messageId,
+    contactName: opts.contactName,
+    timestamp: opts.timestamp,
+  };
+}
+
+/** Build an IngestEvent from a LinkedIn message or scraped profile snapshot. */
+export function linkedinEvent(opts: {
+  id: string;
+  type: 'message' | 'profile';
+  contactName: string;
+  contactUrl?: string;
+  body: string;
+  timestamp?: string;
+}): IngestEvent {
+  const headerLine = opts.contactUrl
+    ? `Contact: ${opts.contactName} (${opts.contactUrl})`
+    : `Contact: ${opts.contactName}`;
+  const composed = `${headerLine}\n\n${opts.body}`;
+  return {
+    name: `LinkedIn ${opts.type}: ${opts.contactName}`,
+    body: composed,
+    source: opts.type === 'message' ? 'linkedin-message' : 'linkedin-profile',
+    sourceId: opts.id,
+    contactName: opts.contactName,
+    timestamp: opts.timestamp,
   };
 }

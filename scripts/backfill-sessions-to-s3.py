@@ -29,13 +29,61 @@ from pathlib import Path
 
 HOME = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or "")
 PROJECTS_DIR = HOME / ".claude" / "projects" / "C--Users-USER-secondbrain"
-BUCKET = "secondbrain-sessions-000000000000-us-east-1"
-REGION = "us-east-1"
+REGION = os.environ.get("SECONDBRAIN_AWS_REGION", "us-east-1")
 REPO = "secondbrain"
 
 
-def build_meta(transcript_path: Path, session_id: str) -> dict:
+def _resolve_bucket() -> str:
+    """Resolve bucket at runtime. Account ID is intentionally not in source
+    (PII strip 2f94cce, 2026-04-11). Override via env or read via aws sts."""
+    override = os.environ.get("SECONDBRAIN_SESSIONS_BUCKET")
+    if override:
+        return override
+    account_id = os.environ.get("AWS_ACCOUNT_ID")
+    if not account_id:
+        try:
+            account_id = subprocess.check_output(
+                ["aws", "sts", "get-caller-identity", "--query", "Account", "--output", "text"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+        except Exception as exc:
+            raise RuntimeError(
+                "Cannot resolve AWS account: set SECONDBRAIN_SESSIONS_BUCKET, AWS_ACCOUNT_ID, or configure aws cli"
+            ) from exc
+    if not account_id or account_id == "000000000000":
+        raise RuntimeError("Resolved account id is empty or placeholder")
+    return f"secondbrain-sessions-{account_id}-{REGION}"
+
+
+BUCKET = _resolve_bucket()
+
+
+USER_CORPUS_LIMIT = 32 * 1024
+ASSISTANT_CORPUS_LIMIT = 32 * 1024
+MAX_USER_MESSAGES = 200
+MAX_ASSISTANT_MESSAGES = 50
+
+
+def _cap_concat(messages, total_limit, max_n):
+    if not messages:
+        return ""
+    if len(messages) > max_n:
+        step = max(len(messages) // max_n, 1)
+        sampled = [messages[i] for i in range(0, len(messages), step)][:max_n]
+    else:
+        sampled = messages
+    per = max(total_limit // max(len(sampled), 1), 200)
+    parts = [m[:per] for m in sampled]
+    joined = "\n\n".join(parts)
+    if len(joined) > total_limit:
+        joined = joined[:total_limit]
+    return joined
+
+
+def build_meta(transcript_path: Path, session_id: str, repo: str = None) -> dict:
     """Parse a jsonl transcript and extract the metadata payload."""
+    repo = repo or REPO
     first_prompt = None
     last_response = None
     started_at = None
@@ -43,6 +91,8 @@ def build_meta(transcript_path: Path, session_id: str) -> dict:
     message_count = 0
     tool_calls: set[str] = set()
     topic_guess = ""
+    user_messages: list[str] = []
+    assistant_messages: list[str] = []
 
     try:
         with transcript_path.open("r", encoding="utf-8", errors="replace") as f:
@@ -80,17 +130,20 @@ def build_meta(transcript_path: Path, session_id: str) -> dict:
                                 tool_calls.add(p.get("name", "unknown"))
                     content = "\n".join(parts).strip() if parts else None
 
-                if role == "user" and content and not first_prompt:
-                    first_prompt = content[:500]
-                    topic_guess = content[:200]
+                if role == "user" and content:
+                    if not first_prompt:
+                        first_prompt = content[:1000]
+                        topic_guess = content[:200]
+                    user_messages.append(content)
                 if role == "assistant" and content:
-                    last_response = content[-500:]
+                    last_response = content[-1000:]
+                    assistant_messages.append(content)
     except Exception as e:
-        return {"error": str(e), "session_id": session_id, "repo": REPO}
+        return {"error": str(e), "session_id": session_id, "repo": repo}
 
     return {
         "session_id": session_id,
-        "repo": REPO,
+        "repo": repo,
         "started_at": started_at,
         "ended_at": ended_at,
         "message_count": message_count,
@@ -98,6 +151,11 @@ def build_meta(transcript_path: Path, session_id: str) -> dict:
         "first_prompt": first_prompt or "",
         "last_response": last_response or "",
         "topic_guess": topic_guess or "",
+        "corpus_user": _cap_concat(user_messages, USER_CORPUS_LIMIT, MAX_USER_MESSAGES),
+        "corpus_assistant": _cap_concat(
+            assistant_messages, ASSISTANT_CORPUS_LIMIT, MAX_ASSISTANT_MESSAGES
+        ),
+        "schema_version": 2,
     }
 
 

@@ -40,6 +40,9 @@ import {
   callEvent,
   briefingEvent,
   chatSessionEvent,
+  gmailEvent,
+  linkedinEvent,
+  stripHtmlToText,
 } from '../ingest-hooks';
 
 beforeEach(() => {
@@ -141,6 +144,83 @@ describe('event builders', () => {
     expect(e.name).toBe('Chat session: Discussed memory architecture');
     expect(e.source).toBe('chat-session');
     expect(e.sourceId).toBe('chat-abc');
+  });
+
+  it('gmailEvent inbound carries headers and strips HTML', () => {
+    const e = gmailEvent({
+      messageId: 'm-1',
+      threadId: 't-1',
+      from: 'amy@example.com',
+      to: 'luke@example.com',
+      subject: 'graphiti smoke test',
+      body: '<p>Hello <b>Luke</b></p><script>alert(1)</script>',
+      bodyIsHtml: true,
+      direction: 'inbound',
+      timestamp: '2026-04-30T12:00:00Z',
+    });
+    expect(e.source).toBe('gmail-inbound');
+    expect(e.sourceId).toBe('m-1');
+    expect(e.name).toContain('graphiti smoke test');
+    expect(e.body).toContain('From: amy@example.com');
+    expect(e.body).toContain('Subject: graphiti smoke test');
+    expect(e.body).toContain('Hello Luke');
+    expect(e.body).not.toContain('<b>');
+    expect(e.body).not.toContain('alert(1)');
+  });
+
+  it('gmailEvent outbound flips direction tag', () => {
+    const e = gmailEvent({
+      messageId: 'm-2',
+      from: 'luke@example.com',
+      subject: 'reply',
+      body: 'plain body',
+      direction: 'outbound',
+    });
+    expect(e.source).toBe('gmail-outbound');
+    expect(e.body).toContain('plain body');
+  });
+
+  it('linkedinEvent message carries contact url', () => {
+    const e = linkedinEvent({
+      id: 'li-1',
+      type: 'message',
+      contactName: 'Test Contact',
+      contactUrl: 'https://linkedin.com/in/test',
+      body: 'Hey, congrats on the role',
+      timestamp: '2026-04-30T08:00:00Z',
+    });
+    expect(e.source).toBe('linkedin-message');
+    expect(e.name).toBe('LinkedIn message: Test Contact');
+    expect(e.body).toContain('linkedin.com/in/test');
+    expect(e.contactName).toBe('Test Contact');
+  });
+
+  it('linkedinEvent profile uses profile source tag', () => {
+    const e = linkedinEvent({
+      id: 'li-prof-1',
+      type: 'profile',
+      contactName: 'Test Contact',
+      body: 'Posted: shipping new feature',
+    });
+    expect(e.source).toBe('linkedin-profile');
+    expect(e.name).toBe('LinkedIn profile: Test Contact');
+  });
+
+  it('stripHtmlToText drops script style and tags', () => {
+    const out = stripHtmlToText(
+      '<style>.x{}</style><script>x()</script><p>One</p><p>Two<br>Three</p>',
+    );
+    expect(out).not.toContain('<');
+    expect(out).not.toContain('x()');
+    expect(out).toContain('One');
+    expect(out).toContain('Two');
+    expect(out).toContain('Three');
+  });
+
+  it('stripHtmlToText decodes common entities', () => {
+    expect(stripHtmlToText('a&nbsp;b')).toContain('a b');
+    expect(stripHtmlToText('&amp;')).toBe('&');
+    expect(stripHtmlToText('&quot;hi&quot;')).toBe('"hi"');
   });
 });
 
