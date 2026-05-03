@@ -297,7 +297,7 @@ async function planSearch(
         role: "system",
         content: `Analyze a question about a meeting transcript library and extract a search plan.
 Return JSON:
-- people: names to find (e.g. ["Jack", "Jack Smith"]). Include first + last names separately.
+- people: names to find (e.g. ["Alice", "Alice Smith"]). Include first + last names separately.
 - topics: subjects/themes (e.g. ["product roadmap", "hiring"])
 - keywords: other search terms (e.g. ["deadline", "Q3"])
 - needsTranscripts: true only if the answer requires reading actual spoken text (specific quotes, detailed narrative). False for counts, lists, who attended, topic summaries.

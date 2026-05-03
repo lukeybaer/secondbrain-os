@@ -217,7 +217,7 @@ describe('searchMemoryFiles', () => {
 describe('fullGraphitiSeed', () => {
   it('ingests all discovered files as Graphiti episodes', async () => {
     const result = await fullGraphitiSeed();
-    // 5 files: user_profile, feedback_testing, project_projecta, bryant, ed
+    // 5 files: user_profile, feedback_testing, project_projecta, contact_a, contact_b
     expect(result.total).toBe(5);
     expect(result.ingested).toBe(5);
     expect(result.failed).toBe(0);

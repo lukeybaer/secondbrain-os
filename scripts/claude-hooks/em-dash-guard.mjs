@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // em-dash-guard.mjs
 //
-// Mechanical enforcement of Luke's "no em dashes in ANY output" rule
+// Mechanical enforcement of the owner's "no em dashes in ANY output" rule
 // (CLAUDE.md global behavioral rules).
 //
 // Two modes, dispatched by hook event:
@@ -63,7 +63,7 @@ function handlePreToolUse(payload) {
           "[em-dash-guard] BLOCKED: " + hit.charName + " found in tool input field '" + field + "'.",
           "Snippet: ..." + hit.snippet + "...",
           "",
-          "Luke's rule (CLAUDE.md global): No em dashes in ANY output. Use commas, periods, or plain hyphens (-) instead.",
+          "the owner's rule (CLAUDE.md global): No em dashes in ANY output. Use commas, periods, or plain hyphens (-) instead.",
           "Rewrite this tool call without em or en dashes and retry.",
         ].join("\n")
       );
@@ -112,7 +112,7 @@ function handleStop(payload) {
         "[em-dash-guard] " + hit.charName + " detected in your last message.",
         "Snippet: ..." + hit.snippet + "...",
         "",
-        "Luke's rule (CLAUDE.md global): No em dashes in ANY output. Rewrite the offending sentence(s) using commas, periods, or plain hyphens (-).",
+        "the owner's rule (CLAUDE.md global): No em dashes in ANY output. Rewrite the offending sentence(s) using commas, periods, or plain hyphens (-).",
         "Continue the turn by sending a corrected version of just the affected text.",
       ].join("\n")
     );
