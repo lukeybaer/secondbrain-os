@@ -14,7 +14,7 @@
 //   const tracedHandle = makeTracedHandle(app.getPath('userData'));
 //   tracedHandle('calls:initiate', async (e, ...args) => { ... });
 //
-// This is a pure wrapper — no behavior change on success path.
+// This is a pure wrapper , no behavior change on success path.
 // Failures in tracing never block the handler (best-effort, same as tool-trace).
 
 import { ipcMain, IpcMainInvokeEvent } from 'electron';

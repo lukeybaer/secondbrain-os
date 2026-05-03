@@ -1,6 +1,6 @@
 // scheduler.ts
-// Lightweight scheduler — checks time every minute, fires jobs at their designated times.
-// Uses SQLite process locks (acquireLock) for idempotency — one job per day, guaranteed.
+// Lightweight scheduler , checks time every minute, fires jobs at their designated times.
+// Uses SQLite process locks (acquireLock) for idempotency , one job per day, guaranteed.
 
 import { sendDailyBriefing } from './briefing';
 import { runVideoPipeline } from './video-pipeline';
@@ -54,12 +54,12 @@ function todayKey(): string {
 async function tick(): Promise<void> {
   const time = nowInCT();
 
-  // 5:29–5:31 AM CT — morning briefing + video pipeline
+  // 5:29-5:31 AM CT , morning briefing + video pipeline
   if (inWindow(time, 5, 29)) {
-    // Morning briefing — idempotent via its own SQLite lock
+    // Morning briefing , idempotent via its own SQLite lock
     sendDailyBriefing().catch((err) => console.error('[scheduler] sendDailyBriefing error:', err));
 
-    // Video pipeline — build 5 videos if not already done today
+    // Video pipeline , build 5 videos if not already done today
     const pipelineDoneKey = `video-pipeline-${todayKey()}-done`;
     if (!lockExists(pipelineDoneKey)) {
       console.log('[scheduler] Triggering video pipeline at 5:30 AM CT');
@@ -67,7 +67,7 @@ async function tick(): Promise<void> {
     }
   }
 
-  // 0:00–0:02 AM CT — LinkedIn contact intelligence crawl
+  // 0:00-0:02 AM CT , LinkedIn contact intelligence crawl
   if (inWindow(time, 0, 0)) {
     const crawlKey = `linkedin-crawl-${todayKey()}`;
     if (acquireLock(crawlKey)) {
@@ -77,14 +77,14 @@ async function tick(): Promise<void> {
     }
   }
 
-  // 2:00–2:02 AM CT — nightly Hebbian memory decay
+  // 2:00-2:02 AM CT , nightly Hebbian memory decay
   if (inWindow(time, 2, 0)) {
     const decayKey = `memory-decay-${todayKey()}`;
     if (acquireLock(decayKey)) {
       try {
         const result = runNightlyDecay();
         console.log(
-          `[scheduler] memory decay complete — decayed:${result.decayed} archived:${result.archived} pruned:${result.pruned}`,
+          `[scheduler] memory decay complete , decayed:${result.decayed} archived:${result.archived} pruned:${result.pruned}`,
         );
       } catch (err) {
         console.error('[scheduler] runNightlyDecay error:', err);
@@ -92,14 +92,14 @@ async function tick(): Promise<void> {
     }
   }
 
-  // 2:30–2:32 AM CT — sleep-time core memory block consolidation (Letta pattern)
+  // 2:30-2:32 AM CT , sleep-time core memory block consolidation (Letta pattern)
   if (inWindow(time, 2, 30)) {
     const consolidateKey = `sleep-consolidation-${todayKey()}`;
     if (acquireLock(consolidateKey)) {
       runSleepTimeConsolidation()
         .then((result) => {
           console.log(
-            `[scheduler] sleep-time consolidation — checked:${result.blocksChecked} consolidated:${result.blocksConsolidated} saved:${result.bytesSaved}b`,
+            `[scheduler] sleep-time consolidation , checked:${result.blocksChecked} consolidated:${result.blocksConsolidated} saved:${result.bytesSaved}b`,
           );
           if (result.errors.length > 0) {
             console.warn('[scheduler] consolidation errors:', result.errors);
@@ -109,7 +109,7 @@ async function tick(): Promise<void> {
     }
   }
 
-  // 3:00–3:02 AM CT — Time Machine data pruning + RSL automation priority refresh
+  // 3:00-3:02 AM CT , Time Machine data pruning + RSL automation priority refresh
   if (inWindow(time, 3, 0)) {
     const pruneKey = `tm-prune-${todayKey()}`;
     if (acquireLock(pruneKey)) {
@@ -117,23 +117,23 @@ async function tick(): Promise<void> {
         const { pruneTimeMachineData } = await import('./timemachine-pruner');
         const result = await pruneTimeMachineData();
         console.log(
-          `[scheduler] tm prune complete — screenshots:${result.deletedScreenshots} audio:${result.deletedAudio}`,
+          `[scheduler] tm prune complete , screenshots:${result.deletedScreenshots} audio:${result.deletedAudio}`,
         );
       } catch (err) {
         console.error('[scheduler] pruneTimeMachineData error:', err);
       }
 
-      // RSL priority refresh — recompute automation_priority by miss_count
+      // RSL priority refresh , recompute automation_priority by miss_count
       // so the video pipeline knows which QC checks to automate first
       try {
         const { refreshAutomationPriority } = await import('./rejection-skill-learning');
         const { priority, topMissed } = refreshAutomationPriority();
         if (topMissed.length > 0) {
           console.log(
-            `[scheduler] RSL priority refresh — ${priority.length} criteria tracked. Top missed: ${topMissed.map((c) => `${c.id}(${c.miss_count})`).join(', ')}`,
+            `[scheduler] RSL priority refresh , ${priority.length} criteria tracked. Top missed: ${topMissed.map((c) => `${c.id}(${c.miss_count})`).join(', ')}`,
           );
         } else {
-          console.log(`[scheduler] RSL priority refresh — no misses recorded yet`);
+          console.log(`[scheduler] RSL priority refresh , no misses recorded yet`);
         }
       } catch (err) {
         console.error('[scheduler] RSL refreshAutomationPriority error:', err);
@@ -141,14 +141,14 @@ async function tick(): Promise<void> {
     }
   }
 
-  // 3:30–3:32 AM CT — daily backup (full snapshot + retention pruning)
+  // 3:30-3:32 AM CT , daily backup (full snapshot + retention pruning)
   if (inWindow(time, 3, 30)) {
     const backupKey = `daily-backup-${todayKey()}`;
     if (acquireLock(backupKey)) {
       try {
         const result = await runDailyBackup();
         console.log(
-          `[scheduler] daily backup complete — snapshot:${result.snapshot.id} (${result.snapshot.fileCount} files, ${(result.snapshot.dataBytes / 1048576).toFixed(1)}MB) pruned:${result.pruned.length}`,
+          `[scheduler] daily backup complete , snapshot:${result.snapshot.id} (${result.snapshot.fileCount} files, ${(result.snapshot.dataBytes / 1048576).toFixed(1)}MB) pruned:${result.pruned.length}`,
         );
       } catch (err) {
         console.error('[scheduler] runDailyBackup error:', err);
@@ -156,7 +156,7 @@ async function tick(): Promise<void> {
     }
   }
 
-  // 4:00–4:02 AM CT — incremental memory sync to Graphiti
+  // 4:00-4:02 AM CT , incremental memory sync to Graphiti
   if (inWindow(time, 4, 0)) {
     const syncKey = `memory-graphiti-sync-${todayKey()}`;
     if (acquireLock(syncKey)) {
@@ -164,7 +164,7 @@ async function tick(): Promise<void> {
         const { incrementalGraphitiSync } = await import('./memory-sync');
         const result = await incrementalGraphitiSync();
         console.log(
-          `[scheduler] memory-graphiti sync — checked:${result.checked} ingested:${result.ingested} failed:${result.failed}`,
+          `[scheduler] memory-graphiti sync , checked:${result.checked} ingested:${result.ingested} failed:${result.failed}`,
         );
       } catch (err) {
         console.error('[scheduler] incrementalGraphitiSync error:', err);
@@ -172,10 +172,10 @@ async function tick(): Promise<void> {
     }
   }
 
-  // Evening update + sermon briefing disabled — Telegram is daily-briefing-only.
+  // Evening update + theme briefing disabled , Telegram is daily-briefing-only.
   // the owner can still request these on-demand via Telegram commands.
 
-  // ── Social post scheduled publishing (every tick — checks for due posts) ───
+  // ── Social post scheduled publishing (every tick , checks for due posts) ───
   publishScheduledSocialPosts().catch((err) =>
     console.error('[scheduler] publishScheduledSocialPosts error:', err),
   );
@@ -245,10 +245,10 @@ let _timer: ReturnType<typeof setInterval> | null = null;
 
 export function startScheduler(): void {
   if (_timer !== null) {
-    console.warn('[scheduler] already running — ignoring startScheduler()');
+    console.warn('[scheduler] already running , ignoring startScheduler()');
     return;
   }
-  console.log('[scheduler] started — checking every 60 s');
+  console.log('[scheduler] started , checking every 60 s');
   tick(); // Run immediately on start (catches a launch inside a window)
   _timer = setInterval(() => {
     tick();

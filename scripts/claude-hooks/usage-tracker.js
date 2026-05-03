@@ -167,7 +167,7 @@ function rolling5hTokens() {
     if (Date.now() - cached.ts < ROLLING_CACHE_TTL_MS) {
       return { outputTokens: cached.outputTokens, totalTokens: cached.totalTokens };
     }
-  } catch (_) { /* cache miss or corrupt — recompute */ }
+  } catch (_) { /* cache miss or corrupt , recompute */ }
 
   // Sum output tokens across ALL sessions in ALL repos in the last 5 hours
   // Max plan limits are shared across every surface

@@ -61,7 +61,7 @@ function analyzeFile(filePath) {
       content,
     );
   const hasLocation =
-    /\b(lives? in|based in|located|moved to|from |city|state|country|mckinney|dallas|seattle|sf|nyc|toronto|austin)\b/i.test(
+    /\b(lives? in|based in|located|moved to|from |city|state|country|dallas|seattle|sf|nyc|toronto|austin)\b/i.test(
       content,
     );
   const hasLinkedIn = /\blinkedin\b/i.test(content);

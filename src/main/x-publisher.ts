@@ -1,5 +1,5 @@
 /**
- * X (Twitter) API v2 client — publish tweets and fetch engagement metrics.
+ * X (Twitter) API v2 client , publish tweets and fetch engagement metrics.
  * Uses OAuth 1.0a User Context authentication.
  */
 

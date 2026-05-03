@@ -516,7 +516,7 @@ export default function Studio() {
               key={rec.id}
               style={{ ...S.card, cursor: 'pointer', borderColor: isSelected ? '#7c3aed' : '#222' }}
             >
-              {/* Header — always visible, clickable */}
+              {/* Header , always visible, clickable */}
               <div
                 onClick={() => setSelectedRecording(isSelected ? null : rec.id)}
                 style={{
@@ -593,7 +593,7 @@ export default function Studio() {
                     </div>
                   )}
 
-                  {/* Video playback — source recordings */}
+                  {/* Video playback , source recordings */}
                   <div style={{ marginBottom: 16 }}>
                     <div
                       style={{
@@ -886,7 +886,7 @@ export default function Studio() {
                 disabled={!hasNvenc}
                 onChange={(e) => saveConfig({ useNvenc: e.target.checked })}
               />
-              Use NVENC (GPU) {!hasNvenc && '— not available'}
+              Use NVENC (GPU) {!hasNvenc && ', not available'}
             </label>
           </div>
         </div>

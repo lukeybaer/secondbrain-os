@@ -127,9 +127,9 @@ Return a JSON object with exactly these fields:
 }
 
 CRITICAL RULES:
-- Extract EVERY personal detail mentioned — kids' names, spouse names, birthdays, anniversaries, health conditions, hobbies, pets, vehicles, addresses
-- Extract ALL goals, predictions, and plans — even casual ones like "I'm thinking about getting a new car"
-- Note personality traits and communication style — "always responds quickly", "tends to be formal", "uses lots of emojis"
+- Extract EVERY personal detail mentioned , kids' names, spouse names, birthdays, anniversaries, health conditions, hobbies, pets, vehicles, addresses
+- Extract ALL goals, predictions, and plans , even casual ones like "I'm thinking about getting a new car"
+- Note personality traits and communication style , "always responds quickly", "tends to be formal", "uses lots of emojis"
 - If someone mentions their work/career, extract job title, company, responsibilities
 - If someone mentions family members, extract names and relationships
 - Return ONLY valid JSON, no markdown, no explanation.`;

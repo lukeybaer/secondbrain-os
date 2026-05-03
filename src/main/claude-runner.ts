@@ -71,7 +71,7 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
   if (isWindows && !childEnv['CLAUDE_CODE_GIT_BASH_PATH']) {
     const username = process.env.USERNAME || process.env.USER || process.env.LOGNAME || 'user';
     const candidates = [
-      `C:\\Users\\${username}\\Desktop\\Luke\\Dev\\Git\\usr\\bin\\bash.exe`,
+      `C:\\Users\\${username}\\Program Files\\Git\\usr\\bin\\bash.exe`,
       `C:\\Program Files\\Git\\usr\\bin\\bash.exe`,
       `C:\\Users\\${username}\\scoop\\apps\\git\\current\\usr\\bin\\bash.exe`,
     ];
@@ -107,7 +107,7 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
         /* try next */
       }
     }
-    return 'claude.cmd'; // fallback — rely on PATH
+    return 'claude.cmd'; // fallback , rely on PATH
   }
   const claudeAbsPath = findClaudeCmd();
 
@@ -118,7 +118,7 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
       const promptContent = args[pIdx + 1];
       // Strip "-p <prompt>" and use "--print" so claude reads from stdin
       const claudeArgs = [...args.slice(0, pIdx), '--print', ...args.slice(pIdx + 2)];
-      // Use full path to cmd.exe — Electron's PATH may not include System32 when launched from Git Bash
+      // Use full path to cmd.exe , Electron's PATH may not include System32 when launched from Git Bash
       const cmdExe = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
       // Quote the absolute path in case it contains spaces
       const quotedPath = claudeAbsPath.includes(' ') ? `"${claudeAbsPath}"` : claudeAbsPath;
@@ -195,7 +195,7 @@ export function runClaudeCodeContinue(prompt: string, options?: RunOptions): Pro
  *  context.
  *
  *  Do NOT use for interactive commands, briefing generation, or anything the
- *  user will see the output of verbatim — the stub instructs the session to
+ *  user will see the output of verbatim , the stub instructs the session to
  *  drain-and-exit and does not load voice/tone rules.
  */
 export function runClaudeCodeIngest(prompt: string, options?: RunOptions): Promise<RunResult> {

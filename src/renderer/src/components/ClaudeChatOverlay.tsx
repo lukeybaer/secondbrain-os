@@ -149,7 +149,7 @@ export default function ClaudeChatOverlay({ currentPage }: { currentPage: string
 
   return (
     <>
-      {/* Floating action button — always visible, bottom-right */}
+      {/* Floating action button , always visible, bottom-right */}
       <button
         onClick={() => setPanelOpen(v => !v)}
         title="Claude Code (Ctrl+Shift+Space)"
@@ -179,7 +179,7 @@ export default function ClaudeChatOverlay({ currentPage }: { currentPage: string
         🧠
       </button>
 
-      {/* Chat panel — slides up from button */}
+      {/* Chat panel , slides up from button */}
       {panelOpen && (
         <div
           style={{
@@ -236,10 +236,10 @@ export default function ClaudeChatOverlay({ currentPage }: { currentPage: string
                   <div style={{ color: "#ccc", marginBottom: 3 }}>{r.prompt}</div>
                   {r.status === "sending" && <div style={{ color: "#7c3aed" }}>Sending…</div>}
                   {r.status === "queued" && (
-                    <div style={{ color: "#888" }}>Queued — waiting for worker…</div>
+                    <div style={{ color: "#888" }}>Queued , waiting for worker…</div>
                   )}
                   {r.status === "worker-timeout" && (
-                    <div style={{ color: "#f59e0b" }}>Worker not responding — check Telegram for result</div>
+                    <div style={{ color: "#f59e0b" }}>Worker not responding , check Telegram for result</div>
                   )}
                   {r.status === "processing" && (
                     <div style={{ color: "#60a5fa" }}>Processing…</div>
@@ -303,7 +303,7 @@ export default function ClaudeChatOverlay({ currentPage }: { currentPage: string
         </div>
       )}
 
-      {/* Hotkey overlay — appears at cursor position */}
+      {/* Hotkey overlay , appears at cursor position */}
       {hotkeyOverlay && (
         <div
           style={{
@@ -320,7 +320,7 @@ export default function ClaudeChatOverlay({ currentPage }: { currentPage: string
           }}
         >
           <div style={{ fontSize: 11, color: "#7c3aed", marginBottom: 8, fontWeight: 700 }}>
-            🧠 Claude Code — {hotkeyOverlay.screenshotPath ? "Screenshot captured" : "No screenshot"} · {currentPage}
+            🧠 Claude Code , {hotkeyOverlay.screenshotPath ? "Screenshot captured" : "No screenshot"} · {currentPage}
           </div>
           <input
             ref={hotkeyInputRef}

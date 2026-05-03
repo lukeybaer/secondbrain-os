@@ -11,7 +11,7 @@ if echo "$CONTEXT" | grep -q '"stop_hook_active":true'; then
 fi
 
 cat <<'INSTRUCTIONS'
-[COMPLETION CHECK — AUTO-TRIGGERED]
+[COMPLETION CHECK , AUTO-TRIGGERED]
 
 Before stopping, verify:
 1. Are there any in_progress or pending items in your todo list?

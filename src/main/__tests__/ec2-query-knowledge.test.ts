@@ -2,7 +2,7 @@
  * Tests for the query_knowledge inline-answer fix.
  *
  * Before this fix, query_knowledge added to queryQueue and polled queryAnswers,
- * which was never populated — always timing out after 25s.
+ * which was never populated , always timing out after 25s.
  *
  * After the fix: query_knowledge calls askAmy() inline and returns the answer
  * directly within Vapi's timing window (<20s).
@@ -97,7 +97,7 @@ function buildOutboundCallBody(
   };
 }
 
-describe('query_knowledge — inline answer fix', () => {
+describe('query_knowledge , inline answer fix', () => {
   it('returns askAmy answer directly without polling', async () => {
     const mockAskAmy = vi.fn().mockResolvedValue('Sandeep Paruchuri is a contact at Amazon.');
     const result = await handleQueryKnowledge('Who is Sandeep?', mockAskAmy);
@@ -157,7 +157,7 @@ describe('VAPI_FUNCTION_TOOLS', () => {
   });
 });
 
-describe('initiateVapiOutbound — tool config fix', () => {
+describe('initiateVapiOutbound , tool config fix', () => {
   it('includes serverUrl in assistantOverrides', () => {
     const body = buildOutboundCallBody('+15551234567', 'Hi there', 'phone-id-123');
     expect(body.assistantOverrides.serverUrl).toBe(VAPI_SERVER_URL);

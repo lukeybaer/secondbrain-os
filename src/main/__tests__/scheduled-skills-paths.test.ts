@@ -4,7 +4,7 @@
 // tracked repo paths (secondbrain/... or ${SECONDBRAIN_ROOT}\...)
 // rather than AppData paths. The hardlink migration in commit 5 made
 // AppData paths work via hardlinks but new skill authors should not
-// adopt the legacy paths — write to the tracked path directly.
+// adopt the legacy paths , write to the tracked path directly.
 //
 // Additionally: each do-the-work skill (the three registered nightly
 // cron tasks) must contain the word COMMIT so it actually ships code

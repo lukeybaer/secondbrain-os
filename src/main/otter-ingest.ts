@@ -19,7 +19,10 @@ import { getConfig } from './config';
 import { tagConversation } from './tagger';
 import { saveConversation, listAllConversations, updateOtterListCacheStatus } from './storage';
 import { upsertConversation } from './database';
-import { processConversationForSermon } from './sermons';
+// Optional theme detection hook. The OS repo ships a no-op stub.
+// Replace with your own implementation that scans transcripts for
+// custom themes you care about (lectures, podcasts, talks, etc.).
+function processConversationForCustomTheme(_meta: any, _transcript: any): void { /* no-op */ }
 
 // ── Storage paths ─────────────────────────────────────────────────────────────
 
@@ -38,7 +41,7 @@ function ingestStateFile(): string {
   return path.join(memoryDir(), 'otter-ingest-state.json');
 }
 
-// ── Ingest state (MD5-based dedup — Khoj pattern) ────────────────────────────
+// ── Ingest state (MD5-based dedup , Khoj pattern) ────────────────────────────
 
 interface IngestState {
   processed: Record<string, { hash: string; ingestedAt: string; title: string }>;
@@ -81,7 +84,7 @@ function extractCallContext(speech: OtterSpeech): {
 } {
   const haystack = [speech.title, speech.transcript?.slice(0, 500) || ''].join(' ').toLowerCase();
 
-  // Known contacts — customize with your own contact mappings.
+  // Known contacts , customize with your own contact mappings.
   // Maps lowercase transcript mentions to display names.
   // Example: { 'john': 'John Smith', 'jane': 'Jane Doe' }
   const knownContacts: Record<string, string> = {};
@@ -231,13 +234,13 @@ function writeToArchive(speech: OtterSpeech, content: string): string {
  */
 function updateMemoryIndex(speech: OtterSpeech, archivePath: string): void {
   const { contact, topic } = extractCallContext(speech);
-  if (!contact && !topic) return; // generic call — archive only, no Tier 1 pointer
+  if (!contact && !topic) return; // generic call , archive only, no Tier 1 pointer
 
   const memFile = path.join(memoryDir(), 'MEMORY.md');
   const date = new Date(speech.createdAt * 1000).toISOString().split('T')[0];
   const rel = path.relative(memoryDir(), archivePath).replace(/\\/g, '/');
-  const label = [contact, topic].filter(Boolean).join(' — ');
-  const entry = `- [${speech.title.slice(0, 60)} (${date})](${rel}) — ${label}\n`;
+  const label = [contact, topic].filter(Boolean).join(' , ');
+  const entry = `- [${speech.title.slice(0, 60)} (${date})](${rel}) , ${label}\n`;
 
   try {
     const existing = fs.existsSync(memFile)
@@ -280,7 +283,7 @@ export async function ingestNewTranscripts(): Promise<{
     // Pre-build set of speech IDs already in data/conversations/ for O(1) lookup
     const existingConvIds = new Set(listAllConversations().map((c) => c.otterId));
 
-    // Process all speeches — MD5 dedup skips archive rewrites for unchanged content,
+    // Process all speeches , MD5 dedup skips archive rewrites for unchanged content,
     // but we still check conversations/ gap for every speech.
     const speeches = collected;
 
@@ -304,7 +307,7 @@ export async function ingestNewTranscripts(): Promise<{
       const hashUnchanged = existing && existing.hash === hash;
 
       if (!hashUnchanged) {
-        // Content is new or changed — update archive
+        // Content is new or changed , update archive
         const archivePath = writeToArchive(full, content);
         updateMemoryIndex(full, archivePath);
 
@@ -357,11 +360,11 @@ export async function ingestNewTranscripts(): Promise<{
             console.warn(`[otter-ingest] ingest hook failed: ${hookErr.message}`);
           }
 
-          // Post-ingest: check if this is a Peter sermon
+          // Post-ingest: check if this matches a custom theme
           try {
-            processConversationForSermon(meta, transcript);
-          } catch (sermonErr: any) {
-            console.error(`[otter-ingest] sermon detection failed: ${sermonErr.message}`);
+            processConversationForCustomTheme(meta, transcript);
+          } catch (themeErr: any) {
+            console.error(`[otter-ingest] theme detection failed: ${themeErr.message}`);
           }
         } catch (e: any) {
           console.error(`[otter-ingest] tag failed for ${full.id}: ${e.message}`);
@@ -393,11 +396,11 @@ export function startOtterPolling(intervalMs = 15 * 60 * 1000): void {
       console.error(
         '[otter-ingest] Error: Otter.ai credentials are missing. Go to Settings → Otter.ai and click "Login with Otter.ai".',
       );
-      // Telegram is daily-briefing-only — log credential issue to console
+      // Telegram is daily-briefing-only , log credential issue to console
       if (!credsMissingAlertSent) {
         credsMissingAlertSent = true;
         console.error(
-          '[otter-ingest] Otter.ai credentials missing — transcript polling is disabled',
+          '[otter-ingest] Otter.ai credentials missing , transcript polling is disabled',
         );
       }
       return;

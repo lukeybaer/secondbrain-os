@@ -1,5 +1,5 @@
 /**
- * Tests for linkedin-intel.ts — Contact Intelligence nightly crawl and briefing section builder.
+ * Tests for linkedin-intel.ts , Contact Intelligence nightly crawl and briefing section builder.
  * Tests pure logic: event parsing, priority ranking, dedup, section formatting.
  * Does NOT touch the filesystem or Electron APIs.
  */
@@ -89,7 +89,7 @@ function makeEvent(
   overrides: Partial<ContactEvent> & { id: string; contactName: string; eventType: string },
 ): ContactEvent {
   return {
-    headline: `${overrides.contactName} — test event`,
+    headline: `${overrides.contactName} , test event`,
     detail: '',
     source: 'linkedin_daily_intel',
     detectedAt: new Date().toISOString(),
@@ -124,7 +124,7 @@ describe('rankEvents', () => {
     expect(ranked[0].id).toBe('b');
   });
 
-  it('breaks ties by recency — more recent first', () => {
+  it('breaks ties by recency , more recent first', () => {
     const older = makeEvent({
       id: 'a',
       contactName: 'Alice',
@@ -142,9 +142,9 @@ describe('rankEvents', () => {
   });
 });
 
-// ── buildSection — filtering ──────────────────────────────────────────────────
+// ── buildSection , filtering ──────────────────────────────────────────────────
 
-describe('buildSection — filtering', () => {
+describe('buildSection , filtering', () => {
   it('excludes events older than 7 days from pastWeek', () => {
     const events = [
       makeEvent({
@@ -214,9 +214,9 @@ describe('buildSection — filtering', () => {
   });
 });
 
-// ── buildSection — returned reportedIds ───────────────────────────────────────
+// ── buildSection , returned reportedIds ───────────────────────────────────────
 
-describe('buildSection — reportedIds', () => {
+describe('buildSection , reportedIds', () => {
   it('returns IDs of events it surfaced', () => {
     const events = [
       makeEvent({
@@ -245,9 +245,9 @@ describe('buildSection — reportedIds', () => {
   });
 });
 
-// ── buildSection — section structure ─────────────────────────────────────────
+// ── buildSection , section structure ─────────────────────────────────────────
 
-describe('buildSection — output structure', () => {
+describe('buildSection , output structure', () => {
   it('always includes CONTACT INTELLIGENCE header', () => {
     const { text } = buildSection([], new Set(), NOW);
     expect(text).toContain('CONTACT INTELLIGENCE:');

@@ -14,7 +14,7 @@ import os from "os";
 import * as fsActual from "fs";
 
 // ---------------------------------------------------------------------------
-// vi.hoisted — values that must exist before vi.mock factory runs
+// vi.hoisted , values that must exist before vi.mock factory runs
 // ---------------------------------------------------------------------------
 
 // vi.mock factories are hoisted to the top of the file by Vitest's transform,
@@ -30,16 +30,16 @@ const { TEST_USER_DATA } = vi.hoisted(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Constants (derived — safe to declare after vi.hoisted)
+// Constants (derived , safe to declare after vi.hoisted)
 // ---------------------------------------------------------------------------
 
 const CALLS_DIR = path.join(TEST_USER_DATA, "data", "calls");
 
 // ---------------------------------------------------------------------------
-// Module mocks — declared before any imports of the mocked modules
+// Module mocks , declared before any imports of the mocked modules
 // ---------------------------------------------------------------------------
 
-// Electron mock — config.ts calls app.getPath("userData") at module evaluation time
+// Electron mock , config.ts calls app.getPath("userData") at module evaluation time
 vi.mock("electron", () => ({
   app: {
     getPath: vi.fn((key: string) => {
@@ -49,7 +49,7 @@ vi.mock("electron", () => ({
   },
 }));
 
-// Personas mock — listPersonas() is called inside calls.ts
+// Personas mock , listPersonas() is called inside calls.ts
 vi.mock("../src/main/personas", () => ({
   listPersonas: vi.fn(() => []),
 }));
@@ -145,10 +145,10 @@ afterEach(() => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// initiateCall — config validation (no fetch needed, no persona needed)
+// initiateCall , config validation (no fetch needed, no persona needed)
 // ──────────────────────────────────────────────────────────────────────────────
 
-describe("initiateCall — config validation", () => {
+describe("initiateCall , config validation", () => {
   it("returns error when vapiApiKey is missing", async () => {
     const result = await initiateCall("+15551234567", "Book an appointment", "");
     expect(result.success).toBe(false);
@@ -169,11 +169,11 @@ describe("initiateCall — config validation", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// initiateCall — successful outbound call (all use a persona to avoid the
+// initiateCall , successful outbound call (all use a persona to avoid the
 // voicemailSection bug in the no-persona code path of buildSystemPrompt)
 // ──────────────────────────────────────────────────────────────────────────────
 
-describe("initiateCall — successful outbound call (with persona)", () => {
+describe("initiateCall , successful outbound call (with persona)", () => {
   beforeEach(async () => {
     const { saveConfig } = await import("../src/main/config");
     saveConfig({ vapiApiKey: "vapi-test-key", vapiPhoneNumberId: "pn-test-id" });
@@ -290,10 +290,10 @@ describe("initiateCall — successful outbound call (with persona)", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// initiateCall — no-persona path documents the known bug
+// initiateCall , no-persona path documents the known bug
 // ──────────────────────────────────────────────────────────────────────────────
 
-describe("initiateCall — no-persona path", () => {
+describe("initiateCall , no-persona path", () => {
   it("succeeds without a persona set", async () => {
     const { saveConfig } = await import("../src/main/config");
     saveConfig({ vapiApiKey: "vapi-test-key", vapiPhoneNumberId: "pn-test-id" });
@@ -589,7 +589,7 @@ describe("listCallRecords", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// fetchAndSyncInboundCalls — inbound callback detection
+// fetchAndSyncInboundCalls , inbound callback detection
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe("fetchAndSyncInboundCalls", () => {
@@ -1025,7 +1025,7 @@ describe("syncCallbackAssistant", () => {
     const systemContent: string = body.model.messages[0].content;
 
     expect(systemContent).toContain("Sarah");
-    // Must include the inbound override — agent is RECEIVING, not making the call
+    // Must include the inbound override , agent is RECEIVING, not making the call
     expect(systemContent).toContain("RECEIVING");
   });
 

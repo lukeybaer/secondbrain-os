@@ -171,7 +171,7 @@ function scp(remote, local) {
   }
 
   saveManifest(manifest);
-  console.log(`[sync] Done — ${synced} new videos synced, ${skipped} already present`);
+  console.log(`[sync] Done , ${synced} new videos synced, ${skipped} already present`);
   if (synced > 0) {
     console.log('[sync] Open ContentPipeline tab to review new videos');
   }

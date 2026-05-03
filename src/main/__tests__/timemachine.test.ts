@@ -1,5 +1,5 @@
 /**
- * Tests for Time Machine — config management.
+ * Tests for Time Machine , config management.
  *
  * NOTE: SQLite-dependent tests (frames, audio, FTS5 search) require the
  * Electron-rebuilt better-sqlite3 native module and run via `npm test`

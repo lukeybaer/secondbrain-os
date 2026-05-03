@@ -1,7 +1,7 @@
 /**
  * Regression test for ec2-server.js askAmy() routing.
  *
- * Fixes from 2026-04-20 after Luke reported Telegram dispatch silently
+ * Fixes from 2026-04-20 after the owner reported Telegram dispatch silently
  * falling to "On it." for natural-language queries:
  *
  *  1. askAmy() used to try Anthropic API -> OpenAI -> proxy -> CLI. The
@@ -10,7 +10,7 @@
  *     AND had a latent ReferenceError: it referenced bare OPENAI_API_KEY
  *     with no top-level `const OPENAI_API_KEY = ...` declaration, so the
  *     first `if (OPENAI_API_KEY)` check threw, the Telegram handler caught
- *     null, and Luke saw a useless command-queue fallback instead of a
+ *     null, and the owner saw a useless command-queue fallback instead of a
  *     real answer.
  *  2. claude-proxy.js on Windows used to spawn "claude" with no .cmd
  *     resolution, so the supervisor-spawned proxy was ENOENT even though
@@ -44,7 +44,7 @@ describe('ec2-server askAmy routing (Claude Max only)', () => {
     expect(offenders).toEqual([]);
   });
 
-  // NOTE: we do NOT forbid api.anthropic.com globally — the Vapi custom-llm
+  // NOTE: we do NOT forbid api.anthropic.com globally , the Vapi custom-llm
   // path (around line 1944) still needs it because the claude-proxy does not
   // yet translate Claude's tool_use blocks into OpenAI tool_calls for Vapi.
   // That is tracked separately in memory/reference_claude_proxy_windows.md.

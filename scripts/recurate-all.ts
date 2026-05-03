@@ -5,7 +5,7 @@
  * Standalone script to re-process all existing conversations through the
  * improved memory pipeline (Graphiti + Tier 2/3 Hebbian memory).
  *
- * This does NOT re-tag with OpenAI — it uses the existing meta.json data
+ * This does NOT re-tag with OpenAI , it uses the existing meta.json data
  * and feeds it to Graphiti + memory systems that weren't wired up when
  * the conversations were originally ingested.
  *
@@ -112,7 +112,7 @@ async function addEpisode(
   }
 }
 
-// ── Memory index (simplified — writes directly to files) ────────────────────
+// ── Memory index (simplified , writes directly to files) ────────────────────
 
 function writeMemoryEntry(topic: string, content: string): void {
   const slug = topic
@@ -244,7 +244,7 @@ async function main(): Promise<void> {
 
       // ── Tier 3 Archive ────────────────────────────────────────────
       appendArchive(
-        `[${meta.date}] ${meta.title} — ${meta.summary || 'no summary'} | People: ${meta.peopleMentioned?.join(', ') || 'none'}`,
+        `[${meta.date}] ${meta.title} , ${meta.summary || 'no summary'} | People: ${meta.peopleMentioned?.join(', ') || 'none'}`,
       );
 
       processed++;

@@ -1,22 +1,22 @@
 /**
  * callback-owner-no-goal-bleed.test.ts
  *
- * Regression: when the owner (Luke) calls his own Vapi number, the callback
+ * Regression: when the owner calls his own Vapi number, the callback
  * assistant config must NOT inherit the goal/instructions/history from the
- * most recent outbound call. Luke is calling his EA, not being targeted by
- * a campaign — pulling in a dentist or sales script as "your goal for this
- * call" pollutes the prompt and Amy ends up confused, treating Luke as if
+ * most recent outbound call. the owner is calling his EA, not being targeted by
+ * a campaign , pulling in a dentist or sales script as "your goal for this
+ * call" pollutes the prompt and EA ends up confused, treating the owner as if
  * he's a dental office that needs to schedule a cleaning.
  *
- * Root incident: 2026-04-15 — Luke called Amy from his number, Amy opened
+ * Root incident: 2026-04-15 , the owner called the EA from his number, EA opened
  * with the generic "Hi there, how can I help you?" and was running on a
- * stale Vapi prompt that had inherited the McKinney dentist instructions
+ * stale Vapi prompt that had inherited the Anytown dentist instructions
  * from the last outbound. She failed to recognize him, failed to recall
  * recent sessions, and made up that she had queued a Claude Code task that
  * she had not. Full latest call:
  * %APPDATA%\secondbrain\data\calls\019d8ed6-066c-7dde-ad38-7d32e0500965.json
  *
- * Fix in src/main/calls.ts buildCallbackAssistantConfig — short-circuit for
+ * Fix in src/main/calls.ts buildCallbackAssistantConfig , short-circuit for
  * owner callers so identitySection / historyText / goalInstruction are
  * undefined and firstMessage greets by name instead of "Hi there".
  */
@@ -35,14 +35,14 @@ vi.mock('electron', () => {
   };
 });
 
-// Fictitious phone numbers only — PII scan blocks real digits in tracked
+// Fictitious phone numbers only , PII scan blocks real digits in tracked
 // source (see .github/workflows/sync-to-public.yml). Both values here are
 // arbitrary because identifyCaller and loadContactsStore are mocked against
 // the same constant below.
 const OWNER_PHONE = '+15550100000';
 const STRANGER_PHONE = '+15551234567';
 const DENTIST_GOAL =
-  '## GOAL\nFind a dentist near McKinney TX willing to do a cleaning WITHOUT requiring new X-rays first.';
+  '## GOAL\nFind a dentist near Anytown willing to do a cleaning WITHOUT requiring new X-rays first.';
 
 vi.mock('../config', () => ({
   getConfig: () => ({
@@ -50,7 +50,7 @@ vi.mock('../config', () => ({
     callbackAssistantId: 'test',
     vapiPhoneNumberId: 'test',
     ec2BaseUrl: 'http://127.0.0.1:9999',
-    ownerName: 'Luke',
+    ownerName: 'Owner',
     amyVersion: 3,
   }),
 }));
@@ -119,7 +119,7 @@ vi.mock('../calls', async (orig) => {
   };
 });
 
-describe('buildCallbackAssistantConfig — owner callers do not inherit outbound goals', () => {
+describe('buildCallbackAssistantConfig , owner callers do not inherit outbound goals', () => {
   beforeEach(() => {
     vi.resetModules();
   });

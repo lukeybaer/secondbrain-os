@@ -8,7 +8,7 @@
 // Reference: https://www.letta.com/blog/sleep-time-compute
 // "The primary agent never slows down for memory management."
 //
-// Schedule: 2:30 AM CT — after Hebbian decay (2:00 AM) and before the
+// Schedule: 2:30 AM CT , after Hebbian decay (2:00 AM) and before the
 // Graphiti sync (4:00 AM). The primary agent is never blocked by this.
 //
 // Run 11 of the nightly enhancement cycle. Previous runs built the
@@ -108,7 +108,7 @@ BLOCK NAME: ${blockName}
 CONTENT:
 ${block.content}
 
-Return ONLY the compressed content — no preamble, no explanation, no meta-commentary.`,
+Return ONLY the compressed content , no preamble, no explanation, no meta-commentary.`,
       },
     ],
   });
@@ -169,7 +169,7 @@ Return ONLY the compressed content — no preamble, no explanation, no meta-comm
 /**
  * Run the sleep-time consolidation pass over all core memory blocks.
  * Pass `blocksDir` explicitly (or omit to use the Electron userData default).
- * Designed to be called from the nightly scheduler — never blocks the primary agent.
+ * Designed to be called from the nightly scheduler , never blocks the primary agent.
  */
 export async function runSleepTimeConsolidation(
   blocksDir?: string,
@@ -186,14 +186,14 @@ export async function runSleepTimeConsolidation(
   };
 
   if (!fs.existsSync(dir)) {
-    // No blocks yet — not an error, just nothing to do
-    result.errors.push(`core-blocks dir not found: ${dir} — no blocks to consolidate`);
+    // No blocks yet , not an error, just nothing to do
+    result.errors.push(`core-blocks dir not found: ${dir} , no blocks to consolidate`);
     return result;
   }
 
   const apiKey = getConfig().anthropicApiKey || process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    result.errors.push('anthropicApiKey not configured — skipping sleep-time consolidation');
+    result.errors.push('anthropicApiKey not configured , skipping sleep-time consolidation');
     return result;
   }
 

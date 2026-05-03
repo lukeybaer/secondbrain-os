@@ -94,7 +94,7 @@ export async function summarizePersona(id: string): Promise<{ success: boolean; 
         {
           role: "system",
           content:
-            "Summarize the following AI persona instructions in 1–2 concise sentences. Describe the persona's role, tone, and key behaviors. Be specific and direct — no filler phrases.",
+            "Summarize the following AI persona instructions in 1-2 concise sentences. Describe the persona's role, tone, and key behaviors. Be specific and direct , no filler phrases.",
         },
         { role: "user", content: persona.instructions },
       ],

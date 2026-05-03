@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ec2-build-from-queue.py — Reads ec2-build-queue.json and builds each video.
+ec2-build-from-queue.py , Reads ec2-build-queue.json and builds each video.
 
 Runs on EC2 (/opt/secondbrain/). Builds all videos in the queue that do not
 already have a completed final.mp4, then writes results to build_manifest.json.
@@ -10,7 +10,7 @@ Fixes over build-videos.py:
 - ASS captions offset by thumb card duration (0.25s)
 - Grok Aurora (xAI) thumbnails for all videos
 - Music mix from MUSIC_MAP in empire config
-- No -shortest flag — explicit -t duration prevents truncation
+- No -shortest flag , explicit -t duration prevents truncation
 
 Usage:
   python3 /opt/secondbrain/scripts/ec2-build-from-queue.py
@@ -156,7 +156,7 @@ def grok_thumbnail(title, out_path, config):
     from PIL import Image, ImageDraw, ImageFont
     xai_key = config.get("xai_api_key", "")
     if not xai_key:
-        print("  No xAI key — using gradient thumbnail")
+        print("  No xAI key , using gradient thumbnail")
         return gradient_thumbnail(title, out_path)
 
     # Generate cinematic background via Grok Aurora
@@ -283,7 +283,7 @@ def build_video(spec, config):
 
     # 1. Voice
     if voice_h.exists():
-        print("[1] Voice exists — reusing")
+        print("[1] Voice exists , reusing")
     else:
         if not voice_raw.exists():
             print("[1] Generating ElevenLabs voice...")
@@ -303,19 +303,19 @@ def build_video(spec, config):
 
     # 3. Thumbnail
     if thumbnail.exists():
-        print("[3] Thumbnail exists — reusing")
+        print("[3] Thumbnail exists , reusing")
     else:
         print("[3] Generating Grok Aurora thumbnail...")
         grok_thumbnail(spec["title"], thumbnail, config)
 
-    # 4. Stock footage — ALWAYS loop to full voice duration + 5s buffer
+    # 4. Stock footage , ALWAYS loop to full voice duration + 5s buffer
     if stock_loop.exists():
         loop_dur = voice_duration(str(stock_loop))
         if loop_dur >= dur:
-            print(f"[4] Looped stock exists ({loop_dur:.1f}s) — reusing")
+            print(f"[4] Looped stock exists ({loop_dur:.1f}s) , reusing")
         else:
             stock_loop.unlink()
-            print("[4] Looped stock too short — regenerating")
+            print("[4] Looped stock too short , regenerating")
     if not stock_loop.exists():
         if not stock_raw.exists():
             print("[4] Fetching stock footage from Pexels...")
@@ -340,7 +340,7 @@ def build_video(spec, config):
         run(f"ffmpeg -y -loop 1 -i {thumbnail} -t 0.25 -vf 'scale=1080:1920' "
             f"-pix_fmt yuv420p -r 30 {thumb_card}")
 
-    # 6. Assemble — NO -shortest, explicit -t to prevent truncation
+    # 6. Assemble , NO -shortest, explicit -t to prevent truncation
     print("[5] Assembling final video...")
     concat_txt.write_text(f"file '{thumb_card}'\nfile '{stock_loop}'\n")
     ass_arg = f'-vf "ass={ass_file}"' if ass_file.exists() else ""
@@ -389,7 +389,7 @@ if __name__ == "__main__":
         # Skip if already successfully built and final.mp4 is fresh
         final_path = WORK_DIR / vid_id / "final.mp4"
         if final_path.exists() and not os.environ.get("FORCE_REBUILD"):
-            print(f"[{vid_id}] final.mp4 exists — skipping (set FORCE_REBUILD=1 to override)")
+            print(f"[{vid_id}] final.mp4 exists , skipping (set FORCE_REBUILD=1 to override)")
             built.append(vid_id)
             continue
 

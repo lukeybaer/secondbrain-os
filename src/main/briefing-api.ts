@@ -37,7 +37,7 @@ function resolvePython(): string {
 }
 
 /**
- * Sends a #Amy dispatch email to Luke's own inbox with the section context
+ * Sends a #Amy dispatch email to the owner's own inbox with the section context
  * and comment. This is the "right-click on briefing section -> comment"
  * pathway: it feeds the same #Amy email dispatch convention the Gmail scan
  * already processes. Returns { ok: true } on successful send.
@@ -68,7 +68,7 @@ async function dispatchAmyComment(params: {
   return new Promise((resolve) => {
     const proc = cp.spawn(
       python,
-      [script, '--to', 'luke.d.baer@gmail.com', '--subject', subject, '--body', body],
+      [script, '--to', 'owner@example.com', '--subject', subject, '--body', body],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let stderr = '';

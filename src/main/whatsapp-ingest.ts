@@ -2,7 +2,7 @@
  * whatsapp-ingest.ts
  *
  * Bulk ingestion of WhatsApp message history into SecondBrain's full memory
- * pipeline — AI tagging, Graphiti knowledge graph, 3-tier Hebbian memory,
+ * pipeline , AI tagging, Graphiti knowledge graph, 3-tier Hebbian memory,
  * conversations database, and contact enrichment.
  *
  * Follows the same pattern as otter-ingest.ts:
@@ -193,7 +193,7 @@ async function processChat(chat: WAChat, state: IngestState): Promise<'processed
   // Fetch deep history (up to 1000 messages)
   const messages = await getChatHistory(chat.id, 1000);
   if (messages.length === 0) {
-    console.log(`[wa-ingest] Skipping "${chat.name}" — no messages`);
+    console.log(`[wa-ingest] Skipping "${chat.name}" , no messages`);
     return 'skipped';
   }
 
@@ -202,7 +202,7 @@ async function processChat(chat: WAChat, state: IngestState): Promise<'processed
     (m) => m.body && m.body.trim().length > 0 && m.type === 'chat',
   );
   if (textMessages.length === 0) {
-    console.log(`[wa-ingest] Skipping "${chat.name}" — no text messages`);
+    console.log(`[wa-ingest] Skipping "${chat.name}" , no text messages`);
     return 'skipped';
   }
 
@@ -213,7 +213,7 @@ async function processChat(chat: WAChat, state: IngestState): Promise<'processed
   // Dedup check
   const existing = state.processed[chat.id];
   if (existing && existing.hash === hash) {
-    console.log(`[wa-ingest] Skipping "${chat.name}" — unchanged`);
+    console.log(`[wa-ingest] Skipping "${chat.name}" , unchanged`);
     return 'skipped';
   }
 
@@ -263,7 +263,7 @@ async function processChat(chat: WAChat, state: IngestState): Promise<'processed
   if (textMessages.length >= 5 && meta.summary) {
     const memoryContent = [
       `WhatsApp conversation with ${chat.name}`,
-      `Date range: ${firstMsgDate} — ${new Date(Math.max(...textMessages.map((m) => m.timestamp))).toISOString().split('T')[0]}`,
+      `Date range: ${firstMsgDate} , ${new Date(Math.max(...textMessages.map((m) => m.timestamp))).toISOString().split('T')[0]}`,
       `Messages: ${textMessages.length}`,
       `Summary: ${meta.summary}`,
       meta.topics?.length ? `Topics: ${meta.topics.join(', ')}` : '',

@@ -1,6 +1,6 @@
 // graphiti-client.ts
 // TypeScript client for the Graphiti MCP temporal knowledge graph server.
-// Source: getzep/graphiti (24k stars) — self-hosted via Docker on EC2.
+// Source: getzep/graphiti (24k stars) , self-hosted via Docker on EC2.
 //
 // Graphiti provides:
 //   - Temporal knowledge graph (every fact has timestamp + validity window)
@@ -119,7 +119,7 @@ async function ensureSession(): Promise<string | null> {
       });
     } catch (notifyErr: any) {
       console.warn(`[graphiti] initialized notification failed: ${notifyErr.message}`);
-      /* continue — some servers still work without the notification */
+      /* continue , some servers still work without the notification */
     }
 
     console.log(`[graphiti] MCP session initialized: ${sessionId.slice(0, 8)}...`);
@@ -310,7 +310,7 @@ export async function ingestCallTranscript(opts: {
 }
 
 /**
- * Health check — returns true if Graphiti is reachable.
+ * Health check , returns true if Graphiti is reachable.
  * Uses the plain /health endpoint (not MCP).
  */
 export async function isGraphitiAvailable(): Promise<boolean> {

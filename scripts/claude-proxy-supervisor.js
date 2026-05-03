@@ -5,7 +5,7 @@
 // on exit with a 5-second backoff. Without this, the proxy dies silently (the
 // cmd window closes, the SSH reverse tunnel on EC2 keeps running but reports
 // `maxPlanProxy: disconnected`) and every EC2 LLM call falls back to paid
-// OpenAI — exactly the 2026-04-11 afternoon regression the owner caught.
+// OpenAI , exactly the 2026-04-11 afternoon regression the owner caught.
 //
 // Started by start-claude-proxy.vbs in Windows Startup. If killed the watcher
 // stops cleanly, but the proxy only stops when the supervisor is killed.
@@ -66,7 +66,7 @@ function startProxy() {
   });
 
   child.on('exit', (code, signal) => {
-    log(`proxy exited code=${code} signal=${signal || 'none'} — restart in ${RESTART_DELAY_MS}ms`);
+    log(`proxy exited code=${code} signal=${signal || 'none'} , restart in ${RESTART_DELAY_MS}ms`);
     setTimeout(startProxy, RESTART_DELAY_MS);
   });
 

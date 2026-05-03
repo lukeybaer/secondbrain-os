@@ -2,9 +2,9 @@
  * Regression guard for 2026-04-11 #gap: the daily briefing silently did not
  * appear on the owner's desktop because no local scheduled task existed for it and
  * the EC2 path was unreachable. Prevention is layered:
- *   1. daily-briefing scheduled task (scheduled-tasks.json) — fires 5:30 AM CT
+ *   1. daily-briefing scheduled task (scheduled-tasks.json) , fires 5:30 AM CT
  *   2. manual-briefing-v3.js now writes both .md and .docx to the Desktop
- *   3. THIS test — asserts the briefing script is wired to produce both file
+ *   3. THIS test , asserts the briefing script is wired to produce both file
  *      types and that today's artifacts exist when run locally in CI
  *
  * This test is deliberately shallow: it asserts wiring, not content. Content
@@ -63,7 +63,7 @@ describe('briefing output wiring', () => {
   });
 
   // 2026-04-11 #gap round 3: the briefing silently omitted FOUR spec sections
-  // (7 LinkedIn, 8 Communications, 11 Reputation, 13 Weekly Sermon Saturdays).
+  // (7 LinkedIn, 8 Communications, 11 Reputation, 13 Weekly Theme Saturdays).
   // These assertions lock every numbered section from project_briefing_spec.md
   // in place. When a new section is added to the spec, add it here too.
   //
@@ -76,7 +76,7 @@ describe('briefing output wiring', () => {
     { n: 8, header: 'COMMUNICATIONS SUMMARY', fn: 'getCommunicationsSummary' },
     { n: 10, header: 'FEATURE BACKLOG', fn: 'getFeatureBacklog' },
     { n: 11, header: 'REPUTATION MENTIONS', fn: 'getReputationMentions' },
-    { n: 13, header: 'WEEKLY SERMON BRIEFING', fn: 'getWeeklySermonBriefing' },
+    { n: 13, header: 'WEEKLY THEME BRIEFING', fn: 'getWeeklyThemeBriefing' },
   ];
 
   for (const sec of SPEC_SECTIONS) {
@@ -88,9 +88,9 @@ describe('briefing output wiring', () => {
   }
 
   // Saturday-only contract: when today is Saturday, the disk briefing must
-  // contain the sermon section. On non-Saturdays it must NOT contain the
+  // contain the theme section. On non-Saturdays it must NOT contain the
   // section header (so it's a real conditional, not a literal string).
-  it('briefing sermon section fires on Saturdays only', () => {
+  it('briefing theme section fires on Saturdays only', () => {
     const briefingsDir = join(REPO_ROOT, 'data', 'briefings');
     if (!existsSync(briefingsDir)) return;
     const latest = join(briefingsDir, `briefing-${todayIso}.md`);
@@ -98,9 +98,9 @@ describe('briefing output wiring', () => {
     const content = readFileSync(latest, 'utf8');
     const isSaturday = new Date().getDay() === 6;
     if (isSaturday) {
-      expect(content).toContain('WEEKLY SERMON BRIEFING');
+      expect(content).toContain('WEEKLY THEME BRIEFING');
     } else {
-      expect(content).not.toContain('WEEKLY SERMON BRIEFING');
+      expect(content).not.toContain('WEEKLY THEME BRIEFING');
     }
   });
 

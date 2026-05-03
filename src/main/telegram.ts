@@ -153,7 +153,7 @@ export async function sendPhoto(chatId: string, photoPath: string, caption: stri
  * and sends the YES/NO prompt via Telegram.
  */
 export async function sendApprovalRequest(chatId: string, approval: PendingApproval): Promise<void> {
-  // Persist to SQLite (upsert — caller may have already inserted)
+  // Persist to SQLite (upsert , caller may have already inserted)
   try {
     createApproval({
       id: approval.id,
@@ -164,7 +164,7 @@ export async function sendApprovalRequest(chatId: string, approval: PendingAppro
       created_at: approval.created_at,
     });
   } catch {
-    // Row may already exist if created by server.ts webhook handler — that's fine
+    // Row may already exist if created by server.ts webhook handler , that's fine
   }
 
   // Register the in-memory resolver if provided

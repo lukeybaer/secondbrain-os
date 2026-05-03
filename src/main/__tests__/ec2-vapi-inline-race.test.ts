@@ -4,7 +4,7 @@
  * Regression test for the run_claude_code 25s inline race added to
  * ec2-server.js (commit 11 of plans/dazzling-rolling-moler.md). The
  * actual handler lives in ec2-server.js which is plain Node / CJS and
- * runs on EC2 — we test the race LOGIC by reimplementing it here so
+ * runs on EC2 , we test the race LOGIC by reimplementing it here so
  * a regression in behavior surfaces immediately.
  *
  * The contract:
@@ -20,7 +20,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
 // Reimplement the parts of ec2-server.js that matter for this test.
-// This is the same pattern ec2-scheduler.test.ts uses — test the logic
+// This is the same pattern ec2-scheduler.test.ts uses , test the logic
 // without loading the full EC2 module.
 
 interface Command {
@@ -144,7 +144,7 @@ describe('run_claude_code 25s inline race', () => {
     expect(h.getPendingSize()).toBe(0);
   });
 
-  it('race winner wins — completion before timeout does not double-deliver', async () => {
+  it('race winner wins , completion before timeout does not double-deliver', async () => {
     const h = makeRaceHarness();
     const cmd = makeCmd();
 

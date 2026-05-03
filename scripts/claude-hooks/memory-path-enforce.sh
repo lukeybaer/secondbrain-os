@@ -1,5 +1,5 @@
 #!/bin/bash
-# PreToolUse hook — blocks any Write/Edit/NotebookEdit that targets
+# PreToolUse hook , blocks any Write/Edit/NotebookEdit that targets
 # ~/.claude/memory/ or .claude/memory/ absolute paths. Rewrites would
 # trigger Claude Code's permission gate (path-string-based, not
 # inode-based) and force the owner to click Allow.
@@ -10,7 +10,7 @@
 # the permission gate without a prompt.
 #
 # Same applies to ~/.claude/hooks/, ~/.claude/CLAUDE.md, and
-# ~/.claude/settings.json — use the tracked secondbrain/... paths.
+# ~/.claude/settings.json , use the tracked secondbrain/... paths.
 #
 # On violation: exits 2 (blocking error) and tells Claude Code which
 # path to use instead.

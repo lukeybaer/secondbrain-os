@@ -1,4 +1,4 @@
-// Pure JS search over JSON metadata files — no SQLite, no native deps.
+// Pure JS search over JSON metadata files , no SQLite, no native deps.
 // Works in any Electron/Node version.
 import { listAllConversations, ConversationMeta } from "./storage";
 
@@ -29,7 +29,7 @@ export function searchConversations(query: string, limit = 50): ConversationMeta
 function scoreConversation(meta: ConversationMeta, terms: string[]): number {
   let score = 0;
   for (const term of terms) {
-    // Title — highest weight
+    // Title , highest weight
     if (meta.title.toLowerCase().includes(term)) score += 10;
     // Topics
     if (meta.topics.some(t => t.toLowerCase().includes(term))) score += 6;
@@ -51,7 +51,7 @@ function scoreConversation(meta: ConversationMeta, terms: string[]): number {
   return score;
 }
 
-// Upsert is a no-op — listAllConversations() reads live from disk
+// Upsert is a no-op , listAllConversations() reads live from disk
 export function upsertConversation(_meta: ConversationMeta): void {
   // metadata is written to disk by saveConversation() in storage.ts
 }

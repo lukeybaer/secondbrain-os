@@ -76,7 +76,7 @@ test("Dentist project tasks are listed after selecting project", async () => {
     await projectListSidebar(page).locator("button", { hasText: "Find Dentist" }).first().click();
     // Starlite Dental task title should appear in the detail panel
     await expect(
-      page.locator("div", { hasText: "Starlite Dental — Dr. Nidhi Jaiswal" }).first()
+      page.locator("div", { hasText: "Starlite Dental , Dr. Nidhi Jaiswal" }).first()
     ).toBeVisible({ timeout: 10000 });
   } finally {
     await app.close();
@@ -131,7 +131,7 @@ test("Call Now button is present on a task with phone number", async () => {
   }
 });
 
-test("Add new project — appears in sidebar after creation", async () => {
+test("Add new project , appears in sidebar after creation", async () => {
   const { app, page } = await launchApp();
   try {
     await navigateToProjects(page);
@@ -164,7 +164,7 @@ test("Add new project — appears in sidebar after creation", async () => {
   }
 });
 
-test("Add task to project — task appears in project detail", async () => {
+test("Add task to project , task appears in project detail", async () => {
   const { app, page } = await launchApp();
   try {
     await navigateToProjects(page);

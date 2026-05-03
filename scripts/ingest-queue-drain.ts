@@ -7,12 +7,12 @@
  *
  * Two invocation modes:
  *
- *   1) Inline mode (default) — this script calls the drain() function in-process
+ *   1) Inline mode (default) , this script calls the drain() function in-process
  *      using a handler that classifies the item by source/kind and delegates to
  *      the appropriate Tier 2 enrichment path. No claude subprocess is spawned.
  *      Use when the handlers are implemented directly in TS.
  *
- *   2) Spawn mode (`--spawn-claude`) — this script builds a single prompt that
+ *   2) Spawn mode (`--spawn-claude`) , this script builds a single prompt that
  *      lists all pending items and asks a claude session (marked ingest mode
  *      via SECONDBRAIN_SESSION_MODE=ingest) to process the whole batch. Uses
  *      runClaudeCodeIngest from src/main/claude-runner.ts to get the stub
@@ -27,7 +27,7 @@
  * Exits non-zero on handler crash or queue-layout error so the caller (cron,
  * scheduled task, health check) can detect failure and alert.
  *
- * Run-frequency guidance: every 2-5 minutes is fine — each drain is cheap, and
+ * Run-frequency guidance: every 2-5 minutes is fine , each drain is cheap, and
  * leaving items sitting in pending/ longer than that defeats the point of the
  * 2-minute ingest cadence the pitch targeted.
  */
@@ -164,7 +164,7 @@ async function main(): Promise<number> {
 
   if (args.dryRun) {
     const pending = listPending().slice(0, args.maxItems);
-    console.log(`[ingest-queue-drain] dry run — would drain ${pending.length} items`);
+    console.log(`[ingest-queue-drain] dry run , would drain ${pending.length} items`);
     for (const it of pending) {
       console.log(`  - ${it.id} ${it.source} ${it.kind} ${it.externalId}`);
     }

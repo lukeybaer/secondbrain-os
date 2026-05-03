@@ -98,7 +98,7 @@ function detectCallOutcome(record: any): Task["callOutcome"] {
   const endedReason = (record.endedReason ?? "").toLowerCase();
   const text = transcript + " " + summary;
 
-  // After-hours / automated systems — detect before anything else
+  // After-hours / automated systems , detect before anything else
   const afterHours = ["after hours", "after-hours", "office is closed", "currently closed",
     "outside of our office hours", "our hours are", "please call back during",
     "automated", "press 1", "press 2", "for more options", "directory"];
@@ -107,14 +107,14 @@ function detectCallOutcome(record: any): Task["callOutcome"] {
   // No answer / short call
   if (endedReason === "no-answer" || duration < 8) return "no-answer";
 
-  // Voicemail — AI left a message
+  // Voicemail , AI left a message
   if (text.includes("voicemail") || text.includes("leave a message") || text.includes("not available") || text.includes("at the beep")) return "voicemail";
 
-  // Declined — checked before "agreed" so false positives in GPT don't override clear rejections
+  // Declined , checked before "agreed" so false positives in GPT don't override clear rejections
   const declineSignals = ["require x-ray", "require new x-ray", "cannot see", "won't be able", "we can't", "our policy", "we require", "cannot onboard", "must have x-ray", "x-rays are required"];
   if (declineSignals.some((kw) => text.includes(kw))) return "declined";
 
-  // Agreed — only if GPT confirmed AND no decline signals
+  // Agreed , only if GPT confirmed AND no decline signals
   if (record.completed === true) return "agreed";
 
   // Summary-level signals
@@ -301,7 +301,7 @@ function TaskRow({ task, isCurrentWorkflowTask, onToggleStatus, onToggleWorkflow
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
           <span style={{ fontSize: 11, color: "#555" }}>Outcome:</span>
           <select value={task.callOutcome ?? ""} onChange={(e) => onUpdateOutcome(task, (e.target.value as Task["callOutcome"]) || undefined)} style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 4, color: task.callOutcome ? "#e0e0e0" : "#555", fontSize: 11, padding: "2px 6px", outline: "none", cursor: "pointer" }}>
-            <option value="">— not set —</option>
+            <option value="">, not set ,</option>
             {(Object.entries(CALL_OUTCOME_LABELS) as [NonNullable<Task["callOutcome"]>, string][]).map(([val, label]) => (
               <option key={val} value={val}>{label}</option>
             ))}
@@ -329,7 +329,7 @@ function WorkflowPanel({ state, onSkip, onStop, onDismiss }: { state: WorkflowSt
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {state.running && <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ade80", display: "inline-block" }} />}
           <span style={{ fontSize: 13, fontWeight: 700, color: state.running ? "#4ade80" : "#888" }}>
-            {state.running ? `Workflow running — ${state.currentTask || "starting…"}` : "Workflow complete"}
+            {state.running ? `Workflow running , ${state.currentTask || "starting…"}` : "Workflow complete"}
           </span>
           {state.running && state.callStatus && (
             <span style={{ fontSize: 11, color: "#555" }}>{state.callStatus}</span>
@@ -446,7 +446,7 @@ function ProjectDetail({
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ fontSize: 11, color: "#555", marginBottom: 6, textTransform: "uppercase" as const, letterSpacing: "0.05em" }}>Persona for calls</div>
             {personas.length === 0 ? (
-              <div style={{ fontSize: 11, color: "#444" }}>No personas — create one in the Personas page.</div>
+              <div style={{ fontSize: 11, color: "#444" }}>No personas , create one in the Personas page.</div>
             ) : (
               <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 5 }}>
                 <button type="button" onClick={() => { setSelectedPersonaId(""); setEditingPersona(null); }} style={{ padding: "4px 10px", borderRadius: 20, fontSize: 11, cursor: "pointer", border: `1px solid ${!selectedPersonaId ? "#7c3aed" : "#2a2a2a"}`, background: !selectedPersonaId ? "#2a1a4a" : "#1a1a1a", color: !selectedPersonaId ? "#c4b5fd" : "#555" }}>
@@ -497,7 +497,7 @@ function ProjectDetail({
                 type="button"
                 onClick={onToggleListenToWorkflow}
                 style={{ padding: "5px 12px", fontSize: 11, fontWeight: 700, background: listenToWorkflow ? "#0d1f1a" : "#1a1a1a", border: `1px solid ${listenToWorkflow ? "#22c55e" : "#2a2a2a"}`, borderRadius: 6, color: listenToWorkflow ? "#4ade80" : "#555", cursor: "pointer" }}
-                title={listenToWorkflow ? "Click to mute — stop listening to calls" : "Click to listen live to all workflow calls"}
+                title={listenToWorkflow ? "Click to mute , stop listening to calls" : "Click to listen live to all workflow calls"}
               >
                 {listenToWorkflow ? "🎧 Listening" : "🔇 Listen to calls"}
               </button>
@@ -521,7 +521,7 @@ function ProjectDetail({
         <button onClick={() => setStrategyExpanded((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 20px", background: "none", border: "none", cursor: "pointer", textAlign: "left" as const }}>
           <span style={{ fontSize: 10, color: "#7c3aed" }}>{strategyExpanded ? "▾" : "▸"}</span>
           <span style={{ fontSize: 11, fontWeight: 700, color: "#7c3aed", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>Strategy & Call Plan</span>
-          <span style={{ fontSize: 10, color: "#333", marginLeft: 4 }}>— read before every call</span>
+          <span style={{ fontSize: 10, color: "#333", marginLeft: 4 }}>, read before every call</span>
         </button>
         {strategyExpanded && (
           <div style={{ padding: "0 20px 14px" }}>
@@ -663,7 +663,7 @@ export default function Projects({ onCallNow, onNavigateTo, onSetAutoListen }: P
 
     for (const task of tasks) {
       if (workflowStopRef.current) { addLog("⏹ Stopped by user."); break; }
-      if (!task.phoneNumber) { addLog(`⚠ ${task.title} — no phone number, skipping`); continue; }
+      if (!task.phoneNumber) { addLog(`⚠ ${task.title} , no phone number, skipping`); continue; }
 
       skipCallRef.current = false;
       addLog(`📞 ${task.title}  ${task.phoneNumber}`);
@@ -681,7 +681,7 @@ export default function Projects({ onCallNow, onNavigateTo, onSetAutoListen }: P
       setWorkflowState((prev) => prev ? { ...prev, currentCallId: result.callId } : null);
       addLog(`  ▶ Call placed (${result.callId?.slice(0, 8)}…)`);
 
-      // Navigate AFTER placing — so Calls page loads with the call already in the list
+      // Navigate AFTER placing , so Calls page loads with the call already in the list
       onNavigateTo?.("calls");
 
       // Poll until the call ends (or user skips/stops)
@@ -737,7 +737,7 @@ export default function Projects({ onCallNow, onNavigateTo, onSetAutoListen }: P
 
       // Stop if goal achieved
       if (outcome === "agreed") {
-        addLog("✅ Goal achieved — workflow complete!");
+        addLog("✅ Goal achieved , workflow complete!");
         break;
       }
 

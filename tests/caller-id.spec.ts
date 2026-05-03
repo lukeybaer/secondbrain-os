@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import os from 'os';
 
 // ---------------------------------------------------------------------------
-// vi.hoisted — values needed before vi.mock factories run
+// vi.hoisted , values needed before vi.mock factories run
 // ---------------------------------------------------------------------------
 
 const { TEST_USER_DATA } = vi.hoisted(() => {
@@ -188,7 +188,7 @@ describe('identifyCaller', () => {
   });
 });
 
-describe('identifyCaller — context content', () => {
+describe('identifyCaller , context content', () => {
   it('unknown context includes keyword in prompt when keyword is configured', () => {
     installFixtureStore();
     const ctx = identifyCaller('+15559998888');

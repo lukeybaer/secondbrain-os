@@ -110,7 +110,7 @@ export async function scanAndAlert(text: string, source: string): Promise<PiiDet
     _piiLog.push(event);
     console.warn(`[pii-scanner] DETECTED ${d.piiType} in ${source}: ${d.snippet}`);
 
-    // Security alert — PII detection always goes to Telegram immediately
+    // Security alert , PII detection always goes to Telegram immediately
     if (cfg.telegramChatId && cfg.telegramBotToken) {
       try {
         await sendMessage(

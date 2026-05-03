@@ -15,7 +15,7 @@ def humanize(input_mp3: Path, output_mp3: Path) -> Path:
         'ffmpeg', '-y', '-i', str(input_mp3),
         '-af', ','.join([
             # Subtle compression - reduces dynamic over-perfection
-            # release=80ms (was 200ms) — shorter release prevents pumping/pause artifacts
+            # release=80ms (was 200ms) , shorter release prevents pumping/pause artifacts
             'acompressor=threshold=-18dB:ratio=2.5:attack=8:release=80:makeup=1.5',
             # Very slight high-freq rolloff - removes studio sparkle
             'equalizer=f=8000:width_type=o:width=1.5:g=-2.5',
@@ -23,7 +23,7 @@ def humanize(input_mp3: Path, output_mp3: Path) -> Path:
             'equalizer=f=3500:width_type=o:width=1.2:g=-1.8',
             # Boost low-mid warmth (sounds more like a person in a room)
             'equalizer=f=280:width_type=o:width=1.0:g=1.5',
-            # Very faint room tone — reduced from 0.04|0.03 to 0.015|0.010
+            # Very faint room tone , reduced from 0.04|0.03 to 0.015|0.010
             # to prevent audible echo gaps between words
             'aecho=0.8:0.82:28|45:0.015|0.010',
             # Normalize output

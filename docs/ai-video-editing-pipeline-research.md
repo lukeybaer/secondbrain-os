@@ -1,4 +1,4 @@
-# AI-Powered Video Editing Pipeline — Research Report
+# AI-Powered Video Editing Pipeline , Research Report
 
 **Date:** 2026-04-04
 **Purpose:** Technical research for building an automated multi-camera talking-head video editing pipeline
@@ -13,31 +13,31 @@ The AI video editing space for talking-head content has matured significantly. T
 
 **NLE Plugin-Based (Premiere Pro / DaVinci Resolve)**
 
-- **AutoPod** ($29/mo) — Plugin for Premiere Pro and DaVinci Resolve. Supports up to 10 cameras and 10 microphones. Uses audio-based speaker detection to automatically switch angles. Also includes jump cut editor (silence removal) and social clip creator for aspect ratio adjustments.
-- **Phantom Editor / Wraith** — Newer AutoPod competitor. Claims more intelligent context-aware switching that analyzes conversation patterns rather than just volume levels. Supports up to 8 angles. Offers min/max shot duration controls per camera/speaker. One-time license available.
-- **FireCut / AutoCut** — Additional Premiere Pro plugins with similar auto-switching capabilities.
+- **AutoPod** ($29/mo) , Plugin for Premiere Pro and DaVinci Resolve. Supports up to 10 cameras and 10 microphones. Uses audio-based speaker detection to automatically switch angles. Also includes jump cut editor (silence removal) and social clip creator for aspect ratio adjustments.
+- **Phantom Editor / Wraith** , Newer AutoPod competitor. Claims more intelligent context-aware switching that analyzes conversation patterns rather than just volume levels. Supports up to 8 angles. Offers min/max shot duration controls per camera/speaker. One-time license available.
+- **FireCut / AutoCut** , Additional Premiere Pro plugins with similar auto-switching capabilities.
 
 **Standalone AI Editors**
 
-- **Descript** — Pioneered text-based video editing. Edit video by editing transcript. Automatic multicam mode that shows multiple speakers during dialogue, inserts cutaways during monologues. Has built-in "Remove Retakes" feature. Exports to Premiere/Resolve/Final Cut.
-- **Eddie (HeyEddie.ai)** — Positioned as "ChatGPT for video editing." Natural language editing commands. Supports multicam podcasts, interviews, YouTube content. Auto-detects and switches to multicam mode on import. Up to 3 video angles + 1 main audio track. Waveform-based syncing for overlapping audio.
-- **Gling** — AI-powered multicam syncing, cutting, and refinement. Auto-transcribes, removes unwanted takes and silences. Exports preserved timelines to Final Cut Pro, DaVinci Resolve, Premiere.
+- **Descript** , Pioneered text-based video editing. Edit video by editing transcript. Automatic multicam mode that shows multiple speakers during dialogue, inserts cutaways during monologues. Has built-in "Remove Retakes" feature. Exports to Premiere/Resolve/Final Cut.
+- **Eddie (HeyEddie.ai)** , Positioned as "ChatGPT for video editing." Natural language editing commands. Supports multicam podcasts, interviews, YouTube content. Auto-detects and switches to multicam mode on import. Up to 3 video angles + 1 main audio track. Waveform-based syncing for overlapping audio.
+- **Gling** , AI-powered multicam syncing, cutting, and refinement. Auto-transcribes, removes unwanted takes and silences. Exports preserved timelines to Final Cut Pro, DaVinci Resolve, Premiere.
 
 **Cloud/API-Based**
 
-- **Cutback/Selects** — AI podcast editors with cloud processing
-- **Creatomate** — API-based video rendering with Node.js SDK
+- **Cutback/Selects** , AI podcast editors with cloud processing
+- **Creatomate** , API-based video rendering with Node.js SDK
 
 ### How Professional Editors Choose When to Cut
 
 Research into professional multicam editing reveals these principles:
 
-1. **Never cut for the sake of cutting.** A cut must have a reason — shift in dialogue, emotion, or action.
+1. **Never cut for the sake of cutting.** A cut must have a reason , shift in dialogue, emotion, or action.
 2. **Open wide, go tight progressively.** Start with a wide/medium establishing shot. As the speaker gets into detailed points, cut to tighter angles.
 3. **Cut on breaths.** The ideal cut point is when a speaker takes a breath between thoughts.
 4. **Cut for emphasis.** Move to a closer angle during emotional or important statements.
 5. **Cut to reactions.** In multi-person content, cut to the listener's reaction during key moments.
-6. **Maintain the axis.** Never cross the 180-degree line — if the speaker faces screen-right, they must always face screen-right.
+6. **Maintain the axis.** Never cross the 180-degree line , if the speaker faces screen-right, they must always face screen-right.
 7. **Minimum shot duration.** Professional edits rarely hold a shot for less than 2-3 seconds.
 8. **Use the "30-degree rule."** Successive shots should differ by at least 30 degrees to feel like intentional cuts rather than jump cuts.
 
@@ -45,7 +45,7 @@ Research into professional multicam editing reveals these principles:
 
 | Signal                           | Used By                          | How                                         |
 | -------------------------------- | -------------------------------- | ------------------------------------------- |
-| Audio level / who's speaking     | AutoPod, Descript, Wraith, Eddie | Primary signal — assign cameras to speakers |
+| Audio level / who's speaking     | AutoPod, Descript, Wraith, Eddie | Primary signal , assign cameras to speakers |
 | Conversation patterns            | Wraith                           | Analyzes dialogue flow, not just volume     |
 | Transcript / speaker diarization | Descript, Gling                  | Maps words to speakers via transcript       |
 | Waveform analysis                | TimeBolt, Eddie                  | Detects silence, emphasis, pauses           |
@@ -53,7 +53,7 @@ Research into professional multicam editing reveals these principles:
 
 ---
 
-## 2. Automated Multi-Cam Editing Tools — Deep Dive
+## 2. Automated Multi-Cam Editing Tools , Deep Dive
 
 ### AutoPod
 
@@ -62,15 +62,15 @@ Research into professional multicam editing reveals these principles:
 - **Cameras:** Up to 10 cameras + 10 microphones
 - **Core feature:** Multi-Camera Editor that detects who is speaking and switches to their assigned angle
 - **Additional tools:** Social Clip Creator (auto-reframe for vertical), Jump Cut Editor (silence removal)
-- **Limitations:** Premiere/Resolve only — no standalone or API access
+- **Limitations:** Premiere/Resolve only , no standalone or API access
 
 ### Descript
 
 - **Platform:** Standalone desktop app (Mac/Windows)
 - **Price:** Free tier available, Business $24/user/mo
 - **Multicam modes:**
-  - "Automatic" — shows multiple speakers during dialogue, inserts cutaways during monologues
-  - "Show only active speaker" — cuts to whoever is talking
+  - "Automatic" , shows multiple speakers during dialogue, inserts cutaways during monologues
+  - "Show only active speaker" , cuts to whoever is talking
 - **Key differentiator:** Text-based editing. Edit the transcript and the video follows.
 - **Retake removal:** Built-in AI that scans video, identifies best takes, removes the rest
 - **Export:** Premiere Pro, Final Cut Pro, DaVinci Resolve, direct publish
@@ -103,9 +103,9 @@ Research into professional multicam editing reveals these principles:
 
 ### Open-Source Alternatives
 
-- **OpenShot** — Python/C++ open-source editor with emerging AI features (github.com/KuzscoTech/openshot-ai-features). No dedicated multicam auto-switching yet.
-- **MoviePy** — Python library for programmatic video editing. No multicam auto-switching built in, but compositing primitives exist to build it.
-- **ffmpeg-automated-editor** — GitHub project using ffmpeg-python for automated cuts based on audio analysis.
+- **OpenShot** , Python/C++ open-source editor with emerging AI features (github.com/KuzscoTech/openshot-ai-features). No dedicated multicam auto-switching yet.
+- **MoviePy** , Python library for programmatic video editing. No multicam auto-switching built in, but compositing primitives exist to build it.
+- **ffmpeg-automated-editor** , GitHub project using ffmpeg-python for automated cuts based on audio analysis.
 
 **Bottom line:** There is no mature open-source tool for AI multicam auto-switching. Building a custom pipeline from Whisper + LLM + FFmpeg is the path for a fully open/controllable solution.
 
@@ -250,16 +250,16 @@ In talking-head recordings, speakers frequently restart sentences, do full retak
 
 ### Existing Solutions
 
-**TimeBolt** — Most sophisticated retake detection:
+**TimeBolt** , Most sophisticated retake detection:
 
-- **Two modes:** "False Start Detection" (unscripted — catches stutters/aborted sentences) and "Retake Detection" (scripted — compares against teleprompter script, keeps last take)
+- **Two modes:** "False Start Detection" (unscripted , catches stutters/aborted sentences) and "Retake Detection" (scripted , compares against teleprompter script, keeps last take)
 - **How it works:** Uses Amazon AWS Transcribe for word-level tokens, then compares repeated sentences with configurable similarity tolerance ("Look Ahead Lines" setting)
 - **Hybrid approach:** Waveform analysis determines WHERE to cut; AI transcription identifies WHAT to cut
 - **Accuracy:** Claims 90-98% cut automation accuracy
 
-**Descript** — Built-in "Remove Retakes" that scans video, identifies best take, lets you pick alternatives from the transcript
+**Descript** , Built-in "Remove Retakes" that scans video, identifies best take, lets you pick alternatives from the transcript
 
-**Gling** — Auto-removes unwanted takes and silences during transcription analysis
+**Gling** , Auto-removes unwanted takes and silences during transcription analysis
 
 ### Building Custom Retake Detection
 
@@ -331,7 +331,7 @@ For each retake group, keep the last take (or LLM-selected best take), mark earl
 
 ### Subtitles / Captions
 
-- **Always add subtitles** — most LinkedIn users watch without sound
+- **Always add subtitles** , most LinkedIn users watch without sound
 - **Format:** 1-2 lines per frame, max 42 characters per line, 2-4 seconds display time
 - **Style:** Bold, high-contrast text (white with dark outline or background box)
 - **File format:** SRT for upload; burned-in captions for maximum compatibility
@@ -339,22 +339,22 @@ For each retake group, keep the last take (or LLM-selected best take), mark earl
 
 ### Production Elements That Make LinkedIn Video Look Professional
 
-1. **Hook in first 3 seconds** — text overlay or bold statement; viewers scroll fast
-2. **Burned-in subtitles** — large, readable, high contrast
-3. **Subtle zoom effects** — slow Ken Burns-style zoom in during key points creates visual movement on otherwise static talking-head shots. Zoom should accelerate smoothly and decelerate smoothly.
-4. **B-roll cutaways** — break up talking head with relevant visuals, screen recordings, or graphics every 10-15 seconds
-5. **Multi-angle cuts** — even 2 angles (medium + close-up) dramatically increases production value
-6. **Lower thirds** — name/title graphic in first few seconds
-7. **Consistent color grade** — warm, slightly lifted shadows, clean skin tones
-8. **End card** — call to action, follow prompt, or question to drive comments
-9. **Progress bar or chapter markers** — helps retention on longer videos
+1. **Hook in first 3 seconds** , text overlay or bold statement; viewers scroll fast
+2. **Burned-in subtitles** , large, readable, high contrast
+3. **Subtle zoom effects** , slow Ken Burns-style zoom in during key points creates visual movement on otherwise static talking-head shots. Zoom should accelerate smoothly and decelerate smoothly.
+4. **B-roll cutaways** , break up talking head with relevant visuals, screen recordings, or graphics every 10-15 seconds
+5. **Multi-angle cuts** , even 2 angles (medium + close-up) dramatically increases production value
+6. **Lower thirds** , name/title graphic in first few seconds
+7. **Consistent color grade** , warm, slightly lifted shadows, clean skin tones
+8. **End card** , call to action, follow prompt, or question to drive comments
+9. **Progress bar or chapter markers** , helps retention on longer videos
 
 ### Transitions Between Angles
 
 - **Hard cuts** on speaker breaths (most common, cleanest)
 - **Subtle cross-dissolve** (0.1-0.2s) for softer feel
-- **Zoom punch-in** — digitally zoom into the same angle for a "virtual second camera" effect
-- **L-cuts / J-cuts** — audio from next segment starts before or after the visual cut
+- **Zoom punch-in** , digitally zoom into the same angle for a "virtual second camera" effect
+- **L-cuts / J-cuts** , audio from next segment starts before or after the visual cut
 
 ---
 
@@ -463,7 +463,7 @@ await editly({
 
 ### Recommendation for Automated Multi-Cam Pipeline
 
-**Use fluent-ffmpeg** for the actual rendering — it gives you direct FFmpeg control with the performance of native stream processing. Use Remotion only if you need complex overlays, animated subtitles, or data-driven graphics burned into the video.
+**Use fluent-ffmpeg** for the actual rendering , it gives you direct FFmpeg control with the performance of native stream processing. Use Remotion only if you need complex overlays, animated subtitles, or data-driven graphics burned into the video.
 
 The pipeline would be:
 
@@ -695,13 +695,13 @@ For a SecondBrain integration:
 
 ### Key Technical Decisions
 
-1. **Record with OBS** (not FFmpeg directly) — OBS handles multi-source recording, hardware encoding, and audio mixing far better than raw FFmpeg on Windows.
+1. **Record with OBS** (not FFmpeg directly) , OBS handles multi-source recording, hardware encoding, and audio mixing far better than raw FFmpeg on Windows.
 
-2. **Transcribe with Python subprocess** — faster-whisper + WhisperX are Python-only. Call them from Node.js via `child_process.spawn`.
+2. **Transcribe with Python subprocess** , faster-whisper + WhisperX are Python-only. Call them from Node.js via `child_process.spawn`.
 
-3. **Analyze with Claude API** — Send the timestamped transcript to Claude with a structured prompt. Get back a JSON edit decision list.
+3. **Analyze with Claude API** , Send the timestamped transcript to Claude with a structured prompt. Get back a JSON edit decision list.
 
-4. **Render with fluent-ffmpeg** — Convert the EDL to FFmpeg filter_complex commands. Single render pass for efficiency.
+4. **Render with fluent-ffmpeg** , Convert the EDL to FFmpeg filter_complex commands. Single render pass for efficiency.
 
 5. **Two output formats:** 4:5 vertical with burned-in subtitles for LinkedIn, 16:9 horizontal for YouTube/general use.
 
@@ -709,22 +709,22 @@ For a SecondBrain integration:
 
 ## Sources
 
-- [AutoPod](https://www.autopod.fm/) — Automatic podcast editing for Premiere Pro
+- [AutoPod](https://www.autopod.fm/) , Automatic podcast editing for Premiere Pro
 - [Descript Automatic Multicam](https://help.descript.com/hc/en-us/articles/28736507904525-Automatic-multicam)
 - [Eddie AI Podcasts](https://help.heyeddie.ai/en/articles/10548843-introducing-eddie-podcasts-smart-multicam-editing-for-podcast-style-videos)
 - [Phantom Editor / Wraith](https://phantomeditor.video/products/Wraith)
 - [Gling Multicam](https://www.gling.ai/multicam-video-editing)
 - [TimeBolt Retake Detection](https://www.timebolt.io/blog/auto-remove-bad-takes)
 - [FFmpeg Multitrack Recording on Windows](https://blog.claranguyen.me/post/2024/12/15/multitrack-recording-win/)
-- [WhisperX](https://github.com/m-bain/whisperx) — Word-level timestamps and diarization
-- [whisper-timestamped](https://github.com/linto-ai/whisper-timestamped) — DTW-based word timestamps
+- [WhisperX](https://github.com/m-bain/whisperx) , Word-level timestamps and diarization
+- [whisper-timestamped](https://github.com/linto-ai/whisper-timestamped) , DTW-based word timestamps
 - [FFmpeg 8.0 Native Whisper](https://www.rendi.dev/post/ffmpeg-8-0-part-1-using-whisper-for-native-video-transcription-in-ffmpeg)
-- [Remotion](https://www.remotion.dev/) — Programmatic video with React
-- [editly](https://github.com/mifi/editly) — Declarative Node.js video editing
-- [OBS WebSocket](https://github.com/obsproject/obs-websocket) — Remote control OBS via WebSocket
+- [Remotion](https://www.remotion.dev/) , Programmatic video with React
+- [editly](https://github.com/mifi/editly) , Declarative Node.js video editing
+- [OBS WebSocket](https://github.com/obsproject/obs-websocket) , Remote control OBS via WebSocket
 - [Electron desktopCapturer](https://www.electronjs.org/docs/latest/api/desktop-capturer)
 - [LinkedIn Video Specs 2026](https://www.yansmedia.com/blog/linkedin-video-specs)
 - [LinkedIn Caption Best Practices](https://www.opus.pro/blog/linkedin-video-caption-subtitle-best-practices)
 - [Multicam Interview Best Practices](https://beverlyboy.com/film-technology/multi-cam-interview-setup-gear-angles-and-tips/)
-- [MoviePy](https://github.com/Zulko/moviepy) — Python video editing
+- [MoviePy](https://github.com/Zulko/moviepy) , Python video editing
 - [AI Video Editing 2026 Overview](https://cutback.video/blog/ai-video-editing-in-2026-best-tools-workflows-automation-explained)

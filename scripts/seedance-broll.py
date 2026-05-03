@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""seedance-broll.py — generate cinematic B-roll clips for stuck short-form
+"""seedance-broll.py , generate cinematic B-roll clips for stuck short-form
 videos using ByteDance Seedance 2.0. Attacks feature backlog #77 (multi-shot
 B-roll composition) and unblocks the "can't just show that one stock footage
 the whole time" rejection pattern that has `anthropic_leak` and
@@ -17,10 +17,10 @@ Pipeline:
      splice them into the regen queue.
 
 Env:
-  SEEDANCE_API_KEY  — ByteDance Volcano Ark API key (required)
-  SEEDANCE_MODEL    — default "seedance-2-0-pro" (override for cheaper runs)
-  SEEDANCE_REGION   — default "ap-southeast-1"
-  SEEDANCE_DRY_RUN  — if "1", only print the prompts without calling the API
+  SEEDANCE_API_KEY  , ByteDance Volcano Ark API key (required)
+  SEEDANCE_MODEL    , default "seedance-2-0-pro" (override for cheaper runs)
+  SEEDANCE_REGION   , default "ap-southeast-1"
+  SEEDANCE_DRY_RUN  , if "1", only print the prompts without calling the API
 """
 
 from __future__ import annotations
@@ -68,8 +68,8 @@ def pick_stuck(manifest: dict) -> list[dict]:
 
 def build_shot_prompts(video: dict) -> list[str]:
     """Derive 4-6 cinematic shot prompts from a stuck video. Designed to
-    produce variety — talking-head alternatives, data viz, abstract
-    technology shots — so the regen editor never has to reuse one clip."""
+    produce variety , talking-head alternatives, data viz, abstract
+    technology shots , so the regen editor never has to reuse one clip."""
     title = video.get("title", "") or video.get("id", "")
     hook = video.get("hook") or video.get("subtitle") or ""
     base = f"{title}. {hook}".strip(". ").strip()

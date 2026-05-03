@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * gmail-attach.js — Attach files to an existing Gmail draft.
+ * gmail-attach.js , Attach files to an existing Gmail draft.
  *
  * Usage:
  *   node scripts/gmail-attach.js --draft-id <id> --files <path1> [<path2> ...]
@@ -23,9 +23,9 @@
  *   4. Extract client_id + client_secret from the downloaded JSON
  *   5. Save to ~/.secrets/gmail_oauth_credentials.json
  *   6. Run: node scripts/gmail-attach.js --setup
- *      -> prints a URL, Luke visits it, pastes the code back
+ *      -> prints a URL, the owner visits it, pastes the code back
  *   7. Refresh token saved to ~/.secrets/gmail_oauth_token.json
- *   8. Done — all future runs are fully autonomous.
+ *   8. Done , all future runs are fully autonomous.
  */
 
 'use strict';
@@ -80,7 +80,7 @@ Or set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET environment variables.
 }
 
 // ── OAuth2 client factory ─────────────────────────────────────────────────────
-// Uses http://localhost redirect — starts a temp local server to capture the code
+// Uses http://localhost redirect , starts a temp local server to capture the code
 const http = require('http');
 const { execSync } = require('child_process');
 
@@ -93,7 +93,7 @@ function buildOAuth2Client() {
 }
 
 // Starts a one-shot local HTTP server, returns the 'code' query param from the redirect
-// No timeout — waits until user completes the browser auth flow
+// No timeout , waits until user completes the browser auth flow
 function captureAuthCode() {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
@@ -113,7 +113,7 @@ function captureAuthCode() {
     });
     server.on('error', (err) => reject(err));
     server.listen(AUTH_PORT, '127.0.0.1', () => {
-      console.log(`Listening on http://localhost:${AUTH_PORT} — waiting for Google redirect...`);
+      console.log(`Listening on http://localhost:${AUTH_PORT} , waiting for Google redirect...`);
     });
   });
 }
@@ -149,7 +149,7 @@ async function authorize(oauth2Client) {
     else if (process.platform === 'darwin') execSync(`open "${authUrl}"`, { stdio: 'ignore' });
     else execSync(`xdg-open "${authUrl}"`, { stdio: 'ignore' });
   } catch (_) {
-    /* ignore — URL printed above */
+    /* ignore , URL printed above */
   }
 
   console.log('Waiting for Google OAuth2 redirect on http://localhost:' + AUTH_PORT + '...');
@@ -258,7 +258,7 @@ function extractMessageParts(gmailMessage) {
   const payload = gmailMessage.payload;
   const headers = [];
 
-  // Headers to preserve (skip Content-Type + MIME-Version — we rebuild these)
+  // Headers to preserve (skip Content-Type + MIME-Version , we rebuild these)
   const SKIP_HEADERS = new Set(['content-type', 'mime-version', 'content-transfer-encoding']);
   for (const h of payload.headers || []) {
     if (!SKIP_HEADERS.has(h.name.toLowerCase())) {

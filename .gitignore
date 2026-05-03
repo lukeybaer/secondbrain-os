@@ -1,0 +1,10 @@
+# Owner-specific content artifacts
+content-review/pending/
+content-review/approved/
+content-review/rejected/
+
+# Local data + caches
+node_modules/
+data/
+.cache/
+*.log

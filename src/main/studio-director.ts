@@ -52,7 +52,7 @@ export async function transcribeRecording(recording: StudioRecording): Promise<S
 
   if (existing.length === 0) {
     throw new Error(
-      `No audio source found. Expected files: ${candidates.join(', ')} — none exist on disk.`,
+      `No audio source found. Expected files: ${candidates.join(', ')} , none exist on disk.`,
     );
   }
 
@@ -64,7 +64,7 @@ export async function transcribeRecording(recording: StudioRecording): Promise<S
       audioSource = f;
       break;
     }
-    console.log(`[studio-director] Skipping ${path.basename(f)} — no audio stream`);
+    console.log(`[studio-director] Skipping ${path.basename(f)} , no audio stream`);
   }
 
   if (!audioSource) {
@@ -528,7 +528,7 @@ function removeRetakes(transcript: StudioTranscript): CleanSegment[] {
       }
     }
 
-    // Skip past the retake cue phrase — find the next sentence start after it
+    // Skip past the retake cue phrase , find the next sentence start after it
     let nextStart = retakeTime;
     for (let i = 0; i < words.length; i++) {
       if (words[i].start >= retakeTime + 2.0) {

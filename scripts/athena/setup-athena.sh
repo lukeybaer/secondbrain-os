@@ -2,7 +2,7 @@
 # setup-athena.sh
 #
 # Creates the Athena database + external table over the S3 session
-# archive. Idempotent — safe to re-run. Uses the query result bucket
+# archive. Idempotent , safe to re-run. Uses the query result bucket
 # s3://secondbrain-athena-results-000000000000-us-east-1 for Athena
 # scratch space.
 #

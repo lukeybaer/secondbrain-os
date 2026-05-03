@@ -195,12 +195,12 @@ describe("twilio-sms", () => {
         To: "+15551234567",
         Body: "Hi",
         NumMedia: "0",
-        FromCity: "McKinney",
+        FromCity: "Anytown",
         FromState: "TX",
       };
 
       const msg = parseTwilioWebhook(fields);
-      expect(msg!.contactName).toBe("McKinney, TX");
+      expect(msg!.contactName).toBe("Anytown, TX");
     });
   });
 

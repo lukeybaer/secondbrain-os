@@ -1,5 +1,5 @@
 #!/bin/bash
-# PostToolUse hook: after reading transcripts, conversations, or emails — inject contact enrichment reminder
+# PostToolUse hook: after reading transcripts, conversations, or emails , inject contact enrichment reminder
 # Fires on Read tool when the file looks like a transcript, conversation, or Otter output
 
 FILE=$(node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);console.log(j.tool_input?.file_path||'')}catch{console.log('')}})" 2>/dev/null)
@@ -7,7 +7,7 @@ FILE=$(node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end'
 # Match transcript/conversation/otter/email files
 if echo "$FILE" | grep -qiE '(transcript|conversation|otter|speech|ingest|call.*log|email|inbox|whatsapp|sms|vapi|call|data.*message|archive)'; then
   cat <<'INSTRUCTIONS'
-[CONTACT ENRICHMENT — AUTO-TRIGGERED]
+[CONTACT ENRICHMENT , AUTO-TRIGGERED]
 
 You just read a transcript, conversation, or communication file. SCAN IT NOW for:
 

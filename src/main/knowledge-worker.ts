@@ -1,9 +1,9 @@
 // knowledge-worker.ts
 // Polls EC2 every 3s for pending knowledge queries (from mid-call query_knowledge Vapi function calls).
 // Uses fast/medium/slow routing to respond within Vapi's timing constraints:
-//   fast   (<5s)  — answer from memory/profile, no search needed
-//   medium (5-20s)— search local DB, respond while still on call
-//   slow   (20s+) — acknowledge and queue for follow-up (Telegram/callback)
+//   fast   (<5s)  , answer from memory/profile, no search needed
+//   medium (5-20s), search local DB, respond while still on call
+//   slow   (20s+) , acknowledge and queue for follow-up (Telegram/callback)
 
 import { getConfig } from "./config";
 import { searchConversations } from "./database";
@@ -83,7 +83,7 @@ async function buildFastAnswer(question: string): Promise<string> {
     return `I don't have that information immediately available.`;
   }
 
-  // Simple keyword match from memory — return the most relevant snippet
+  // Simple keyword match from memory , return the most relevant snippet
   const lines = context.split("\n");
   const qLower = question.toLowerCase();
   const relevant = lines.filter(l =>
@@ -131,7 +131,7 @@ function buildMediumAnswer(question: string): string {
 
 async function handleQuery(q: PendingQuery): Promise<void> {
   const speed = classifyQuerySpeed(q.question);
-  console.log(`[knowledge-worker] Query ${q.id} — speed=${speed}: "${q.question.slice(0, 60)}"`);
+  console.log(`[knowledge-worker] Query ${q.id} , speed=${speed}: "${q.question.slice(0, 60)}"`);
 
   try {
     let answer: string;
@@ -139,16 +139,16 @@ async function handleQuery(q: PendingQuery): Promise<void> {
     if (speed === "fast") {
       answer = await buildFastAnswer(q.question);
     } else if (speed === "slow") {
-      // Acknowledge immediately — tell Vapi to say it will follow up
+      // Acknowledge immediately , tell Vapi to say it will follow up
       answer = "That's going to take me a few minutes to look into. I'll send you a message when I have the answer rather than keep you waiting on the call.";
       // TODO: could queue a background task here
     } else {
-      // medium — do the search
+      // medium , do the search
       answer = buildMediumAnswer(q.question);
     }
 
     await postAnswer(q.id, answer);
-    console.log(`[knowledge-worker] Answered query ${q.id} (${speed}) — "${answer.slice(0, 60)}"`);
+    console.log(`[knowledge-worker] Answered query ${q.id} (${speed}) , "${answer.slice(0, 60)}"`);
   } catch (err) {
     console.error("[knowledge-worker] handleQuery error:", err);
     try {
@@ -166,7 +166,7 @@ async function pollOnce(): Promise<void> {
       await handleQuery(q);
     }
   } catch {
-    // Silently swallow — EC2 might be temporarily unreachable
+    // Silently swallow , EC2 might be temporarily unreachable
   }
 
   if (!stopRequested) {

@@ -1,6 +1,6 @@
 # SecondBrain
 
-**An open-source AI executive assistant that lives on your desktop.** It makes phone calls, reads your WhatsApp and email, generates daily briefings, records and searches everything on your screen, manages content pipelines, and builds a temporal knowledge graph of your entire life — all running locally with your existing Claude Pro or Max subscription.
+**An open-source AI executive assistant that lives on your desktop.** It makes phone calls, reads your WhatsApp and email, generates daily briefings, records and searches everything on your screen, manages content pipelines, and builds a temporal knowledge graph of your entire life , all running locally with your existing Claude Pro or Max subscription.
 
 No per-token API costs. No cloud dependency for core features. One Electron app that turns Claude into a full-time executive assistant.
 
@@ -8,12 +8,12 @@ No per-token API costs. No cloud dependency for core features. One Electron app 
 
 ## Why SecondBrain?
 
-Most AI tools are chatbots — you ask a question, you get an answer. SecondBrain is different. It's an **autonomous agent** that takes action on your behalf:
+Most AI tools are chatbots , you ask a question, you get an answer. SecondBrain is different. It's an **autonomous agent** that takes action on your behalf:
 
-- **It makes phone calls for you.** Need to find a dentist who'll do a cleaning without requiring new X-rays? SecondBrain calls them one by one, negotiates, tracks outcomes, and reports back — while you listen in live if you want.
+- **It makes phone calls for you.** Need to find a dentist who'll do a cleaning without requiring new X-rays? SecondBrain calls them one by one, negotiates, tracks outcomes, and reports back , while you listen in live if you want.
 - **It remembers everything.** Every conversation, every meeting, every WhatsApp message gets ingested into a temporal knowledge graph. Ask "what did John say about the project timeline last Tuesday?" and get an answer in seconds.
 - **It watches your screen.** The Time Machine captures screenshots and audio continuously, OCRs every frame, and makes your entire digital life full-text searchable. Like macOS Rewind, but open source and private.
-- **It briefs you every morning.** A personalized daily briefing lands in your Telegram at 5:30 AM — news, contact intelligence, pending approvals, upcoming calls, and anything that needs your attention.
+- **It briefs you every morning.** A personalized daily briefing lands in your Telegram at 5:30 AM , news, contact intelligence, pending approvals, upcoming calls, and anything that needs your attention.
 - **It costs almost nothing to run.** The entire system uses your Claude Pro or Max subscription for all LLM reasoning. No OpenAI bills, no per-token metering, no surprise invoices. Claude Code handles the agent loop natively, which means your flat-rate subscription powers an always-on executive assistant.
 
 ---
@@ -22,7 +22,7 @@ Most AI tools are chatbots — you ask a question, you get an answer. SecondBrai
 
 ### AI Phone Calls (Vapi.ai)
 
-Configure AI voice personas, initiate outbound calls, and listen in live via WebRTC. The agent follows your instructions, navigates phone trees with real DTMF tones, requests approval via Telegram before sharing sensitive info, and records full transcripts. Chain calls into campaigns — the agent learns from each call and refines its approach.
+Configure AI voice personas, initiate outbound calls, and listen in live via WebRTC. The agent follows your instructions, navigates phone trees with real DTMF tones, requests approval via Telegram before sharing sensitive info, and records full transcripts. Chain calls into campaigns , the agent learns from each call and refines its approach.
 
 ### Time Machine (Screen + Audio Recording)
 
@@ -30,15 +30,15 @@ Continuous screenshot capture (every 3 seconds) with OCR text extraction, plus s
 
 ### WhatsApp Integration
 
-Connect your personal WhatsApp via QR code (whatsapp-web.js) or the Meta Business Cloud API. Incoming and outgoing messages are captured, enriched with contact intelligence, and ingested into the knowledge graph. Full chat history bulk import with AI-powered entity extraction — people, topics, decisions, and personal details are all indexed automatically.
+Connect your personal WhatsApp via QR code (whatsapp-web.js) or the Meta Business Cloud API. Incoming and outgoing messages are captured, enriched with contact intelligence, and ingested into the knowledge graph. Full chat history bulk import with AI-powered entity extraction , people, topics, decisions, and personal details are all indexed automatically.
 
 ### Daily Briefing Generation
 
-Automated morning briefing delivered via Telegram at 5:30 AM CT. Pulls from multiple sources: curated news with AI summarization, contact intelligence (birthdays, LinkedIn moves, relationship warmth scores), reputation monitoring via keyword alerts, pending content approvals, and queued calls. Saturday edition includes a curated sermon briefing.
+Automated morning briefing delivered via Telegram at the time you set. Pulls from multiple sources: curated news with AI summarization, contact intelligence (birthdays, LinkedIn moves, relationship warmth scores), reputation monitoring via keyword alerts, pending content approvals, and queued calls. Configure custom themes for the assistant to surface alongside the standard sections.
 
 ### Temporal Knowledge Graph (Graphiti)
 
-Self-hosted [Graphiti](https://github.com/getzep/graphiti) instance (24k+ GitHub stars) running on your EC2. Every data source — calls, WhatsApp, meetings, SMS, briefings — feeds into a temporal knowledge graph where facts have validity windows and contradictions are automatically resolved. Semantic + temporal search means you can ask "what was true about X in March?" and get time-aware answers.
+Self-hosted [Graphiti](https://github.com/getzep/graphiti) instance (24k+ GitHub stars) running on your EC2. Every data source , calls, WhatsApp, meetings, SMS, briefings , feeds into a temporal knowledge graph where facts have validity windows and contradictions are automatically resolved. Semantic + temporal search means you can ask "what was true about X in March?" and get time-aware answers.
 
 ### Phone Number Takeover (Twilio + Vapi)
 
@@ -55,10 +55,10 @@ Biologically-inspired memory architecture that minimizes token spend while keepi
 | Tier               | What                                                                                     | Cost                |
 | ------------------ | ---------------------------------------------------------------------------------------- | ------------------- |
 | **Working Memory** | Always-loaded pointers and recent facts (~50 lines)                                      | ~200 tokens/request |
-| **Indexed Memory** | Per-topic files with Hebbian weight decay — unused facts fade, accessed facts strengthen | Loaded on demand    |
+| **Indexed Memory** | Per-topic files with Hebbian weight decay , unused facts fade, accessed facts strengthen | Loaded on demand    |
 | **Archive**        | Daily append-only logs, auto-pruned when weight drops below threshold                    | Zero unless queried |
 
-The result: most prompts carry ~200 tokens of memory context instead of thousands. The agent still has access to everything — it just doesn't pay for it until it needs it.
+The result: most prompts carry ~200 tokens of memory context instead of thousands. The agent still has access to everything , it just doesn't pay for it until it needs it.
 
 ### Meeting Transcript Import
 
@@ -82,11 +82,11 @@ Critical actions are gated through a real-time Telegram approval loop. When the 
 
 ### The Claude Pro/Max Advantage
 
-This is one of the most beautiful parts of SecondBrain's architecture: **every LLM call runs through your existing Claude Pro or Max subscription.** Claude Code provides the agent runtime natively — tool use, multi-step reasoning, memory management, and autonomous execution are all handled by your flat-rate plan.
+This is one of the most beautiful parts of SecondBrain's architecture: **every LLM call runs through your existing Claude Pro or Max subscription.** Claude Code provides the agent runtime natively , tool use, multi-step reasoning, memory management, and autonomous execution are all handled by your flat-rate plan.
 
 There are no per-token API costs for the core agent loop. No metering. No surprise bills. Your $20/month Pro subscription (or Max for heavier usage) powers an always-on executive assistant that makes phone calls, processes hundreds of WhatsApp messages, generates daily briefings, and manages your entire digital life.
 
-External APIs are only used for specialized capabilities that Claude can't provide directly: Vapi for voice synthesis/telephony, Twilio for SMS/phone routing, and Telegram for mobile notifications. Everything else — reasoning, summarization, entity extraction, memory management, conversation tagging — runs on Claude.
+External APIs are only used for specialized capabilities that Claude can't provide directly: Vapi for voice synthesis/telephony, Twilio for SMS/phone routing, and Telegram for mobile notifications. Everything else , reasoning, summarization, entity extraction, memory management, conversation tagging , runs on Claude.
 
 ### Hybrid Local + Cloud
 
@@ -138,7 +138,7 @@ SecondBrain runs as a desktop Electron app with a cloud companion on AWS:
 
 **Why hybrid?** The desktop app gives you local-first data ownership, zero-latency UI, and native OS integration (screen capture, audio recording, system tray). The EC2 companion handles always-on services that need to receive webhooks 24/7 (Vapi call events, Telegram commands) and runs the Graphiti knowledge graph in Docker.
 
-The two communicate over an SSH tunnel — the Electron app forwards port 8000 for Graphiti access and syncs state to the EC2 server via HTTPS. If the EC2 is unreachable, the desktop app gracefully degrades: local memory and SQLite search continue working, webhook-dependent features queue until reconnection.
+The two communicate over an SSH tunnel , the Electron app forwards port 8000 for Graphiti access and syncs state to the EC2 server via HTTPS. If the EC2 is unreachable, the desktop app gracefully degrades: local memory and SQLite search continue working, webhook-dependent features queue until reconnection.
 
 ### AWS Infrastructure
 
@@ -174,7 +174,7 @@ Response resolves as a typed Promise. No Node APIs leak into the renderer proces
 
 ### Data Storage
 
-All data is local JSON files and SQLite — no external database required for core functionality:
+All data is local JSON files and SQLite , no external database required for core functionality:
 
 ```
 %APPDATA%/secondbrain/              (macOS: ~/Library/Application Support/secondbrain/)
@@ -292,23 +292,38 @@ src/
 ## Design Principles
 
 1. **Autonomous but gated.** The assistant acts independently. Critical actions (sharing PII, making commitments, publishing content) require explicit approval via Telegram.
-2. **Local-first.** All data lives on your machine. No cloud database. No vendor lock-in. The EC2 companion is optional and enhances — it doesn't gatekeep.
+2. **Local-first.** All data lives on your machine. No cloud database. No vendor lock-in. The EC2 companion is optional and enhances , it doesn't gatekeep.
 3. **Flat-rate AI.** Claude Pro/Max subscription handles all LLM reasoning at zero marginal cost. External APIs only where Claude can't (voice synthesis, telephony, notifications).
 4. **Persistent memory.** Every interaction feeds the knowledge graph. Hebbian decay keeps context relevant without manual curation.
 5. **Raw archival.** Every data source saves the full raw payload before processing. You can always reprocess historical data with better models later.
 6. **Graceful degradation.** External service down? Fall back to local data. No hard failures, no blocking dependencies.
 
-**Patterns cheat sheet:** the architectural patterns behind SecondBrain (3-tier personal memory, hashtag hooks, daily briefing as contract, foundation invariants, session archive to S3, subagent quarterback, raw archival) are documented with file-path citations in [`docs/patterns.md`](docs/patterns.md). Lift whatever's useful for your own projects.
+## Documentation
+
+Four guides walk through the architectural patterns and how to set up your own copy:
+
+| Guide                                                          | What it covers                                                                          |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| [`docs/MEMORY_LAYERS.md`](docs/MEMORY_LAYERS.md)               | The four-tier memory architecture (Tier 1 pointers, Tier 2 per-topic, Tier 3 archive, optional Graphiti graph). How to set up your own memory from scratch. |
+| [`docs/HOOKS_GUIDE.md`](docs/HOOKS_GUIDE.md)                   | Claude Code hooks (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse), the prevention hierarchy, hashtag commands, and the ingest-hook pattern that turns Otter transcripts into contact-file updates automatically. |
+| [`docs/DAILY_BRIEFING_TEMPLATE.md`](docs/DAILY_BRIEFING_TEMPLATE.md)  | Complete daily-briefing template with 13 sections, local-first delivery (with optional AWS hosting later), the spec-as-contract regression pattern. |
+| [`docs/patterns.md`](docs/patterns.md)                         | Architectural patterns cheat sheet (3-tier memory, hashtag hooks, briefing-as-contract, foundation invariants, session archive to S3, subagent quarterback, raw archival) with file-path citations into the actual implementation. |
+
+Start with `docs/MEMORY_LAYERS.md` to set up persistent memory, then `docs/HOOKS_GUIDE.md` to wire the hashtag commands, then `docs/DAILY_BRIEFING_TEMPLATE.md` to assemble your morning briefing.
 
 ---
 
 ## Teaching the Agent About You
 
-SecondBrain's agent learns from every interaction, but you can accelerate this:
+The agent learns from every interaction. You can accelerate this:
 
 ### Memory Files
 
-The agent stores knowledge in Markdown files at `%APPDATA%/secondbrain/data/agent/memory/`. You can read and edit these directly — the agent treats its memory as ground truth. Add facts about yourself, your preferences, your contacts, and your projects.
+The agent stores knowledge in Markdown files under `memory/`. You can read and edit these directly. The agent treats its memory as ground truth. See [`docs/MEMORY_LAYERS.md`](docs/MEMORY_LAYERS.md) for the four-tier architecture and how to lay out your own.
+
+### Hooks
+
+Define hashtag commands like `#learn`, `#gap`, `#ppl` to trigger structured workflows on demand. Define ingest hooks to turn raw inbound data (Otter transcripts, Gmail threads, WhatsApp messages, phone calls) into contact-file updates and knowledge-graph episodes automatically. See [`docs/HOOKS_GUIDE.md`](docs/HOOKS_GUIDE.md).
 
 ### Post-Call Reflection
 
@@ -316,7 +331,7 @@ After every phone call, the agent automatically reviews the transcript, extracts
 
 ### Knowledge Graph
 
-Every data source feeds into Graphiti's temporal knowledge graph. Over time, the agent builds a rich, time-aware model of your life — who said what, when commitments were made, how relationships evolve. This isn't a flat database; it's a graph that understands temporal validity and resolves contradictions.
+Every data source feeds into Graphiti's temporal knowledge graph. Over time, the agent builds a rich, time-aware model of your life: who said what, when commitments were made, how relationships evolve. This isn't a flat database; it's a graph that understands temporal validity and resolves contradictions.
 
 ---
 

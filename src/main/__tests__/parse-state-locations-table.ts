@@ -71,10 +71,10 @@ export function parseStateLocationsTable(src: string): StateRow[] {
  * cares about. Anything with "needs migration" is a hard fail.
  */
 export type TrackedKind =
-  | 'git-direct' // plain "git" — path must be in git ls-files
-  | 'git-linked' // "git via hardlink/symlink" — resolves to a tracked path via a link
-  | 'local-ephemeral' // local (ephemeral, acceptable) — don't validate content
-  | 'remote' // ec2 or ec2 docker — can't validate from local disk
+  | 'git-direct' // plain "git" , path must be in git ls-files
+  | 'git-linked' // "git via hardlink/symlink" , resolves to a tracked path via a link
+  | 'local-ephemeral' // local (ephemeral, acceptable) , don't validate content
+  | 'remote' // ec2 or ec2 docker , can't validate from local disk
   | 'pending-migration' // hard fail, table is lying
   | 'unknown';
 

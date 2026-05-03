@@ -1,4 +1,4 @@
-// whatsapp-web.js integration — personal WhatsApp account via Puppeteer/WWebJS.
+// whatsapp-web.js integration , personal WhatsApp account via Puppeteer/WWebJS.
 // All puppeteer/whatsapp-web.js requires are done dynamically so that electron-vite
 // doesn't attempt to bundle them (they live in node_modules at runtime).
 
@@ -228,7 +228,7 @@ export async function initClient(): Promise<{ success: boolean; error?: string }
     });
 
     client.on('loading_screen', (percent: number, message: string) => {
-      console.log(`[whatsapp-web] loading: ${percent}% — ${message}`);
+      console.log(`[whatsapp-web] loading: ${percent}% , ${message}`);
     });
 
     client.on('ready', () => {
@@ -287,10 +287,10 @@ export async function initClient(): Promise<{ success: boolean; error?: string }
       }
     });
 
-    // Fire and forget — initialize() starts Puppeteer asynchronously
+    // Fire and forget , initialize() starts Puppeteer asynchronously
     console.log('[whatsapp-web] calling client.initialize()...');
     const initTimeout = setTimeout(() => {
-      console.error('[whatsapp-web] initialize timed out after 60s — destroying client');
+      console.error('[whatsapp-web] initialize timed out after 60s , destroying client');
       if (client) {
         try {
           client.destroy();
@@ -327,7 +327,7 @@ export async function initClient(): Promise<{ success: boolean; error?: string }
 export async function getAllChats(): Promise<WAChat[]> {
   console.log('[whatsapp-web] getAllChats called, client:', !!client, 'status:', currentStatus);
   if (!client || currentStatus !== 'ready') {
-    console.log('[whatsapp-web] getAllChats bail — client or status not ready');
+    console.log('[whatsapp-web] getAllChats bail , client or status not ready');
     return [];
   }
   try {
@@ -446,14 +446,14 @@ async function cleanStaleLocks(): Promise<void> {
       await fsP.unlink(path.join(sessionDir, lock));
       console.log(`[whatsapp-web] removed stale lock: ${lock}`);
     } catch {
-      // File doesn't exist — fine
+      // File doesn't exist , fine
     }
   }
 }
 
-/** Called on app launch — silently connects if a saved session exists. */
+/** Called on app launch , silently connects if a saved session exists. */
 export async function autoConnectIfSession(): Promise<void> {
-  console.log('[whatsapp-web] autoConnectIfSession — checking', SESSION_PATH());
+  console.log('[whatsapp-web] autoConnectIfSession , checking', SESSION_PATH());
   try {
     await fsP.access(SESSION_PATH());
     console.log('[whatsapp-web] session exists, cleaning locks + auto-connecting...');

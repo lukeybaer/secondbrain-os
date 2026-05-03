@@ -10,7 +10,7 @@
 //   - are edited atomically with typed functions
 //   - are serialised as simple markdown files under memory/core-blocks/
 //
-// This is a pure module — callers pass the block directory explicitly so
+// This is a pure module , callers pass the block directory explicitly so
 // tests can use a tmp dir without touching Electron's userData path.
 
 import * as fs from 'fs';

@@ -260,7 +260,7 @@ export default function WhatsApp() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  // Not connected — show connection panel
+  // Not connected , show connection panel
   if (status === "disconnected" || status === "auth_failure") {
     return (
       <div style={{ ...s.page, alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
@@ -306,7 +306,7 @@ export default function WhatsApp() {
     );
   }
 
-  // Ready — full chat UI
+  // Ready , full chat UI
   return (
     <div style={s.page}>
       {/* ── Sidebar ──────────────────────────────────────────────────────── */}

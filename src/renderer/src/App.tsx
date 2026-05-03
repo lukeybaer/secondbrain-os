@@ -237,7 +237,7 @@ function AppContent() {
         </div>
       </div>
 
-      {/* Main — all pages always mounted, only one visible */}
+      {/* Main , all pages always mounted, only one visible */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         <div style={show('briefing')}>
           <Briefing />
@@ -290,7 +290,7 @@ function AppContent() {
         </div>
       </div>
 
-      {/* Claude Code floating overlay — lives on top of every page */}
+      {/* Claude Code floating overlay , lives on top of every page */}
       <ClaudeChatOverlay currentPage={page} />
     </div>
   );

@@ -1,5 +1,5 @@
 /**
- * Tests for memory-sync.ts — unified memory system (Phases 2-5).
+ * Tests for memory-sync.ts , unified memory system (Phases 2-5).
  * Covers: markdown parsing, file discovery, canonical reader, search, Graphiti ingestion.
  */
 
@@ -77,14 +77,14 @@ beforeEach(async () => {
   await fsp.writeFile(
     path.join(memDir, 'user_profile.md'),
     `---
-name: the owner — Core Profile
+name: the owner , Core Profile
 description: Identity, career, faith, personality
 type: user
 ---
 
 ## Identity
 - Full name: the owner
-- Location: McKinney, TX
+- Location: Anytown, TX
 `,
   );
 
@@ -229,7 +229,7 @@ describe('fullGraphitiSeed', () => {
 
     // Find the call for user_profile
     const profileCall = mockAddEpisode.mock.calls.find(
-      (call: unknown[]) => (call[0] as { name: string }).name === 'the owner — Core Profile',
+      (call: unknown[]) => (call[0] as { name: string }).name === 'the owner , Core Profile',
     );
     expect(profileCall).toBeDefined();
     const episode = profileCall![0];
@@ -248,13 +248,13 @@ describe('fullGraphitiSeed', () => {
 
 describe('incrementalGraphitiSync', () => {
   it('ingests only files changed since last sync', async () => {
-    // First sync — should ingest everything (no state file)
+    // First sync , should ingest everything (no state file)
     const first = await incrementalGraphitiSync();
     expect(first.ingested).toBe(5);
 
     mockAddEpisode.mockClear();
 
-    // Second sync — nothing changed, should ingest 0
+    // Second sync , nothing changed, should ingest 0
     const second = await incrementalGraphitiSync();
     expect(second.ingested).toBe(0);
   });
@@ -276,7 +276,7 @@ describe('incrementalGraphitiSync', () => {
     const now = new Date(Date.now() + 1000); // future to ensure it's "newer"
     fs.utimesSync(path.join(memDir, 'user_profile.md'), now, now);
 
-    // Second sync — should pick up the modified file
+    // Second sync , should pick up the modified file
     const second = await incrementalGraphitiSync();
     expect(second.ingested).toBe(1);
   });

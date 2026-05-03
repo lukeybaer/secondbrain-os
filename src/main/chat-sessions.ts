@@ -109,7 +109,7 @@ export async function saveSessionAsConversation(session: ChatSession): Promise<v
       .map((m) => `${m.role === 'user' ? 'You' : 'SecondBrain'}: ${m.content}`)
       .join('\n\n');
 
-    // If already tagged, just refresh the transcript — no new OpenAI call
+    // If already tagged, just refresh the transcript , no new OpenAI call
     if (conversationExists(session.id)) {
       const all = listAllConversations();
       const existing = all.find((c) => c.otterId === session.id);

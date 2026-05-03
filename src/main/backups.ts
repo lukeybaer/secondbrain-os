@@ -78,7 +78,7 @@ function loadManifest(): BackupManifest {
       return JSON.parse(fs.readFileSync(manifestPath(), 'utf-8'));
     }
   } catch {
-    /* corrupt manifest — start fresh */
+    /* corrupt manifest , start fresh */
   }
   return { version: 1, snapshots: [] };
 }
@@ -90,7 +90,7 @@ function saveManifest(m: BackupManifest): void {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// Paths we NEVER back up — must stay in sync with COPY_EXCLUDE_PATTERNS in
+// Paths we NEVER back up , must stay in sync with COPY_EXCLUDE_PATTERNS in
 // scripts/backup-cli.ts. Drift detector lives at
 // src/main/__tests__/backup-cli-hardening.test.ts.
 const COPY_EXCLUDE_PATTERNS: RegExp[] = [
@@ -197,7 +197,7 @@ export async function createSnapshot(opts?: {
     await copyDir(srcData, path.join(dest, 'data'), skippedFiles);
     if (skippedFiles.length > 0) {
       console.warn(
-        `[backup] Skipped ${skippedFiles.length} locked file(s) — backup is still valid`,
+        `[backup] Skipped ${skippedFiles.length} locked file(s) , backup is still valid`,
       );
     }
   }
@@ -402,7 +402,7 @@ export async function rollForward(): Promise<{ restoredFromId: string }> {
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 
   if (preRestores.length === 0) {
-    throw new Error('No pre-restore snapshot found — nothing to roll forward to');
+    throw new Error('No pre-restore snapshot found , nothing to roll forward to');
   }
 
   const target = preRestores[0];
@@ -449,10 +449,10 @@ interface RetentionWindow {
 
 const RETENTION: RetentionWindow[] = [
   { maxAgeDays: 30, intervalDays: 1 }, // Daily: keep all from last 30 days
-  { maxAgeDays: 60, intervalDays: 3 }, // Tri-daily: one per 3 days, 30–60 days
-  { maxAgeDays: 90, intervalDays: 7 }, // Weekly: one per week, 60–90 days
-  { maxAgeDays: 365, intervalDays: 30 }, // Monthly: one per month, 90–365 days
-  { maxAgeDays: 1095, intervalDays: 91 }, // Quarterly: one per quarter, 1–3 years
+  { maxAgeDays: 60, intervalDays: 3 }, // Tri-daily: one per 3 days, 30-60 days
+  { maxAgeDays: 90, intervalDays: 7 }, // Weekly: one per week, 60-90 days
+  { maxAgeDays: 365, intervalDays: 30 }, // Monthly: one per month, 90-365 days
+  { maxAgeDays: 1095, intervalDays: 91 }, // Quarterly: one per quarter, 1-3 years
   { maxAgeDays: Infinity, intervalDays: 365 }, // Yearly: one per year, 3+ years
 ];
 
@@ -464,7 +464,7 @@ export async function pruneSnapshots(): Promise<string[]> {
   const now = Date.now();
   const deleted: string[] = [];
 
-  // Never prune pre-restore snapshots (safety nets) — keep latest 3 only
+  // Never prune pre-restore snapshots (safety nets) , keep latest 3 only
   const preRestores = manifest.snapshots
     .filter((s) => s.tier === 'pre-restore')
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
@@ -496,7 +496,7 @@ export async function pruneSnapshots(): Promise<string[]> {
       continue;
     }
 
-    // Keep one snapshot per interval — the oldest in each bucket
+    // Keep one snapshot per interval , the oldest in each bucket
     let lastKeptTime = -Infinity;
     for (const s of inWindow) {
       const t = new Date(s.timestamp).getTime();

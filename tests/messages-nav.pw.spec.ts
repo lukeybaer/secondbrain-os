@@ -65,7 +65,7 @@ const MESSAGES_HTML = /* html */ `<!DOCTYPE html>
 
   <script>
     const messages = [
-      { id: "1", channel: "sms", source: "inbound", from: "+15551112222", to: "+15551234567", body: "Hey the owner, dentist appointment confirmed", timestamp: new Date().toISOString(), contactName: "McKinney, TX" },
+      { id: "1", channel: "sms", source: "inbound", from: "+15551112222", to: "+15551234567", body: "Hey the owner, dentist appointment confirmed", timestamp: new Date().toISOString(), contactName: "Anytown, TX" },
       { id: "2", channel: "whatsapp", source: "outbound", from: "+15551234567", to: "+15559998888", body: "Thanks for the update on the project", timestamp: new Date().toISOString() },
       { id: "3", channel: "sms", source: "outbound", from: "+15551234567", to: "+15557776666", body: "Meeting at 3pm works", timestamp: new Date(Date.now() - 2*86400000).toISOString() },
       { id: "4", channel: "whatsapp", source: "inbound", from: "+15554443333", to: "+15551234567", body: "Can you review the PR?", timestamp: new Date(Date.now() - 8*86400000).toISOString(), contactName: "Alex" },

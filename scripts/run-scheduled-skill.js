@@ -38,13 +38,13 @@ const rawContent = fs.readFileSync(skillFile, 'utf8');
 // Strip YAML frontmatter (--- ... ---)
 const prompt = rawContent.replace(/^---[\s\S]*?---\s*\n/, '').trim();
 
-// Log file — per-skill, in the same backups dir other scripts use
+// Log file , per-skill, in the same backups dir other scripts use
 const logDir = path.join(os.homedir(), 'AppData', 'Roaming', 'secondbrain', 'backups');
 fs.mkdirSync(logDir, { recursive: true });
 const logFile = path.join(logDir, `${skillName}.log`);
 
 const timestamp = new Date().toISOString();
-const separator = `\n============================\n${timestamp} — ${skillName}\n============================\n`;
+const separator = `\n============================\n${timestamp} , ${skillName}\n============================\n`;
 fs.appendFileSync(logFile, separator);
 console.log(separator.trim());
 
@@ -100,6 +100,6 @@ if (result.status !== 0) {
   process.exit(result.status || 1);
 }
 
-const done = `SUCCESS — ${skillName} completed at ${new Date().toISOString()}\n`;
+const done = `SUCCESS , ${skillName} completed at ${new Date().toISOString()}\n`;
 fs.appendFileSync(logFile, done);
 console.log(done);

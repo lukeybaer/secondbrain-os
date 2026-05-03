@@ -51,7 +51,7 @@ let workerRunning = false;
 let stopRequested = false;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
-// Active session ID tracked locally — set when we start a claude task, used for continue routing
+// Active session ID tracked locally , set when we start a claude task, used for continue routing
 let activeSessionId: string | null = null;
 
 function getBaseUrl(): string {
@@ -142,7 +142,7 @@ async function handleCommand(cmd: PendingCommand): Promise<void> {
         result = hits
           .map(
             (h, i) =>
-              `${i + 1}. ${h.title ?? "(untitled)"} — ${h.date ?? ""} (${h.durationMinutes ?? 0} min)`
+              `${i + 1}. ${h.title ?? "(untitled)"} , ${h.date ?? ""} (${h.durationMinutes ?? 0} min)`
           )
           .join("\n");
       }

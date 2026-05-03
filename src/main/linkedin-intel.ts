@@ -1,5 +1,5 @@
 // linkedin-intel.ts
-// Nightly contact intelligence crawl — reads the LinkedIn + Gmail daily intel
+// Nightly contact intelligence crawl , reads the LinkedIn + Gmail daily intel
 // markdown files produced by Chrome automation, structures them into ranked events,
 // stores them in %APPDATA%\secondbrain\data\agent\linkedin-intel.json.
 //
@@ -170,21 +170,21 @@ function parseLinkedInIntelFile(reportedIds: Set<string>): ContactEvent[] {
         const titleLine = lines[0].trim();
         if (!titleLine) continue;
 
-        // Parse name — everything before ' — ' or '--'
-        const dashIdx = titleLine.search(/\s+(?:—|-{2})\s+/);
+        // Parse name , everything before ' , ' or '--'
+        const dashIdx = titleLine.search(/\s+(?:,|-{2})\s+/);
         const namePart = dashIdx > 0 ? titleLine.slice(0, dashIdx).trim() : titleLine;
         const descPart =
           dashIdx > 0
             ? titleLine
                 .slice(dashIdx)
-                .replace(/^[\s—-]+/, '')
+                .replace(/^[\s,-]+/, '')
                 .trim()
             : '';
 
         // Parse recency hint
         const ageMatch = block.match(/\((\d+)\s+hours?\s+ago\)/i);
         const dayMatch =
-          block.match(/\((\d+)[\s–-]+\d*\s+days?\s+ago\)/i) ||
+          block.match(/\((\d+)[\s--]+\d*\s+days?\s+ago\)/i) ||
           block.match(/\((\d+)\s+days?\s+ago\)/i);
         let detectedAt = reportDate.toISOString();
         if (ageMatch) {
@@ -222,7 +222,7 @@ function parseLinkedInIntelFile(reportedIds: Set<string>): ContactEvent[] {
           id,
           contactName: namePart,
           eventType: 'engagement',
-          headline: descPart ? `${namePart} — ${descPart}` : `${namePart} — new LinkedIn activity`,
+          headline: descPart ? `${namePart} , ${descPart}` : `${namePart} , new LinkedIn activity`,
           detail: detail.slice(0, 200),
           source: 'linkedin_daily_intel',
           detectedAt,
@@ -240,13 +240,13 @@ function parseLinkedInIntelFile(reportedIds: Set<string>): ContactEvent[] {
         const titleLine = lines[0].trim();
         if (!titleLine) continue;
 
-        const dashIdx = titleLine.search(/\s+(?:—|-{2})\s+/);
+        const dashIdx = titleLine.search(/\s+(?:,|-{2})\s+/);
         const namePart = dashIdx > 0 ? titleLine.slice(0, dashIdx).trim() : titleLine;
         const descPart =
           dashIdx > 0
             ? titleLine
                 .slice(dashIdx)
-                .replace(/^[\s—-]+/, '')
+                .replace(/^[\s,-]+/, '')
                 .trim()
             : 'role change';
 
@@ -259,7 +259,7 @@ function parseLinkedInIntelFile(reportedIds: Set<string>): ContactEvent[] {
           id,
           contactName: namePart,
           eventType: 'job_change',
-          headline: `${namePart} — ${descPart}`,
+          headline: `${namePart} , ${descPart}`,
           detail: detail.slice(0, 200),
           source: 'linkedin_daily_intel',
           detectedAt: reportDate.toISOString(),
@@ -299,13 +299,13 @@ function parseGmailIntelFile(reportedIds: Set<string>): ContactEvent[] {
         const titleLine = lines[0].trim();
         if (!titleLine) continue;
 
-        const dashIdx = titleLine.search(/\s+(?:—|-{2})\s+/);
+        const dashIdx = titleLine.search(/\s+(?:,|-{2})\s+/);
         const namePart = dashIdx > 0 ? titleLine.slice(0, dashIdx).trim() : titleLine;
         const descPart =
           dashIdx > 0
             ? titleLine
                 .slice(dashIdx)
-                .replace(/^[\s—-]+/, '')
+                .replace(/^[\s,-]+/, '')
                 .trim()
             : 'email intel';
 
@@ -328,7 +328,7 @@ function parseGmailIntelFile(reportedIds: Set<string>): ContactEvent[] {
           id,
           contactName: namePart,
           eventType,
-          headline: `${namePart} — ${descPart}`,
+          headline: `${namePart} , ${descPart}`,
           detail: detail.slice(0, 200),
           source: 'gmail_daily_intel',
           detectedAt: reportDate.toISOString(),
@@ -347,7 +347,7 @@ function parseGmailIntelFile(reportedIds: Set<string>): ContactEvent[] {
         if (!titleLine || titleLine.startsWith('*') || titleLine.toUpperCase() === titleLine)
           continue;
 
-        const dashIdx = titleLine.search(/\s+(?:—|-{2})\s+/);
+        const dashIdx = titleLine.search(/\s+(?:,|-{2})\s+/);
         const namePart = dashIdx > 0 ? titleLine.slice(0, dashIdx).trim() : titleLine;
         if (!namePart || namePart.length < 2) continue;
 
@@ -464,7 +464,7 @@ export async function runLinkedInNightlyCrawl(): Promise<void> {
   ensureAgentDir();
   fs.writeFileSync(getIntelPath(), JSON.stringify(store, null, 2), 'utf-8');
   console.log(
-    `[linkedin-intel] Crawl complete — ${events.length} events across ${contacts.length} contacts`,
+    `[linkedin-intel] Crawl complete , ${events.length} events across ${contacts.length} contacts`,
   );
 }
 
@@ -490,7 +490,7 @@ export function buildContactIntelSection(): { text: string; reportedIds: string[
   const reportedIds = loadReportedIds();
   const fresh = store.events.filter((e) => !reportedIds.has(e.id));
 
-  // pastWeek: 7d–48h window (excludes recent 48h to avoid duplicate entries)
+  // pastWeek: 7d-48h window (excludes recent 48h to avoid duplicate entries)
   const pastWeek = fresh
     .filter((e) => {
       const d = new Date(e.detectedAt);

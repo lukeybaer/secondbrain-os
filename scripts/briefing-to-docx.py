@@ -237,7 +237,7 @@ def convert(md_path: Path, out_path: Path) -> Path:
             'FEATURE BACKLOG', 'OVERNIGHT ENHANCEMENTS',
             'LINKEDIN NETWORK INTELLIGENCE', 'COMMUNICATIONS SUMMARY',
             'CONTENT PIPELINE', 'SYSTEM HEALTH', 'REPUTATION MENTIONS',
-            'WEEKLY SERMON BRIEFING', 'PROJECTC INVOICE ACTIVITY',
+            'WEEKLY THEME BRIEFING', 'PROJECTC INVOICE ACTIVITY',
         ]
         is_section = any(stripped.startswith(h) for h in caps_headers)
         if is_section:

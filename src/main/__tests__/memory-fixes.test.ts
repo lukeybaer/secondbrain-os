@@ -79,7 +79,7 @@ afterAll(async () => {
 // ── Graphiti URL Tests ───────────────────────────────────────────────────────
 
 describe('Graphiti URL construction', () => {
-  // We test the logic by importing the module fresh — but since graphitiUrl is
+  // We test the logic by importing the module fresh , but since graphitiUrl is
   // not exported, we test it via the isGraphitiAvailable function behavior.
   // Instead, let's replicate the URL logic directly to verify correctness.
 
@@ -194,7 +194,7 @@ describe('Hebbian decay formula', () => {
 
     const entry = upsertMemory('ephemeral-topic', 'short-lived memory content');
 
-    // Simulate 30 days (0.2 * 0.9^30 ≈ 0.008 — below 0.05)
+    // Simulate 30 days (0.2 * 0.9^30 ≈ 0.008 , below 0.05)
     const index = loadIndex();
     const e = index.entries.find((i) => i.id === entry.id)!;
     const monthAgo = new Date();

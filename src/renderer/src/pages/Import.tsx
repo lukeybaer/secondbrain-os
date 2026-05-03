@@ -119,7 +119,7 @@ export default function Import({ onImported }: { onImported?: () => void }) {
     setFetching(true);
     setFetchDone(false);
     setFetchError(null);
-    // Don't clear existing items — keep them visible while refreshing
+    // Don't clear existing items , keep them visible while refreshing
 
     try {
       const result = await window.api.import.fetchList();
@@ -500,7 +500,7 @@ function Row({ item, selected, processing, onToggle, onProcess }: {
 
       <td style={{ padding: "9px 12px", width: 70, textAlign: "center" }}>
         <span style={{ fontSize: 11, color: "#444" }}>
-          {item.durationMinutes > 0 ? `${item.durationMinutes}m` : "—"}
+          {item.durationMinutes > 0 ? `${item.durationMinutes}m` : ","}
         </span>
       </td>
 
@@ -560,7 +560,7 @@ function EmptyState() {
       <div style={{ fontSize: 36 }}>📥</div>
       <div style={{ fontSize: 14, color: "#555" }}>Click "Fetch from Otter.ai" to load your conversations</div>
       <div style={{ fontSize: 12, color: "#333", maxWidth: 340, textAlign: "center", lineHeight: 1.6 }}>
-        Fetches the list first — you choose which ones to import.
+        Fetches the list first , you choose which ones to import.
         Make sure your Otter.ai email and password are saved in Settings.
       </div>
     </div>

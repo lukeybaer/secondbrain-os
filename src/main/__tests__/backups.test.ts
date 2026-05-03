@@ -1,5 +1,5 @@
 /**
- * Tests for the backup system — snapshot, prune, restore, roll-forward.
+ * Tests for the backup system , snapshot, prune, restore, roll-forward.
  *
  * Uses a temp directory to simulate %APPDATA%\secondbrain so nothing
  * touches real data. Mocks Electron's `app.getPath("userData")`.
@@ -208,7 +208,7 @@ describe("commitRestore + rollForward", () => {
     await commitRestore(original.id);
     expect(JSON.parse(fs.readFileSync(projPath, "utf-8")).name).toBe("Test Project");
 
-    // Roll forward — should get V2 back
+    // Roll forward , should get V2 back
     const { restoredFromId } = await rollForward();
     expect(restoredFromId).toBeTruthy();
     expect(JSON.parse(fs.readFileSync(projPath, "utf-8")).name).toBe("V2 Project");
@@ -253,7 +253,7 @@ describe("pruneSnapshots", () => {
     const s2 = await createSnapshot();
 
     const deleted = await pruneSnapshots();
-    // Both are within the same day — daily tier keeps one per day
+    // Both are within the same day , daily tier keeps one per day
     expect(deleted.length).toBe(1);
 
     const remaining = listSnapshots();

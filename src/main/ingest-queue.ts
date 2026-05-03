@@ -27,7 +27,7 @@
  *
  * Atomicity: every state transition is an fs.renameSync, which on NTFS and
  * POSIX is atomic within a single filesystem. Producers and consumers never
- * hold exclusive locks — the rename IS the lock.
+ * hold exclusive locks , the rename IS the lock.
  */
 
 import * as fs from 'fs';
@@ -46,7 +46,7 @@ export type IngestSource =
   | 'briefing'
   | 'other';
 
-/** Shape of a queued ingest item. Small by design — the raw payload lives in
+/** Shape of a queued ingest item. Small by design , the raw payload lives in
  *  data/{source}/raw/ and is referenced by `rawRef`, not embedded here. */
 export interface IngestItem {
   /** Monotonic time-sorted id (ULID-ish). Set by enqueue(). */
@@ -86,11 +86,11 @@ export interface DrainReport {
 
 /** Config for a drain pass. */
 export interface DrainOptions {
-  /** Maximum items to process in one pass. Default 50 — keeps any single drain bounded. */
+  /** Maximum items to process in one pass. Default 50 , keeps any single drain bounded. */
   maxItems?: number;
   /** Retry budget before an item is auto-failed. Default 3. */
   maxAttempts?: number;
-  /** Override the queue root — tests use this to isolate filesystem state. */
+  /** Override the queue root , tests use this to isolate filesystem state. */
   queueRoot?: string;
 }
 
@@ -234,7 +234,7 @@ export function escalate(id: string, reason: string, queueRoot?: string): void {
 }
 
 /** Release a claimed item back to pending/ (e.g. worker crash recovery).
- *  Use with care — repeated claim loops increment attempts until the item
+ *  Use with care , repeated claim loops increment attempts until the item
  *  hits maxAttempts in drain() and gets auto-failed. */
 export function release(id: string, queueRoot?: string): void {
   const root = queueRoot ?? defaultQueueRoot();
@@ -246,7 +246,7 @@ export function release(id: string, queueRoot?: string): void {
 export type DrainHandler = (item: IngestItem) => Promise<DrainResult>;
 
 /** Process all pending items in a single pass using the given handler.
- *  This is what the batched ingest session calls — one claude -p invocation
+ *  This is what the batched ingest session calls , one claude -p invocation
  *  per drain() call, processing many items, paying Tier 1 cost once. */
 export async function drain(handler: DrainHandler, opts?: DrainOptions): Promise<DrainReport> {
   const started = Date.now();

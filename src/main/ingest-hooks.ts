@@ -17,7 +17,7 @@ import { appendWorkingMemory } from './memory-index';
 export interface IngestEvent {
   /** Human-readable name for the episode (e.g., "WhatsApp from Sandeep") */
   name: string;
-  /** The actual content — transcript, message body, briefing text, etc. */
+  /** The actual content , transcript, message body, briefing text, etc. */
   body: string;
   /** Source tag for provenance tracking */
   source: IngestSource;
@@ -51,11 +51,11 @@ export type IngestSource =
 // ── Main hook ────────────────────────────────────────────────────────────────
 
 /**
- * Post-ingest hook — call this after EVERY data save in SecondBrain.
+ * Post-ingest hook , call this after EVERY data save in SecondBrain.
  * Fire-and-forget: errors are logged but never block the caller.
  */
 export function onDataIngested(event: IngestEvent): void {
-  // All hooks are non-blocking — don't await, don't throw
+  // All hooks are non-blocking , don't await, don't throw
   ingestToGraphiti(event).catch((err) =>
     console.warn(`[ingest-hook] Graphiti ingest failed for ${event.source}: ${err.message}`),
   );
@@ -88,7 +88,7 @@ function ingestToWorkingMemory(event: IngestEvent): void {
     const summary = event.body.slice(0, 80).replace(/\n/g, ' ');
     appendWorkingMemory(`[${event.source}] ${contact}: ${summary}`);
   } catch {
-    // Non-critical — don't crash the ingest path
+    // Non-critical , don't crash the ingest path
   }
 }
 

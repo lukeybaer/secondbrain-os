@@ -12,7 +12,7 @@ import * as path from 'path';
 
 const BRIEFING_SRC = path.resolve(__dirname, '..', 'briefing.ts');
 
-describe('briefing.ts — no paid LLM calls', () => {
+describe('briefing.ts , no paid LLM calls', () => {
   let src: string;
 
   beforeAll(() => {
@@ -24,7 +24,7 @@ describe('briefing.ts — no paid LLM calls', () => {
   });
 
   it('does not import or use groqApiKey for summarization', () => {
-    // groqApiKey may still exist in config interface — but it must not be used
+    // groqApiKey may still exist in config interface , but it must not be used
     // in any https.request call for summarization
     const groqHttpCallPattern = /https\.request[\s\S]{0,200}api\.groq\.com/;
     expect(groqHttpCallPattern.test(src)).toBe(false);
@@ -41,7 +41,7 @@ describe('briefing.ts — no paid LLM calls', () => {
   });
 });
 
-describe('ec2-server.js — briefing uses local claude CLI', () => {
+describe('ec2-server.js , briefing uses local claude CLI', () => {
   let src: string;
 
   beforeAll(() => {
@@ -66,7 +66,7 @@ describe('ec2-server.js — briefing uses local claude CLI', () => {
 
   it('summarizeWithClaude detects auth failure and falls back to raw headlines', () => {
     // Regression: claude CLI on EC2 was unauthenticated and returning
-    // "Not logged in · Please run /login" as stdout — which was then shipped
+    // "Not logged in · Please run /login" as stdout , which was then shipped
     // to the owner as the briefing content. The function must detect login failure
     // strings and fall back to raw numbered headlines.
     if (!src) return;
@@ -79,7 +79,7 @@ describe('ec2-server.js — briefing uses local claude CLI', () => {
   });
 });
 
-describe('ec2-server.js — briefing MUST include news sections', () => {
+describe('ec2-server.js , briefing MUST include news sections', () => {
   // Regression 2026-04-10: sendDailyBriefing was refactored into a "6-section"
   // format on Apr 6 and the news fetching was silently dropped. The briefing
   // on 2026-04-10 shipped as 119 characters ("Good morning... Reply with questions")
@@ -117,7 +117,7 @@ describe('ec2-server.js — briefing MUST include news sections', () => {
     if (fn) expect(fn[0]).toMatch(/sections\.push\(['"`]\s*\\n?AI & TECH/);
   });
 
-  it('fetchNewsHeadlines is not dead code — it has a caller', () => {
+  it('fetchNewsHeadlines is not dead code , it has a caller', () => {
     if (!src) return;
     // Count non-definition references to fetchNewsHeadlines
     const refs = (src.match(/fetchNewsHeadlines\(/g) || []).length;
@@ -125,7 +125,7 @@ describe('ec2-server.js — briefing MUST include news sections', () => {
     expect(refs).toBeGreaterThanOrEqual(2);
   });
 
-  it('fetchAITechNews is not dead code — it has a caller', () => {
+  it('fetchAITechNews is not dead code , it has a caller', () => {
     if (!src) return;
     const refs = (src.match(/fetchAITechNews\(/g) || []).length;
     expect(refs).toBeGreaterThanOrEqual(2);

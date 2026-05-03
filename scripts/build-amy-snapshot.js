@@ -34,7 +34,7 @@ function safe(fn, fallback) {
 }
 
 function now() {
-  // Central Time (McKinney TX) - use America/Chicago offset
+  // Central Time (Anytown) - use America/Chicago offset
   const d = new Date();
   const opts = {
     timeZone: 'America/Chicago',

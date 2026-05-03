@@ -17,10 +17,10 @@
 #   (test > hook > npm script > CLAUDE.md > memory file), this hook
 #   moves the guard up to the mechanical tier.
 #
-#   2026-04-15 incident: Luke asked to send an email to Dena. The
+#   2026-04-15 incident: the owner asked to send an email to Dena. The
 #   send pipeline was broken from a PII scrub. Instead of fixing the
 #   pipeline inline, the response said "Want me to fix it now, or
-#   spawn it as a separate task?" Luke flagged it as #gap.
+#   spawn it as a separate task?" the owner flagged it as #gap.
 #
 # How it works:
 #   1. Find the session transcript JSONL via CLAUDE_SESSION_ID
@@ -170,7 +170,7 @@ QUOTES=$(echo "$RESULT" | tail -n +2 | sed 's/"/\\"/g' | awk '{printf "  - %s\\n
 cat <<JSON
 {
   "decision": "block",
-  "reason": "STALL DETECTED: your last message asked permission instead of executing. memory/feedback_no_permission_stalling.md and memory/feedback_no_stopping_to_ask.md document this as a chronic regression. JUST DO THE THING. Phrases caught:\n${QUOTES}\nExecute the proposed action now without asking. Pick the obvious next step (the one Luke would say yes to) and run it. Only stop if the action is genuinely destructive or ambiguous, not because you want confirmation."
+  "reason": "STALL DETECTED: your last message asked permission instead of executing. memory/feedback_no_permission_stalling.md and memory/feedback_no_stopping_to_ask.md document this as a chronic regression. JUST DO THE THING. Phrases caught:\n${QUOTES}\nExecute the proposed action now without asking. Pick the obvious next step (the one the owner would say yes to) and run it. Only stop if the action is genuinely destructive or ambiguous, not because you want confirmation."
 }
 JSON
 

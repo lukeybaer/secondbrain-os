@@ -50,8 +50,8 @@ export interface AppConfig {
   newsApiKey: string; // NewsAPI.org key for headlines (optional)
   youtubeClientId: string; // YouTube Data API OAuth client ID
   youtubeClientSecret: string; // YouTube Data API OAuth client secret
-  otterSessionCookie: string; // Otter session cookies — Google SSO alternative to password
-  otterUserId: string; // Otter numeric user ID — captured alongside session cookie
+  otterSessionCookie: string; // Otter session cookies , Google SSO alternative to password
+  otterUserId: string; // Otter numeric user ID , captured alongside session cookie
   twilioAccountSid: string; // Twilio Account SID for SMS
   twilioAuthToken: string; // Twilio Auth Token for SMS
   twilioPhoneNumber: string; // Twilio phone number (e.g. +15551234567)
@@ -68,7 +68,7 @@ const DEFAULTS: AppConfig = {
   otterPassword: '',
   openaiApiKey: '',
   dataDir: path.join(app.getPath('userData'), 'data'),
-  openaiModel: 'gpt-4o', // Vapi voice only — justified by quality requirement
+  openaiModel: 'gpt-4o', // Vapi voice only , justified by quality requirement
   openaiLightModel: 'gpt-4o-mini', // All automated OpenAI LLM calls (15x cheaper)
   openaiEmbeddingModel: 'text-embedding-3-small', // Graphiti embeddings (cheapest)
   maxContextConversations: 10,

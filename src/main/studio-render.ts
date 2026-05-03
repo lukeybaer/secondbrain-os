@@ -129,7 +129,7 @@ async function renderVideo(
     }
   }
   if (!audioFileHint) {
-    console.warn('[studio-render] No file has audio — rendering video-only');
+    console.warn('[studio-render] No file has audio , rendering video-only');
   }
 
   // Build FFmpeg filter_complex from EDL
