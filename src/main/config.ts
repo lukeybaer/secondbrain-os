@@ -61,7 +61,37 @@ export interface AppConfig {
   xAccessToken: string; // X (Twitter) Access Token
   xAccessTokenSecret: string; // X (Twitter) Access Token Secret
   ownerName: string; // Display name for the owner, used in prompt templates; leave blank for anonymous default
+
+  // Onboarding state. Persists what the first-run wizard collected so it
+  // doesn't re-prompt and so the rest of the app knows what to surface.
+  onboarding: {
+    completedAt: string | null;        // ISO timestamp when the wizard was finished. null = not done.
+    currentStep: number;               // 0-indexed step the user is on. Lets them resume mid-wizard.
+    skippedTour: boolean;              // True if they hit "Skip tour" instead of clicking through every step.
+    briefingSections: Record<string, boolean>;  // Which of the 13 briefing sections they enabled. See DEFAULT_BRIEFING_SECTIONS.
+    secretsDeferred: string[];         // AppConfig keys (e.g. 'vapiApiKey') the user said "remind me later" about.
+    lastReminderShownAt: string | null; // ISO timestamp the deferred-secrets banner was last shown. Throttles to weekly.
+  };
 }
+
+// 13 briefing sections from docs/DAILY_BRIEFING_TEMPLATE.md. The wizard
+// shows this as a checkbox list so the user can prune what they don't want.
+// All default to true; toggling off means the briefing skips the section.
+export const DEFAULT_BRIEFING_SECTIONS: Record<string, boolean> = {
+  header: true,                  // 1. Date + greeting
+  topDecisions: true,            // 2. Decisions waiting on you
+  calendarToday: true,           // 3. Today's schedule
+  pendingApprovals: true,        // 4. Approvals queued
+  people: true,                  // 5. People needing attention
+  communicationsSummary: true,   // 6. Inbox summary
+  projectsDoneTogether: true,    // 7. What you and the EA shipped
+  contentPipeline: true,         // 8. Content queue
+  news: true,                    // 9. Curated news
+  systemHealth: true,            // 10. Operational health
+  tokenUsageYesterday: true,     // 11. Confirms free-tier claim
+  awsCosts: false,               // 12. Off by default (only useful if you run AWS)
+  footerLinks: true,             // 13. Dashboard + repo links
+};
 
 const DEFAULTS: AppConfig = {
   otterEmail: '',
@@ -97,6 +127,14 @@ const DEFAULTS: AppConfig = {
   xAccessToken: '',
   xAccessTokenSecret: '',
   ownerName: '',
+  onboarding: {
+    completedAt: null,
+    currentStep: 0,
+    skippedTour: false,
+    briefingSections: { ...DEFAULT_BRIEFING_SECTIONS },
+    secretsDeferred: [],
+    lastReminderShownAt: null,
+  },
 };
 
 let _config: AppConfig | null = null;
@@ -112,6 +150,17 @@ export function loadConfig(): AppConfig {
         delete saved.anthropicApiKey;
       }
       _config = { ...DEFAULTS, ...saved };
+      // Merge nested onboarding object so older configs (saved before
+      // onboarding existed) get the default state added without losing
+      // whatever they had.
+      _config.onboarding = {
+        ...DEFAULTS.onboarding,
+        ...(saved.onboarding || {}),
+        briefingSections: {
+          ...DEFAULT_BRIEFING_SECTIONS,
+          ...(saved.onboarding?.briefingSections || {}),
+        },
+      };
     } else {
       _config = { ...DEFAULTS };
       saveConfig(_config);

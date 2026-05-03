@@ -8,3 +8,4 @@ node_modules/
 data/
 .cache/
 *.log
+tsconfig.web.tsbuildinfo
