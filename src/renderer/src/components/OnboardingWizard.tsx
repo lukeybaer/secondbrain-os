@@ -57,18 +57,18 @@ const FEATURE_TOUR: FeatureSlide[] = [
   {
     title: 'Hooks: how rules stick mechanically',
     paragraphs: [
-      'A correction in chat is forgotten by next session. A hook is a shell script that runs every time the relevant event fires. Hashtag commands like #learn and #gap save lessons to memory and write regression tests, in one transaction.',
-      'Ingest hooks are the other side: when an Otter transcript lands, the hook matches participants to your contact files and appends what was said. Your contact memory updates while you sleep.',
-      'The prevention hierarchy is the framework rule: if a behavior matters, push it from a memory file up to a hook or a test. Tests fail loud. Hooks fire deterministically. Memory files rely on the AI noticing.',
+      'This is the part that demands developer effort, and where the payoff is biggest. A correction in chat is forgotten by next session. A hook is a shell script that runs every time a relevant event fires, deterministically, before or after the AI does anything. Hashtag commands like #learn and #gap save lessons to memory and write regression tests in one transaction.',
+      'Use #learn every time you correct the EA on something you want it to remember forever (a preference, a fact, a person). Use #gap when the EA repeats the same mistake twice. The framework escalates the rule up the prevention hierarchy: test > hook > npm script > CLAUDE.md > memory file. Stronger guards live higher. The discipline is yours; the framework just enforces what you decide.',
+      'Ingest hooks are the other side: when an Otter transcript lands, the hook matches participants to your contact files and appends what was said. Your contact memory updates while you sleep. Same pattern reuses for Gmail, WhatsApp, calls, LinkedIn. You write the cascade once, then every data source flows through it.',
     ],
     docsLink: 'docs/HOOKS_GUIDE.md',
   },
   {
     title: 'Daily briefing: what shows up before you wake up',
     paragraphs: [
-      'A scheduled task fires before you wake up, builds a briefing from your data sources, and delivers it to Telegram and Gmail. The top is always decisions you need to make today, never status. Status goes at the bottom.',
-      'Every section is verifiable. No hardcoded numbers, no fabricated counts. If a data source breaks, the section says so explicitly instead of inventing a value.',
-      'You\'ll choose which sections you want in a couple of steps. Local-first by default; you can move it to AWS later if you want it to keep firing while your laptop is closed.',
+      'A scheduled task fires before you wake up, builds a briefing from your data sources, and delivers it to Telegram and Gmail. The top is always decisions you need to make today, never status. Status goes at the bottom. Every section is verifiable; no hardcoded numbers, no fabricated counts.',
+      'Read the briefing as your monitoring tool for the EA itself. The People section shows what it learned about your contacts, the Projects-Done-Together section shows what it shipped, the System Health section shows what is breaking. If something it should remember is missing, that is a signal to fire #learn or #gap right then so it gets wired in. The briefing is how you catch misses early.',
+      "You'll choose which sections you want in a couple of steps. Local-first by default; you can move it to AWS later if you want it to keep firing while your laptop is closed. AWS also gets you more durable backups, since the EC2 companion writes snapshots to S3 with versioning instead of relying on your local disk.",
     ],
     docsLink: 'docs/DAILY_BRIEFING_TEMPLATE.md',
   },
@@ -217,18 +217,25 @@ function WelcomeStep({ onNext, onSkip }: { onNext: () => void; onSkip: () => voi
     <div>
       <h1 style={h1Style}>Welcome to SecondBrain</h1>
       <p style={paraStyle}>
-        Your desktop now runs an autonomous executive assistant. It makes phone calls,
-        remembers people you talk to, summarizes your inbox, and ships you a daily
-        briefing every morning. All on your existing Claude Pro or Max subscription.
+        <strong>This is a tool for agentic developers.</strong> It is not a finished
+        product you install and forget. It is a framework you keep tuning to your own
+        life. The features work out of the box, but the EA only gets sharper if you
+        actively teach it your preferences, correct it when it drifts, and read the
+        daily briefing to catch what it missed.
       </p>
       <p style={paraStyle}>
-        This setup takes about 5 minutes. We'll walk through the major features (one
-        page each, click to advance), then you'll pick which briefing sections you
-        want and optionally add your API keys.
+        The two hashtag commands you will use most: <code style={codeStyle}>#learn</code>{' '}
+        when you want a lesson saved to memory permanently, and{' '}
+        <code style={codeStyle}>#gap</code> when the EA repeats a mistake and you want
+        a mechanical guard installed (test, hook, or rule) so it cannot recur. These
+        two commands turn one-time corrections into permanent infrastructure.
       </p>
       <p style={paraStyle}>
-        You can skip the tour at any point and add secrets later. Nothing here is
-        a hard requirement; the EA degrades gracefully when an integration is missing.
+        On your desktop now: phone calls (Vapi), inbox + WhatsApp + SMS,
+        screen-and-audio Time Machine, content pipeline, and a daily briefing on
+        Telegram. All on your existing Claude Pro or Max subscription. No
+        per-token API costs for the agent loop. Setup takes about 5 minutes; you
+        can skip the tour at any point and add secrets later.
       </p>
       <div style={buttonRowStyle}>
         <button style={secondaryButtonStyle} onClick={onSkip}>Skip tour</button>
@@ -448,9 +455,21 @@ function DoneStep({
         <li>You can change any of this anytime from Settings.</li>
       </ul>
       <p style={paraStyle}>
-        Next: open the Briefing tab to generate your first briefing on demand, or wait
-        for the scheduled task to fire on its own (5:30 AM by default, configurable in
-        Settings).
+        <strong>Next, the developer loop.</strong> Generate your first briefing from
+        the Briefing tab (or wait for the scheduled task to fire on its own at 5:30 AM
+        by default). Read it carefully. Anywhere it missed something the EA should have
+        known, fire <code style={codeStyle}>#learn</code> in chat to teach it. Anywhere
+        it repeated a mistake, fire <code style={codeStyle}>#gap</code> to install a
+        mechanical guard. Treat the briefing as both a daily report and an audit of
+        what your EA actually understands.
+      </p>
+      <p style={paraStyle}>
+        <strong>For more durable backups, configure the AWS companion.</strong> The
+        local-first setup keeps everything on your laptop, which means a disk failure
+        loses everything since the last sync. The EC2 + S3 path documented in{' '}
+        <code style={codeStyle}>docs/DAILY_BRIEFING_TEMPLATE.md</code> writes versioned
+        snapshots to S3 and lets the briefing keep firing while your laptop is closed.
+        Optional, recommended after a week of local use.
       </p>
       <p style={{ ...paraStyle, fontSize: 13, color: '#888' }}>
         Architecture details: <code style={codeStyle}>docs/MEMORY_LAYERS.md</code>,{' '}
