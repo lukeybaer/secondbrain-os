@@ -29,6 +29,8 @@ const api = {
       ipcRenderer.invoke('briefing:export', date),
     openExternal: (url: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('briefing:openExternal', url),
+    generate: (force = true): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('briefing:generate', force),
   },
 
   otter: {

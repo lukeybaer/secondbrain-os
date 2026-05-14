@@ -611,10 +611,10 @@ function loadRecentInboundCalls(limit = 5): AmyInboundCall[] {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export async function sendDailyBriefing(): Promise<void> {
+export async function sendDailyBriefing(force = false): Promise<void> {
   const FLAG = 'briefing-sent';
 
-  if (flagExists(FLAG)) {
+  if (!force && flagExists(FLAG)) {
     console.log('[briefing] daily briefing already sent today , skipping');
     return;
   }
@@ -768,19 +768,38 @@ export async function sendDailyBriefing(): Promise<void> {
       }
     }
 
-    // Morning briefing is no longer delivered via Telegram (policy changed 2026-04-20).
-    // the owner reads the daily briefing at the mobile dashboard URL (server.ts /briefing)
-    // or in the Electron Briefing page. Gmail draft + on-disk markdown remain the
-    // authoritative deliverables. See memory/feedback_telegram_policy.md for the
-    // current policy and memory/feedback_amy_email_dispatch_convention.md for the
-    // dispatch-from-anywhere architecture.
-    //
-    // Operational + security alerts still flow through sendMessage() elsewhere in
-    // this file and in health-self-heal.js; those are NOT briefings.
-    void msg1Lines; void msg2Lines; void msg3Lines; void msg4Lines;
+    // Write briefing to disk so the Electron Briefing page can read it.
+    // Telegram delivery is disabled (policy changed 2026-04-20); the owner reads
+    // the briefing in the app or at the EC2 dashboard URL. Operational alerts still
+    // flow through sendMessage() elsewhere; those are NOT briefings.
+    const briefingsDir = path.join(
+      process.env.SECONDBRAIN_ROOT || app.getAppPath(),
+      'data',
+      'briefings',
+    );
+    if (!fs.existsSync(briefingsDir)) fs.mkdirSync(briefingsDir, { recursive: true });
+
+    const nowIso = new Date().toISOString();
+    const sections: string[] = [
+      `Good morning — ${friendlyDate()}`,
+      `Generated: ${nowIso}`,
+      `LLM: claude-code`,
+      `---`,
+      ``,
+      ...msg1Lines,
+      ``,
+      ...msg2Lines,
+      ``,
+      ...msg3Lines,
+      ``,
+      ...msg4Lines,
+    ];
+    const markdown = sections.join('\n');
+    const briefingFile = path.join(briefingsDir, `briefing-${todayStamp()}.md`);
+    fs.writeFileSync(briefingFile, markdown, 'utf-8');
 
     writeFlag(FLAG);
-    console.log('[briefing] daily briefing rendered; Telegram send disabled by policy');
+    console.log(`[briefing] daily briefing written to ${briefingFile}`);
 
     // Mark contact events as reported so they won't repeat tomorrow
     if (contactReportedIds.length > 0) {

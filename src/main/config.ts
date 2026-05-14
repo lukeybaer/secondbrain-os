@@ -61,6 +61,7 @@ export interface AppConfig {
   xAccessToken: string; // X (Twitter) Access Token
   xAccessTokenSecret: string; // X (Twitter) Access Token Secret
   ownerName: string; // Display name for the owner, used in prompt templates; leave blank for anonymous default
+  ownerEmail: string; // Owner's email address — used for briefing dispatch and Amy self-send emails
 
   // Onboarding state. Persists what the first-run wizard collected so it
   // doesn't re-prompt and so the rest of the app knows what to surface.
@@ -127,6 +128,7 @@ const DEFAULTS: AppConfig = {
   xAccessToken: '',
   xAccessTokenSecret: '',
   ownerName: '',
+  ownerEmail: '',
   onboarding: {
     completedAt: null,
     currentStep: 0,

@@ -44,6 +44,7 @@ export default function Briefing() {
   const [briefing, setBriefing] = useState<BriefingData | null>(null);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
   const [comment, setComment] = useState<{ sectionTitle: string } | null>(null);
   const [commentText, setCommentText] = useState('');
   const [sending, setSending] = useState(false);
@@ -80,6 +81,23 @@ export default function Briefing() {
       setBriefing(null);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function onGenerate() {
+    setGenerating(true);
+    try {
+      const result = await window.api.briefing.generate(true);
+      if (result.ok) {
+        setToast('Briefing generated');
+        await refreshDays();
+        const today = new Date().toISOString().slice(0, 10);
+        setSelectedDate(today);
+      } else {
+        setToast(`Generation failed: ${result.error}`);
+      }
+    } finally {
+      setGenerating(false);
     }
   }
 
@@ -263,6 +281,22 @@ export default function Briefing() {
               Right-click any section to dispatch feedback to Amy. Last 3 days retained.
             </div>
           </div>
+          <button
+            onClick={onGenerate}
+            disabled={generating}
+            style={{
+              padding: '7px 14px',
+              background: generating ? '#333' : '#1e1e1e',
+              color: generating ? '#888' : CREAM,
+              border: `1px solid ${COPPER}`,
+              borderRadius: 4,
+              cursor: generating ? 'not-allowed' : 'pointer',
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            {generating ? 'Generating...' : 'Generate Now'}
+          </button>
           <button
             onClick={onExport}
             disabled={!selectedDate}

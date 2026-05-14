@@ -11,6 +11,8 @@ import {
   ParsedBriefing,
   BriefingSummary,
 } from './briefing-parser';
+import { sendDailyBriefing } from './briefing';
+import { getConfig } from './config';
 
 const DISPATCH_LOG = (): string =>
   path.join(
@@ -66,9 +68,15 @@ async function dispatchAmyComment(params: {
   const script = SEND_GMAIL_PY();
 
   return new Promise((resolve) => {
+    const cfg = getConfig();
+    const toEmail = cfg.ownerEmail || cfg.otterEmail;
+    if (!toEmail) {
+      resolve({ ok: false, error: 'No owner email configured. Set Owner Email in Settings.' });
+      return;
+    }
     const proc = cp.spawn(
       python,
-      [script, '--to', 'owner@example.com', '--subject', subject, '--body', body],
+      [script, '--to', toEmail, '--subject', subject, '--body', body],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let stderr = '';
@@ -162,6 +170,18 @@ export function registerBriefingIpc(): void {
       return { ok: false };
     }
   });
+
+  ipcMain.handle(
+    'briefing:generate',
+    async (_e, force = true): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        await sendDailyBriefing(force);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+  );
 }
 
 export { parseBriefing, pruneOldBriefings };
