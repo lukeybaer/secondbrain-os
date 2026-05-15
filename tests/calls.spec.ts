@@ -22,9 +22,9 @@ import * as fsActual from "fs";
 // to declare values that the mock factory needs.  Use require() here because
 // ES import bindings are also not yet available when the hoisted block runs.
 const { TEST_USER_DATA } = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+   
   const _os = require("os") as typeof import("os");
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+   
   const _path = require("path") as typeof import("path");
   return { TEST_USER_DATA: _path.join(_os.tmpdir(), "sb-calls-test-userdata") };
 });

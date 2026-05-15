@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 
 // health-self-heal.js is CommonJS; pull via require.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+ 
 const { decideS3ParityHealStatus } = require('../scripts/health-self-heal.js');
 
 describe('decideS3ParityHealStatus', () => {

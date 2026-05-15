@@ -47,7 +47,7 @@ export interface WAMessage {
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 let client: any = null;
 let currentStatus: WAStatus = 'disconnected';
 

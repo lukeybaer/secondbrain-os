@@ -209,7 +209,7 @@ describe('buildSection , filtering', () => {
     );
     const { text } = buildSection(rankEvents(events), new Set(), NOW);
     // Should show at most 3 bullets for pastWeek and 3 for past48h
-    const bulletCount = (text.match(/  • /g) || []).length;
+    const bulletCount = (text.match(/ {2}• /g) || []).length;
     expect(bulletCount).toBeLessThanOrEqual(6);
   });
 });
