@@ -5,6 +5,14 @@
 import * as http from 'http';
 import { BrowserWindow } from 'electron';
 import { getConfig } from './config';
+import {
+  verifyTwilioSignature,
+  verifyVapiSignature,
+  verifyTelegramSecret,
+  reconstructRequestUrl,
+  headerValue,
+  type VerifyResult,
+} from './webhook-verify';
 import { initiateCall, listCallRecords } from './calls';
 import { PendingApproval, sendApprovalRequest, sendMessage } from './telegram';
 import {
@@ -67,6 +75,7 @@ type Handler = (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   body: unknown,
+  rawBody: string,
 ) => Promise<void>;
 
 interface Route {
@@ -81,33 +90,35 @@ function route(method: string, path: string, handler: Handler): void {
   routes.push({ method: method.toUpperCase(), path, handler });
 }
 
-function readBody(req: http.IncomingMessage): Promise<unknown> {
+// Reads the request body once and returns both the raw string and the JSON-parsed
+// form. Webhook signature verification needs the raw bytes; handlers that don't
+// care can keep using `body`. Twilio's form-urlencoded payload comes through as
+// `{}` for parsed (JSON.parse fails) — the Twilio handler re-parses from `raw`.
+function readBody(req: http.IncomingMessage): Promise<{ parsed: unknown; raw: string }> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
       const raw = Buffer.concat(chunks).toString('utf-8');
       if (!raw) {
-        resolve({});
+        resolve({ parsed: {}, raw: '' });
         return;
       }
       try {
-        resolve(JSON.parse(raw));
+        resolve({ parsed: JSON.parse(raw), raw });
       } catch {
-        resolve({});
+        resolve({ parsed: {}, raw });
       }
     });
     req.on('error', reject);
   });
 }
 
-function readRawBody(req: http.IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-    req.on('error', reject);
-  });
+function rejectUnauthorized(res: http.ServerResponse, source: string, result: VerifyResult): void {
+  if (!result.ok) {
+    console.warn(`[server] ${source} webhook rejected: ${result.reason}`);
+  }
+  jsonResponse(res, 401, { error: 'unauthorized' });
 }
 
 function jsonResponse(res: http.ServerResponse, status: number, body: unknown): void {
@@ -135,7 +146,19 @@ route('GET', '/health', async (_req, res, _body) => {
  *   status-update  , tracks call lifecycle; on "ended" ingests transcript
  *   transcript     , incremental transcript (logged, not acted on here)
  */
-route('POST', '/vapi/webhook', async (_req, res, body) => {
+route('POST', '/vapi/webhook', async (req, res, body, rawBody) => {
+  const cfg = getConfig();
+  const verify = verifyVapiSignature({
+    secret: cfg.vapiWebhookSecret,
+    rawBody,
+    signatureHeader: headerValue(req, 'x-vapi-signature'),
+    timestampHeader: headerValue(req, 'x-vapi-timestamp'),
+  });
+  if (!verify.ok) {
+    rejectUnauthorized(res, 'vapi', verify);
+    return;
+  }
+
   const event = body as Record<string, unknown>;
   const type = event?.message ? (event.message as Record<string, unknown>)?.type : event?.type;
 
@@ -354,7 +377,17 @@ interface TelegramWebhookUpdate {
 // Callers that want to handle free-form messages should call setOnMessage()
 // before startServer().
 
-route('POST', '/telegram/webhook', async (_req, res, body) => {
+route('POST', '/telegram/webhook', async (req, res, body) => {
+  const cfg = getConfig();
+  const verify = verifyTelegramSecret({
+    expectedSecret: cfg.telegramWebhookSecret,
+    secretHeader: headerValue(req, 'x-telegram-bot-api-secret-token'),
+  });
+  if (!verify.ok) {
+    rejectUnauthorized(res, 'telegram', verify);
+    return;
+  }
+
   const update = body as TelegramWebhookUpdate;
   const msg = update?.message;
 
@@ -429,11 +462,24 @@ route('GET', '/calls/list', async (_req, res, _body) => {
 
 // ── Route: POST /twilio/webhook ──────────────────────────────────────────────
 
-route('POST', '/twilio/webhook', async (req, res, _body) => {
-  // Twilio sends form-urlencoded, not JSON , read raw and parse
-  const raw = await readRawBody(req);
+route('POST', '/twilio/webhook', async (req, res, _body, rawBody) => {
+  // Twilio sends form-urlencoded, not JSON , parse from the raw body that the
+  // router already read. (Previously this re-read the stream after the router
+  // had consumed it, yielding empty fields.)
   const fields: Record<string, string> = {};
-  for (const [k, v] of new URLSearchParams(raw)) fields[k] = v;
+  for (const [k, v] of new URLSearchParams(rawBody)) fields[k] = v;
+
+  const cfg = getConfig();
+  const verify = verifyTwilioSignature({
+    authToken: cfg.twilioAuthToken,
+    fullUrl: reconstructRequestUrl(req, cfg.publicWebhookBaseUrl),
+    params: fields,
+    signatureHeader: headerValue(req, 'x-twilio-signature'),
+  });
+  if (!verify.ok) {
+    rejectUnauthorized(res, 'twilio', verify);
+    return;
+  }
 
   const { count, message } = await ingestSmsWebhook(fields);
 
@@ -769,8 +815,8 @@ export function startServer(): void {
     }
 
     try {
-      const body = await readBody(req);
-      await matched.handler(req, res, body);
+      const { parsed, raw } = await readBody(req);
+      await matched.handler(req, res, parsed, raw);
     } catch (err) {
       console.error('[server] unhandled error:', err);
       jsonResponse(res, 500, { error: 'Internal server error' });

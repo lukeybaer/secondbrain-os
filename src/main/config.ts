@@ -53,8 +53,11 @@ export interface AppConfig {
   otterSessionCookie: string; // Otter session cookies , Google SSO alternative to password
   otterUserId: string; // Otter numeric user ID , captured alongside session cookie
   twilioAccountSid: string; // Twilio Account SID for SMS
-  twilioAuthToken: string; // Twilio Auth Token for SMS
+  twilioAuthToken: string; // Twilio Auth Token for SMS (also: webhook signing secret for X-Twilio-Signature)
   twilioPhoneNumber: string; // Twilio phone number (e.g. +15551234567)
+  vapiWebhookSecret: string; // Shared HMAC-SHA256 secret for verifying X-Vapi-Signature on inbound webhooks
+  telegramWebhookSecret: string; // Static token configured via Telegram setWebhook(secret_token=...); echoed in X-Telegram-Bot-Api-Secret-Token
+  publicWebhookBaseUrl: string; // Externally-reachable base URL of this server (e.g. https://tunnel.example.com); used to compute the canonical URL for Twilio HMAC. Falls back to Host header when empty.
   amyVersion: number; // Active Amy version (1=Classic, 2=Skill-Aware, 3=Claude-Powered)
   xApiKey: string; // X (Twitter) API Consumer Key
   xApiSecret: string; // X (Twitter) API Consumer Secret
@@ -121,6 +124,9 @@ const DEFAULTS: AppConfig = {
   twilioAccountSid: '',
   twilioAuthToken: '',
   twilioPhoneNumber: '',
+  vapiWebhookSecret: '',
+  telegramWebhookSecret: '',
+  publicWebhookBaseUrl: '',
   amyVersion: 2, // Default to v2 (Skill-Aware)
   xApiKey: '',
   xApiSecret: '',
