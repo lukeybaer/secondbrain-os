@@ -149,7 +149,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('config:save', (_e, config) => saveConfig(config));
 
   // Otter: test authentication
-  ipcMain.handle('otter:testConnection', async () => {
+  tracedHandle('otter:testConnection', async () => {
     try {
       await login();
       return { ok: true, message: 'Connected successfully' };
@@ -267,7 +267,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // Fetch list from Otter , streams batches back via import:listBatch events
-  ipcMain.handle('import:fetchList', async () => {
+  tracedHandle('import:fetchList', async () => {
     try {
       const local = listAllConversations();
       const taggedIds = new Set(
@@ -321,7 +321,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // Process specific conversations (download transcript + AI tag)
-  ipcMain.handle('import:processIds', async (_e, otterIds: string[]) => {
+  tracedHandle('import:processIds', async (_e, otterIds: string[]) => {
     let processed = 0;
     let failed = 0;
 
@@ -392,7 +392,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return { success: true };
   });
 
-  ipcMain.handle('chats:summarize', async (_e, sessionData: ChatSession) => {
+  tracedHandle('chats:summarize', async (_e, sessionData: ChatSession) => {
     try {
       const summary = await summarizeSession(sessionData);
       return { success: true, summary };
@@ -401,7 +401,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  ipcMain.handle('chats:finish', async (_e, sessionData: ChatSession) => {
+  tracedHandle('chats:finish', async (_e, sessionData: ChatSession) => {
     try {
       saveSession(sessionData);
       await saveSessionAsConversation(sessionData);
@@ -429,10 +429,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('whatsapp:messages', (_e, chatId: string, limit?: number) =>
     waGetHistory(chatId, limit),
   );
-  ipcMain.handle('whatsapp:send', async (_e, to: string, text: string) => waSend(to, text));
+  tracedHandle('whatsapp:send', async (_e, to: string, text: string) => waSend(to, text));
   ipcMain.handle('whatsapp:search', (_e, query: string) => waSearch(query));
   ipcMain.handle('whatsapp:disconnect', () => waDisconnect());
-  ipcMain.handle('whatsapp:ingestAll', async () => {
+  tracedHandle('whatsapp:ingestAll', async () => {
     const { ingestAllWhatsAppHistory } = await import('./whatsapp-ingest');
     return ingestAllWhatsAppHistory((progress) => {
       if (!mainWindow.isDestroyed()) {
@@ -455,7 +455,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('sms:search', (_e, query: string, limit?: number) =>
     searchSmsMessages(query, limit),
   );
-  ipcMain.handle('sms:send', async (_e, to: string, body: string, mediaUrl?: string) =>
+  tracedHandle('sms:send', async (_e, to: string, body: string, mediaUrl?: string) =>
     sendSms(to, body, mediaUrl),
   );
   ipcMain.handle('sms:ingest', async (_e, fields: Record<string, string>) =>
@@ -593,7 +593,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // 2026-04-20, approval only wrote the local JSON, so videos sat forever
   // waiting on a second manual click that the owner never made (18+ day stall).
   async function pushVideoToEc2(id: string): Promise<{ success: boolean; error?: string; position?: number }> {
-    const { execSync } = require('child_process');
+    const { execFile } = require('child_process');
+    const execAsync = (cmd: string, args: string[], opts: { timeout: number }) =>
+      new Promise<void>((resolve, reject) =>
+        execFile(cmd, args, opts, (err: Error | null) => (err ? reject(err) : resolve())),
+      );
     const queuePath = path.join(contentRoot, 'content-review', 'upload-queue.json');
     const pendingDir = path.join(contentRoot, 'content-review', 'pending');
     const SSH_KEY = '${HOME:-~}/.ssh/secondbrain-backend-key.pem';
@@ -614,18 +618,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         return { success: false, error: 'Video file not found: ' + (videoPath ?? 'none') };
       }
       const remoteVideoPath = `${EC2_VIDEO_DIR}/${id}.mp4`;
-      const scpOpts = `-i ${SSH_KEY} -o StrictHostKeyChecking=no`;
-      execSync(
-        `ssh ${scpOpts} ${EC2_HOST} "mkdir -p ${EC2_VIDEO_DIR}" && scp ${scpOpts} "${videoPath.replace(/\\/g, '/')}" ${EC2_HOST}:${remoteVideoPath}`,
-        { timeout: 120000 },
-      );
+      const sshArgs = ['-i', SSH_KEY, '-o', 'StrictHostKeyChecking=no'];
+      await execAsync('ssh', [...sshArgs, EC2_HOST, `mkdir -p ${EC2_VIDEO_DIR}`], { timeout: 30000 });
+      await execAsync('scp', [...sshArgs, videoPath, `${EC2_HOST}:${remoteVideoPath}`], { timeout: 120000 });
       let remoteThumbnailPath: string | undefined;
       if (thumbPath && fs.existsSync(thumbPath)) {
         remoteThumbnailPath = `${EC2_VIDEO_DIR}/${id}_thumb.jpg`;
-        execSync(
-          `scp ${scpOpts} "${thumbPath.replace(/\\/g, '/')}" ${EC2_HOST}:${remoteThumbnailPath}`,
-          { timeout: 30000 },
-        );
+        await execAsync('scp', [...sshArgs, thumbPath, `${EC2_HOST}:${remoteThumbnailPath}`], { timeout: 30000 });
       }
       const res = await fetch(`${ec2}/youtube/queue`, {
         method: 'POST',
@@ -651,7 +650,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   }
 
-  ipcMain.handle('empire:approveVideo', async (_e, id: string) => {
+  tracedHandle('empire:approveVideo', async (_e, id: string) => {
     const pendingDir = path.join(contentRoot, 'content-review', 'pending');
     const manifestPath = path.join(pendingDir, 'manifest.json');
     const queuePath = path.join(contentRoot, 'content-review', 'upload-queue.json');
@@ -777,7 +776,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   );
 
   // Regen: find all videos marked video_needs_regen/thumbnail_needs_regen and rebuild them
-  ipcMain.handle('empire:regenRejected', async () => {
+  tracedHandle('empire:regenRejected', async () => {
     try {
       const results: RegenResult[] = await regenRejectedVideos(contentRoot);
       const succeeded = results.filter((r) => r.success).map((r) => r.videoId);
@@ -791,7 +790,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // Sync new videos from EC2 into local content-review/pending
-  ipcMain.handle('empire:syncFromEC2', async () => {
+  tracedHandle('empire:syncFromEC2', async () => {
     const { spawn } = require('child_process');
     const syncScript = path.join(contentRoot, 'scripts', 'sync-videos-from-ec2.js');
     if (!fs.existsSync(syncScript)) {
@@ -860,7 +859,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // Queue video for YouTube upload via EC2. Now a thin wrapper -- approval
   // auto-invokes pushVideoToEc2 too, so this handler mostly exists for the
   // manual "Queue for Upload" button + retries.
-  ipcMain.handle('empire:queueForUpload', async (_e, id: string) => {
+  tracedHandle('empire:queueForUpload', async (_e, id: string) => {
     return pushVideoToEc2(id);
   });
 
@@ -1136,7 +1135,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // Agent memory
-  ipcMain.handle('agent:readMemory', async () => {
+  tracedHandle('agent:readMemory', async () => {
     try {
       await ensureMemoryFile();
       const content = await readMemory();
@@ -1146,7 +1145,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  ipcMain.handle('agent:writeMemory', async (_e, content: string) => {
+  tracedHandle('agent:writeMemory', async (_e, content: string) => {
     try {
       await writeMemory(content);
       return { success: true };
@@ -1155,7 +1154,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  ipcMain.handle(
+  tracedHandle(
     'agent:postCallReflection',
     async (
       _e,
@@ -1180,7 +1179,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   );
 
   // ── Backups ──────────────────────────────────────────────────────────────────
-  ipcMain.handle('backups:create', async () => {
+  tracedHandle('backups:create', async () => {
     try {
       const meta = await createSnapshot();
       return { success: true, snapshot: meta };
@@ -1220,7 +1219,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  ipcMain.handle('backups:testRestore', async (_e, id: string) => {
+  tracedHandle('backups:testRestore', async (_e, id: string) => {
     try {
       const tempPath = await testRestore(id);
       return { success: true, tempPath };
@@ -1229,7 +1228,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  ipcMain.handle('backups:commitRestore', async (_e, id: string) => {
+  tracedHandle('backups:commitRestore', async (_e, id: string) => {
     try {
       const result = await commitRestore(id);
       return { success: true, ...result };
@@ -1238,7 +1237,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  ipcMain.handle('backups:rollForward', async () => {
+  tracedHandle('backups:rollForward', async () => {
     try {
       const result = await rollForward();
       return { success: true, ...result };
@@ -1256,7 +1255,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  ipcMain.handle('backups:runDaily', async () => {
+  tracedHandle('backups:runDaily', async () => {
     try {
       const result = await runDailyBackup();
       return { success: true, ...result };
@@ -1330,7 +1329,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return detectDevices();
   });
   ipcMain.handle('studio:checkNvenc', async () => checkNvenc());
-  ipcMain.handle('studio:start', async () => {
+  tracedHandle('studio:start', async () => {
     // Resolve devices HERE using the cached list, then pass to startRecording
     // so it never calls detectDevices/detectCameras itself (those hang on repeat calls).
     let devices: { name: string; type: string }[] = [];
@@ -1358,7 +1357,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('studio:list', () => listRecordings());
   ipcMain.handle('studio:get', (_e, id: string) => loadRecording(id));
   ipcMain.handle('studio:delete', async (_e, id: string) => deleteRecording(id));
-  ipcMain.handle('studio:process', async (_e, id: string) => {
+  tracedHandle('studio:process', async (_e, id: string) => {
     try {
       const result = await processRecording(id, (stage, pct) => {
         send('studio:progress', { id, stage, pct });
@@ -1370,8 +1369,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // Time Machine
-  ipcMain.handle('tm:start', async () => startTimeMachine());
-  ipcMain.handle('tm:stop', async () => stopTimeMachine());
+  tracedHandle('tm:start', async () => startTimeMachine());
+  tracedHandle('tm:stop', async () => stopTimeMachine());
   ipcMain.handle('tm:pause', () => pauseTimeMachine());
   ipcMain.handle('tm:resume', () => resumeTimeMachine());
   ipcMain.handle('tm:status', () => getTimeMachineStatus());
