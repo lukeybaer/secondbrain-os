@@ -10,8 +10,35 @@
 //   runClaudeCodeAndSummarize() → runs either mode + summarizes result for Telegram
 
 import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { app } from 'electron';
 import Anthropic from '@anthropic-ai/sdk';
+
+// Load .env at module init — values supplement process.env, never override.
+// Looks for .env at the project root (process.cwd() in dev, ../../ from out/main/ in prod).
+(function loadEnvFile() {
+  const candidates = [
+    path.join(process.cwd(), '.env'),
+    path.resolve(__dirname, '../../.env'),
+  ];
+  const envFile = candidates.find((p) => fs.existsSync(p));
+  if (!envFile) return;
+  try {
+    for (const line of fs.readFileSync(envFile, 'utf-8').split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      const val = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+      if (key && !(key in process.env)) process.env[key] = val;
+    }
+  } catch {
+    /* unreadable .env — silently skip */
+  }
+})();
 
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
 

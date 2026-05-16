@@ -1,3 +1,6 @@
+# Local environment — never commit (see .env.example for the template)
+.env
+
 # Owner-specific content artifacts
 content-review/pending/
 content-review/approved/
@@ -9,3 +12,4 @@ data/
 .cache/
 *.log
 tsconfig.web.tsbuildinfo
+fixes.txt
