@@ -132,13 +132,23 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
   const claudeAbsPath = CLAUDE_CMD;
 
   return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const settle = (result: RunResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
     let child: ReturnType<typeof spawn>;
 
     if (hasPromptArg) {
       const promptContent = args[pIdx + 1];
       // Strip "-p <prompt>" and use "--print" so claude reads from stdin
       const claudeArgs = [...args.slice(0, pIdx), '--print', ...args.slice(pIdx + 2)];
-      // Use full path to cmd.exe , Electron's PATH may not include System32 when launched from Git Bash
+      // Use full path to cmd.exe — Electron's PATH may not include System32 when launched from Git Bash
       const cmdExe = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
       // Quote the absolute path in case it contains spaces
       const quotedPath = claudeAbsPath.includes(' ') ? `"${claudeAbsPath}"` : claudeAbsPath;
@@ -148,8 +158,12 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      child.stdin!.write(promptContent, 'utf-8');
-      child.stdin!.end();
+      if (!child.stdin) {
+        settle({ output: 'Process error: stdin not available', success: false, exitCode: -1 });
+        return;
+      }
+      child.stdin.write(promptContent, 'utf-8');
+      child.stdin.end();
     } else {
       child = spawn(claudeAbsPath, args, {
         cwd,
@@ -169,26 +183,24 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
       stderr += chunk.toString();
     });
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       child.kill('SIGTERM');
       const minutes = timeoutMs / 60_000;
-      resolve({
+      settle({
         output: `Timed out after ${minutes} minute${minutes !== 1 ? 's' : ''}`,
         success: false,
         exitCode: -1,
       });
     }, timeoutMs);
 
-    child.on('close', (code) => {
-      clearTimeout(timer);
+    child.on('close', (code: number | null) => {
       const exitCode = code ?? -1;
       const output = (stdout + (stderr ? `\n\nSTDERR:\n${stderr}` : '')).trim();
-      resolve({ output, success: exitCode === 0, exitCode });
+      settle({ output, success: exitCode === 0, exitCode });
     });
 
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({ output: `Process error: ${err.message}`, success: false, exitCode: -1 });
+    child.on('error', (err: Error) => {
+      settle({ output: `Process error: ${err.message}`, success: false, exitCode: -1 });
     });
   });
 }
@@ -240,6 +252,10 @@ export async function runClaudeCodeAndSummarize(
 }> {
   const runFn = options?.continueSession ? runClaudeCodeContinue : runClaudeCode;
   const { output: fullOutput, success, exitCode } = await runFn(prompt, options);
+
+  if (!fullOutput.trim()) {
+    return { fullOutput, summary: '(no output)', success, exitCode };
+  }
 
   let summary = success
     ? fullOutput.slice(0, 500)
