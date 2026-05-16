@@ -28,6 +28,12 @@ import {
   type AmyVersion,
 } from './amy-versions';
 import { identifyCaller } from './caller-id';
+import {
+  enqueueRetry,
+  cancelRetriesForPhone,
+  needsAssistantSync,
+  recordAssistantSync,
+} from './call-retry-queue';
 
 async function detectCompletion(instructions: string, transcript: string): Promise<boolean> {
   const config = getConfig();
@@ -475,16 +481,39 @@ export async function refreshCallStatus(
         const cfgDir = getConfig().dataDir ?? '';
         if (cfgDir && transcript) {
           extractAndStoreCallPattern(cfgDir, existing.instructions, transcript, completed).catch(
-            () => {
-              /* best-effort, never block */
-            },
+            () => { /* best-effort, never block */ },
           );
         }
+
+        // If the goal was accomplished, cancel any pending retries for this number
+        if (completed) {
+          cancelRetriesForPhone(existing.phoneNumber);
+        }
+
         // Always update callback assistant so it has latest context for this number
         syncCallbackAssistant(existing.phoneNumber);
       });
     } else {
-      // No transcript to analyze , still sync so callback assistant is up to date
+      // No transcript — check if the call should be retried (no-answer / voicemail)
+      const endReason = updated.endedReason ?? '';
+      if (!existing.isCallback) {
+        // Count how many retries have already been queued for this phone number
+        const { listPendingRetries } = await import('./call-retry-queue');
+        const existingRetries = listPendingRetries().filter(
+          (r) => r.phone_number === existing.phoneNumber,
+        ).length;
+        enqueueRetry(
+          existing.id,
+          existing.phoneNumber,
+          existing.instructions,
+          existing.personalContext,
+          existing.personaId ?? null,
+          existing.leaveVoicemail ?? false,
+          endReason,
+          existingRetries,
+        );
+      }
+      // Still sync callback assistant so inbound is up to date
       syncCallbackAssistant(existing.phoneNumber);
     }
   }
@@ -732,18 +761,32 @@ export async function linkCallbackAssistantToPhoneNumber(): Promise<void> {
   }
 }
 
-/** Update the callback assistant's system prompt with the latest call history for callerPhone. */
+/** Update the callback assistant's system prompt with the latest call history for callerPhone.
+ *  Uses a hash-based cache to skip the Vapi PATCH when the assistant body hasn't changed,
+ *  preventing redundant API calls on every inbound event.
+ */
 export async function syncCallbackAssistant(callerPhone: string): Promise<void> {
   const config = getConfig();
   if (!config.vapiApiKey || !config.callbackAssistantId) return;
 
   const assistantBody = await buildCallbackAssistantConfig(callerPhone);
+
+  // ── Cache check: skip PATCH if body is identical to last sync ───────────────
+  if (!needsAssistantSync(callerPhone, assistantBody)) {
+    console.log(`[calls] syncCallbackAssistant: skipping PATCH for ${callerPhone} (no changes)`);
+    return;
+  }
+
   try {
-    await fetch(`https://api.vapi.ai/assistant/${config.callbackAssistantId}`, {
+    const res = await fetch(`https://api.vapi.ai/assistant/${config.callbackAssistantId}`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${config.vapiApiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(assistantBody),
     });
+    if (res.ok) {
+      // Record the synced hash so we skip identical bodies next time
+      recordAssistantSync(callerPhone, assistantBody);
+    }
   } catch {
     // Best-effort , don't throw
   }

@@ -175,6 +175,14 @@ async function tick(): Promise<void> {
   // Evening update + theme briefing disabled , Telegram is daily-briefing-only.
   // the owner can still request these on-demand via Telegram commands.
 
+  // ── Call retry queue , fires on every tick, no-ops when queue is empty ───────
+  try {
+    const { processRetryQueue } = await import('./call-retry-queue');
+    await processRetryQueue();
+  } catch (err) {
+    console.error('[scheduler] processRetryQueue error:', err);
+  }
+
   // ── Social post scheduled publishing (every tick , checks for due posts) ───
   publishScheduledSocialPosts().catch((err) =>
     console.error('[scheduler] publishScheduledSocialPosts error:', err),

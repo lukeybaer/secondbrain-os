@@ -200,6 +200,75 @@ function runMigrations(db: Database.Database): void {
   }
 }
 
+// ── Briefing History helpers ──────────────────────────────────────────────────
+
+/** Run once per DB init to add the briefing_history table (migration v4). */
+export function ensureBriefingHistorySchema(): void {
+  const db = getDb();
+  db.exec(`
+    -- Persistent store for daily briefings so the app can show history.
+    -- The raw Markdown body is stored so the existing parser can re-render it.
+    CREATE TABLE IF NOT EXISTS briefing_history (
+      id           TEXT PRIMARY KEY,   -- e.g. "2026-05-16"
+      date         TEXT NOT NULL,      -- ISO date YYYY-MM-DD
+      generated_at TEXT NOT NULL,      -- ISO timestamp when it was generated
+      raw_markdown TEXT NOT NULL,      -- Full briefing Markdown
+      section_count INTEGER NOT NULL DEFAULT 0,
+      word_count    INTEGER NOT NULL DEFAULT 0,
+      delivered     INTEGER NOT NULL DEFAULT 0  -- 1 = sent to Telegram
+    );
+    CREATE INDEX IF NOT EXISTS idx_briefing_date ON briefing_history(date DESC);
+  `);
+}
+
+export interface DbBriefing {
+  id: string;
+  date: string;
+  generated_at: string;
+  raw_markdown: string;
+  section_count: number;
+  word_count: number;
+  delivered: boolean;
+}
+
+/** Upsert a briefing record (idempotent — same date overwrites). */
+export function upsertBriefingHistory(entry: DbBriefing): void {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO briefing_history
+      (id, date, generated_at, raw_markdown, section_count, word_count, delivered)
+    VALUES
+      (@id, @date, @generated_at, @raw_markdown, @section_count, @word_count, @delivered)
+    ON CONFLICT(id) DO UPDATE SET
+      raw_markdown  = excluded.raw_markdown,
+      section_count = excluded.section_count,
+      word_count    = excluded.word_count,
+      delivered     = excluded.delivered,
+      generated_at  = excluded.generated_at
+  `).run({ ...entry, delivered: entry.delivered ? 1 : 0 });
+}
+
+/** List all briefings, newest first. */
+export function listBriefingHistory(limit = 90): DbBriefing[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT * FROM briefing_history
+    ORDER BY date DESC
+    LIMIT ?
+  `).all(limit) as Array<Omit<DbBriefing, 'delivered'> & { delivered: number }>;
+  return rows.map((r) => ({ ...r, delivered: r.delivered === 1 }));
+}
+
+/** Get a single briefing by date (YYYY-MM-DD). */
+export function getBriefingByDate(date: string): DbBriefing | null {
+  const db = getDb();
+  const row = db.prepare(
+    'SELECT * FROM briefing_history WHERE date = ?',
+  ).get(date) as (Omit<DbBriefing, 'delivered'> & { delivered: number }) | undefined;
+  if (!row) return null;
+  return { ...row, delivered: row.delivered === 1 };
+}
+
 // ── Pending Approvals ─────────────────────────────────────────────────────────
 
 export interface DbApproval {
@@ -440,6 +509,10 @@ export function initDatabase(): void {
   try {
     getDb(); // triggers migrations
     seedDefaultWhitelistDb();
+    ensureBriefingHistorySchema();
+    // Ensure retry queue + assistant cache tables exist (own migration in call-retry-queue.ts)
+    const { ensureRetryQueueSchema } = require('./call-retry-queue');
+    ensureRetryQueueSchema();
     console.log('[db] SQLite initialized at', getDbPath());
   } catch (err) {
     console.error('[db] SQLite initialization failed:', err);

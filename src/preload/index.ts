@@ -332,6 +332,16 @@ const api = {
     ): Promise<{ success: boolean; dataUrl?: string; url?: string; error?: string }> =>
       ipcRenderer.invoke('tm:screenshot', localPath, s3Key),
   },
+
+  briefingHistory: {
+    list: (): Promise<
+      { id: string; date: string; generated_at: string; section_count: number; word_count: number; delivered: number }[]
+    > => ipcRenderer.invoke('briefingHistory:list'),
+    get: (date: string): Promise<{
+      id: string; date: string; generated_at: string;
+      raw_markdown: string; section_count: number; word_count: number; delivered: number;
+    } | null> => ipcRenderer.invoke('briefingHistory:get', date),
+  },
 };
 
 if (process.contextIsolated) {

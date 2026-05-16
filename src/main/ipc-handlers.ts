@@ -1424,3 +1424,41 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// ── Briefing History IPC handlers ─────────────────────────────────────────────
+// Registered separately so they can be added without touching registerIpcHandlers.
+export function registerBriefingHistoryHandlers(): void {
+  const { listBriefingHistory, getBriefingByDate } = require('./database-sqlite');
+
+  /**
+   * List all briefing entries (newest first).
+   * Returns lightweight metadata — no raw_markdown to keep payload small.
+   */
+  ipcMain.handle('briefingHistory:list', () => {
+    try {
+      const rows = listBriefingHistory(90) as Array<{
+        id: string; date: string; generated_at: string;
+        section_count: number; word_count: number; delivered: boolean;
+      }>;
+      return rows.map(({ id, date, generated_at, section_count, word_count, delivered }) => ({
+        id, date, generated_at, section_count, word_count, delivered,
+      }));
+    } catch (err: any) {
+      console.error('[briefingHistory:list]', err.message);
+      return [];
+    }
+  });
+
+  /**
+   * Get full briefing Markdown by date (YYYY-MM-DD).
+   * Returns null when not found in DB.
+   */
+  ipcMain.handle('briefingHistory:get', (_e: any, date: string) => {
+    try {
+      return getBriefingByDate(date) ?? null;
+    } catch (err: any) {
+      console.error('[briefingHistory:get]', err.message);
+      return null;
+    }
+  });
+}

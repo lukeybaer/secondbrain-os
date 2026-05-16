@@ -14,6 +14,7 @@ import Backups from './pages/Backups';
 import Studio from './pages/Studio';
 import TimeMachine from './pages/TimeMachine';
 import Briefing from './pages/Briefing';
+import BriefingHistory from './pages/BriefingHistory';
 import ClaudeChatOverlay from './components/ClaudeChatOverlay';
 import ToastProvider, { useToast } from './components/ToastProvider';
 import OnboardingWizard from './components/OnboardingWizard';
@@ -71,6 +72,7 @@ class ErrorBoundary extends React.Component<
 
 type Page =
   | 'briefing'
+  | 'briefing-history'
   | 'chat'
   | 'import'
   | 'conversations'
@@ -88,6 +90,7 @@ type Page =
 
 const NAV_ITEMS: { id: Page; label: string; hint: string }[] = [
   { id: 'briefing', label: 'Briefing', hint: 'Daily executive briefing (last 3 days, right-click to dispatch)' },
+  { id: 'briefing-history', label: 'Briefing Archive', hint: 'Browse past generated briefings from the SQLite database' },
   { id: 'chat', label: 'Chat', hint: 'Ask your meetings anything' },
   { id: 'import', label: 'Import', hint: 'Fetch & process from Otter.ai' },
   { id: 'conversations', label: 'Conversations', hint: 'Browse your library' },
@@ -325,6 +328,9 @@ function AppContent() {
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         <div style={show('briefing')}>
           <Briefing />
+        </div>
+        <div style={show('briefing-history')}>
+          <BriefingHistory />
         </div>
         <div style={show('chat')}>
           <Chat onConversationSaved={refreshCount} />

@@ -64,7 +64,12 @@ function getBaseUrl(): string {
 
 // ── Session registry helpers ──────────────────────────────────────────────────
 
+/**
+ * Register a new Claude session in the EC2 session registry.
+ * Returns `null` silently when EC2 is not configured.
+ */
 async function registerSession(topic: string): Promise<string | null> {
+  if (!hasValidBaseUrl()) return null;
   try {
     const base = getBaseUrl();
     const res = await fetch(`${base}/sessions`, {
@@ -81,7 +86,12 @@ async function registerSession(topic: string): Promise<string | null> {
   }
 }
 
+/**
+ * Mark a session as complete in the EC2 registry.
+ * No-ops silently when EC2 is not configured.
+ */
 async function completeSession(sessionId: string): Promise<void> {
+  if (!hasValidBaseUrl()) return;
   try {
     const base = getBaseUrl();
     await fetch(`${base}/sessions/${sessionId}`, {
@@ -95,7 +105,25 @@ async function completeSession(sessionId: string): Promise<void> {
 
 // ── EC2 command queue helpers ─────────────────────────────────────────────────
 
+/**
+ * Returns true when `ec2BaseUrl` is configured and looks like an absolute URL.
+ * All EC2 fetch helpers call this first — if the URL is not configured yet
+ * (fresh install, Settings not filled in) we skip the request silently instead
+ * of crashing with ERR_INVALID_URL on every poll tick.
+ */
+function hasValidBaseUrl(): boolean {
+  const base = getBaseUrl();
+  return base.startsWith("http://") || base.startsWith("https://");
+}
+
+/**
+ * Poll EC2 for the next pending command.
+ * Returns `null` immediately (without fetching) when `ec2BaseUrl` is not set.
+ */
 async function fetchPendingCommand(): Promise<PendingCommand | null> {
+  // Guard: skip silently until the user configures ec2BaseUrl in Settings.
+  if (!hasValidBaseUrl()) return null;
+
   const base = getBaseUrl();
   const res = await fetch(`${base}/commands/pending`, { signal: AbortSignal.timeout(8_000) });
   if (res.status === 204 || res.status === 404) return null;
@@ -105,7 +133,9 @@ async function fetchPendingCommand(): Promise<PendingCommand | null> {
   return data as PendingCommand;
 }
 
+/** Claim a command on EC2 so other workers don't double-process it. */
 async function claimCommand(id: string): Promise<void> {
+  if (!hasValidBaseUrl()) return;
   const base = getBaseUrl();
   await fetch(`${base}/commands/${id}/claim`, {
     method: "POST",
@@ -113,7 +143,9 @@ async function claimCommand(id: string): Promise<void> {
   });
 }
 
+/** Report a command result back to EC2. */
 async function completeCommand(id: string, result: string, success: boolean): Promise<void> {
+  if (!hasValidBaseUrl()) return;
   const base = getBaseUrl();
   await fetch(`${base}/commands/${id}/complete`, {
     method: "POST",

@@ -779,6 +779,41 @@ export async function sendDailyBriefing(): Promise<void> {
     // this file and in health-self-heal.js; those are NOT briefings.
     void msg1Lines; void msg2Lines; void msg3Lines; void msg4Lines;
 
+    // ── Persist briefing to SQLite history ──────────────────────────────────
+    try {
+      const fullMarkdown = [
+        `# Daily Briefing — ${friendlyDate()}`,
+        '',
+        msg1Lines.join('\n'),
+        '',
+        msg2Lines.join('\n'),
+        '',
+        msg3Lines.join('\n'),
+        '',
+        msg4Lines.join('\n'),
+      ].join('\n');
+
+      const dateKey = todayStamp();
+      const wordCount = fullMarkdown.split(/\s+/).filter(Boolean).length;
+      const sectionCount = [msg1Lines, msg2Lines, msg3Lines, msg4Lines].filter(
+        (s) => s.length > 0,
+      ).length;
+
+      const { upsertBriefingHistory } = await import('./database-sqlite');
+      upsertBriefingHistory({
+        id: dateKey,
+        date: dateKey,
+        generated_at: new Date().toISOString(),
+        raw_markdown: fullMarkdown,
+        section_count: sectionCount,
+        word_count: wordCount,
+        delivered: false, // Telegram send disabled by policy
+      });
+      console.log(`[briefing] saved to SQLite history (${wordCount} words)`);
+    } catch (histErr) {
+      console.warn('[briefing] failed to save history to SQLite:', histErr);
+    }
+
     writeFlag(FLAG);
     console.log('[briefing] daily briefing rendered; Telegram send disabled by policy');
 

@@ -5,7 +5,7 @@
   "main": "out/main/index.js",
   "scripts": {
     "predev": "node -e \"const fs=require('fs'),p=require('path'),d=p.join(process.env.APPDATA||'','secondbrain');['SingletonLock','SingletonCookie','SingletonSocket'].forEach(f=>{try{fs.unlinkSync(p.join(d,f))}catch{}});console.log('[predev] singleton locks cleared')\"",
-    "dev": "node -e \"const c=process.cwd().replace(/\\\\/g,'/');if(c.includes('.claude/worktrees')){console.error('\\n' + '='.repeat(60) + '\\nFATAL: npm run dev must be run from the MAIN REPO\\nYou are in: ' + c + '\\nRun from: ${SECONDBRAIN_ROOT:-/path/to/secondbrain}\\n' + '='.repeat(60));process.exit(1)}\" && electron-vite dev",
+    "dev": "node scripts/check-dev-env.js && electron-vite dev",
     "build": "electron-vite build",
     "dist": "npm run build && electron-packager . secondbrain --platform=win32 --arch=x64 --out=dist-pkg --overwrite --app-bundle-id=com.secondbrain.app --ignore=\"node_modules|src|\\.git|dist-pkg|dist$\" --electron-version=28.3.3",
     "preview": "electron-vite preview",
