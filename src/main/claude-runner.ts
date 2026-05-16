@@ -159,6 +159,7 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       if (!child.stdin) {
+        child.kill('SIGTERM');
         settle({ output: 'Process error: stdin not available', success: false, exitCode: -1 });
         return;
       }
@@ -277,7 +278,7 @@ export async function runClaudeCodeAndSummarize(
       ],
     });
     const block = msg.content[0];
-    if (block.type === 'text') {
+    if (block?.type === 'text') {
       summary = block.text.trim();
     }
   } catch (err) {
