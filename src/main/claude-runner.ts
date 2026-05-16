@@ -40,7 +40,7 @@ import Anthropic from '@anthropic-ai/sdk';
   }
 })();
 
-const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
+const DEFAULT_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS) || 300_000;
 
 const USERNAME = process.env.USERNAME || process.env.USER || process.env.LOGNAME || os.userInfo().username;
 
@@ -206,7 +206,8 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
   });
 }
 
-const CLAUDE_MODEL = 'claude-sonnet-4-6';
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+const CLAUDE_SUMMARIZE_MODEL = process.env.CLAUDE_SUMMARIZE_MODEL || 'claude-haiku-4-5-20251001';
 
 /** Spawn a fresh claude -p session */
 export function runClaudeCode(prompt: string, options?: RunOptions): Promise<RunResult> {
@@ -265,7 +266,7 @@ export async function runClaudeCodeAndSummarize(
   try {
     const anthropic = new Anthropic();
     const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: CLAUDE_SUMMARIZE_MODEL,
       max_tokens: 256,
       messages: [
         {
