@@ -4,6 +4,9 @@
 // Binary files (screenshots, audio) live in S3 , only paths/keys stored here.
 
 import { getDb } from './database-sqlite';
+import * as fs from 'fs';
+import type { TimeMachineActivityCluster, TimeMachineStorageForecast } from './timemachine-types';
+import { computeStorageForecast } from './timemachine-analytics';
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -59,6 +62,11 @@ export interface TmStorageStats {
   todayConversations: number;
 }
 
+export type TmActivityCluster = Omit<TimeMachineActivityCluster, 'representativeFrame'> & {
+  representativeFrame: TmFrame | null;
+  frames?: TmFrame[];
+};
+
 // ─── Frame Queries ──────────────────────────────────────────────────────
 
 export function insertFrame(
@@ -97,6 +105,20 @@ export function getFramesInRange(start: string, end: string, limit = 200): TmFra
     SELECT * FROM tm_frames
     WHERE timestamp >= ? AND timestamp <= ? AND is_duplicate = 0
     ORDER BY timestamp DESC
+    LIMIT ?
+  `,
+    )
+    .all(start, end, limit) as TmFrame[];
+}
+
+export function getFramesInRangeAscending(start: string, end: string, limit = 1000): TmFrame[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `
+    SELECT * FROM tm_frames
+    WHERE timestamp >= ? AND timestamp <= ? AND is_duplicate = 0
+    ORDER BY timestamp ASC
     LIMIT ?
   `,
     )
@@ -311,6 +333,117 @@ export function getStorageStats(): TmStorageStats {
     todayFrames,
     todayConversations: todayConvs,
   };
+}
+
+export function getStorageForecast(config: {
+  captureIntervalMs: number;
+  retentionScreenshotDays: number;
+}): TimeMachineStorageForecast {
+  const db = getDb();
+  const frames = db
+    .prepare(
+      `
+    SELECT file_size, is_duplicate, local_path
+    FROM tm_frames
+  `,
+    )
+    .all() as { file_size: number; is_duplicate: number; local_path: string | null }[];
+  const audioSegments = (
+    db.prepare(`SELECT local_path FROM tm_audio_segments`).all() as { local_path: string | null }[]
+  ).map((segment) => ({
+    ...segment,
+    file_size:
+      segment.local_path && fs.existsSync(segment.local_path)
+        ? fs.statSync(segment.local_path).size
+        : 0,
+  }));
+
+  return computeStorageForecast({
+    frames,
+    audioSegments,
+    captureIntervalMs: config.captureIntervalMs,
+    retentionScreenshotDays: config.retentionScreenshotDays,
+  });
+}
+
+function topOcrTerms(frames: TmFrame[], count: number): string[] {
+  const stopWords = new Set([
+    'the',
+    'and',
+    'for',
+    'that',
+    'this',
+    'with',
+    'you',
+    'are',
+    'from',
+    'have',
+    'not',
+    'was',
+  ]);
+  const counts = new Map<string, number>();
+  for (const frame of frames) {
+    const words = frame.ocr_text.toLowerCase().match(/[a-z0-9]{3,}/g) || [];
+    for (const word of words) {
+      if (stopWords.has(word)) continue;
+      counts.set(word, (counts.get(word) || 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, count)
+    .map(([word]) => word);
+}
+
+function toCluster(frames: TmFrame[], index: number, topTermCount: number): TmActivityCluster {
+  const representativeFrame = frames[Math.floor(frames.length / 2)] || null;
+  return {
+    id: `cluster_${frames[0]?.id ?? index}_${frames[frames.length - 1]?.id ?? index}`,
+    start: frames[0]?.timestamp || '',
+    end: frames[frames.length - 1]?.timestamp || '',
+    frameCount: frames.length,
+    representativeFrame,
+    topOcrTerms: topOcrTerms(frames, topTermCount),
+    frames,
+  };
+}
+
+export function generateActivityClusters(
+  frames: TmFrame[],
+  idleGapMinutes = 5,
+  topTermCount = 5,
+): TmActivityCluster[] {
+  if (frames.length === 0) return [];
+  const ordered = [...frames].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const clusters: TmActivityCluster[] = [];
+  let current: TmFrame[] = [ordered[0]];
+  const gapMs = Math.max(idleGapMinutes, 0) * 60_000;
+
+  for (let i = 1; i < ordered.length; i++) {
+    const previous = new Date(ordered[i - 1].timestamp).getTime();
+    const next = new Date(ordered[i].timestamp).getTime();
+    if (next - previous > gapMs) {
+      clusters.push(toCluster(current, clusters.length, topTermCount));
+      current = [];
+    }
+    current.push(ordered[i]);
+  }
+
+  if (current.length > 0) clusters.push(toCluster(current, clusters.length, topTermCount));
+  return clusters;
+}
+
+export function getActivityClusters(
+  start: string,
+  end: string,
+  idleGapMinutes = 5,
+  topTermCount = 5,
+): TmActivityCluster[] {
+  return generateActivityClusters(
+    getFramesInRangeAscending(start, end, 2000),
+    idleGapMinutes,
+    topTermCount,
+  );
 }
 
 // ─── Pruning Queries ────────────────────────────────────────────────────

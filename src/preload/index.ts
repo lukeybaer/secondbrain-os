@@ -210,6 +210,9 @@ const api = {
       ipcRenderer.invoke('backups:readFile', id, relativePath),
     queryDb: (id: string, sql: string): Promise<any> =>
       ipcRenderer.invoke('backups:queryDb', id, sql),
+    verify: (id: string): Promise<any> => ipcRenderer.invoke('backups:verify', id),
+    s3Status: (): Promise<any> => ipcRenderer.invoke('backups:s3Status'),
+    security: (id: string): Promise<any> => ipcRenderer.invoke('backups:security', id),
     testRestore: (id: string): Promise<any> => ipcRenderer.invoke('backups:testRestore', id),
     commitRestore: (id: string): Promise<any> => ipcRenderer.invoke('backups:commitRestore', id),
     rollForward: (): Promise<any> => ipcRenderer.invoke('backups:rollForward'),
@@ -267,11 +270,18 @@ const api = {
     createDraft: (post: any): Promise<any> => ipcRenderer.invoke('social:createDraft', post),
     approvePost: (id: string, scheduledFor?: string): Promise<any> =>
       ipcRenderer.invoke('social:approvePost', id, scheduledFor),
+    schedulePost: (id: string, scheduledFor: string): Promise<any> =>
+      ipcRenderer.invoke('social:schedulePost', id, scheduledFor),
+    clearSchedule: (id: string): Promise<any> => ipcRenderer.invoke('social:clearSchedule', id),
     rejectPost: (id: string, note: string): Promise<any> =>
       ipcRenderer.invoke('social:rejectPost', id, note),
     editPost: (id: string, content: string): Promise<any> =>
       ipcRenderer.invoke('social:editPost', id, content),
+    setActiveVariant: (id: string, variantId: string): Promise<any> =>
+      ipcRenderer.invoke('social:setActiveVariant', id, variantId),
     publishPost: (id: string): Promise<any> => ipcRenderer.invoke('social:publishPost', id),
+    exportPost: (id: string, exportNote?: string, exportUrl?: string): Promise<any> =>
+      ipcRenderer.invoke('social:exportPost', id, exportNote, exportUrl),
     trashPost: (id: string): Promise<any> => ipcRenderer.invoke('social:trashPost', id),
     refreshEngagement: (id: string): Promise<any> =>
       ipcRenderer.invoke('social:refreshEngagement', id),
@@ -318,6 +328,10 @@ const api = {
       range: (start: string, end: string): Promise<any[]> =>
         ipcRenderer.invoke('tm:frames:range', start, end),
     },
+    clusters: {
+      range: (start: string, end: string): Promise<any[]> =>
+        ipcRenderer.invoke('tm:clusters:range', start, end),
+    },
     audio: {
       range: (start: string, end: string): Promise<any[]> =>
         ipcRenderer.invoke('tm:audio:range', start, end),
@@ -325,6 +339,7 @@ const api = {
     search: (query: string, limit?: number): Promise<any[]> =>
       ipcRenderer.invoke('tm:search', query, limit),
     stats: (): Promise<any> => ipcRenderer.invoke('tm:stats'),
+    forecast: (): Promise<any> => ipcRenderer.invoke('tm:forecast'),
     prune: (): Promise<any> => ipcRenderer.invoke('tm:prune'),
     screenshot: (
       localPath: string | null,

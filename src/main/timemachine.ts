@@ -4,10 +4,17 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import { app } from 'electron';
 import { spawn, ChildProcess, execFile } from 'child_process';
 import { insertFrame, updateFrameOcr } from './timemachine-db';
+import type {
+  TimeMachineClusteringSettings,
+  TimeMachineDedupeSettings,
+  TimeMachinePrivacySettings,
+} from './timemachine-types';
+import type { ActiveWindowInfo } from './timemachine-privacy';
+import { buildPrivacyDrawboxFilter, decidePrivacyCapture } from './timemachine-privacy';
+import { TimeMachineDedupe } from './timemachine-dedupe';
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -23,6 +30,9 @@ export interface TimeMachineConfig {
   silenceThresholdSeconds: number;
   s3Bucket: string;
   s3Prefix: string;
+  privacy: TimeMachinePrivacySettings;
+  dedupe: TimeMachineDedupeSettings;
+  clustering: TimeMachineClusteringSettings;
 }
 
 export interface TimeMachineStatus {
@@ -32,6 +42,9 @@ export interface TimeMachineStatus {
   lastCaptureAt: string | null;
   audioRecording: boolean;
   conversationsToday: number;
+  privacyActive: boolean;
+  privacyReason: string | null;
+  privacySkipCount: number;
 }
 
 // ─── Paths ──────────────────────────────────────────────────────────────
@@ -78,22 +91,74 @@ const DEFAULT_CONFIG: TimeMachineConfig = {
   silenceThresholdSeconds: 60,
   s3Bucket: '000000000000-secondbrain-backups',
   s3Prefix: 'timemachine',
+  privacy: {
+    zones: [],
+    pauseSchedules: [],
+    excludedApps: [],
+    excludedTitlePatterns: [],
+    excludedDomains: [],
+  },
+  dedupe: {
+    enabled: true,
+    sizeDriftThreshold: 0.05,
+    chunkBytes: 4096,
+    recentWindowSize: 12,
+  },
+  clustering: {
+    idleGapMinutes: 5,
+    topTermCount: 5,
+  },
 };
+
+function mergeConfig(config: Partial<TimeMachineConfig>): TimeMachineConfig {
+  return {
+    ...DEFAULT_CONFIG,
+    ...config,
+    privacy: {
+      ...DEFAULT_CONFIG.privacy,
+      ...(config.privacy || {}),
+    },
+    dedupe: {
+      ...DEFAULT_CONFIG.dedupe,
+      ...(config.dedupe || {}),
+    },
+    clustering: {
+      ...DEFAULT_CONFIG.clustering,
+      ...(config.clustering || {}),
+    },
+  };
+}
 
 export function loadTimeMachineConfig(): TimeMachineConfig {
   try {
     if (fs.existsSync(configPath())) {
-      return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(configPath(), 'utf-8')) };
+      return mergeConfig(JSON.parse(fs.readFileSync(configPath(), 'utf-8')));
     }
   } catch {
     /* ignore */
   }
-  return { ...DEFAULT_CONFIG };
+  return mergeConfig({});
 }
 
 export function saveTimeMachineConfig(config: Partial<TimeMachineConfig>): TimeMachineConfig {
   ensureDir(dataDir());
-  const merged = { ...loadTimeMachineConfig(), ...config };
+  const current = loadTimeMachineConfig();
+  const merged = mergeConfig({
+    ...current,
+    ...config,
+    privacy: {
+      ...current.privacy,
+      ...(config.privacy || {}),
+    },
+    dedupe: {
+      ...current.dedupe,
+      ...(config.dedupe || {}),
+    },
+    clustering: {
+      ...current.clustering,
+      ...(config.clustering || {}),
+    },
+  });
   fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2));
   return merged;
 }
@@ -106,8 +171,19 @@ let captureTimer: ReturnType<typeof setTimeout> | null = null;
 let audioProcess: ChildProcess | null = null;
 let captureCount = 0;
 let lastCaptureAt: string | null = null;
-let lastFrameHash: string | null = null;
-let lastFrameSize = 0;
+let privacyActive = false;
+let privacyReason: string | null = null;
+let privacySkipCount = 0;
+const dedupe = new TimeMachineDedupe(DEFAULT_CONFIG.dedupe);
+
+async function getActiveWindowInfo(): Promise<ActiveWindowInfo | null> {
+  try {
+    const mod = await import('get-windows');
+    return (await mod.activeWindow()) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 // ─── Screenshot Capture ─────────────────────────────────────────────────
 
@@ -120,22 +196,24 @@ async function captureScreenshot(): Promise<{ filePath: string; fileSize: number
   const filePath = path.join(dir, `${timeStr}.jpg`);
 
   const config = loadTimeMachineConfig();
+  const privacyFilter = buildPrivacyDrawboxFilter(config.privacy.zones);
+  const args = [
+    '-f',
+    'gdigrab',
+    '-i',
+    'desktop',
+    '-frames:v',
+    '1',
+    '-q:v',
+    String(config.screenshotQuality),
+  ];
+  if (privacyFilter) args.push('-vf', privacyFilter);
+  args.push('-y', filePath);
 
   return new Promise((resolve) => {
     const proc = spawn(
       'ffmpeg',
-      [
-        '-f',
-        'gdigrab',
-        '-i',
-        'desktop',
-        '-frames:v',
-        '1',
-        '-q:v',
-        String(config.screenshotQuality),
-        '-y',
-        filePath,
-      ],
+      args,
       { stdio: ['pipe', 'pipe', 'pipe'] },
     );
 
@@ -159,29 +237,6 @@ async function captureScreenshot(): Promise<{ filePath: string; fileSize: number
       resolve(null);
     });
   });
-}
-
-function isDuplicate(filePath: string, fileSize: number): boolean {
-  // Quick check: if file size differs by more than 5%, it's different
-  if (lastFrameSize > 0 && Math.abs(fileSize - lastFrameSize) / lastFrameSize > 0.05) {
-    return false;
-  }
-
-  // Hash first 4KB for fast comparison
-  try {
-    const fd = fs.openSync(filePath, 'r');
-    const buf = Buffer.alloc(4096);
-    const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
-    fs.closeSync(fd);
-    const hash = crypto.createHash('md5').update(buf.subarray(0, bytesRead)).digest('hex');
-
-    if (hash === lastFrameHash) return true;
-    lastFrameHash = hash;
-    lastFrameSize = fileSize;
-    return false;
-  } catch {
-    return false;
-  }
 }
 
 // ─── OCR via Tesseract ──────────────────────────────────────────────────
@@ -328,13 +383,29 @@ async function captureOnce(): Promise<void> {
   const now = new Date();
   const timestamp = now.toISOString();
   const dateStr = now.toISOString().slice(0, 10);
+  const activeWindow = await getActiveWindowInfo();
+  const privacyDecision = decidePrivacyCapture(config.privacy, activeWindow, now);
+
+  privacyActive = !privacyDecision.allowed;
+  privacyReason = privacyDecision.reason;
+
+  if (!privacyDecision.allowed) {
+    privacySkipCount++;
+    await stopAudioCapture();
+    return;
+  }
+
+  if (config.captureAudio && !audioProcess) {
+    await startAudioCapture();
+  }
 
   // Take screenshot (fast , ~200ms)
   const result = await captureScreenshot();
   if (!result) return;
 
   const { filePath, fileSize } = result;
-  const dup = isDuplicate(filePath, fileSize);
+  dedupe.updateSettings(config.dedupe);
+  const dup = dedupe.check(filePath, fileSize);
 
   if (dup) {
     // Duplicate , delete immediately, insert minimal record
@@ -415,8 +486,11 @@ export async function startTimeMachine(): Promise<{ success: boolean; error?: st
     running = true;
     paused = false;
     captureCount = 0;
-    lastFrameHash = null;
-    lastFrameSize = 0;
+    privacyActive = false;
+    privacyReason = null;
+    privacySkipCount = 0;
+    dedupe.updateSettings(loadTimeMachineConfig().dedupe);
+    dedupe.reset();
 
     console.log('[timemachine] started');
 
@@ -468,5 +542,8 @@ export function getTimeMachineStatus(): TimeMachineStatus {
     lastCaptureAt,
     audioRecording: audioProcess !== null,
     conversationsToday: 0, // Updated by conversation detector
+    privacyActive,
+    privacyReason,
+    privacySkipCount,
   };
 }

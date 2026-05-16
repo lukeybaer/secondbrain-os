@@ -221,7 +221,7 @@ describe("commitRestore + rollForward", () => {
 });
 
 describe("testRestore", () => {
-  it("extracts snapshot to temp dir without touching live data", async () => {
+  it("returns preview fields and extracts snapshot without touching live data", async () => {
     const meta = await createSnapshot();
 
     // Modify live data
@@ -229,8 +229,14 @@ describe("testRestore", () => {
     fs.writeFileSync(projPath, JSON.stringify({ id: "proj-001", name: "Modified" }));
 
     // Test restore
-    const tempDir = await testRestore(meta.id);
+    const preview = await testRestore(meta.id);
+    const tempDir = preview.tempPath;
     expect(fs.existsSync(tempDir)).toBe(true);
+    expect(preview.fileCount).toBeGreaterThan(0);
+    expect(preview.dataBytes).toBeGreaterThan(0);
+    expect(preview.hasConfig).toBe(true);
+    expect(preview.hasDatabase).toBe(false);
+    expect(preview.warnings).toContain("data/secondbrain.db is not included in this snapshot.");
 
     // Temp dir has original data
     const tempProj = JSON.parse(fs.readFileSync(path.join(tempDir, "data", "projects", "proj-001.json"), "utf-8"));

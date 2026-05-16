@@ -1,262 +1,230 @@
-/**
- * Tests for social posts content pipeline , CRUD, approval workflow,
- * rejection with learnings, and publishing.
- */
-
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-
-// ── Test directory setup ────────────────────────────────────────────────────
+import {
+  approvePost,
+  clearSchedule,
+  createDraft,
+  editPost,
+  exportPost,
+  getPosts,
+  getSocialPostPaths,
+  publishDueScheduledSocialPosts,
+  publishPost,
+  readSocialQueue,
+  rejectPost,
+  schedulePost,
+  setActiveVariant,
+} from '../social-posts';
 
 let testRoot: string;
-let socialDir: string;
-let queuePath: string;
-let learningsPath: string;
 
 beforeEach(() => {
   testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'social-test-'));
-  socialDir = path.join(testRoot, 'content-review', 'social-posts');
-  fs.mkdirSync(socialDir, { recursive: true });
-  queuePath = path.join(socialDir, 'queue.json');
-  learningsPath = path.join(socialDir, 'learnings.md');
-  fs.writeFileSync(queuePath, '[]');
+  fs.mkdirSync(getSocialPostPaths(testRoot).socialDir, { recursive: true });
 });
 
-afterAll(() => {
-  // Cleanup is best-effort
-  try {
-    if (testRoot) fs.rmSync(testRoot, { recursive: true, force: true });
-  } catch {
-    /* ok */
-  }
+afterEach(() => {
+  fs.rmSync(testRoot, { recursive: true, force: true });
 });
 
-// ── Helpers (mirror the IPC handler logic) ──────────────────────────────────
-
-function readQueue(): any[] {
-  try {
-    return JSON.parse(fs.readFileSync(queuePath, 'utf8'));
-  } catch {
-    return [];
-  }
-}
-
-function writeQueue(queue: any[]): void {
-  fs.writeFileSync(queuePath, JSON.stringify(queue, null, 2));
-}
-
-function createDraft(post: { content: string; platform?: string; source_idea?: string }): {
-  success: boolean;
-  post?: any;
-} {
-  const queue = readQueue();
-  const id = `post_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const entry = {
-    id,
-    platform: post.platform || 'x',
-    status: 'pending_approval',
-    content: post.content,
-    source_idea: post.source_idea || '',
-    media_paths: [],
-    created_at: new Date().toISOString(),
-  };
-  queue.push(entry);
-  writeQueue(queue);
-  return { success: true, post: entry };
-}
-
-function approvePost(id: string): { success: boolean } {
-  const queue = readQueue();
-  const post = queue.find((p: any) => p.id === id);
-  if (!post) return { success: false };
-  post.status = 'approved';
-  post.approved_at = new Date().toISOString();
-  writeQueue(queue);
-  return { success: true };
-}
-
-function rejectPost(id: string, note: string): { success: boolean } {
-  const queue = readQueue();
-  const post = queue.find((p: any) => p.id === id);
-  if (!post) return { success: false };
-  if (!note) {
-    post.status = 'trashed';
-  } else {
-    post.status = 'rejected';
-    post.rejection_note = note;
-    const date = new Date().toISOString().split('T')[0];
-    const line = `- [${date}] **Rejected** (${post.platform}): ${note}\n`;
-    if (!fs.existsSync(learningsPath)) {
-      fs.writeFileSync(
-        learningsPath,
-        '# Social Post Learnings\n\n## Rejection Feedback\n\n',
-        'utf8',
-      );
-    }
-    fs.appendFileSync(learningsPath, line, 'utf8');
-  }
-  writeQueue(queue);
-  return { success: true };
-}
-
-function editPost(id: string, content: string): { success: boolean } {
-  const queue = readQueue();
-  const post = queue.find((p: any) => p.id === id);
-  if (!post) return { success: false };
-  post.content = content;
-  writeQueue(queue);
-  return { success: true };
-}
-
-function trashPost(id: string): { success: boolean } {
-  const queue = readQueue();
-  const post = queue.find((p: any) => p.id === id);
-  if (!post) return { success: false };
-  post.status = 'trashed';
-  writeQueue(queue);
-  return { success: true };
-}
-
-// ── Tests ───────────────────────────────────────────────────────────────────
-
-describe('Social Posts , Content Pipeline', () => {
-  describe('createDraft', () => {
-    it('creates a draft with pending_approval status', () => {
-      const result = createDraft({
-        content: 'AI is transforming how we work. Here are 3 things I learned this week.',
-      });
-      expect(result.success).toBe(true);
-      expect(result.post).toBeDefined();
-      expect(result.post!.status).toBe('pending_approval');
-      expect(result.post!.platform).toBe('x');
-      expect(result.post!.content).toContain('AI is transforming');
-
-      const queue = readQueue();
-      expect(queue).toHaveLength(1);
-      expect(queue[0].id).toBe(result.post!.id);
+describe('Social Posts domain logic', () => {
+  it('creates a draft with variants, active variant, and history', () => {
+    const result = createDraft(testRoot, {
+      content: 'AI is transforming how we work.',
+      platform: 'x',
     });
 
-    it('supports custom platform', () => {
-      const result = createDraft({ content: 'LinkedIn post', platform: 'linkedin' });
-      expect(result.post!.platform).toBe('linkedin');
-    });
-
-    it('stores source idea', () => {
-      const result = createDraft({
-        content: 'Polished tweet text',
-        source_idea: 'the owner voice note: AI stuff this week was crazy',
-      });
-      expect(result.post!.source_idea).toContain('voice note');
-    });
+    expect(result.success).toBe(true);
+    expect(result.post?.status).toBe('pending_approval');
+    expect(result.post?.variants).toHaveLength(1);
+    expect(result.post?.active_variant_id).toBe(result.post?.variants[0].id);
+    expect(result.post?.history[0].type).toBe('create');
   });
 
-  describe('approvePost', () => {
-    it('changes status to approved with timestamp', () => {
-      const { post } = createDraft({ content: 'Test post' });
-      const result = approvePost(post!.id);
-      expect(result.success).toBe(true);
+  it('edits by creating a new active variant and preserving the old variant', () => {
+    const { post } = createDraft(testRoot, { content: 'Original text' });
+    const originalVariantId = post!.active_variant_id;
 
-      const queue = readQueue();
-      expect(queue[0].status).toBe('approved');
-      expect(queue[0].approved_at).toBeDefined();
-    });
+    const edited = editPost(testRoot, post!.id, 'Edited text with more detail');
+    const queue = readSocialQueue(testRoot);
 
-    it('returns failure for non-existent post', () => {
-      const result = approvePost('nonexistent');
-      expect(result.success).toBe(false);
-    });
+    expect(edited.success).toBe(true);
+    expect(queue[0].content).toBe('Edited text with more detail');
+    expect(queue[0].variants).toHaveLength(2);
+    expect(queue[0].active_variant_id).not.toBe(originalVariantId);
+    expect(queue[0].variants.find((variant) => variant.id === originalVariantId)?.content).toBe(
+      'Original text',
+    );
   });
 
-  describe('rejectPost', () => {
-    it('trashes post when no note is provided', () => {
-      const { post } = createDraft({ content: 'Bad post' });
-      rejectPost(post!.id, '');
+  it('switches the active variant before approval', () => {
+    const { post } = createDraft(testRoot, { content: 'Original text' });
+    editPost(testRoot, post!.id, 'Edited text');
+    const oldVariantId = readSocialQueue(testRoot)[0].variants[0].id;
 
-      const queue = readQueue();
-      expect(queue[0].status).toBe('trashed');
-    });
+    const result = setActiveVariant(testRoot, post!.id, oldVariantId);
 
-    it('marks as rejected and appends to learnings when note provided', () => {
-      const { post } = createDraft({ content: 'Needs work' });
-      rejectPost(post!.id, 'Too generic, needs a specific personal anecdote');
-
-      const queue = readQueue();
-      expect(queue[0].status).toBe('rejected');
-      expect(queue[0].rejection_note).toContain('Too generic');
-
-      // Check learnings file was updated
-      const learnings = fs.readFileSync(learningsPath, 'utf8');
-      expect(learnings).toContain('Too generic');
-      expect(learnings).toContain('Rejected');
-    });
+    expect(result.success).toBe(true);
+    expect(readSocialQueue(testRoot)[0].content).toBe('Original text');
   });
 
-  describe('editPost', () => {
-    it('updates content in queue', () => {
-      const { post } = createDraft({ content: 'Original text' });
-      editPost(post!.id, 'Edited text with more detail');
+  it('approves immediately and records approval history', () => {
+    const { post } = createDraft(testRoot, { content: 'Test post' });
 
-      const queue = readQueue();
-      expect(queue[0].content).toBe('Edited text with more detail');
-    });
+    approvePost(testRoot, post!.id);
+    const updated = readSocialQueue(testRoot)[0];
+
+    expect(updated.status).toBe('approved');
+    expect(updated.approved_at).toBeDefined();
+    expect(updated.history.some((entry) => entry.type === 'approve')).toBe(true);
   });
 
-  describe('trashPost', () => {
-    it('marks post as trashed', () => {
-      const { post } = createDraft({ content: 'Unwanted post' });
-      trashPost(post!.id);
+  it('approves with a schedule and stores scheduled_for', () => {
+    const { post } = createDraft(testRoot, { content: 'Scheduled post' });
+    const scheduledFor = new Date(Date.now() + 60_000).toISOString();
 
-      const queue = readQueue();
-      expect(queue[0].status).toBe('trashed');
-    });
+    approvePost(testRoot, post!.id, scheduledFor);
+    const updated = readSocialQueue(testRoot)[0];
+
+    expect(updated.status).toBe('approved');
+    expect(updated.scheduled_for).toBe(scheduledFor);
+    expect(updated.history.some((entry) => entry.type === 'schedule')).toBe(true);
   });
 
-  describe('full workflow', () => {
-    it('create → edit → approve lifecycle', () => {
-      const { post } = createDraft({
-        content: 'Draft from voice note',
-        source_idea: 'the owner said: building my own EA is wild',
-      });
+  it('reschedules and records old/new schedule metadata', () => {
+    const { post } = createDraft(testRoot, { content: 'Reschedule post' });
+    const first = new Date(Date.now() + 60_000).toISOString();
+    const second = new Date(Date.now() + 120_000).toISOString();
+    approvePost(testRoot, post!.id, first);
 
-      editPost(
-        post!.id,
-        'Building my own AI executive assistant taught me 3 things about automation that no blog post covers.',
-      );
-      approvePost(post!.id);
+    schedulePost(testRoot, post!.id, second);
+    const updated = readSocialQueue(testRoot)[0];
+    const history = updated.history.find((entry) => entry.type === 'reschedule');
 
-      const queue = readQueue();
-      expect(queue[0].status).toBe('approved');
-      expect(queue[0].content).toContain('3 things about automation');
-      expect(queue[0].approved_at).toBeDefined();
+    expect(updated.scheduled_for).toBe(second);
+    expect(history?.metadata?.old_scheduled_for).toBe(first);
+    expect(history?.metadata?.scheduled_for).toBe(second);
+  });
+
+  it('clears schedule from an approved post', () => {
+    const { post } = createDraft(testRoot, { content: 'Clear schedule post' });
+    approvePost(testRoot, post!.id, new Date(Date.now() + 60_000).toISOString());
+
+    clearSchedule(testRoot, post!.id);
+
+    expect(readSocialQueue(testRoot)[0].scheduled_for).toBeUndefined();
+  });
+
+  it('rejects with note, appends Markdown learning, JSONL learning, and history', () => {
+    const { post } = createDraft(testRoot, { content: 'Needs work' });
+
+    rejectPost(testRoot, post!.id, 'Too generic, needs a specific personal anecdote');
+    const paths = getSocialPostPaths(testRoot);
+    const updated = readSocialQueue(testRoot)[0];
+
+    expect(updated.status).toBe('rejected');
+    expect(updated.rejection_note).toContain('Too generic');
+    expect(updated.history.some((entry) => entry.type === 'reject')).toBe(true);
+    expect(fs.readFileSync(paths.learningsPath, 'utf8')).toContain('Too generic');
+    expect(JSON.parse(fs.readFileSync(paths.learningsJsonlPath, 'utf8').trim()).type).toBe(
+      'rejection',
+    );
+  });
+
+  it('trashes without note and records history', () => {
+    const { post } = createDraft(testRoot, { content: 'Bad post' });
+
+    rejectPost(testRoot, post!.id, '');
+    const updated = readSocialQueue(testRoot)[0];
+
+    expect(updated.status).toBe('trashed');
+    expect(updated.history.some((entry) => entry.type === 'trash')).toBe(true);
+  });
+
+  it('publishes X posts and records tweet metadata and history', async () => {
+    const { post } = createDraft(testRoot, { content: 'Tweet text', platform: 'x' });
+    approvePost(testRoot, post!.id);
+    const publishTweet = vi.fn(async () => ({
+      success: true,
+      tweetId: '123',
+      postUrl: 'https://x.com/Channel17/status/123',
+    }));
+
+    const result = await publishPost(testRoot, post!.id, publishTweet);
+    const updated = readSocialQueue(testRoot)[0];
+
+    expect(result.success).toBe(true);
+    expect(updated.status).toBe('posted');
+    expect(updated.tweet_id).toBe('123');
+    expect(updated.post_url).toContain('/123');
+    expect(updated.history.some((entry) => entry.type === 'publish')).toBe(true);
+  });
+
+  it('exports LinkedIn posts without calling X publishing', () => {
+    const { post } = createDraft(testRoot, { content: 'LinkedIn text', platform: 'linkedin' });
+    approvePost(testRoot, post!.id);
+    const publishTweet = vi.fn();
+
+    const result = exportPost(testRoot, post!.id);
+    const updated = readSocialQueue(testRoot)[0];
+
+    expect(result.success).toBe(true);
+    expect(updated.status).toBe('posted');
+    expect(updated.exported_at).toBeDefined();
+    expect(updated.history.some((entry) => entry.type === 'export')).toBe(true);
+    expect(publishTweet).not.toHaveBeenCalled();
+  });
+
+  it('returns media warnings for missing paths without blocking approval', () => {
+    const missingPath = path.join(testRoot, 'missing.png');
+    const { post } = createDraft(testRoot, {
+      content: 'Post with media',
+      media_paths: [missingPath],
     });
 
-    it('create → reject → feedback loop', () => {
-      const { post } = createDraft({ content: 'Generic AI post' });
-      rejectPost(post!.id, 'This could be from any AI account. Add personal experience.');
+    approvePost(testRoot, post!.id);
+    const updated = readSocialQueue(testRoot)[0];
 
-      const queue = readQueue();
-      expect(queue[0].status).toBe('rejected');
+    expect(updated.status).toBe('approved');
+    expect(updated.media_validation?.[0].warning).toBe('Missing local media file');
+  });
 
-      const learnings = fs.readFileSync(learningsPath, 'utf8');
-      expect(learnings).toContain('personal experience');
-    });
+  it('scheduler publishes only due approved X posts and ignores LinkedIn posts', async () => {
+    const due = new Date(Date.now() - 60_000).toISOString();
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const xDue = createDraft(testRoot, { content: 'Due X', platform: 'x' }).post!;
+    const xFuture = createDraft(testRoot, { content: 'Future X', platform: 'x' }).post!;
+    const linkedInDue = createDraft(testRoot, {
+      content: 'Due LinkedIn',
+      platform: 'linkedin',
+    }).post!;
+    approvePost(testRoot, xDue.id, due);
+    approvePost(testRoot, xFuture.id, future);
+    approvePost(testRoot, linkedInDue.id, due);
+    const publishTweet = vi.fn(async () => ({
+      success: true,
+      tweetId: 'scheduled',
+      postUrl: 'https://x.com/Channel17/status/scheduled',
+    }));
 
-    it('multiple posts in queue at different statuses', () => {
-      const a = createDraft({ content: 'Post A' });
-      const b = createDraft({ content: 'Post B' });
-      const c = createDraft({ content: 'Post C' });
+    const result = await publishDueScheduledSocialPosts(testRoot, publishTweet);
+    const queue = readSocialQueue(testRoot);
 
-      approvePost(a.post!.id);
-      rejectPost(b.post!.id, 'Too short');
-      // C stays pending
+    expect(result.published).toBe(1);
+    expect(publishTweet).toHaveBeenCalledTimes(1);
+    expect(queue.find((post) => post.id === xDue.id)?.status).toBe('posted');
+    expect(queue.find((post) => post.id === xFuture.id)?.status).toBe('approved');
+    expect(queue.find((post) => post.id === linkedInDue.id)?.status).toBe('approved');
+  });
 
-      const queue = readQueue();
-      const statuses = queue.map((p: any) => p.status);
-      expect(statuses).toContain('approved');
-      expect(statuses).toContain('rejected');
-      expect(statuses).toContain('pending_approval');
-    });
+  it('getPosts includes compact learning records for matching posts', () => {
+    const { post } = createDraft(testRoot, { content: 'Learning post' });
+    rejectPost(testRoot, post!.id, 'Needs a sharper opening');
+
+    const posts = getPosts(testRoot);
+
+    expect(posts[0].learnings?.[0].note).toContain('sharper opening');
   });
 });

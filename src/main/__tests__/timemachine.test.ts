@@ -33,6 +33,8 @@ vi.mock('../config', () => ({
 }));
 
 vi.mock('../timemachine-db', () => ({
+  insertFrame: vi.fn(),
+  updateFrameOcr: vi.fn(),
   insertConversation: vi.fn(),
   getUnprocessedConversations: vi.fn(() => []),
   markConversationProcessed: vi.fn(),
@@ -67,6 +69,16 @@ describe('TimeMachine Config', () => {
     expect(config.silenceThresholdSeconds).toBe(60);
     expect(config.s3Bucket).toBe('000000000000-secondbrain-backups');
     expect(config.s3Prefix).toBe('timemachine');
+    expect(config.privacy).toEqual({
+      zones: [],
+      pauseSchedules: [],
+      excludedApps: [],
+      excludedTitlePatterns: [],
+      excludedDomains: [],
+    });
+    expect(config.dedupe.enabled).toBe(true);
+    expect(config.dedupe.recentWindowSize).toBe(12);
+    expect(config.clustering.idleGapMinutes).toBe(5);
   });
 
   it('saves and loads config', () => {
@@ -85,6 +97,44 @@ describe('TimeMachine Config', () => {
     expect(after.s3Prefix).toBe('custom/tm'); // preserved from first save
     expect(after.retentionScreenshotDays).toBe(14); // new value
     expect(after.captureIntervalMs).toBe(3000); // default preserved
+  });
+
+  it('preserves nested Time Machine config on partial saves', () => {
+    saveTimeMachineConfig({
+      privacy: {
+        zones: [],
+        pauseSchedules: [],
+        excludedApps: ['Slack'],
+        excludedTitlePatterns: ['private'],
+        excludedDomains: ['example.com'],
+      },
+      dedupe: {
+        enabled: true,
+        sizeDriftThreshold: 0.1,
+        chunkBytes: 2048,
+        recentWindowSize: 3,
+      },
+    });
+
+    const after = saveTimeMachineConfig({
+      privacy: {
+        pauseSchedules: [
+          {
+            id: 'p1',
+            label: 'Night',
+            days: [1],
+            startTime: '22:00',
+            endTime: '06:00',
+            enabled: true,
+          },
+        ],
+      } as any,
+    });
+
+    expect(after.privacy.excludedApps).toEqual(['Slack']);
+    expect(after.privacy.excludedDomains).toEqual(['example.com']);
+    expect(after.privacy.pauseSchedules).toHaveLength(1);
+    expect(after.dedupe.chunkBytes).toBe(2048);
   });
 
   it('handles boolean toggles correctly', () => {

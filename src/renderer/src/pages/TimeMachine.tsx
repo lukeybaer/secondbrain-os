@@ -9,6 +9,9 @@ interface TmStatus {
   lastCaptureAt: string | null;
   audioRecording: boolean;
   conversationsToday: number;
+  privacyActive: boolean;
+  privacyReason: string | null;
+  privacySkipCount: number;
 }
 
 interface TmConfig {
@@ -23,6 +26,23 @@ interface TmConfig {
   silenceThresholdSeconds: number;
   s3Bucket: string;
   s3Prefix: string;
+  privacy: {
+    zones: { id: string; label: string; x: number; y: number; width: number; height: number; enabled: boolean }[];
+    pauseSchedules: { id: string; label: string; days: number[]; startTime: string; endTime: string; enabled: boolean }[];
+    excludedApps: string[];
+    excludedTitlePatterns: string[];
+    excludedDomains: string[];
+  };
+  dedupe: {
+    enabled: boolean;
+    sizeDriftThreshold: number;
+    chunkBytes: number;
+    recentWindowSize: number;
+  };
+  clustering: {
+    idleGapMinutes: number;
+    topTermCount: number;
+  };
 }
 
 interface TmFrame {
@@ -50,7 +70,27 @@ interface TmStats {
   todayConversations: number;
 }
 
+interface TmForecast {
+  averageScreenshotBytes: number;
+  screenshotsPerDay: number;
+  estimatedScreenshotRetentionBytes: number;
+  existingLocalScreenshotBytes: number;
+  existingLocalAudioBytes: number;
+  estimatedRetainedTotalBytes: number;
+}
+
+interface TmCluster {
+  id: string;
+  start: string;
+  end: string;
+  frameCount: number;
+  representativeFrame: TmFrame | null;
+  topOcrTerms: string[];
+  frames?: TmFrame[];
+}
+
 type Tab = 'timeline' | 'search' | 'settings';
+type TimelineView = 'frames' | 'clusters';
 
 // ─── Time Ranges ────────────────────────────────────────────────────────
 
@@ -176,8 +216,11 @@ export default function TimeMachine() {
   const [status, setStatus] = useState<TmStatus | null>(null);
   const [config, setConfig] = useState<TmConfig | null>(null);
   const [stats, setStats] = useState<TmStats | null>(null);
+  const [forecast, setForecast] = useState<TmForecast | null>(null);
   const [frames, setFrames] = useState<TmFrame[]>([]);
+  const [clusters, setClusters] = useState<TmCluster[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(-1); // index into frames[]
+  const [timelineView, setTimelineView] = useState<TimelineView>('frames');
   const [fullScreenUrl, setFullScreenUrl] = useState<string | null>(null);
   const [thumbUrls, setThumbUrls] = useState<Record<number, string>>(thumbCache);
   const [stepSize, setStepSize] = useState(TIME_RANGES[4]); // controls arrow step
@@ -302,6 +345,9 @@ export default function TimeMachine() {
     try {
       setStats(await window.api.timemachine.stats());
     } catch {}
+    try {
+      setForecast(await window.api.timemachine.forecast());
+    } catch {}
     loadFrames();
   }
 
@@ -319,6 +365,10 @@ export default function TimeMachine() {
     try {
       const f = await window.api.timemachine.frames.range(start, end);
       setFrames(f || []);
+    } catch {}
+    try {
+      const c = await window.api.timemachine.clusters.range(start, end);
+      setClusters(c || []);
     } catch {}
   }
 
@@ -345,6 +395,9 @@ export default function TimeMachine() {
   async function saveConfig(updates: Partial<TmConfig>) {
     const result = await window.api.timemachine.config.save(updates);
     setConfig(result);
+    try {
+      setForecast(await window.api.timemachine.forecast());
+    } catch {}
   }
 
   async function handleSearch(query: string) {
@@ -381,6 +434,29 @@ export default function TimeMachine() {
     });
   }
 
+  function fmtBytes(bytes: number): string {
+    if (bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    return `${(bytes / 1024 ** idx).toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+  }
+
+  function updatePrivacy(next: Partial<TmConfig['privacy']>) {
+    if (!config) return;
+    saveConfig({ privacy: { ...config.privacy, ...next } } as Partial<TmConfig>);
+  }
+
+  function textList(value: string[]): string {
+    return value.join('\n');
+  }
+
+  function parseTextList(value: string): string[] {
+    return value
+      .split('\n')
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }
+
   // ─── Timeline Tab ───────────────────────────────────────────────────
 
   function renderTimelineTab() {
@@ -405,6 +481,16 @@ export default function TimeMachine() {
             <span style={{ fontSize: 12, color: '#666' }}>
               {stats.todayConversations} conversation{stats.todayConversations !== 1 ? 's' : ''}{' '}
               today
+            </span>
+          )}
+          {status?.privacyActive && (
+            <span style={{ fontSize: 12, color: '#f59e0b' }}>
+              Privacy active: {status.privacyReason}
+            </span>
+          )}
+          {status && status.privacySkipCount > 0 && (
+            <span style={{ fontSize: 12, color: '#666' }}>
+              {status.privacySkipCount} privacy skips
             </span>
           )}
           <div style={{ flex: 1 }} />
@@ -460,10 +546,109 @@ export default function TimeMachine() {
 
         {/* Thumbnail Strip */}
         <div style={{ ...S.card, padding: 12 }}>
-          <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
-            {frames.length} frames &mdash; step: {stepSize.label}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: 8,
+            }}
+          >
+            <div style={{ fontSize: 12, color: '#666' }}>
+              {timelineView === 'frames'
+                ? `${frames.length} frames`
+                : `${clusters.length} clusters`}{' '}
+              &mdash; step: {stepSize.label}
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                style={S.rangeBtn(timelineView === 'frames')}
+                onClick={() => setTimelineView('frames')}
+              >
+                Frames
+              </button>
+              <button
+                style={S.rangeBtn(timelineView === 'clusters')}
+                onClick={() => setTimelineView('clusters')}
+              >
+                Clusters
+              </button>
+            </div>
           </div>
-          {frames.length === 0 ? (
+          {timelineView === 'clusters' ? (
+            clusters.length === 0 ? (
+              <div style={{ color: '#444', fontSize: 13, padding: '20px 0', textAlign: 'center' }}>
+                No activity clusters in this window.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {clusters.map((cluster) => (
+                  <div
+                    key={cluster.id}
+                    data-testid="tm-cluster"
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '120px 1fr',
+                      gap: 12,
+                      padding: 10,
+                      border: '1px solid #242424',
+                      borderRadius: 6,
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => {
+                      setViewAnchor(new Date(cluster.end).getTime() + 60_000);
+                      if (cluster.frames) setFrames(cluster.frames);
+                      setTimelineView('frames');
+                    }}
+                  >
+                    {cluster.representativeFrame && thumbUrls[cluster.representativeFrame.id] ? (
+                      <img
+                        src={thumbUrls[cluster.representativeFrame.id]}
+                        style={S.thumbnail(false)}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          ...S.thumbnail(false),
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: 10,
+                          color: '#555',
+                        }}
+                      >
+                        no img
+                      </div>
+                    )}
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+                        {fmtTime(cluster.start)} - {fmtTime(cluster.end)}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#888', marginBottom: 6 }}>
+                        {cluster.frameCount} frame{cluster.frameCount !== 1 ? 's' : ''}
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {cluster.topOcrTerms.map((term) => (
+                          <span
+                            key={term}
+                            style={{
+                              fontSize: 10,
+                              color: '#aaa',
+                              background: '#222',
+                              borderRadius: 4,
+                              padding: '2px 6px',
+                            }}
+                          >
+                            {term}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          ) : frames.length === 0 ? (
             <div style={{ color: '#444', fontSize: 13, padding: '20px 0', textAlign: 'center' }}>
               {status?.running
                 ? 'Waiting for captures...'
@@ -732,6 +917,392 @@ export default function TimeMachine() {
           <div style={{ fontSize: 11, color: '#555', marginTop: 8 }}>
             OCR text and transcripts are kept in SQLite forever. Screenshots and audio upload to S3
             then delete locally.
+          </div>
+        </div>
+
+        {/* Storage Forecast */}
+        {forecast && (
+          <div style={S.card}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>
+              Storage Forecast
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12 }}>
+              <div style={{ color: '#888' }}>Average screenshot</div>
+              <div>{fmtBytes(forecast.averageScreenshotBytes)}</div>
+              <div style={{ color: '#888' }}>Projected screenshots/day</div>
+              <div>{forecast.screenshotsPerDay.toLocaleString()}</div>
+              <div style={{ color: '#888' }}>Projected retained screenshots</div>
+              <div>{fmtBytes(forecast.estimatedScreenshotRetentionBytes)}</div>
+              <div style={{ color: '#888' }}>Local screenshots now</div>
+              <div>{fmtBytes(forecast.existingLocalScreenshotBytes)}</div>
+              <div style={{ color: '#888' }}>Local audio now</div>
+              <div>{fmtBytes(forecast.existingLocalAudioBytes)}</div>
+              <div style={{ color: '#888' }}>Estimated retained total</div>
+              <div>{fmtBytes(forecast.estimatedRetainedTotalBytes)}</div>
+            </div>
+          </div>
+        )}
+
+        {/* Privacy */}
+        <div style={S.card}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Privacy</div>
+          <div style={{ marginBottom: 14 }}>
+            <label style={S.label}>Privacy zones</label>
+            {config.privacy.zones.map((zone, idx) => (
+              <div
+                key={zone.id}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1.4fr repeat(4, 0.8fr) auto auto',
+                  gap: 6,
+                  marginBottom: 6,
+                  alignItems: 'center',
+                }}
+              >
+                <input
+                  style={S.input}
+                  value={zone.label}
+                  onChange={(e) => {
+                    const zones = [...config.privacy.zones];
+                    zones[idx] = { ...zone, label: e.target.value };
+                    setConfig({ ...config, privacy: { ...config.privacy, zones } });
+                  }}
+                  onBlur={() => updatePrivacy({ zones: config.privacy.zones })}
+                />
+                {(['x', 'y', 'width', 'height'] as const).map((field) => (
+                  <input
+                    key={field}
+                    aria-label={`zone-${field}`}
+                    style={S.input}
+                    type="number"
+                    value={zone[field]}
+                    onChange={(e) => {
+                      const zones = [...config.privacy.zones];
+                      zones[idx] = { ...zone, [field]: parseInt(e.target.value) || 0 };
+                      setConfig({ ...config, privacy: { ...config.privacy, zones } });
+                    }}
+                    onBlur={() => updatePrivacy({ zones: config.privacy.zones })}
+                  />
+                ))}
+                <input
+                  type="checkbox"
+                  checked={zone.enabled}
+                  onChange={(e) => {
+                    const zones = [...config.privacy.zones];
+                    zones[idx] = { ...zone, enabled: e.target.checked };
+                    updatePrivacy({ zones });
+                  }}
+                />
+                <button
+                  style={S.btn('#333', 'sm')}
+                  onClick={() =>
+                    updatePrivacy({ zones: config.privacy.zones.filter((z) => z.id !== zone.id) })
+                  }
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button
+              data-testid="tm-add-zone"
+              style={S.btn('#333', 'sm')}
+              onClick={() =>
+                updatePrivacy({
+                  zones: [
+                    ...config.privacy.zones,
+                    {
+                      id: `zone_${Date.now()}`,
+                      label: 'New zone',
+                      x: 0,
+                      y: 0,
+                      width: 320,
+                      height: 180,
+                      enabled: true,
+                    },
+                  ],
+                })
+              }
+            >
+              Add Zone
+            </button>
+          </div>
+
+          <div style={{ marginBottom: 14 }}>
+            <label style={S.label}>Pause schedules</label>
+            {config.privacy.pauseSchedules.map((schedule, idx) => (
+              <div
+                key={schedule.id}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1.2fr 0.8fr 0.8fr auto auto',
+                  gap: 6,
+                  marginBottom: 6,
+                  alignItems: 'center',
+                }}
+              >
+                <input
+                  style={S.input}
+                  value={schedule.label}
+                  onChange={(e) => {
+                    const pauseSchedules = [...config.privacy.pauseSchedules];
+                    pauseSchedules[idx] = { ...schedule, label: e.target.value };
+                    setConfig({ ...config, privacy: { ...config.privacy, pauseSchedules } });
+                  }}
+                  onBlur={() => updatePrivacy({ pauseSchedules: config.privacy.pauseSchedules })}
+                />
+                <input
+                  aria-label="schedule-days"
+                  style={S.input}
+                  value={schedule.days.join(',')}
+                  onChange={(e) => {
+                    const pauseSchedules = [...config.privacy.pauseSchedules];
+                    pauseSchedules[idx] = {
+                      ...schedule,
+                      days: e.target.value
+                        .split(',')
+                        .map((v) => parseInt(v.trim(), 10))
+                        .filter((v) => Number.isFinite(v) && v >= 0 && v <= 6),
+                    };
+                    setConfig({ ...config, privacy: { ...config.privacy, pauseSchedules } });
+                  }}
+                  onBlur={() => updatePrivacy({ pauseSchedules: config.privacy.pauseSchedules })}
+                />
+                <input
+                  aria-label="schedule-start"
+                  style={S.input}
+                  type="time"
+                  value={schedule.startTime}
+                  onChange={(e) => {
+                    const pauseSchedules = [...config.privacy.pauseSchedules];
+                    pauseSchedules[idx] = { ...schedule, startTime: e.target.value };
+                    setConfig({ ...config, privacy: { ...config.privacy, pauseSchedules } });
+                  }}
+                  onBlur={() => updatePrivacy({ pauseSchedules: config.privacy.pauseSchedules })}
+                />
+                <input
+                  aria-label="schedule-end"
+                  style={S.input}
+                  type="time"
+                  value={schedule.endTime}
+                  onChange={(e) => {
+                    const pauseSchedules = [...config.privacy.pauseSchedules];
+                    pauseSchedules[idx] = { ...schedule, endTime: e.target.value };
+                    setConfig({ ...config, privacy: { ...config.privacy, pauseSchedules } });
+                  }}
+                  onBlur={() => updatePrivacy({ pauseSchedules: config.privacy.pauseSchedules })}
+                />
+                <input
+                  type="checkbox"
+                  checked={schedule.enabled}
+                  onChange={(e) => {
+                    const pauseSchedules = [...config.privacy.pauseSchedules];
+                    pauseSchedules[idx] = { ...schedule, enabled: e.target.checked };
+                    updatePrivacy({ pauseSchedules });
+                  }}
+                />
+                <button
+                  style={S.btn('#333', 'sm')}
+                  onClick={() =>
+                    updatePrivacy({
+                      pauseSchedules: config.privacy.pauseSchedules.filter(
+                        (s) => s.id !== schedule.id,
+                      ),
+                    })
+                  }
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button
+              style={S.btn('#333', 'sm')}
+              onClick={() =>
+                updatePrivacy({
+                  pauseSchedules: [
+                    ...config.privacy.pauseSchedules,
+                    {
+                      id: `pause_${Date.now()}`,
+                      label: 'Focus block',
+                      days: [1, 2, 3, 4, 5],
+                      startTime: '09:00',
+                      endTime: '17:00',
+                      enabled: true,
+                    },
+                  ],
+                })
+              }
+            >
+              Add Schedule
+            </button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <div>
+              <label style={S.label}>Excluded apps</label>
+              <textarea
+                style={{ ...S.input, minHeight: 90 }}
+                value={textList(config.privacy.excludedApps)}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    privacy: { ...config.privacy, excludedApps: parseTextList(e.target.value) },
+                  })
+                }
+                onBlur={() => updatePrivacy({ excludedApps: config.privacy.excludedApps })}
+              />
+            </div>
+            <div>
+              <label style={S.label}>Excluded domains</label>
+              <textarea
+                style={{ ...S.input, minHeight: 90 }}
+                value={textList(config.privacy.excludedDomains)}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    privacy: { ...config.privacy, excludedDomains: parseTextList(e.target.value) },
+                  })
+                }
+                onBlur={() => updatePrivacy({ excludedDomains: config.privacy.excludedDomains })}
+              />
+            </div>
+            <div>
+              <label style={S.label}>Excluded title patterns</label>
+              <textarea
+                style={{ ...S.input, minHeight: 90 }}
+                value={textList(config.privacy.excludedTitlePatterns)}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    privacy: {
+                      ...config.privacy,
+                      excludedTitlePatterns: parseTextList(e.target.value),
+                    },
+                  })
+                }
+                onBlur={() =>
+                  updatePrivacy({ excludedTitlePatterns: config.privacy.excludedTitlePatterns })
+                }
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Dedupe */}
+        <div style={S.card}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Dedupe</div>
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              fontSize: 13,
+              cursor: 'pointer',
+              marginBottom: 12,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={config.dedupe.enabled}
+              onChange={(e) => saveConfig({ dedupe: { ...config.dedupe, enabled: e.target.checked } } as any)}
+            />
+            Enable duplicate screenshot detection
+          </label>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <div>
+              <label style={S.label}>Size drift threshold</label>
+              <input
+                style={S.input}
+                type="number"
+                step="0.01"
+                value={config.dedupe.sizeDriftThreshold}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    dedupe: {
+                      ...config.dedupe,
+                      sizeDriftThreshold: parseFloat(e.target.value) || 0,
+                    },
+                  })
+                }
+                onBlur={() => saveConfig({ dedupe: config.dedupe } as any)}
+              />
+            </div>
+            <div>
+              <label style={S.label}>Chunk bytes</label>
+              <input
+                style={S.input}
+                type="number"
+                value={config.dedupe.chunkBytes}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    dedupe: { ...config.dedupe, chunkBytes: parseInt(e.target.value) || 4096 },
+                  })
+                }
+                onBlur={() => saveConfig({ dedupe: config.dedupe } as any)}
+              />
+            </div>
+            <div>
+              <label style={S.label}>Recent window</label>
+              <input
+                style={S.input}
+                type="number"
+                value={config.dedupe.recentWindowSize}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    dedupe: {
+                      ...config.dedupe,
+                      recentWindowSize: parseInt(e.target.value) || 12,
+                    },
+                  })
+                }
+                onBlur={() => saveConfig({ dedupe: config.dedupe } as any)}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Clustering */}
+        <div style={S.card}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Clustering</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <label style={S.label}>Idle gap (minutes)</label>
+              <input
+                style={S.input}
+                type="number"
+                value={config.clustering.idleGapMinutes}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    clustering: {
+                      ...config.clustering,
+                      idleGapMinutes: parseInt(e.target.value) || 5,
+                    },
+                  })
+                }
+                onBlur={() => saveConfig({ clustering: config.clustering } as any)}
+              />
+            </div>
+            <div>
+              <label style={S.label}>Top OCR terms</label>
+              <input
+                style={S.input}
+                type="number"
+                value={config.clustering.topTermCount}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    clustering: {
+                      ...config.clustering,
+                      topTermCount: parseInt(e.target.value) || 5,
+                    },
+                  })
+                }
+                onBlur={() => saveConfig({ clustering: config.clustering } as any)}
+              />
+            </div>
           </div>
         </div>
 

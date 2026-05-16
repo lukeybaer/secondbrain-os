@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from "react";
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
 type BackupTier = "daily" | "tri-daily" | "weekly" | "monthly" | "quarterly" | "yearly" | "pre-restore";
+type IntegrityStatus = "ok" | "warning" | "failed";
+type S3Availability = "available" | "unavailable" | "not_configured";
+type S3ArchiveStatus = "synced" | "missing" | "unknown";
+type SecuritySensitivity = "none_detected" | "sensitive" | "encrypted_sensitive";
+type OffsiteEncryptionStatus = "encrypted" | "unknown" | "not_configured" | "unavailable";
 
 interface SnapshotMeta {
   id: string;
@@ -20,7 +23,60 @@ interface FileEntry {
   size: number;
 }
 
-// ── Constants ────────────────────────────────────────────────────────────────
+interface BackupIntegrityReport {
+  id: string;
+  status: IntegrityStatus;
+  checks: Record<string, boolean>;
+  fileCount: number;
+  dataBytes: number;
+  expectedFileCount: number;
+  expectedDataBytes: number;
+  warnings: string[];
+  errors: string[];
+}
+
+interface TestRestorePreview {
+  tempPath: string;
+  fileCount: number;
+  dataBytes: number;
+  hasConfig: boolean;
+  hasDatabase: boolean;
+  warnings: string[];
+}
+
+interface BackupS3StatusReport {
+  availability: S3Availability;
+  bucket?: string;
+  prefix: string;
+  snapshots: { id: string; archiveKey: string; status: S3ArchiveStatus }[];
+  summary: {
+    localSnapshots: number;
+    s3Archives: number;
+    missingFromS3: number;
+    s3Unreachable: boolean;
+  };
+  error?: string;
+}
+
+interface BackupSecurityReport {
+  id: string;
+  hasConfig: boolean;
+  hasEncryptedPiiVault: boolean;
+  sensitivePaths: string[];
+  sensitivity: SecuritySensitivity;
+  localProtection: "local_filesystem";
+  offsiteEncryption: OffsiteEncryptionStatus;
+  warnings: string[];
+}
+
+interface RestoreWizardState {
+  snapshot: SnapshotMeta;
+  step: 1 | 2 | 3 | 4;
+  integrity?: BackupIntegrityReport;
+  preview?: TestRestorePreview;
+  security?: BackupSecurityReport;
+  error?: string;
+}
 
 const TIER_COLORS: Record<BackupTier, string> = {
   daily: "#60a5fa",
@@ -42,7 +98,23 @@ const TIER_LABELS: Record<BackupTier, string> = {
   "pre-restore": "Pre-Restore",
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+const HEALTH_LABELS: Record<IntegrityStatus, string> = {
+  ok: "Health OK",
+  warning: "Health Warning",
+  failed: "Health Failed",
+};
+
+const S3_LABELS: Record<S3ArchiveStatus, string> = {
+  synced: "S3 Synced",
+  missing: "S3 Missing",
+  unknown: "S3 Unknown",
+};
+
+const SECURITY_LABELS: Record<SecuritySensitivity, string> = {
+  none_detected: "No Sensitive Paths",
+  sensitive: "Sensitive",
+  encrypted_sensitive: "Encrypted PII",
+};
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -54,8 +126,11 @@ function formatBytes(bytes: number): string {
 function formatTimestamp(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleDateString("en-US", {
-    month: "short", day: "numeric", year: "numeric",
-    hour: "numeric", minute: "2-digit",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
   });
 }
 
@@ -73,37 +148,98 @@ function timeAgo(iso: string): string {
   return `${Math.floor(months / 12)}y ago`;
 }
 
-// ── Component ────────────────────────────────────────────────────────────────
+function badgeColors(kind: "ok" | "warning" | "failed" | "neutral") {
+  if (kind === "ok") return { background: "#052e1a", color: "#4ade80", borderColor: "#14532d" };
+  if (kind === "warning") return { background: "#2b2106", color: "#fbbf24", borderColor: "#713f12" };
+  if (kind === "failed") return { background: "#2a0b0b", color: "#f87171", borderColor: "#7f1d1d" };
+  return { background: "#1e1e1e", color: "#999", borderColor: "#333" };
+}
+
+function healthKind(status?: IntegrityStatus): "ok" | "warning" | "failed" | "neutral" {
+  if (!status) return "neutral";
+  return status === "ok" ? "ok" : status === "warning" ? "warning" : "failed";
+}
+
+function s3Kind(status?: S3ArchiveStatus): "ok" | "warning" | "failed" | "neutral" {
+  if (status === "synced") return "ok";
+  if (status === "missing") return "warning";
+  return "neutral";
+}
+
+function securityKind(report?: BackupSecurityReport): "ok" | "warning" | "failed" | "neutral" {
+  if (!report) return "neutral";
+  if (report.sensitivity === "none_detected" || report.sensitivity === "encrypted_sensitive") return "ok";
+  return "warning";
+}
+
+function StatusBadge({ label, kind }: { label: string; kind: "ok" | "warning" | "failed" | "neutral" }) {
+  const colors = badgeColors(kind);
+  return (
+    <span style={{ ...badgeStyle, ...colors }}>
+      {label}
+    </span>
+  );
+}
 
 export default function Backups() {
   const [snapshots, setSnapshots] = useState<SnapshotMeta[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null); // action name or null
+  const [busy, setBusy] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [tierFilter, setTierFilter] = useState<BackupTier | "all">("all");
+  const [integrityReports, setIntegrityReports] = useState<Record<string, BackupIntegrityReport>>({});
+  const [securityReports, setSecurityReports] = useState<Record<string, BackupSecurityReport>>({});
+  const [s3Status, setS3Status] = useState<BackupS3StatusReport | null>(null);
+  const [wizard, setWizard] = useState<RestoreWizardState | null>(null);
 
-  // Inspector state
   const [inspecting, setInspecting] = useState<string | null>(null);
   const [inspectPath, setInspectPath] = useState<string[]>([]);
   const [inspectFiles, setInspectFiles] = useState<FileEntry[]>([]);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileContentName, setFileContentName] = useState<string | null>(null);
 
-  // SQL query state
   const [querySnapshotId, setQuerySnapshotId] = useState<string | null>(null);
   const [sqlQuery, setSqlQuery] = useState("SELECT name FROM sqlite_master WHERE type='table'");
   const [queryResult, setQueryResult] = useState<unknown[] | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh();
+  }, []);
 
   async function refresh() {
     setLoading(true);
     try {
       const list = await window.api.backups.list();
       setSnapshots(list);
-    } catch { /* ignore */ }
+      await refreshReports(list);
+    } catch {
+      /* ignore */
+    }
     setLoading(false);
+  }
+
+  async function refreshReports(list: SnapshotMeta[]) {
+    const [s3Result, integrityResults, securityResults] = await Promise.all([
+      window.api.backups.s3Status(),
+      Promise.all(list.map((snapshot) => window.api.backups.verify(snapshot.id))),
+      Promise.all(list.map((snapshot) => window.api.backups.security(snapshot.id))),
+    ]);
+    if (s3Result.success) setS3Status(s3Result.report);
+    setIntegrityReports(
+      Object.fromEntries(
+        integrityResults
+          .filter((result) => result.success)
+          .map((result) => [result.report.id, result.report]),
+      ),
+    );
+    setSecurityReports(
+      Object.fromEntries(
+        securityResults
+          .filter((result) => result.success)
+          .map((result) => [result.report.id, result.report]),
+      ),
+    );
   }
 
   function flash(msg: string) {
@@ -121,7 +257,9 @@ export default function Backups() {
       } else {
         flash(`Error: ${res.error}`);
       }
-    } catch (e: any) { flash(`Error: ${e.message}`); }
+    } catch (e: any) {
+      flash(`Error: ${e.message}`);
+    }
     setBusy(null);
   }
 
@@ -136,7 +274,9 @@ export default function Backups() {
       } else {
         flash(`Error: ${res.error}`);
       }
-    } catch (e: any) { flash(`Error: ${e.message}`); }
+    } catch (e: any) {
+      flash(`Error: ${e.message}`);
+    }
     setBusy(null);
   }
 
@@ -150,36 +290,69 @@ export default function Backups() {
       } else {
         flash(`Error: ${res.error}`);
       }
-    } catch (e: any) { flash(`Error: ${e.message}`); }
+    } catch (e: any) {
+      flash(`Error: ${e.message}`);
+    }
     setBusy(null);
   }
 
-  async function handleTestRestore(id: string) {
-    setBusy(`Test-restoring ${id}...`);
+  async function openRestoreWizard(snapshot: SnapshotMeta) {
+    const current: RestoreWizardState = { snapshot, step: 1 };
+    setWizard(current);
+    setBusy(`Checking ${snapshot.id}...`);
     try {
-      const res = await window.api.backups.testRestore(id);
+      const [integrityResult, securityResult] = await Promise.all([
+        window.api.backups.verify(snapshot.id),
+        window.api.backups.security(snapshot.id),
+      ]);
+      setWizard({
+        ...current,
+        integrity: integrityResult.success ? integrityResult.report : undefined,
+        security: securityResult.success ? securityResult.report : undefined,
+        error: integrityResult.success ? undefined : integrityResult.error,
+      });
+    } catch (e: any) {
+      setWizard({ ...current, error: e.message });
+    }
+    setBusy(null);
+  }
+
+  async function runWizardDryRun() {
+    if (!wizard) return;
+    setBusy(`Test-restoring ${wizard.snapshot.id}...`);
+    try {
+      const res = await window.api.backups.testRestore(wizard.snapshot.id);
       if (res.success) {
-        flash(`Test restore extracted to: ${res.tempPath}`);
+        setWizard({ ...wizard, step: 3, preview: res, error: undefined });
       } else {
-        flash(`Error: ${res.error}`);
+        setWizard({ ...wizard, step: 3, error: res.error });
       }
-    } catch (e: any) { flash(`Error: ${e.message}`); }
+    } catch (e: any) {
+      setWizard({ ...wizard, step: 3, error: e.message });
+    }
     setBusy(null);
   }
 
-  async function handleCommitRestore(id: string) {
-    if (!confirm(`Restore to snapshot ${id}?\n\nA safety snapshot of current state will be created first. You can roll forward to undo.`)) return;
-    setBusy(`Restoring to ${id}...`);
+  async function commitWizardRestore() {
+    if (!wizard || !canCommitWizard(wizard)) return;
+    setBusy(`Restoring to ${wizard.snapshot.id}...`);
     try {
-      const res = await window.api.backups.commitRestore(id);
+      const res = await window.api.backups.commitRestore(wizard.snapshot.id);
       if (res.success) {
-        flash(`Restored to ${id}. Pre-restore safety copy: ${res.preRestoreId}. Restart app to load new data.`);
+        flash(`Restored to ${wizard.snapshot.id}. Pre-restore safety copy: ${res.preRestoreId}. Restart app to load new data.`);
+        setWizard(null);
         await refresh();
       } else {
-        flash(`Error: ${res.error}`);
+        setWizard({ ...wizard, error: res.error });
       }
-    } catch (e: any) { flash(`Error: ${e.message}`); }
+    } catch (e: any) {
+      setWizard({ ...wizard, error: e.message });
+    }
     setBusy(null);
+  }
+
+  function canCommitWizard(state: RestoreWizardState): boolean {
+    return state.integrity?.status !== "failed" && !!state.preview && !state.error;
   }
 
   async function handleRollForward() {
@@ -193,11 +366,11 @@ export default function Backups() {
       } else {
         flash(`Error: ${res.error}`);
       }
-    } catch (e: any) { flash(`Error: ${e.message}`); }
+    } catch (e: any) {
+      flash(`Error: ${e.message}`);
+    }
     setBusy(null);
   }
-
-  // ── Inspector ──────────────────────────────────────────────────────────────
 
   async function openInspector(id: string) {
     setInspecting(id);
@@ -245,8 +418,6 @@ export default function Backups() {
     }
   }
 
-  // ── SQL query ──────────────────────────────────────────────────────────────
-
   async function runQuery() {
     if (!querySnapshotId) return;
     setQueryError(null);
@@ -258,23 +429,19 @@ export default function Backups() {
       } else {
         setQueryError(res.error);
       }
-    } catch (e: any) { setQueryError(e.message); }
+    } catch (e: any) {
+      setQueryError(e.message);
+    }
   }
 
-  // ── Filter ─────────────────────────────────────────────────────────────────
-
-  const filtered = tierFilter === "all" ? snapshots : snapshots.filter(s => s.tier === tierFilter);
-
-  // ── Tier summary ───────────────────────────────────────────────────────────
-
-  const tierCounts = snapshots.reduce<Record<string, number>>((acc, s) => {
-    acc[s.tier] = (acc[s.tier] || 0) + 1;
+  const filtered = tierFilter === "all" ? snapshots : snapshots.filter((snapshot) => snapshot.tier === tierFilter);
+  const tierCounts = snapshots.reduce<Record<string, number>>((acc, snapshot) => {
+    acc[snapshot.tier] = (acc[snapshot.tier] || 0) + 1;
     return acc;
   }, {});
-
-  const totalBytes = snapshots.reduce((sum, s) => sum + s.dataBytes, 0);
-
-  // ── Render ─────────────────────────────────────────────────────────────────
+  const totalBytes = snapshots.reduce((sum, snapshot) => sum + snapshot.dataBytes, 0);
+  const s3ById = Object.fromEntries((s3Status?.snapshots ?? []).map((snapshot) => [snapshot.id, snapshot]));
+  const securityWarnings = Object.values(securityReports).reduce((count, report) => count + (report.warnings.length > 0 ? 1 : 0), 0);
 
   const btnStyle = (variant: "primary" | "danger" | "ghost" = "ghost"): React.CSSProperties => ({
     padding: "6px 14px",
@@ -290,101 +457,249 @@ export default function Backups() {
 
   return (
     <div style={{ padding: 24, height: "100%", overflowY: "auto", color: "#e0e0e0" }}>
-      {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
         <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Backups</h1>
-        <button style={btnStyle("primary")} onClick={handleCreate} disabled={!!busy}>
-          Create Snapshot
-        </button>
-        <button style={btnStyle()} onClick={handleRunDaily} disabled={!!busy}>
-          Run Daily Backup
-        </button>
-        <button style={btnStyle()} onClick={handlePrune} disabled={!!busy}>
-          Prune
-        </button>
-        <button style={btnStyle()} onClick={handleRollForward} disabled={!!busy}>
-          Roll Forward
-        </button>
+        <button style={btnStyle("primary")} onClick={handleCreate} disabled={!!busy}>Create Snapshot</button>
+        <button style={btnStyle()} onClick={handleRunDaily} disabled={!!busy}>Run Daily Backup</button>
+        <button style={btnStyle()} onClick={handlePrune} disabled={!!busy}>Prune</button>
+        <button style={btnStyle()} onClick={handleRollForward} disabled={!!busy}>Roll Forward</button>
       </div>
 
-      {/* Status */}
-      {busy && <div style={{ padding: "8px 12px", background: "#1a1a2e", borderRadius: 6, marginBottom: 12, fontSize: 13, color: "#a78bfa" }}>{busy}</div>}
-      {statusMsg && <div style={{ padding: "8px 12px", background: "#1a2e1a", borderRadius: 6, marginBottom: 12, fontSize: 13, color: "#4ade80" }}>{statusMsg}</div>}
+      {busy && <div style={bannerStyle("#1a1a2e", "#a78bfa")}>{busy}</div>}
+      {statusMsg && <div style={bannerStyle("#1a2e1a", "#4ade80")}>{statusMsg}</div>}
 
-      {/* Summary */}
       <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
         <div style={statCard}>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>{snapshots.length}</div>
-          <div style={{ fontSize: 11, color: "#666" }}>Total snapshots</div>
+          <div style={statValue}>{snapshots.length}</div>
+          <div style={statLabel}>Local snapshots</div>
         </div>
         <div style={statCard}>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>{formatBytes(totalBytes)}</div>
-          <div style={{ fontSize: 11, color: "#666" }}>Total size</div>
+          <div style={statValue}>{formatBytes(totalBytes)}</div>
+          <div style={statLabel}>Total size</div>
+        </div>
+        <div style={statCard}>
+          <div style={statValue}>{s3Status?.summary.s3Archives ?? 0}</div>
+          <div style={statLabel}>S3 archives</div>
+        </div>
+        <div style={statCard}>
+          <div style={statValue}>{s3Status?.summary.missingFromS3 ?? 0}</div>
+          <div style={statLabel}>Missing from S3</div>
+        </div>
+        <div style={statCard}>
+          <div style={statValue}>{s3Status?.availability === "unavailable" ? "Yes" : "No"}</div>
+          <div style={statLabel}>S3 unreachable</div>
+        </div>
+        <div style={statCard}>
+          <div style={statValue}>{securityWarnings}</div>
+          <div style={statLabel}>Security warnings</div>
         </div>
         {Object.entries(tierCounts).map(([tier, count]) => (
           <div key={tier} style={{ ...statCard, borderTop: `2px solid ${TIER_COLORS[tier as BackupTier] || "#444"}` }}>
-            <div style={{ fontSize: 20, fontWeight: 700 }}>{count}</div>
-            <div style={{ fontSize: 11, color: "#666" }}>{TIER_LABELS[tier as BackupTier] || tier}</div>
+            <div style={statValue}>{count}</div>
+            <div style={statLabel}>{TIER_LABELS[tier as BackupTier] || tier}</div>
           </div>
         ))}
       </div>
 
-      {/* Tier filter */}
+      <div style={panelStyle}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <strong style={{ fontSize: 13 }}>Offsite/S3</strong>
+          <StatusBadge
+            label={s3Status?.availability === "available" ? "Available" : s3Status?.availability === "unavailable" ? "Unavailable" : "Not Configured"}
+            kind={s3Status?.availability === "available" ? "ok" : s3Status?.availability === "unavailable" ? "failed" : "neutral"}
+          />
+          <span style={mutedText}>{s3Status?.bucket ? `Bucket: ${s3Status.bucket}` : "SECONDBRAIN_BACKUP_BUCKET is not configured."}</span>
+        </div>
+      </div>
+
+      <div style={panelStyle}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <strong style={{ fontSize: 13 }}>Security</strong>
+          <span style={mutedText}>Reports config inclusion, encrypted PII vault presence, sensitive path categories, and S3 encryption metadata.</span>
+        </div>
+      </div>
+
       <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
-        {["all", "daily", "tri-daily", "weekly", "monthly", "quarterly", "yearly", "pre-restore"].map(t => (
+        {["all", "daily", "tri-daily", "weekly", "monthly", "quarterly", "yearly", "pre-restore"].map((tier) => (
           <button
-            key={t}
-            onClick={() => setTierFilter(t as any)}
+            key={tier}
+            onClick={() => setTierFilter(tier as BackupTier | "all")}
             style={{
-              padding: "4px 10px", borderRadius: 4, border: "none", cursor: "pointer",
-              background: tierFilter === t ? "#7c3aed" : "#1e1e1e",
-              color: tierFilter === t ? "#fff" : "#888", fontSize: 11,
+              padding: "4px 10px",
+              borderRadius: 4,
+              border: "none",
+              cursor: "pointer",
+              background: tierFilter === tier ? "#7c3aed" : "#1e1e1e",
+              color: tierFilter === tier ? "#fff" : "#888",
+              fontSize: 11,
             }}
           >
-            {t === "all" ? "All" : TIER_LABELS[t as BackupTier]}
+            {tier === "all" ? "All" : TIER_LABELS[tier as BackupTier]}
           </button>
         ))}
       </div>
 
-      {/* Snapshot list */}
       {loading ? (
         <div style={{ color: "#666", padding: 20 }}>Loading...</div>
       ) : filtered.length === 0 ? (
         <div style={{ color: "#666", padding: 20 }}>No snapshots. Click "Create Snapshot" or "Run Daily Backup" to start.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {filtered.map(s => (
-            <div key={s.id} style={rowStyle}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
-                <span style={{
-                  padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600,
-                  background: `${TIER_COLORS[s.tier]}22`, color: TIER_COLORS[s.tier],
-                }}>
-                  {TIER_LABELS[s.tier]}
-                </span>
-                <span style={{ fontSize: 13, fontWeight: 500, fontFamily: "monospace" }}>{s.id}</span>
-                <span style={{ fontSize: 12, color: "#666" }}>{formatTimestamp(s.timestamp)}</span>
-                <span style={{ fontSize: 11, color: "#555" }}>{timeAgo(s.timestamp)}</span>
-                {s.note && <span style={{ fontSize: 11, color: "#94a3b8", fontStyle: "italic" }}>{s.note}</span>}
+          {filtered.map((snapshot) => {
+            const integrity = integrityReports[snapshot.id];
+            const security = securityReports[snapshot.id];
+            const s3 = s3ById[snapshot.id];
+            return (
+              <div key={snapshot.id} style={rowStyle}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, flexWrap: "wrap" }}>
+                  <span style={{ ...tierBadge, background: `${TIER_COLORS[snapshot.tier]}22`, color: TIER_COLORS[snapshot.tier] }}>
+                    {TIER_LABELS[snapshot.tier]}
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 500, fontFamily: "monospace" }}>{snapshot.id}</span>
+                  <span style={{ fontSize: 12, color: "#666" }}>{formatTimestamp(snapshot.timestamp)}</span>
+                  <span style={{ fontSize: 11, color: "#555" }}>{timeAgo(snapshot.timestamp)}</span>
+                  <StatusBadge label={integrity ? HEALTH_LABELS[integrity.status] : "Health Pending"} kind={healthKind(integrity?.status)} />
+                  <StatusBadge label={s3 ? S3_LABELS[s3.status] : "S3 Pending"} kind={s3Kind(s3?.status)} />
+                  <StatusBadge label={security ? SECURITY_LABELS[security.sensitivity] : "Security Pending"} kind={securityKind(security)} />
+                  {snapshot.note && <span style={{ fontSize: 11, color: "#94a3b8", fontStyle: "italic" }}>{snapshot.note}</span>}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: "#666" }}>{snapshot.fileCount} files</span>
+                  <span style={{ fontSize: 11, color: "#666" }}>{formatBytes(snapshot.dataBytes)}</span>
+                  <button style={smallBtn} onClick={() => openInspector(snapshot.id)} title="Browse files">Browse</button>
+                  <button style={smallBtn} onClick={() => { setQuerySnapshotId(snapshot.id); setQueryResult(null); setQueryError(null); }} title="Query SQLite">SQL</button>
+                  <button style={{ ...smallBtn, color: "#f97316" }} onClick={() => openRestoreWizard(snapshot)} disabled={!!busy} title="Open restore wizard">Restore</button>
+                </div>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 11, color: "#666" }}>{s.fileCount} files</span>
-                <span style={{ fontSize: 11, color: "#666" }}>{formatBytes(s.dataBytes)}</span>
-                <button style={smallBtn} onClick={() => openInspector(s.id)} title="Browse files">Browse</button>
-                <button style={smallBtn} onClick={() => { setQuerySnapshotId(s.id); setQueryResult(null); setQueryError(null); }} title="Query SQLite">SQL</button>
-                <button style={smallBtn} onClick={() => handleTestRestore(s.id)} disabled={!!busy} title="Extract to temp dir">Test</button>
-                <button style={{ ...smallBtn, color: "#f97316" }} onClick={() => handleCommitRestore(s.id)} disabled={!!busy} title="Restore (creates safety snapshot first)">Restore</button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      {/* ── File Inspector Modal ────────────────────────────────────────────── */}
+      {wizard && (
+        <div style={overlayStyle}>
+          <div style={{ ...modalStyle, maxWidth: 760 }}>
+            <div style={modalHeaderStyle}>
+              <h2 style={{ margin: 0, fontSize: 16 }}>Restore Wizard: {wizard.snapshot.id}</h2>
+              <button style={smallBtn} onClick={() => setWizard(null)}>Close</button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 16 }}>
+              {["Summary", "Integrity", "Dry Run", "Commit"].map((label, index) => (
+                <button
+                  key={label}
+                  style={{
+                    ...stepBtn,
+                    background: wizard.step === index + 1 ? "#7c3aed" : "#1e1e1e",
+                    color: wizard.step === index + 1 ? "#fff" : "#999",
+                  }}
+                  onClick={() => setWizard({ ...wizard, step: (index + 1) as RestoreWizardState["step"] })}
+                >
+                  {index + 1}. {label}
+                </button>
+              ))}
+            </div>
+
+            {wizard.error && <div style={bannerStyle("#2a0b0b", "#f87171")}>{wizard.error}</div>}
+
+            {wizard.step === 1 && (
+              <div style={wizardBodyStyle}>
+                <InfoRow label="Tier" value={TIER_LABELS[wizard.snapshot.tier]} />
+                <InfoRow label="Created" value={formatTimestamp(wizard.snapshot.timestamp)} />
+                <InfoRow label="Size" value={formatBytes(wizard.snapshot.dataBytes)} />
+                <InfoRow label="Files" value={`${wizard.snapshot.fileCount}`} />
+                <InfoRow label="Note" value={wizard.snapshot.note ?? "None"} />
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <button style={btnStyle("primary")} onClick={() => setWizard({ ...wizard, step: 2 })}>Next</button>
+                </div>
+              </div>
+            )}
+
+            {wizard.step === 2 && (
+              <div style={wizardBodyStyle}>
+                {wizard.integrity ? (
+                  <>
+                    <StatusBadge label={HEALTH_LABELS[wizard.integrity.status]} kind={healthKind(wizard.integrity.status)} />
+                    <div style={gridTwo}>
+                      {Object.entries(wizard.integrity.checks).map(([key, value]) => (
+                        <InfoRow key={key} label={key} value={value ? "Pass" : "Needs attention"} />
+                      ))}
+                    </div>
+                    <MessageList title="Warnings" messages={wizard.integrity.warnings} />
+                    <MessageList title="Errors" messages={wizard.integrity.errors} />
+                  </>
+                ) : (
+                  <div style={mutedText}>Integrity report is loading.</div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <button style={btnStyle()} onClick={() => setWizard({ ...wizard, step: 1 })}>Back</button>
+                  <button style={btnStyle("primary")} onClick={runWizardDryRun} disabled={!!busy || wizard.integrity?.status === "failed"}>
+                    Run Dry-Run Restore
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {wizard.step === 3 && (
+              <div style={wizardBodyStyle}>
+                {wizard.preview ? (
+                  <>
+                    <div style={gridTwo}>
+                      <InfoRow label="Temp path" value={wizard.preview.tempPath} />
+                      <InfoRow label="Files restored" value={`${wizard.preview.fileCount}`} />
+                      <InfoRow label="Bytes restored" value={formatBytes(wizard.preview.dataBytes)} />
+                      <InfoRow label="Config present" value={wizard.preview.hasConfig ? "Yes" : "No"} />
+                      <InfoRow label="Database present" value={wizard.preview.hasDatabase ? "Yes" : "No"} />
+                    </div>
+                    <MessageList title="Warnings" messages={wizard.preview.warnings} />
+                  </>
+                ) : (
+                  <div style={mutedText}>Run the dry-run restore to preview extracted files before commit.</div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <button style={btnStyle()} onClick={() => setWizard({ ...wizard, step: 2 })}>Back</button>
+                  <button style={btnStyle("primary")} onClick={() => setWizard({ ...wizard, step: 4 })} disabled={!wizard.preview}>
+                    Continue
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {wizard.step === 4 && (
+              <div style={wizardBodyStyle}>
+                <div style={panelStyle}>
+                  <strong style={{ fontSize: 13 }}>Final commit restore confirmation</strong>
+                  <div style={{ ...mutedText, marginTop: 6 }}>
+                    Commit restore will create a pre-restore safety snapshot before replacing live data.
+                  </div>
+                </div>
+                {wizard.security && (
+                  <div style={panelStyle}>
+                    <strong style={{ fontSize: 13 }}>Security</strong>
+                    <div style={gridTwo}>
+                      <InfoRow label="Config included" value={wizard.security.hasConfig ? "Yes" : "No"} />
+                      <InfoRow label="Encrypted PII vault" value={wizard.security.hasEncryptedPiiVault ? "Present" : "Missing"} />
+                      <InfoRow label="Offsite encryption" value={wizard.security.offsiteEncryption} />
+                      <InfoRow label="Sensitive paths" value={wizard.security.sensitivePaths.join(", ") || "None detected"} />
+                    </div>
+                    <MessageList title="Security warnings" messages={wizard.security.warnings} />
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <button style={btnStyle()} onClick={() => setWizard({ ...wizard, step: 3 })}>Back</button>
+                  <button style={btnStyle("danger")} onClick={commitWizardRestore} disabled={!!busy || !canCommitWizard(wizard)}>
+                    Commit Restore
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {inspecting && (
         <div style={overlayStyle}>
           <div style={modalStyle}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={modalHeaderStyle}>
               <h2 style={{ margin: 0, fontSize: 16 }}>
                 Browse: {inspecting}
                 {inspectPath.length > 0 && <span style={{ color: "#666", fontWeight: 400 }}> / {inspectPath.join(" / ")}</span>}
@@ -393,7 +708,7 @@ export default function Backups() {
             </div>
 
             {inspectPath.length > 0 && (
-              <button style={{ ...smallBtn, marginBottom: 8 }} onClick={navigateUp}>&larr; Up</button>
+              <button style={{ ...smallBtn, marginBottom: 8, alignSelf: "flex-start" }} onClick={navigateUp}>Up</button>
             )}
 
             {fileContent !== null ? (
@@ -402,29 +717,22 @@ export default function Backups() {
                   <span style={{ fontSize: 13, fontWeight: 600 }}>{fileContentName}</span>
                   <button style={smallBtn} onClick={() => { setFileContent(null); setFileContentName(null); }}>Back to list</button>
                 </div>
-                <pre style={{
-                  background: "#0a0a0a", padding: 12, borderRadius: 6, fontSize: 11,
-                  maxHeight: 400, overflow: "auto", whiteSpace: "pre-wrap", color: "#ccc",
-                  border: "1px solid #222",
-                }}>
-                  {fileContent.length > 50000 ? fileContent.slice(0, 50000) + "\n\n... (truncated)" : fileContent}
+                <pre style={preStyle}>
+                  {fileContent.length > 50000 ? `${fileContent.slice(0, 50000)}\n\n... (truncated)` : fileContent}
                 </pre>
               </div>
             ) : (
               <div style={{ maxHeight: 400, overflowY: "auto" }}>
-                {inspectFiles.map(f => (
+                {inspectFiles.map((file) => (
                   <div
-                    key={f.name}
-                    onClick={() => f.isDir ? navigateDir(f.name) : openFile(f.name)}
-                    style={{
-                      padding: "6px 10px", display: "flex", justifyContent: "space-between", cursor: "pointer",
-                      borderBottom: "1px solid #1a1a1a", fontSize: 12,
-                    }}
-                    onMouseEnter={e => (e.currentTarget.style.background = "#1a1a2e")}
-                    onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                    key={file.name}
+                    onClick={() => file.isDir ? navigateDir(file.name) : openFile(file.name)}
+                    style={fileRowStyle}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "#1a1a2e")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                   >
-                    <span>{f.isDir ? "📁 " : "📄 "}{f.name}</span>
-                    <span style={{ color: "#666" }}>{f.isDir ? "" : formatBytes(f.size)}</span>
+                    <span>{file.isDir ? "[dir] " : "[file] "}{file.name}</span>
+                    <span style={{ color: "#666" }}>{file.isDir ? "" : formatBytes(file.size)}</span>
                   </div>
                 ))}
               </div>
@@ -433,24 +741,20 @@ export default function Backups() {
         </div>
       )}
 
-      {/* ── SQL Query Modal ─────────────────────────────────────────────────── */}
       {querySnapshotId && (
         <div style={overlayStyle}>
           <div style={{ ...modalStyle, maxWidth: 800 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={modalHeaderStyle}>
               <h2 style={{ margin: 0, fontSize: 16 }}>Query: {querySnapshotId}</h2>
               <button style={smallBtn} onClick={() => { setQuerySnapshotId(null); setQueryResult(null); setQueryError(null); }}>Close</button>
             </div>
 
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
               <input
-                style={{
-                  flex: 1, background: "#0a0a0a", border: "1px solid #333", borderRadius: 6,
-                  padding: "8px 12px", color: "#e0e0e0", fontSize: 12, fontFamily: "monospace",
-                }}
+                style={inputStyle}
                 value={sqlQuery}
-                onChange={e => setSqlQuery(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && runQuery()}
+                onChange={(e) => setSqlQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && runQuery()}
                 placeholder="SELECT * FROM ..."
               />
               <button style={btnStyle("primary")} onClick={runQuery}>Run</button>
@@ -466,8 +770,8 @@ export default function Backups() {
                   <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
                     <thead>
                       <tr>
-                        {Object.keys(queryResult[0] as Record<string, unknown>).map(col => (
-                          <th key={col} style={{ padding: "6px 8px", borderBottom: "1px solid #333", textAlign: "left", color: "#888" }}>{col}</th>
+                        {Object.keys(queryResult[0] as Record<string, unknown>).map((col) => (
+                          <th key={col} style={tableHeadStyle}>{col}</th>
                         ))}
                       </tr>
                     </thead>
@@ -475,7 +779,7 @@ export default function Backups() {
                       {queryResult.map((row, i) => (
                         <tr key={i}>
                           {Object.values(row as Record<string, unknown>).map((val, j) => (
-                            <td key={j} style={{ padding: "4px 8px", borderBottom: "1px solid #1a1a1a", color: "#ccc", fontFamily: "monospace" }}>
+                            <td key={j} style={tableCellStyle}>
                               {val === null ? <span style={{ color: "#555" }}>NULL</span> : String(val)}
                             </td>
                           ))}
@@ -493,13 +797,63 @@ export default function Backups() {
   );
 }
 
-// ── Styles ───────────────────────────────────────────────────────────────────
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 10, color: "#666", textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 12, color: "#ddd", wordBreak: "break-word" }}>{value}</div>
+    </div>
+  );
+}
+
+function MessageList({ title, messages }: { title: string; messages: string[] }) {
+  if (messages.length === 0) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{title}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {messages.map((message) => (
+          <div key={message} style={{ fontSize: 12, color: "#cbd5e1", background: "#151515", borderRadius: 6, padding: "6px 8px" }}>
+            {message}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const bannerStyle = (background: string, color: string): React.CSSProperties => ({
+  padding: "8px 12px",
+  background,
+  borderRadius: 6,
+  marginBottom: 12,
+  fontSize: 13,
+  color,
+});
 
 const statCard: React.CSSProperties = {
   background: "#151515",
   borderRadius: 8,
   padding: "12px 16px",
   minWidth: 80,
+};
+
+const statValue: React.CSSProperties = {
+  fontSize: 20,
+  fontWeight: 700,
+};
+
+const statLabel: React.CSSProperties = {
+  fontSize: 11,
+  color: "#666",
+};
+
+const panelStyle: React.CSSProperties = {
+  background: "#111",
+  border: "1px solid #222",
+  borderRadius: 8,
+  padding: "10px 12px",
+  marginBottom: 12,
 };
 
 const rowStyle: React.CSSProperties = {
@@ -519,6 +873,27 @@ const smallBtn: React.CSSProperties = {
   color: "#999",
   fontSize: 11,
   cursor: "pointer",
+};
+
+const tierBadge: React.CSSProperties = {
+  padding: "2px 8px",
+  borderRadius: 4,
+  fontSize: 10,
+  fontWeight: 600,
+};
+
+const badgeStyle: React.CSSProperties = {
+  padding: "2px 7px",
+  borderRadius: 4,
+  fontSize: 10,
+  fontWeight: 700,
+  border: "1px solid",
+  whiteSpace: "nowrap",
+};
+
+const mutedText: React.CSSProperties = {
+  fontSize: 12,
+  color: "#777",
 };
 
 const overlayStyle: React.CSSProperties = {
@@ -542,4 +917,80 @@ const modalStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   border: "1px solid #222",
+};
+
+const modalHeaderStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginBottom: 12,
+  gap: 12,
+};
+
+const stepBtn: React.CSSProperties = {
+  padding: "7px 8px",
+  borderRadius: 6,
+  border: "1px solid #333",
+  cursor: "pointer",
+  fontSize: 11,
+};
+
+const wizardBodyStyle: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 14,
+  minHeight: 280,
+  overflow: "auto",
+};
+
+const gridTwo: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: 12,
+};
+
+const preStyle: React.CSSProperties = {
+  background: "#0a0a0a",
+  padding: 12,
+  borderRadius: 6,
+  fontSize: 11,
+  maxHeight: 400,
+  overflow: "auto",
+  whiteSpace: "pre-wrap",
+  color: "#ccc",
+  border: "1px solid #222",
+};
+
+const fileRowStyle: React.CSSProperties = {
+  padding: "6px 10px",
+  display: "flex",
+  justifyContent: "space-between",
+  cursor: "pointer",
+  borderBottom: "1px solid #1a1a1a",
+  fontSize: 12,
+};
+
+const inputStyle: React.CSSProperties = {
+  flex: 1,
+  background: "#0a0a0a",
+  border: "1px solid #333",
+  borderRadius: 6,
+  padding: "8px 12px",
+  color: "#e0e0e0",
+  fontSize: 12,
+  fontFamily: "monospace",
+};
+
+const tableHeadStyle: React.CSSProperties = {
+  padding: "6px 8px",
+  borderBottom: "1px solid #333",
+  textAlign: "left",
+  color: "#888",
+};
+
+const tableCellStyle: React.CSSProperties = {
+  padding: "4px 8px",
+  borderBottom: "1px solid #1a1a1a",
+  color: "#ccc",
+  fontFamily: "monospace",
 };

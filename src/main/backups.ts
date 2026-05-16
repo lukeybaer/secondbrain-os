@@ -17,6 +17,9 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { app } from 'electron';
 import Database from 'better-sqlite3';
+import { verifyBackupIntegrity, BackupIntegrityReport } from './backup-health';
+import { getBackupS3Status, BackupS3StatusReport } from './backup-s3-status';
+import { getBackupSecurityReport, BackupSecurityReport } from './backup-security';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,6 +45,15 @@ export interface SnapshotMeta {
 export interface BackupManifest {
   version: 1;
   snapshots: SnapshotMeta[];
+}
+
+export interface TestRestorePreview {
+  tempPath: string;
+  fileCount: number;
+  dataBytes: number;
+  hasConfig: boolean;
+  hasDatabase: boolean;
+  warnings: string[];
 }
 
 // ── Paths ────────────────────────────────────────────────────────────────────
@@ -289,6 +301,18 @@ export function getSnapshot(id: string): SnapshotMeta | null {
   return manifest.snapshots.find((s) => s.id === id) ?? null;
 }
 
+export async function verifySnapshot(id: string): Promise<BackupIntegrityReport> {
+  return verifyBackupIntegrity(snapshotDir(id), getSnapshot(id));
+}
+
+export function getS3BackupStatus(): BackupS3StatusReport {
+  return getBackupS3Status(listSnapshots());
+}
+
+export async function getSnapshotSecurityStatus(id: string): Promise<BackupSecurityReport> {
+  return getBackupSecurityReport(snapshotDir(id), id);
+}
+
 /**
  * Browse the file tree of a snapshot. Returns relative paths.
  */
@@ -341,19 +365,38 @@ export function querySnapshotDb(id: string, sql: string): unknown[] | null {
 
 /**
  * Test-restore: extracts a snapshot to a temp directory for inspection.
- * Does NOT touch the live data. Returns the temp path.
+ * Does NOT touch the live data. Returns a restore preview.
  */
-export async function testRestore(snapshotId: string): Promise<string> {
+export async function testRestore(snapshotId: string): Promise<TestRestorePreview> {
   const src = snapshotDir(snapshotId);
   if (!fs.existsSync(src)) throw new Error(`Snapshot ${snapshotId} not found`);
 
   const tempDir = path.join(backupsRoot(), `_test-restore-${snapshotId}`);
+  const warnings: string[] = [];
   if (fs.existsSync(tempDir)) await rmDir(tempDir);
-  await copyDir(path.join(src, 'data'), path.join(tempDir, 'data'));
+  const snapshotData = path.join(src, 'data');
+  if (!fs.existsSync(snapshotData)) {
+    throw new Error(`Snapshot ${snapshotId} has no data directory`);
+  }
+  await copyDir(snapshotData, path.join(tempDir, 'data'));
   if (fs.existsSync(path.join(src, 'config.json'))) {
     await fsp.copyFile(path.join(src, 'config.json'), path.join(tempDir, 'config.json'));
+  } else {
+    warnings.push('config.json is not included in this snapshot.');
   }
-  return tempDir;
+  const stats = await dirStats(tempDir);
+  const hasDatabase = fs.existsSync(path.join(tempDir, 'data', 'secondbrain.db'));
+  if (!hasDatabase) {
+    warnings.push('data/secondbrain.db is not included in this snapshot.');
+  }
+  return {
+    tempPath: tempDir,
+    fileCount: stats.fileCount,
+    dataBytes: stats.dataBytes,
+    hasConfig: fs.existsSync(path.join(tempDir, 'config.json')),
+    hasDatabase,
+    warnings,
+  };
 }
 
 /**

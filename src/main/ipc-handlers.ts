@@ -39,6 +39,20 @@ import {
   onNewMessage as waOnMessage,
 } from './whatsapp-web';
 import {
+  approvePost,
+  clearSchedule,
+  createDraft,
+  editPost,
+  exportPost,
+  getPosts,
+  rejectPost,
+  schedulePost,
+  setActiveVariant,
+  publishPost,
+  trashPost,
+  refreshEngagement,
+} from './social-posts';
+import {
   initiateCall,
   refreshCallStatus,
   loadCallRecord,
@@ -103,6 +117,8 @@ import {
   getAudioInRange,
   searchAll,
   getStorageStats,
+  getStorageForecast,
+  getActivityClusters,
 } from './timemachine-db';
 import { pruneTimeMachineData } from './timemachine-pruner';
 import {
@@ -112,6 +128,9 @@ import {
   inspectSnapshot,
   readSnapshotFile,
   querySnapshotDb,
+  verifySnapshot,
+  getS3BackupStatus,
+  getSnapshotSecurityStatus,
   testRestore,
   commitRestore,
   rollForward,
@@ -963,163 +982,57 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // ── Social Posts (X / LinkedIn content approval pipeline) ─────────────────
-  const socialDir = path.join(contentRoot, 'content-review', 'social-posts');
-  const socialQueuePath = path.join(socialDir, 'queue.json');
-  const socialLearningsPath = path.join(socialDir, 'learnings.md');
-
-  function readSocialQueue(): any[] {
-    try {
-      if (!fs.existsSync(socialQueuePath)) return [];
-      return JSON.parse(fs.readFileSync(socialQueuePath, 'utf8'));
-    } catch {
-      return [];
-    }
-  }
-
-  function writeSocialQueue(queue: any[]): void {
-    if (!fs.existsSync(socialDir)) fs.mkdirSync(socialDir, { recursive: true });
-    fs.writeFileSync(socialQueuePath, JSON.stringify(queue, null, 2));
-  }
-
-  ipcMain.handle('social:getPosts', (_e, statusFilter?: string) => {
-    const queue = readSocialQueue();
-    if (!statusFilter) return queue;
-    return queue.filter((p: any) => p.status === statusFilter);
-  });
+  ipcMain.handle('social:getPosts', (_e, statusFilter?: string) => getPosts(contentRoot, statusFilter));
 
   ipcMain.handle('social:createDraft', async (_e, post: any) => {
-    try {
-      const queue = readSocialQueue();
-      const id = post.id || `post_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const entry = {
-        id,
-        platform: post.platform || 'x',
-        status: post.status || 'pending_approval',
-        content: post.content || '',
-        source_idea: post.source_idea || '',
-        media_paths: post.media_paths || [],
-        created_at: new Date().toISOString(),
-      };
-      queue.push(entry);
-      writeSocialQueue(queue);
-
-      // Telegram is daily-briefing-only , social post drafts visible in Content Pipeline UI
-      console.log(`[social] New ${entry.platform.toUpperCase()} post draft ready for review`);
-
-      return { success: true, post: entry };
-    } catch (e: any) {
-      return { success: false, error: e.message };
+    const result = createDraft(contentRoot, post);
+    if (result.success && result.post) {
+      console.log(`[social] New ${result.post.platform.toUpperCase()} post draft ready for review`);
     }
+    return result;
   });
 
-  ipcMain.handle('social:approvePost', (_e, id: string, scheduledFor?: string) => {
-    try {
-      const queue = readSocialQueue();
-      const post = queue.find((p: any) => p.id === id);
-      if (!post) return { success: false, error: 'Post not found' };
-      post.status = 'approved';
-      post.approved_at = new Date().toISOString();
-      if (scheduledFor) post.scheduled_for = scheduledFor;
-      writeSocialQueue(queue);
-      return { success: true };
-    } catch (e: any) {
-      return { success: false, error: e.message };
-    }
-  });
+  ipcMain.handle('social:approvePost', (_e, id: string, scheduledFor?: string) =>
+    approvePost(contentRoot, id, scheduledFor),
+  );
 
-  ipcMain.handle('social:rejectPost', (_e, id: string, note: string) => {
-    try {
-      const queue = readSocialQueue();
-      const post = queue.find((p: any) => p.id === id);
-      if (!post) return { success: false, error: 'Post not found' };
-      if (!note) {
-        post.status = 'trashed';
-      } else {
-        post.status = 'rejected';
-        post.rejection_note = note;
-        // Append to learnings
-        const date = new Date().toISOString().split('T')[0];
-        const line = `- [${date}] **Rejected** (${post.platform}): ${note}\n`;
-        if (!fs.existsSync(socialLearningsPath)) {
-          fs.writeFileSync(
-            socialLearningsPath,
-            '# Social Post Learnings\n\n## Rejection Feedback\n\n',
-            'utf8',
-          );
-        }
-        fs.appendFileSync(socialLearningsPath, line, 'utf8');
-      }
-      writeSocialQueue(queue);
-      return { success: true };
-    } catch (e: any) {
-      return { success: false, error: e.message };
-    }
-  });
+  ipcMain.handle('social:schedulePost', (_e, id: string, scheduledFor: string) =>
+    schedulePost(contentRoot, id, scheduledFor),
+  );
 
-  ipcMain.handle('social:editPost', (_e, id: string, content: string) => {
-    try {
-      const queue = readSocialQueue();
-      const post = queue.find((p: any) => p.id === id);
-      if (!post) return { success: false, error: 'Post not found' };
-      post.content = content;
-      writeSocialQueue(queue);
-      return { success: true, post };
-    } catch (e: any) {
-      return { success: false, error: e.message };
-    }
-  });
+  ipcMain.handle('social:clearSchedule', (_e, id: string) => clearSchedule(contentRoot, id));
+
+  ipcMain.handle('social:rejectPost', (_e, id: string, note: string) =>
+    rejectPost(contentRoot, id, note),
+  );
+
+  ipcMain.handle('social:editPost', (_e, id: string, content: string) =>
+    editPost(contentRoot, id, content),
+  );
+
+  ipcMain.handle('social:setActiveVariant', (_e, id: string, variantId: string) =>
+    setActiveVariant(contentRoot, id, variantId),
+  );
 
   ipcMain.handle('social:publishPost', async (_e, id: string) => {
     try {
       const { publishTweet } = await import('./x-publisher');
-      const queue = readSocialQueue();
-      const post = queue.find((p: any) => p.id === id);
-      if (!post) return { success: false, error: 'Post not found' };
-      if (post.platform !== 'x')
-        return { success: false, error: `Publishing to ${post.platform} not yet supported` };
-
-      const result = await publishTweet(post.content);
-      if (!result.success) return result;
-
-      post.status = 'posted';
-      post.posted_at = new Date().toISOString();
-      post.post_url = result.postUrl;
-      post.tweet_id = result.tweetId;
-      writeSocialQueue(queue);
-      return { success: true, postUrl: result.postUrl };
+      return publishPost(contentRoot, id, publishTweet);
     } catch (e: any) {
       return { success: false, error: e.message };
     }
   });
 
-  ipcMain.handle('social:trashPost', (_e, id: string) => {
-    try {
-      const queue = readSocialQueue();
-      const post = queue.find((p: any) => p.id === id);
-      if (!post) return { success: false, error: 'Post not found' };
-      post.status = 'trashed';
-      writeSocialQueue(queue);
-      return { success: true };
-    } catch (e: any) {
-      return { success: false, error: e.message };
-    }
-  });
+  ipcMain.handle('social:exportPost', (_e, id: string, exportNote?: string, exportUrl?: string) =>
+    exportPost(contentRoot, id, exportNote, exportUrl),
+  );
+
+  ipcMain.handle('social:trashPost', (_e, id: string) => trashPost(contentRoot, id));
 
   ipcMain.handle('social:refreshEngagement', async (_e, id: string) => {
     try {
       const { getTweetEngagement } = await import('./x-publisher');
-      const queue = readSocialQueue();
-      const post = queue.find((p: any) => p.id === id);
-      if (!post) return { success: false, error: 'Post not found' };
-      if (!post.tweet_id)
-        return { success: false, error: 'No tweet ID , post may not have been published' };
-
-      const engagement = await getTweetEngagement(post.tweet_id);
-      if (!engagement) return { success: false, error: 'Could not fetch engagement' };
-
-      post.engagement = engagement;
-      writeSocialQueue(queue);
-      return { success: true, engagement };
+      return refreshEngagement(contentRoot, id, getTweetEngagement);
     } catch (e: any) {
       return { success: false, error: e.message };
     }
@@ -1220,10 +1133,36 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
+  ipcMain.handle('backups:verify', async (_e, id: string) => {
+    try {
+      const report = await verifySnapshot(id);
+      return { success: true, report };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('backups:s3Status', () => {
+    try {
+      return { success: true, report: getS3BackupStatus() };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('backups:security', async (_e, id: string) => {
+    try {
+      const report = await getSnapshotSecurityStatus(id);
+      return { success: true, report };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
   ipcMain.handle('backups:testRestore', async (_e, id: string) => {
     try {
-      const tempPath = await testRestore(id);
-      return { success: true, tempPath };
+      const preview = await testRestore(id);
+      return { success: true, ...preview };
     } catch (e: any) {
       return { success: false, error: e.message };
     }
@@ -1384,6 +1323,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('tm:audio:range', (_e, start: string, end: string) => getAudioInRange(start, end));
   ipcMain.handle('tm:search', (_e, query: string, limit?: number) => searchAll(query, limit));
   ipcMain.handle('tm:stats', () => getStorageStats());
+  ipcMain.handle('tm:forecast', () => getStorageForecast(loadTimeMachineConfig()));
+  ipcMain.handle('tm:clusters:range', (_e, start: string, end: string) => {
+    const config = loadTimeMachineConfig();
+    return getActivityClusters(
+      start,
+      end,
+      config.clustering.idleGapMinutes,
+      config.clustering.topTermCount,
+    );
+  });
   ipcMain.handle('tm:prune', async () => pruneTimeMachineData());
   ipcMain.handle('tm:screenshot', async (_e, localPath: string | null, s3Key: string | null) => {
     // Try local file first

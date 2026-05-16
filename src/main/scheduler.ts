@@ -9,9 +9,9 @@ import { runNightlyDecay } from './memory-index';
 import { runDailyBackup } from './backups';
 import { runLinkedInNightlyCrawl } from './linkedin-intel';
 import { runSleepTimeConsolidation } from './sleep-time-consolidation';
-import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
+import { publishDueScheduledSocialPosts } from './social-posts';
 
 // ── CT time helper ────────────────────────────────────────────────────────────
 
@@ -185,48 +185,10 @@ async function publishScheduledSocialPosts(): Promise<void> {
   const contentRoot =
     process.env.SECONDBRAIN_ROOT ??
     (app.isPackaged ? '${SECONDBRAIN_ROOT:-/path/to/secondbrain}' : path.resolve(app.getAppPath()));
-  const queuePath = path.join(contentRoot, 'content-review', 'social-posts', 'queue.json');
-
-  if (!fs.existsSync(queuePath)) return;
-
-  let queue: any[];
-  try {
-    queue = JSON.parse(fs.readFileSync(queuePath, 'utf8'));
-  } catch {
-    return;
-  }
-
-  const now = new Date();
-  let changed = false;
-
-  for (const post of queue) {
-    if (post.status !== 'approved' || !post.scheduled_for) continue;
-    const scheduledTime = new Date(post.scheduled_for);
-    if (scheduledTime > now) continue;
-
-    // Time to publish
-    try {
-      const { publishTweet } = await import('./x-publisher');
-      if (post.platform === 'x') {
-        const result = await publishTweet(post.content);
-        if (result.success) {
-          post.status = 'posted';
-          post.posted_at = new Date().toISOString();
-          post.post_url = result.postUrl;
-          post.tweet_id = result.tweetId;
-          changed = true;
-          console.log(`[scheduler] Published scheduled social post ${post.id} to X`);
-        } else {
-          console.error(`[scheduler] Failed to publish ${post.id}:`, result.error);
-        }
-      }
-    } catch (err) {
-      console.error(`[scheduler] Error publishing ${post.id}:`, err);
-    }
-  }
-
-  if (changed) {
-    fs.writeFileSync(queuePath, JSON.stringify(queue, null, 2));
+  const { publishTweet } = await import('./x-publisher');
+  const result = await publishDueScheduledSocialPosts(contentRoot, publishTweet);
+  if (result.published > 0) {
+    console.log(`[scheduler] Published ${result.published} scheduled social post(s) to X`);
   }
 }
 

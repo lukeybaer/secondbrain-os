@@ -61,6 +61,41 @@ export interface SocialPost {
   rejection_note?: string;
   scheduled_for?: string;
   tweet_id?: string;
+  exported_at?: string;
+  export_url?: string;
+  export_note?: string;
+  variants?: {
+    id: string;
+    content: string;
+    created_at: string;
+    source: string;
+    active: boolean;
+  }[];
+  active_variant_id?: string;
+  history?: {
+    id: string;
+    type: string;
+    at: string;
+    note?: string;
+    actor?: string;
+    metadata?: Record<string, unknown>;
+  }[];
+  media_validation?: {
+    path: string;
+    exists: boolean;
+    kind: 'image' | 'video' | 'file';
+    file_name: string;
+    warning?: string;
+  }[];
+  learnings?: {
+    id: string;
+    type: 'rejection' | 'engagement';
+    platform: 'x' | 'linkedin';
+    content_excerpt: string;
+    note?: string;
+    metrics?: Record<string, unknown>;
+    created_at: string;
+  }[];
   engagement?: {
     views?: number;
     likes?: number;
@@ -1455,6 +1490,20 @@ function PlatformBadge({ platform }: { platform: SocialPost['platform'] }) {
   );
 }
 
+function toDatetimeLocalValue(value?: string): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function fromDatetimeLocalValue(value: string): string | undefined {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 // ---------------------------------------------------------------------------
 // Social post card (review/approve/reject)
 // ---------------------------------------------------------------------------
@@ -1462,17 +1511,25 @@ function PlatformBadge({ platform }: { platform: SocialPost['platform'] }) {
 function SocialPostCard({
   post,
   onApprove,
+  onSchedule,
+  onClearSchedule,
   onReject,
   onEdit,
+  onSetActiveVariant,
   onPublish,
+  onExport,
   onTrash,
   onRefreshEngagement,
 }: {
   post: SocialPost;
-  onApprove: (id: string) => void;
+  onApprove: (id: string, scheduledFor?: string) => void;
+  onSchedule: (id: string, scheduledFor: string) => void;
+  onClearSchedule: (id: string) => void;
   onReject: (id: string, note: string) => void;
   onEdit: (id: string, content: string) => void;
+  onSetActiveVariant: (id: string, variantId: string) => void;
   onPublish: (id: string) => void;
+  onExport: (id: string) => void;
   onTrash: (id: string) => void;
   onRefreshEngagement: (id: string) => void;
 }) {
@@ -1480,10 +1537,17 @@ function SocialPostCard({
   const [editContent, setEditContent] = useState(post.content);
   const [rejecting, setRejecting] = useState(false);
   const [rejectNote, setRejectNote] = useState('');
+  const [scheduleValue, setScheduleValue] = useState(toDatetimeLocalValue(post.scheduled_for));
   const [busy, setBusy] = useState(false);
+  const activeVariantId = post.active_variant_id || post.variants?.find((v) => v.active)?.id;
   const charLimit = post.platform === 'x' ? 280 : 3000;
   const charCount = editContent.length;
   const overLimit = charCount > charLimit;
+
+  useEffect(() => {
+    setEditContent(post.content);
+    setScheduleValue(toDatetimeLocalValue(post.scheduled_for));
+  }, [post.content, post.scheduled_for]);
 
   async function handleSaveEdit() {
     setBusy(true);
@@ -1495,6 +1559,29 @@ function SocialPostCard({
   async function handleApprove() {
     setBusy(true);
     await onApprove(post.id);
+    setBusy(false);
+  }
+
+  async function handleApproveScheduled() {
+    const scheduledFor = fromDatetimeLocalValue(scheduleValue);
+    if (!scheduledFor) return;
+    setBusy(true);
+    await onApprove(post.id, scheduledFor);
+    setBusy(false);
+  }
+
+  async function handleSchedule() {
+    const scheduledFor = fromDatetimeLocalValue(scheduleValue);
+    if (!scheduledFor) return;
+    setBusy(true);
+    await onSchedule(post.id, scheduledFor);
+    setBusy(false);
+  }
+
+  async function handleClearSchedule() {
+    setBusy(true);
+    await onClearSchedule(post.id);
+    setScheduleValue('');
     setBusy(false);
   }
 
@@ -1512,10 +1599,29 @@ function SocialPostCard({
     setBusy(false);
   }
 
+  async function handleExport() {
+    setBusy(true);
+    await onExport(post.id);
+    setBusy(false);
+  }
+
+  async function handleCopy() {
+    await navigator.clipboard?.writeText(post.content);
+  }
+
+  async function handleVariantChange(variantId: string) {
+    setBusy(true);
+    await onSetActiveVariant(post.id, variantId);
+    const variant = post.variants?.find((v) => v.id === variantId);
+    if (variant) setEditContent(variant.content);
+    setBusy(false);
+  }
+
   const isPending = post.status === 'pending_approval' || post.status === 'draft';
   const isApproved = post.status === 'approved';
   const isPosted = post.status === 'posted';
   const isRejected = post.status === 'rejected';
+  const isLinkedIn = post.platform === 'linkedin';
 
   return (
     <div
@@ -1535,16 +1641,42 @@ function SocialPostCard({
             minute: '2-digit',
           })}
         </span>
-        {isPosted && post.posted_at && (
-          <span style={{ ...s.meta, color: '#4ade80' }}>
-            Posted{' '}
+          {isPosted && post.posted_at && (
+            <span style={{ ...s.meta, color: '#4ade80' }}>
+            {post.exported_at ? 'Exported' : 'Posted'}{' '}
             {new Date(post.posted_at).toLocaleDateString('en-US', {
               month: 'short',
               day: 'numeric',
             })}
           </span>
         )}
+        {isApproved && post.scheduled_for && (
+          <span style={{ ...s.meta, color: '#facc15' }}>
+            Scheduled {new Date(post.scheduled_for).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+          </span>
+        )}
+        {isApproved && !post.scheduled_for && (
+          <span style={{ ...s.meta, color: '#60a5fa' }}>Ready to publish</span>
+        )}
       </div>
+
+      {isPending && (post.variants?.length ?? 0) > 1 && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+          <span style={s.meta}>Variant</span>
+          <select
+            value={activeVariantId}
+            onChange={(e) => handleVariantChange(e.target.value)}
+            disabled={busy}
+            style={{ ...s.input, width: 'auto', padding: '5px 8px' }}
+          >
+            {post.variants?.map((variant, index) => (
+              <option key={variant.id} value={variant.id}>
+                {index + 1} · {variant.source}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* Content */}
       {editing ? (
@@ -1637,6 +1769,49 @@ function SocialPostCard({
         </details>
       )}
 
+      {(post.media_validation?.length ?? post.media_paths?.length ?? 0) > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          {(post.media_validation ?? post.media_paths?.map((p) => ({
+            path: p,
+            exists: true,
+            kind: 'file' as const,
+            file_name: p.split(/[\\/]/).pop() || p,
+          })) ?? []).map((media) => (
+            <div
+              key={media.path}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginTop: 6,
+                padding: 8,
+                borderRadius: 4,
+                background: '#0a0a0a',
+                border: `1px solid ${media.warning ? '#3a1a1a' : '#1a1a1a'}`,
+              }}
+            >
+              {media.exists && media.kind === 'image' && (
+                <img
+                  src={localFileUrl(media.path)}
+                  alt={media.file_name}
+                  style={{ width: 56, height: 40, objectFit: 'cover', borderRadius: 4 }}
+                />
+              )}
+              {media.exists && media.kind === 'video' && (
+                <video
+                  src={localFileUrl(media.path)}
+                  style={{ width: 56, height: 40, objectFit: 'cover', borderRadius: 4 }}
+                  muted
+                />
+              )}
+              <span style={{ fontSize: 12, color: media.warning ? '#f87171' : '#888' }}>
+                {media.file_name}{media.warning ? ` · ${media.warning}` : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Rejection note */}
       {isRejected && post.rejection_note && (
         <div
@@ -1651,6 +1826,26 @@ function SocialPostCard({
           }}
         >
           Rejected: {post.rejection_note}
+        </div>
+      )}
+
+      {(post.learnings?.length ?? 0) > 0 && (
+        <div
+          style={{
+            fontSize: 12,
+            color: '#a3e635',
+            background: '#0d1a0a',
+            borderRadius: 4,
+            padding: 8,
+            marginBottom: 8,
+            border: '1px solid #1f3a10',
+          }}
+        >
+          Learnings: {post.learnings!.slice(-2).map((learning) =>
+            learning.type === 'rejection'
+              ? learning.note
+              : `Engagement snapshot captured ${new Date(learning.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
+          ).join(' · ')}
         </div>
       )}
 
@@ -1689,6 +1884,19 @@ function SocialPostCard({
               <button style={s.btnApprove} disabled={busy} onClick={handleApprove}>
                 Approve
               </button>
+              <input
+                type="datetime-local"
+                value={scheduleValue}
+                onChange={(e) => setScheduleValue(e.target.value)}
+                style={{ ...s.input, width: 180, padding: '5px 8px', fontSize: 11 }}
+              />
+              <button
+                style={s.btnSmall}
+                disabled={busy || !scheduleValue}
+                onClick={handleApproveScheduled}
+              >
+                Approve Scheduled
+              </button>
               <button style={{ ...s.btnSmall }} onClick={() => setEditing(true)}>
                 Edit
               </button>
@@ -1705,20 +1913,64 @@ function SocialPostCard({
             </>
           )}
           {isApproved && (
-            <button
-              style={{
-                ...s.btnApprove,
-                background: '#0e1b2e',
-                color: '#60a5fa',
-                borderColor: '#1e3a5f',
-              }}
-              disabled={busy}
-              onClick={handlePublish}
-            >
-              Publish Now
-            </button>
+            <>
+              <input
+                type="datetime-local"
+                value={scheduleValue}
+                onChange={(e) => setScheduleValue(e.target.value)}
+                style={{ ...s.input, width: 180, padding: '5px 8px', fontSize: 11 }}
+              />
+              <button style={s.btnSmall} disabled={busy || !scheduleValue} onClick={handleSchedule}>
+                {post.scheduled_for ? 'Reschedule' : 'Schedule'}
+              </button>
+              {post.scheduled_for && (
+                <button style={s.btnSmall} disabled={busy} onClick={handleClearSchedule}>
+                  Clear Schedule
+                </button>
+              )}
+              {isLinkedIn ? (
+                <>
+                  <button style={s.btnSmall} disabled={busy} onClick={handleCopy}>
+                    Copy Text
+                  </button>
+                  <button
+                    style={{
+                      ...s.btnApprove,
+                      background: '#0e2e1b',
+                      color: '#60fab4',
+                      borderColor: '#1e5f3a',
+                    }}
+                    disabled={busy}
+                    onClick={handleExport}
+                  >
+                    Mark Exported
+                  </button>
+                </>
+              ) : (
+                <button
+                  style={{
+                    ...s.btnApprove,
+                    background: '#0e1b2e',
+                    color: '#60a5fa',
+                    borderColor: '#1e3a5f',
+                  }}
+                  disabled={busy}
+                  onClick={handlePublish}
+                >
+                  Publish Now
+                </button>
+              )}
+            </>
           )}
-          {isPosted && post.post_url && (
+          {isPosted && isLinkedIn && (
+            <>
+              <button style={s.btnSmall} disabled={busy} onClick={handleCopy}>
+                Copy Text
+              </button>
+              <span style={{ ...s.meta, color: '#60fab4' }}>LinkedIn export prepared</span>
+            </>
+          )}
+          {isPosted && post.post_url && !isLinkedIn && (
             <>
               <a
                 href={post.post_url}
@@ -1738,6 +1990,20 @@ function SocialPostCard({
             </>
           )}
         </div>
+      )}
+
+      {(post.history?.length ?? 0) > 0 && (
+        <details style={{ marginTop: 10 }}>
+          <summary style={{ fontSize: 11, color: '#555', cursor: 'pointer' }}>History</summary>
+          <div style={{ marginTop: 6, display: 'grid', gap: 4 }}>
+            {post.history!.slice(-8).map((entry) => (
+              <div key={entry.id} style={{ fontSize: 11, color: '#666' }}>
+                {entry.type} · {new Date(entry.at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                {entry.note ? ` · ${entry.note}` : ''}
+              </div>
+            ))}
+          </div>
+        </details>
       )}
 
       {/* Reject panel */}
@@ -1797,29 +2063,65 @@ function SocialPostsTab() {
     }
   }
 
-  async function handleApprove(id: string) {
-    await ipcInvoke('social:approvePost', id);
+  async function handleApprove(id: string, scheduledFor?: string) {
+    const result = (await ipcInvoke('social:approvePost', id, scheduledFor)) as any;
+    if (result?.post) {
+      setPosts((prev) => prev.map((p) => (p.id === id ? result.post : p)));
+      return;
+    }
     setPosts((prev) =>
       prev.map((p) =>
-        p.id === id ? { ...p, status: 'approved', approved_at: new Date().toISOString() } : p,
+        p.id === id
+          ? {
+              ...p,
+              status: 'approved',
+              approved_at: new Date().toISOString(),
+              scheduled_for: scheduledFor,
+            }
+          : p,
+      ),
+    );
+  }
+
+  async function handleSchedule(id: string, scheduledFor: string) {
+    const result = (await ipcInvoke('social:schedulePost', id, scheduledFor)) as any;
+    setPosts((prev) =>
+      prev.map((p) =>
+        p.id === id ? result?.post ?? { ...p, status: 'approved', scheduled_for: scheduledFor } : p,
+      ),
+    );
+  }
+
+  async function handleClearSchedule(id: string) {
+    const result = (await ipcInvoke('social:clearSchedule', id)) as any;
+    setPosts((prev) =>
+      prev.map((p) =>
+        p.id === id ? result?.post ?? { ...p, scheduled_for: undefined } : p,
       ),
     );
   }
 
   async function handleReject(id: string, note: string) {
-    await ipcInvoke('social:rejectPost', id, note);
+    const result = (await ipcInvoke('social:rejectPost', id, note)) as any;
     if (!note) {
       setPosts((prev) => prev.filter((p) => p.id !== id));
     } else {
       setPosts((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, status: 'rejected', rejection_note: note } : p)),
+        prev.map((p) =>
+          p.id === id ? result?.post ?? { ...p, status: 'rejected', rejection_note: note } : p,
+        ),
       );
     }
   }
 
   async function handleEdit(id: string, content: string) {
-    await ipcInvoke('social:editPost', id, content);
-    setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, content } : p)));
+    const result = (await ipcInvoke('social:editPost', id, content)) as any;
+    setPosts((prev) => prev.map((p) => (p.id === id ? result?.post ?? { ...p, content } : p)));
+  }
+
+  async function handleSetActiveVariant(id: string, variantId: string) {
+    const result = (await ipcInvoke('social:setActiveVariant', id, variantId)) as any;
+    setPosts((prev) => prev.map((p) => (p.id === id ? result?.post ?? p : p)));
   }
 
   async function handlePublish(id: string) {
@@ -1834,6 +2136,19 @@ function SocialPostsTab() {
                 posted_at: new Date().toISOString(),
                 post_url: result.postUrl,
               }
+            : p,
+        ),
+      );
+    }
+  }
+
+  async function handleExport(id: string) {
+    const result = (await ipcInvoke('social:exportPost', id)) as any;
+    if (result?.success) {
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === id
+            ? result.post ?? { ...p, status: 'posted', exported_at: new Date().toISOString() }
             : p,
         ),
       );
@@ -1855,7 +2170,8 @@ function SocialPostsTab() {
   }
 
   const pending = posts.filter((p) => p.status === 'pending_approval' || p.status === 'draft');
-  const approved = posts.filter((p) => p.status === 'approved');
+  const scheduled = posts.filter((p) => p.status === 'approved' && p.scheduled_for);
+  const ready = posts.filter((p) => p.status === 'approved' && !p.scheduled_for);
   const posted = posts
     .filter((p) => p.status === 'posted')
     .sort((a, b) => (b.posted_at ?? '').localeCompare(a.posted_at ?? ''));
@@ -1874,9 +2190,13 @@ function SocialPostsTab() {
             key={p.id}
             post={p}
             onApprove={handleApprove}
+            onSchedule={handleSchedule}
+            onClearSchedule={handleClearSchedule}
             onReject={handleReject}
             onEdit={handleEdit}
+            onSetActiveVariant={handleSetActiveVariant}
             onPublish={handlePublish}
+            onExport={handleExport}
             onTrash={handleTrash}
             onRefreshEngagement={handleRefreshEngagement}
           />
@@ -1893,8 +2213,9 @@ function SocialPostsTab() {
         pending,
         'No posts pending review. Amy will queue drafts here for your approval.',
       )}
-      {renderSection('Approved , Ready to Publish', approved, 'No approved posts waiting.')}
-      {renderSection('Posted', posted, 'No posts published yet.')}
+      {renderSection('Scheduled', scheduled, 'No scheduled posts waiting.')}
+      {renderSection('Ready to Publish', ready, 'No approved posts waiting.')}
+      {renderSection('Posted / Exported', posted, 'No posts published or exported yet.')}
       {rejected.length > 0 && renderSection('Rejected', rejected, '')}
     </div>
   );
