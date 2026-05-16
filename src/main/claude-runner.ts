@@ -105,7 +105,7 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
     ];
     for (const p of candidates) {
       try {
-        require('fs').accessSync(p);
+        fs.accessSync(p);
         childEnv['CLAUDE_CODE_GIT_BASH_PATH'] = p;
         break;
       } catch {
@@ -129,7 +129,7 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
     ].filter(Boolean) as string[];
     for (const c of candidates) {
       try {
-        require('fs').accessSync(c);
+        fs.accessSync(c);
         return c;
       } catch {
         /* try next */
