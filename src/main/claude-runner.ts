@@ -42,6 +42,8 @@ import Anthropic from '@anthropic-ai/sdk';
 
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
 
+const USERNAME = process.env.USERNAME || process.env.USER || process.env.LOGNAME || os.userInfo().username;
+
 // Both resolved once at module load — avoids repeated fs.accessSync on every spawn.
 const CLAUDE_CMD: string = (() => {
   if (process.platform !== 'win32') return 'claude';
@@ -58,11 +60,10 @@ const CLAUDE_CMD: string = (() => {
 
 const GIT_BASH_PATH: string | null = (() => {
   if (process.platform !== 'win32') return null;
-  const username = process.env.USERNAME || process.env.USER || process.env.LOGNAME || os.userInfo().username;
   const candidates = [
-    `C:\\Users\\${username}\\Program Files\\Git\\usr\\bin\\bash.exe`,
+    `C:\\Users\\${USERNAME}\\Program Files\\Git\\usr\\bin\\bash.exe`,
     `C:\\Program Files\\Git\\usr\\bin\\bash.exe`,
-    `C:\\Users\\${username}\\scoop\\apps\\git\\current\\usr\\bin\\bash.exe`,
+    `C:\\Users\\${USERNAME}\\scoop\\apps\\git\\current\\usr\\bin\\bash.exe`,
   ];
   for (const p of candidates) {
     try { fs.accessSync(p); return p; } catch { /* try next */ }
@@ -117,11 +118,10 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
   // SessionStart hook can find canonical memory files. When Electron is
   // launched from Start Menu or a desktop shortcut, user-level env vars may
   // not be inherited by the process tree.
-  const username = process.env.USERNAME || process.env.USER || process.env.LOGNAME || os.userInfo().username;
   if (!childEnv['SECONDBRAIN_ROOT']) {
     childEnv['SECONDBRAIN_ROOT'] = isWindows
-      ? `C:/Users/${username}/secondbrain`
-      : `/Users/${username}/secondbrain`;
+      ? `C:/Users/${USERNAME}/secondbrain`
+      : `/Users/${USERNAME}/secondbrain`;
   }
 
   // Ensure Claude Code can find git-bash on Windows (resolved once at module load)
