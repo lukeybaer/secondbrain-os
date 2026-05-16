@@ -42,6 +42,34 @@ import Anthropic from '@anthropic-ai/sdk';
 
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
 
+// Both resolved once at module load — avoids repeated fs.accessSync on every spawn.
+const CLAUDE_CMD: string = (() => {
+  if (process.platform !== 'win32') return 'claude';
+  const candidates = [
+    process.env.APPDATA ? `${process.env.APPDATA}\\npm\\claude.cmd` : null,
+    process.env.npm_config_prefix ? `${process.env.npm_config_prefix}\\claude.cmd` : null,
+    process.env.USERPROFILE ? `${process.env.USERPROFILE}\\scoop\\shims\\claude.cmd` : null,
+  ].filter(Boolean) as string[];
+  for (const c of candidates) {
+    try { fs.accessSync(c); return c; } catch { /* try next */ }
+  }
+  return 'claude.cmd'; // fallback — rely on PATH
+})();
+
+const GIT_BASH_PATH: string | null = (() => {
+  if (process.platform !== 'win32') return null;
+  const username = process.env.USERNAME || process.env.USER || process.env.LOGNAME || os.userInfo().username;
+  const candidates = [
+    `C:\\Users\\${username}\\Program Files\\Git\\usr\\bin\\bash.exe`,
+    `C:\\Program Files\\Git\\usr\\bin\\bash.exe`,
+    `C:\\Users\\${username}\\scoop\\apps\\git\\current\\usr\\bin\\bash.exe`,
+  ];
+  for (const p of candidates) {
+    try { fs.accessSync(p); return p; } catch { /* try next */ }
+  }
+  return null;
+})();
+
 export interface RunOptions {
   cwd?: string;
   timeoutMs?: number;
@@ -96,48 +124,12 @@ function spawnClaude(args: string[], options: RunOptions): Promise<RunResult> {
       : `/Users/${username}/secondbrain`;
   }
 
-  // Ensure Claude Code can find git-bash on Windows (custom Git install path)
-  if (isWindows && !childEnv['CLAUDE_CODE_GIT_BASH_PATH']) {
-    const candidates = [
-      `C:\\Users\\${username}\\Program Files\\Git\\usr\\bin\\bash.exe`,
-      `C:\\Program Files\\Git\\usr\\bin\\bash.exe`,
-      `C:\\Users\\${username}\\scoop\\apps\\git\\current\\usr\\bin\\bash.exe`,
-    ];
-    for (const p of candidates) {
-      try {
-        fs.accessSync(p);
-        childEnv['CLAUDE_CODE_GIT_BASH_PATH'] = p;
-        break;
-      } catch {
-        /* try next */
-      }
-    }
+  // Ensure Claude Code can find git-bash on Windows (resolved once at module load)
+  if (!childEnv['CLAUDE_CODE_GIT_BASH_PATH'] && GIT_BASH_PATH) {
+    childEnv['CLAUDE_CODE_GIT_BASH_PATH'] = GIT_BASH_PATH;
   }
 
-  // On Windows, resolve the absolute path to claude.cmd so cmd.exe can find it
-  // even when Electron is launched from Git Bash (which puts Unix-style paths in
-  // process.env.PATH that cmd.exe can't interpret).
-  function findClaudeCmd(): string {
-    if (!isWindows) return 'claude';
-    const candidates = [
-      // npm global bin (most common install location)
-      process.env.APPDATA ? `${process.env.APPDATA}\\npm\\claude.cmd` : null,
-      // npm prefix via env var (set by some installers)
-      process.env.npm_config_prefix ? `${process.env.npm_config_prefix}\\claude.cmd` : null,
-      // Scoop
-      process.env.USERPROFILE ? `${process.env.USERPROFILE}\\scoop\\shims\\claude.cmd` : null,
-    ].filter(Boolean) as string[];
-    for (const c of candidates) {
-      try {
-        fs.accessSync(c);
-        return c;
-      } catch {
-        /* try next */
-      }
-    }
-    return 'claude.cmd'; // fallback , rely on PATH
-  }
-  const claudeAbsPath = findClaudeCmd();
+  const claudeAbsPath = CLAUDE_CMD;
 
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
