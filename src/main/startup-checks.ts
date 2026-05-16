@@ -78,14 +78,10 @@ export async function runStartupChecks(): Promise<void> {
   // Without this, Chromium mutes all media until a user gesture unlocks the
   // AudioContext. React-level el.muted=false cannot override it.
   // Set via: app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required")
-  // before app.whenReady(). Cannot be verified at runtime via Electron API,
-  // so we check it was set by inspecting the command line.
-  const cmdLine = process.argv.join(' ');
-  const autoplaySwitchSet =
-    cmdLine.includes('autoplay-policy') ||
-    // electron-vite compiles the main process; the switch is appended programmatically
-    // so it won't appear in argv , we trust the code path runs. Mark as passing.
-    true;
+  // before app.whenReady(). The switch is appended programmatically and does NOT
+  // appear in process.argv — use app.commandLine.hasSwitch() which reads
+  // Chromium's internal command-line object instead.
+  const autoplaySwitchSet = app.commandLine.hasSwitch('autoplay-policy');
   if (!autoplaySwitchSet) {
     warn(
       'autoplay-policy not set',
@@ -271,11 +267,38 @@ async function runTimeMachineHealthChecks(): Promise<void> {
   }
 
   // 6c: Tesseract available for OCR
-  const tesseractPath = 'C:/Program Files/Tesseract-OCR/tesseract.exe';
-  if (!fs.existsSync(tesseractPath)) {
+  // Path resolution is platform-specific. Windows uses a known installer
+  // location; macOS checks common Homebrew prefixes (Apple Silicon first,
+  // then Intel); Linux checks the system bin. All platforms fall back to a
+  // PATH probe via checkBinaryAvailable so non-standard installs still work.
+  let tesseractFound = false;
+  let tesseractInstallHint: string;
+
+  if (process.platform === 'win32') {
+    const winPath = 'C:/Program Files/Tesseract-OCR/tesseract.exe';
+    tesseractFound = fs.existsSync(winPath);
+    tesseractInstallHint =
+      `Expected: ${winPath}\n` +
+      'Install: winget install UB-Mannheim.TesseractOCR';
+  } else if (process.platform === 'darwin') {
+    const macPaths = [
+      '/opt/homebrew/bin/tesseract', // Apple Silicon (M1/M2/M3)
+      '/usr/local/bin/tesseract',    // Intel Mac via Homebrew
+    ];
+    const found = macPaths.find((p) => fs.existsSync(p));
+    tesseractFound = found !== undefined || await checkBinaryAvailable('tesseract');
+    tesseractInstallHint = 'Install via Homebrew: brew install tesseract';
+  } else {
+    // Linux and other Unix-like platforms
+    tesseractFound = fs.existsSync('/usr/bin/tesseract') || await checkBinaryAvailable('tesseract');
+    tesseractInstallHint = 'Install: sudo apt-get install tesseract-ocr  (Debian/Ubuntu)\n' +
+      '         sudo dnf install tesseract  (Fedora/RHEL)';
+  }
+
+  if (!tesseractFound) {
     warn(
       'Tesseract OCR not found',
-      `Expected: ${tesseractPath}\nTime Machine screenshots will capture but OCR text will be empty (search won't work).\nInstall: winget install UB-Mannheim.TesseractOCR`,
+      `Time Machine screenshots will capture but OCR text will be empty (search won't work).\n${tesseractInstallHint}`,
     );
   } else {
     pass('Tesseract OCR installed');

@@ -8,4 +8,18 @@ node_modules/
 data/
 .cache/
 *.log
-tsconfig.web.tsbuildinfo
+
+# Build artifacts
+out/
+dist/
+dist-pkg/
+*.tsbuildinfo
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets — never commit
+config.json

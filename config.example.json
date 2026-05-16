@@ -1,0 +1,71 @@
+{
+  "_readme": "Copy this file to %APPDATA%/secondbrain/config.json (Windows) or ~/Library/Application Support/secondbrain/config.json (macOS). Fill in every YOUR_* placeholder. Fields left empty disable the corresponding feature. dataDir is set automatically at runtime — leave it blank here.",
+
+  "otterEmail": "your@email.com",
+  "otterPassword": "YOUR_OTTER_PASSWORD",
+  "otterSessionCookie": "",
+  "otterUserId": "",
+
+  "openaiApiKey": "sk-YOUR_OPENAI_API_KEY",
+  "openaiModel": "gpt-4o",
+  "openaiLightModel": "gpt-4o-mini",
+  "openaiEmbeddingModel": "text-embedding-3-small",
+
+  "anthropicApiKey": "sk-ant-YOUR_ANTHROPIC_API_KEY",
+  "groqApiKey": "gsk_YOUR_GROQ_API_KEY",
+
+  "vapiApiKey": "YOUR_VAPI_API_KEY",
+  "vapiPhoneNumberId": "YOUR_VAPI_PHONE_NUMBER_ID",
+  "callbackAssistantId": "YOUR_VAPI_CALLBACK_ASSISTANT_ID",
+
+  "telegramBotToken": "YOUR_TELEGRAM_BOT_TOKEN",
+  "telegramChatId": "YOUR_TELEGRAM_CHAT_ID",
+
+  "whatsappPhoneNumberId": "YOUR_WHATSAPP_PHONE_NUMBER_ID",
+  "whatsappAccessToken": "YOUR_WHATSAPP_ACCESS_TOKEN",
+
+  "twilioAccountSid": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "twilioAuthToken": "YOUR_TWILIO_AUTH_TOKEN",
+  "twilioPhoneNumber": "+15550000000",
+
+  "youtubeClientId": "YOUR_YOUTUBE_OAUTH_CLIENT_ID",
+  "youtubeClientSecret": "YOUR_YOUTUBE_OAUTH_CLIENT_SECRET",
+
+  "xApiKey": "YOUR_X_API_CONSUMER_KEY",
+  "xApiSecret": "YOUR_X_API_CONSUMER_SECRET",
+  "xAccessToken": "YOUR_X_ACCESS_TOKEN",
+  "xAccessTokenSecret": "YOUR_X_ACCESS_TOKEN_SECRET",
+
+  "newsApiKey": "YOUR_NEWSAPI_ORG_KEY",
+
+  "ec2BaseUrl": "https://your-ec2-instance.example.com",
+  "ownerPrivateSim": "+15550000000",
+  "ownerName": "Your Name",
+
+  "dataDir": "",
+  "maxContextConversations": 10,
+  "amyVersion": 2,
+
+  "onboarding": {
+    "completedAt": null,
+    "currentStep": 0,
+    "skippedTour": false,
+    "briefingSections": {
+      "header": true,
+      "topDecisions": true,
+      "calendarToday": true,
+      "pendingApprovals": true,
+      "people": true,
+      "communicationsSummary": true,
+      "projectsDoneTogether": true,
+      "contentPipeline": true,
+      "news": true,
+      "systemHealth": true,
+      "tokenUsageYesterday": true,
+      "awsCosts": false,
+      "footerLinks": true
+    },
+    "secretsDeferred": [],
+    "lastReminderShownAt": null
+  }
+}

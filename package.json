@@ -1,7 +1,7 @@
 {
   "name": "secondbrain",
   "version": "1.0.0",
-  "description": "AI-powered Otter.ai conversation synthesis and search",
+  "description": "Open-source AI executive assistant — phone calls, screen recording, WhatsApp, daily briefings, and a temporal knowledge graph, all powered by your Claude Pro/Max subscription",
   "main": "out/main/index.js",
   "scripts": {
     "predev": "node -e \"const fs=require('fs'),p=require('path'),d=p.join(process.env.APPDATA||'','secondbrain');['SingletonLock','SingletonCookie','SingletonSocket'].forEach(f=>{try{fs.unlinkSync(p.join(d,f))}catch{}});console.log('[predev] singleton locks cleared')\"",
