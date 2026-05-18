@@ -2,7 +2,7 @@
 //
 // CrewAI/AutoGen inspired reflection records. After a multi-step task Amy
 // appends a structured reflection entry: goal, steps, outcome, learnings.
-// This is intentionally minimal , one function, one record type, one file.
+// This is intentionally minimal — one function, one record type, one file.
 //
 // The reflection log already exists at data/agent/ea-reflection-log.jsonl.
 // This module adds a typed append so the nightly briefing can aggregate

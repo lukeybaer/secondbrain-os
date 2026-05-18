@@ -1,9 +1,9 @@
 /**
- * Regression guard: 2026-04-17 owner-requested noise fixes.
+ * Regression guard: 2026-04-17 Luke-requested noise fixes.
  *
  * 1. ProjectC invoice section must be DROPPED (not shown as raw error text)
  *    when the DDB scan fails. A raw "DDB scan failed: ..." line is briefing
- *    noise the owner does not understand.
+ *    noise Luke does not understand.
  * 2. News articles where the LLM returned a refusal sentinel ("I cannot write
  *    this summary" etc.) must be dropped entirely -- headlines without real
  *    summaries are useless.

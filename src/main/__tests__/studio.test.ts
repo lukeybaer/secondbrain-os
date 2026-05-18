@@ -1,5 +1,5 @@
 /**
- * Tests for the Studio module , config, recording management, retake detection.
+ * Tests for the Studio module — config, recording management, retake detection.
  *
  * Uses a temp directory to simulate %APPDATA%\secondbrain so nothing
  * touches real data. Mocks Electron's `app.getPath("userData")`.
@@ -66,7 +66,7 @@ function createMockProcess(behavior?: MockSpawnBehavior): any {
 
   proc.kill = vi.fn(() => doExit(null));
 
-  // stdin.write('q') is how stopFFmpegSession gracefully stops , trigger exit
+  // stdin.write('q') is how stopFFmpegSession gracefully stops — trigger exit
   proc.stdin = new EventEmitter() as any;
   proc.stdin.write = vi.fn((data: string) => {
     if (data === 'q') {
@@ -287,10 +287,10 @@ describe('Retake Detection (via studio-director)', () => {
         { word: 'my', start: 5.5, end: 5.7, confidence: 0.99 },
         { word: 'name', start: 5.7, end: 5.9, confidence: 0.99 },
         { word: 'is', start: 5.9, end: 6.0, confidence: 0.99 },
-        { word: 'Sample', start: 6.0, end: 6.3, confidence: 0.99 },
-        { word: 'Speaker', start: 6.3, end: 6.7, confidence: 0.99 },
+        { word: 'the owner', start: 6.0, end: 6.3, confidence: 0.99 },
+        { word: 'Baer', start: 6.3, end: 6.7, confidence: 0.99 },
       ],
-      fullText: 'Hello my name is Sample Speaker let me do that again Hello my name is Sample Speaker',
+      fullText: 'Hello my name is the owner let me do that again Hello my name is the owner',
       sections: [],
     };
 
@@ -348,7 +348,7 @@ describe('SRT Generation (via studio-render)', () => {
 // Spawn call order for a single camera, recordScreen=false:
 //   1. detectAudioDevices → detectDevices → spawn ffmpeg -list_devices  (needs close event)
 //   2. validateCamera → spawn ffmpeg -f dshow ... -t 0.5  (needs exit event)
-//   3. spawnFFmpeg → spawn ffmpeg ... <outputFile>  (recording process , stays alive or dies)
+//   3. spawnFFmpeg → spawn ffmpeg ... <outputFile>  (recording process — stays alive or dies)
 //
 // For stopRecording:
 //   4. Each session receives 'q' on stdin → exit
@@ -379,7 +379,7 @@ function queueValidateSpawn(ok: boolean, errorMsg?: string): void {
 
 /** Helper: queue a spawn that stays alive (for a successful camera recording) */
 function queueAliveSpawn(): void {
-  // No exit behavior , process stays alive until killed
+  // No exit behavior — process stays alive until killed
   spawnBehaviorQueue.push({});
 }
 
@@ -413,7 +413,7 @@ describe('Camera Recording Pipeline', () => {
   // After each test, make sure no active recording is lingering (otherwise next test fails
   // with "Recording already in progress"). We stop it if needed.
   afterEach(async () => {
-    // Best-effort cleanup , stopRecording may fail if there's no active recording
+    // Best-effort cleanup — stopRecording may fail if there's no active recording
     // Queue spawns for potential remux calls during stop
     spawnBehaviorQueue = [
       { exitImmediately: true, exitCode: 0 },
@@ -436,7 +436,7 @@ describe('Camera Recording Pipeline', () => {
     });
 
     // Queue spawns for startRecording:
-    // 1. spawnFFmpeg for TestCam , stays alive (no validation/detection with config cameras)
+    // 1. spawnFFmpeg for TestCam — stays alive (no validation/detection with config cameras)
     queueAliveSpawn();
 
     const startResult = await startRecording();
@@ -453,7 +453,7 @@ describe('Camera Recording Pipeline', () => {
     // So stopRecording's post-validation should remove it from files.
 
     // Queue spawns for stopRecording:
-    // stopFFmpegSession writes 'q' , our mock process has stdin.write as vi.fn()
+    // stopFFmpegSession writes 'q' — our mock process has stdin.write as vi.fn()
     // and then the process exits (we need to handle this via kill or exit event)
     // The mock process will be killed during stop. Then remux is called per MKV result.
     // Since file doesn't exist, remux won't be attempted for missing files.
@@ -483,7 +483,7 @@ describe('Camera Recording Pipeline', () => {
     const filePath = rec!.files.front;
 
     // Create the MKV file but make it tiny (simulating FFmpeg dying mid-recording)
-    fs.writeFileSync(filePath, Buffer.alloc(100)); // 100 bytes , below the 1024 threshold
+    fs.writeFileSync(filePath, Buffer.alloc(100)); // 100 bytes — below the 1024 threshold
 
     const stopResult = await stopRecording();
     expect(stopResult.success).toBe(true);
@@ -528,11 +528,11 @@ describe('Camera Recording Pipeline', () => {
 
     // New flow: no validateCamera, just direct spawn attempts.
     // Non-MJPEG-first camera tries: default → mjpeg 720p → mjpeg 480p
-    // 1. Default format , FAILS (exits immediately)
+    // 1. Default format — FAILS (exits immediately)
     queueFailSpawn('Error: Could not connect pins');
-    // 2. MJPEG 1280x720 , FAILS
+    // 2. MJPEG 1280x720 — FAILS
     queueFailSpawn('Error: Could not open dshow');
-    // 3. MJPEG 640x480 , SUCCEEDS (stays alive)
+    // 3. MJPEG 640x480 — SUCCEEDS (stays alive)
     queueAliveSpawn();
 
     const result = await startRecording();
@@ -637,9 +637,9 @@ describe('Camera Recording Pipeline', () => {
 
     // 1. detectAudioDevices
     queueDetectDevicesSpawn();
-    // 2. validateCamera , fails
+    // 2. validateCamera — fails
     queueValidateSpawn(false, 'Error: Could not connect pins');
-    // 3. First fallback (mjpeg 1280x720) , succeeds
+    // 3. First fallback (mjpeg 1280x720) — succeeds
     queueAliveSpawn();
 
     const result = await startRecording();

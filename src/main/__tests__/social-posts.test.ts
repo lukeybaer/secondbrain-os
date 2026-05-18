@@ -1,5 +1,5 @@
 /**
- * Tests for social posts content pipeline , CRUD, approval workflow,
+ * Tests for social posts content pipeline — CRUD, approval workflow,
  * rejection with learnings, and publishing.
  */
 
@@ -121,7 +121,7 @@ function trashPost(id: string): { success: boolean } {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe('Social Posts , Content Pipeline', () => {
+describe('Social Posts — Content Pipeline', () => {
   describe('createDraft', () => {
     it('creates a draft with pending_approval status', () => {
       const result = createDraft({

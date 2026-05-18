@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup-hyperframes.sh , bootstrap the HeyGen HyperFrames repo locally for
+# setup-hyperframes.sh — bootstrap the HeyGen HyperFrames repo locally for
 # thumbnail + B-roll generation. Idempotent. Not committed to git (tools/ is
 # gitignored) because the repo is ~220MB after lfs filter.
 #
@@ -17,12 +17,12 @@ if [ ! -d "$TOOLS_DIR/.git" ]; then
   git clone --depth 1 https://github.com/heygen-com/hyperframes.git "$TOOLS_DIR"
 else
   echo "[hyperframes] already cloned at $TOOLS_DIR, pulling latest..."
-  git -C "$TOOLS_DIR" pull --ff-only || echo "  (pull skipped , continuing with current checkout)"
+  git -C "$TOOLS_DIR" pull --ff-only || echo "  (pull skipped — continuing with current checkout)"
 fi
 
 if ! command -v bun >/dev/null 2>&1; then
   echo "[hyperframes] NOTE: 'bun' is not on PATH. HyperFrames uses bun for workspace resolution."
-  echo "            Install: https://bun.sh , then re-run this script to build."
+  echo "            Install: https://bun.sh — then re-run this script to build."
   exit 0
 fi
 

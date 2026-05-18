@@ -7,8 +7,8 @@
  *   1. v2 called the paid OpenAI API directly despite the owner having a Claude Max
  *      subscription. The rule "everything flows through claude max" was violated.
  *   2. v2 hardcoded action item strings as literal msg4Parts.push(...) calls,
- *      which fabricated facts (attributing a contact's 7-day deadline to the partner,
- *      inventing a personal-life-event connection) and would have shipped the same fake items
+ *      which fabricated facts (attributing Ed's 7-day deadline to partner, inventing
+ *      an EB-1A/I-485 connection) and would have shipped the same fake items
  *      every future run regardless of Gmail state.
  *   3. v3 initially used spawnSync({shell:true}) on Windows which truncated
  *      multi-line prompts and made claude return "what do you want me to write?"
@@ -23,7 +23,7 @@ import { spawnSync } from 'child_process';
 
 const SCRIPT_PATH = path.resolve(__dirname, '..', '..', '..', 'scripts', 'manual-briefing-v3.js');
 
-describe('manual-briefing-v3.js , no paid LLM calls', () => {
+describe('manual-briefing-v3.js — no paid LLM calls', () => {
   let src: string;
   beforeAll(() => {
     src = fs.existsSync(SCRIPT_PATH) ? fs.readFileSync(SCRIPT_PATH, 'utf-8') : '';
@@ -73,11 +73,11 @@ describe('manual-briefing-v3.js , no paid LLM calls', () => {
   });
 });
 
-// Regression: 2026-04-12 #gap , script had bash-style ${VARNAME:-default} syntax
+// Regression: 2026-04-12 #gap — script had bash-style ${VARNAME:-default} syntax
 // embedded in JS template literals, causing SyntaxError at startup. Node.js cannot
 // run a file that fails to parse. This suite catches any future syntax breakage
 // before it reaches the scheduled task runner.
-describe('manual-briefing-v3.js , JavaScript syntax validity', () => {
+describe('manual-briefing-v3.js — JavaScript syntax validity', () => {
   it('parses without syntax errors (node --check)', () => {
     const result = spawnSync(process.execPath, ['--check', SCRIPT_PATH], {
       encoding: 'utf8',
@@ -98,7 +98,7 @@ describe('manual-briefing-v3.js , JavaScript syntax validity', () => {
   });
 });
 
-describe('manual-briefing-v3.js , no hardcoded action items', () => {
+describe('manual-briefing-v3.js — no hardcoded action items', () => {
   let src: string;
   beforeAll(() => {
     src = fs.existsSync(SCRIPT_PATH) ? fs.readFileSync(SCRIPT_PATH, 'utf-8') : '';
@@ -110,11 +110,11 @@ describe('manual-briefing-v3.js , no hardcoded action items', () => {
   });
 
   it('does not contain hardcoded person names in msg4Parts.push calls', () => {
-    // v2 had lines like: msg4Parts.push('1. Contact B , ITM Operating Agreement ...')
+    // v2 had lines like: msg4Parts.push('1. Contact B — ITM Operating Agreement ...')
     // with literal names, dates, and fabricated content. Any push call whose
-    // literal argument mentions a proper-name pattern + "," is a regression.
+    // literal argument mentions a proper-name pattern + "—" is a regression.
     const badPattern =
-      /msg4Parts\.push\([`'"][^`'"]*\b(Contact B|partner|Contact D|Contact E|Zachary|ContactC)\b[^`'"]*,/;
+      /msg4Parts\.push\([`'"][^`'"]*\b(Contact B|partner|Contact D|Contact E|Zachary|ContactC)\b[^`'"]*—/;
     expect(badPattern.test(src)).toBe(false);
   });
 
@@ -125,7 +125,7 @@ describe('manual-briefing-v3.js , no hardcoded action items', () => {
   });
 });
 
-describe('manual-briefing-v3.js , fetches full article bodies', () => {
+describe('manual-briefing-v3.js — fetches full article bodies', () => {
   let src: string;
   beforeAll(() => {
     src = fs.existsSync(SCRIPT_PATH) ? fs.readFileSync(SCRIPT_PATH, 'utf-8') : '';
@@ -156,7 +156,7 @@ describe('manual-briefing-v3.js , fetches full article bodies', () => {
   });
 });
 
-describe('manual-briefing-v3.js , Desktop + home + data dir outputs', () => {
+describe('manual-briefing-v3.js — Desktop + home + data dir outputs', () => {
   let src: string;
   beforeAll(() => {
     src = fs.existsSync(SCRIPT_PATH) ? fs.readFileSync(SCRIPT_PATH, 'utf-8') : '';
@@ -175,7 +175,7 @@ describe('manual-briefing-v3.js , Desktop + home + data dir outputs', () => {
   });
 });
 
-describe('action items JSON , structure', () => {
+describe('action items JSON — structure', () => {
   const jsonPath = path.resolve(__dirname, '..', '..', '..', 'data', 'briefing-action-items.json');
   let data: any;
   beforeAll(() => {
@@ -203,7 +203,7 @@ describe('action items JSON , structure', () => {
     }
   });
 
-  // Regression: 2026-04-11 #gap , Contact E commitment shipped in the 5:30
+  // Regression: 2026-04-11 #gap — Contact E commitment shipped in the 5:30
   // briefing even though Ed replied Apr 9 "I'll jump into ADP" which paused
   // the owner's promise. The openCommitments schema had no supersession check.
   // These tests enforce that every openCommitment carries enough metadata
@@ -212,7 +212,7 @@ describe('action items JSON , structure', () => {
     if (!data || !data.openCommitments) return;
     for (const c of data.openCommitments) {
       expect(c.committedAt, `openCommitment for ${c.person} missing committedAt`).toBeDefined();
-      // stillOpen:true is the operator override , otherwise lastThreadMessageAt
+      // stillOpen:true is the operator override — otherwise lastThreadMessageAt
       // must be present so the script can decide whether the thread moved on.
       if (c.stillOpen !== true) {
         expect(
@@ -238,7 +238,7 @@ describe('action items JSON , structure', () => {
   });
 });
 
-describe('manual-briefing-v3.js , openCommitment supersession filter', () => {
+describe('manual-briefing-v3.js — openCommitment supersession filter', () => {
   let src: string;
   beforeAll(() => {
     src = fs.existsSync(SCRIPT_PATH) ? fs.readFileSync(SCRIPT_PATH, 'utf-8') : '';

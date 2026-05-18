@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""seedance-broll.py , generate cinematic B-roll clips for stuck short-form
+"""seedance-broll.py — generate cinematic B-roll clips for stuck short-form
 videos using ByteDance Seedance 2.0. Attacks feature backlog #77 (multi-shot
 B-roll composition) and unblocks the "can't just show that one stock footage
 the whole time" rejection pattern that has `anthropic_leak` and
@@ -17,10 +17,10 @@ Pipeline:
      splice them into the regen queue.
 
 Env:
-  SEEDANCE_API_KEY  , ByteDance Volcano Ark API key (required)
-  SEEDANCE_MODEL    , default "seedance-2-0-pro" (override for cheaper runs)
-  SEEDANCE_REGION   , default "ap-southeast-1"
-  SEEDANCE_DRY_RUN  , if "1", only print the prompts without calling the API
+  SEEDANCE_API_KEY  — ByteDance Volcano Ark API key (required)
+  SEEDANCE_MODEL    — default "seedance-2-0-pro" (override for cheaper runs)
+  SEEDANCE_REGION   — default "ap-southeast-1"
+  SEEDANCE_DRY_RUN  — if "1", only print the prompts without calling the API
 """
 
 from __future__ import annotations
@@ -66,21 +66,61 @@ def pick_stuck(manifest: dict) -> list[dict]:
     return hits
 
 
+def script_beats(video: dict) -> list[str]:
+    """Split the narration script into sentence-level beats.
+
+    Animations must be relevant to what the video actually says, so each shot
+    is anchored to a real sentence from the script, never to invented imagery.
+    """
+    import re as _re
+    script = (video.get("script") or "").strip()
+    if not script:
+        return []
+    beats = [b.strip() for b in _re.split(r"(?<=[.!?])\s+", script) if b.strip()]
+    return beats
+
+
 def build_shot_prompts(video: dict) -> list[str]:
-    """Derive 4-6 cinematic shot prompts from a stuck video. Designed to
-    produce variety , talking-head alternatives, data viz, abstract
-    technology shots , so the regen editor never has to reuse one clip."""
+    """Derive 4-6 cinematic shot prompts grounded in the actual video script.
+
+    Each shot subject is a real sentence (beat) from the narration, so the
+    animation always depicts something the video is actually saying. When no
+    script is available it falls back to the title only, never to invented
+    concepts the video does not contain.
+    """
     title = video.get("title", "") or video.get("id", "")
     hook = video.get("hook") or video.get("subtitle") or ""
-    base = f"{title}. {hook}".strip(". ").strip()
-    shots = [
-        f"Cinematic close-up of a glowing neural network morphing in ultra slow motion, shallow depth of field, 35mm, teal and orange grade, subject: {base}",
-        f"Dolly shot over a futuristic data-center server rack with volumetric light shafts and particulate air, moody atmosphere, subject: {base}",
-        f"Overhead macro of a circuit board with ripples of light tracing copper pathways, 120fps slow motion, subject: {base}",
-        f"Side-light portrait of a focused engineer at a monitor, reflections in glasses, Roger Deakins style, subject: {base}",
-        f"Abstract generative particles forming into a Claude-style waveform, Anthropic orange gradient, subtle motion blur, subject: {base}",
-        f"Aerial shot of a neon skyline at dusk with data streams overlaid, Blade Runner palette, subject: {base}",
+    beats = script_beats(video)
+
+    styles = [
+        "Cinematic close-up, shallow depth of field, 35mm, teal and orange grade, depicting: {subject}",
+        "Slow dolly shot with volumetric light shafts and particulate air, moody atmosphere, depicting: {subject}",
+        "Overhead macro, 120fps slow motion, soft rim light, depicting: {subject}",
+        "Side-light portrait, reflections, Roger Deakins style, depicting: {subject}",
+        "Abstract generative particles forming a clear visual metaphor, subtle motion blur, depicting: {subject}",
+        "Aerial establishing shot at dusk, cinematic palette, depicting: {subject}",
     ]
+
+    # Subjects come from the script beats so the animation matches the video.
+    if beats:
+        subjects = beats[:6]
+    else:
+        # No script available: anchor on the title only, never invent.
+        fallback = f"{title}. {hook}".strip(". ").strip()
+        subjects = [fallback] if fallback else []
+
+    shots = []
+    for i, subject in enumerate(subjects):
+        style = styles[i % len(styles)]
+        shots.append(style.format(subject=subject))
+    # Guarantee at least 4 shots by reusing beats / styles when the script
+    # is short, still grounded in real script content.
+    idx = 0
+    while len(shots) < 4 and subjects:
+        subject = subjects[idx % len(subjects)]
+        style = styles[len(shots) % len(styles)]
+        shots.append(style.format(subject=subject))
+        idx += 1
     return shots
 
 

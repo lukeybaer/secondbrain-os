@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * LinkedIn Video Producer , SecondBrain Studio
+ * LinkedIn Video Producer — SecondBrain Studio
  * Multi-pass approach for robustness:
  *   Pass 1: Audio splice & normalize
  *   Pass 2: Face intro segment

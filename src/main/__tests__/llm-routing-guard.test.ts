@@ -38,7 +38,7 @@ const IGNORE_PATTERNS = [
 
 // Forbidden: chat/completion endpoints that have a free Claude Max equivalent.
 // ALLOWED (intentionally not in this list): audio transcription (Whisper),
-// embeddings, and image generation endpoints , those have no Claude Max
+// embeddings, and image generation endpoints — those have no Claude Max
 // equivalent so they must use a paid API.
 const FORBIDDEN_ENDPOINTS = [
   /api\.openai\.com\/v1\/chat\/completions/,
@@ -80,7 +80,7 @@ function walkSourceFiles(dir: string, results: string[] = []): string[] {
   return results;
 }
 
-describe('LLM routing guard , no paid hosts in source', () => {
+describe('LLM routing guard — no paid hosts in source', () => {
   const files: string[] = [];
 
   for (const entry of SCAN_DIRS) {
@@ -118,7 +118,7 @@ describe('LLM routing guard , no paid hosts in source', () => {
       }
       if (violators.length > 0) {
         throw new Error(
-          `Forbidden endpoint ${endpoint.source} found in source files , must route through Claude Max proxy:\n` +
+          `Forbidden endpoint ${endpoint.source} found in source files — must route through Claude Max proxy:\n` +
             violators.map((v) => `  - ${v}`).join('\n') +
             '\n\nTo allowlist a file temporarily during migration, add it to LEGACY_MIGRATION_ALLOWLIST in this test.',
         );

@@ -14,7 +14,7 @@
  *   npx ts-node scripts/session-search.ts recent [N]
  *
  * Addresses the owner's 2026-04-11 "you were confused before forgetting what
- * I wanted" , Amy can now grep prior sessions to see what the owner actually
+ * I wanted" — Amy can now grep prior sessions to see what the owner actually
  * asked in previous conversations.
  *
  * Commit 16 of 18 in plans/dazzling-rolling-moler.md.
@@ -144,7 +144,7 @@ function openDb(): Database.Database {
 
 function listMetaKeysFromS3(): string[] {
   // Only scan the meta/ prefix. Transcripts under transcripts/ are huge
-  // and we don't need them for the index , the meta file already has
+  // and we don't need them for the index — the meta file already has
   // first_prompt, last_response, topic_guess, and tool_calls.
   const out = execSync(`aws s3 ls s3://${BUCKET}/meta/ --recursive --region ${REGION}`, {
     encoding: 'utf-8',

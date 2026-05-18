@@ -1,5 +1,5 @@
 /**
- * Tests for Studio camera detection , verifies the dshow parsing logic
+ * Tests for Studio camera detection — verifies the dshow parsing logic
  * and prevents regressions in built-in camera discovery.
  *
  * Root cause (2026-04-04): FFmpeg v8.0 removed "DirectShow video devices"
@@ -32,7 +32,7 @@ function parseDshowOutput(stderr: string): DetectedDevice[] {
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
-describe('Studio , Camera Detection Parser', () => {
+describe('Studio — Camera Detection Parser', () => {
   // Real output from ffmpeg v8.0 on the owner's machine
   const FFMPEG_V8_OUTPUT = `[dshow @ 000002805d783600] "Integrated Camera" (video)
 [dshow @ 000002805d783600]   Alternative name "@device_pnp_\\\\?\\usb#vid_04ca&pid_7058&mi_00#6&1a3a7abf&0&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\\global"

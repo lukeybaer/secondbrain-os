@@ -97,7 +97,7 @@ def score_resolution(video_stream, specs):
 
     feedback = f"{width}x{height} (target: {target_w}x{target_h})"
     if score < 80:
-        feedback += " , consider upscaling or re-recording at higher resolution"
+        feedback += " — consider upscaling or re-recording at higher resolution"
 
     return {"score": score, "feedback": feedback, "raw": {"width": width, "height": height}}
 
@@ -164,7 +164,7 @@ def score_bitrate(format_data, specs):
 
     feedback = f"{bitrate_kbps:.0f} kbps (min: {min_br}, ideal: {ideal_br})"
     if score < 70:
-        feedback += " , bitrate too low, re-encode at higher quality (lower CRF)"
+        feedback += " — bitrate too low, re-encode at higher quality (lower CRF)"
 
     return {"score": score, "feedback": feedback, "raw": {"bitrate_kbps": round(bitrate_kbps)}}
 
@@ -190,7 +190,7 @@ def score_format_fit(video_stream, format_data, specs):
         notes.append(f"Aspect ratio: {actual_ratio:.2f} (close to target {target_ratio:.2f})")
     else:
         score += max(0, 30 - int(ratio_diff * 50))
-        notes.append(f"Aspect ratio: {actual_ratio:.2f} (target: {target_ratio:.2f}) , wrong format")
+        notes.append(f"Aspect ratio: {actual_ratio:.2f} (target: {target_ratio:.2f}) — wrong format")
 
     # Duration scoring
     max_dur = specs["max_duration"]

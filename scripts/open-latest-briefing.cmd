@@ -12,13 +12,13 @@ for /f "delims=" %%f in ('dir /b /o-d "%BRIEFING_DIR%\briefing-*.md" 2^>nul') do
     exit /b 0
 )
 
-REM No briefing found , try Desktop as a fallback
+REM No briefing found — try Desktop as a fallback
 for /f "delims=" %%f in ('dir /b /o-d "%USERPROFILE%\Desktop\briefing-*.md" 2^>nul') do (
     start "" "%USERPROFILE%\Desktop\%%f"
     exit /b 0
 )
 
-REM Nothing exists , regenerate and open
+REM Nothing exists — regenerate and open
 echo No briefing found. Regenerating...
 cd /d %USERPROFILE%\secondbrain
 node scripts\manual-briefing-v3.js

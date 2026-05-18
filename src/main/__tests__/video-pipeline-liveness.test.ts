@@ -7,7 +7,7 @@
  *   - empire:rejectVideo sets video_needs_regen = true but nothing on EC2 ever
  *     reads that flag. The TypeScript pipeline calls build_video.py which has no
  *     main() and exits 0, producing nothing. Everything "passes" but no video
- *     is ever built. (Gap discovered 2026-04-13 , pending review empty for weeks.)
+ *     is ever built. (Gap discovered 2026-04-13 — pending review empty for weeks.)
  *
  * These tests verify the mechanical contracts that must hold for the pipeline
  * to actually produce videos. They are NOT integration tests (no network calls).
@@ -24,7 +24,7 @@ const MANIFEST_PATH = path.join(PENDING_DIR, 'manifest.json');
 
 // ── Queue + build scripts exist ───────────────────────────────────────────────
 
-describe('video pipeline , required scripts exist', () => {
+describe('video pipeline — required scripts exist', () => {
   it('ec2-build-from-queue.py exists', () => {
     expect(fs.existsSync(path.join(SCRIPTS_DIR, 'ec2-build-from-queue.py'))).toBe(true);
   });
@@ -53,7 +53,7 @@ describe('video pipeline , required scripts exist', () => {
 
 // ── build_video.py must have a main() entry point ────────────────────────────
 
-describe('build_video.py , must be runnable, not just a library', () => {
+describe('build_video.py — must be runnable, not just a library', () => {
   it('has argparse main entry point', () => {
     const localScript = path.join(REPO_ROOT, 'src', 'main', 'empire', 'build_video.py');
     if (!fs.existsSync(localScript)) return; // Only applies when local script exists
@@ -65,7 +65,7 @@ describe('build_video.py , must be runnable, not just a library', () => {
 
 // ── ipc-handlers wires syncFromEC2 and regenRejected ─────────────────────────
 
-describe('ipc-handlers.ts , video pipeline handlers registered', () => {
+describe('ipc-handlers.ts — video pipeline handlers registered', () => {
   const ipcPath = path.join(REPO_ROOT, 'src', 'main', 'ipc-handlers.ts');
   let src: string;
 
@@ -88,7 +88,7 @@ describe('ipc-handlers.ts , video pipeline handlers registered', () => {
 
 // ── ContentPipeline has sync button ──────────────────────────────────────────
 
-describe('ContentPipeline.tsx , sync UI exists', () => {
+describe('ContentPipeline.tsx — sync UI exists', () => {
   const uiPath = path.join(REPO_ROOT, 'src', 'renderer', 'src', 'pages', 'ContentPipeline.tsx');
   let src: string;
 
@@ -111,7 +111,7 @@ describe('ContentPipeline.tsx , sync UI exists', () => {
 
 // ── Manifest freshness ────────────────────────────────────────────────────────
 
-describe('content-review manifest , freshness and structure', () => {
+describe('content-review manifest — freshness and structure', () => {
   let manifest: any;
 
   beforeAll(() => {
@@ -146,7 +146,7 @@ describe('content-review manifest , freshness and structure', () => {
 
 // ── video-pipeline.ts exports the regen functions ────────────────────────────
 
-describe('video-pipeline.ts , exports regen API', () => {
+describe('video-pipeline.ts — exports regen API', () => {
   const pipelinePath = path.join(REPO_ROOT, 'src', 'main', 'video-pipeline.ts');
   let src: string;
 

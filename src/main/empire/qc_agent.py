@@ -1,5 +1,5 @@
 """
-qc_agent.py , Quality Control Agent
+qc_agent.py — Quality Control Agent
 Runs after every video build. Blocks delivery on failure.
 Call: python3 qc_agent.py <video_dir>
 Or import: from qc_agent import run_qc
@@ -68,7 +68,7 @@ def check_has_audio(vid_dir: Path) -> tuple[bool, str]:
         '-of','default=noprint_wrappers=1:nokey=1', str(final)
     ], capture_output=True, text=True)
     if 'audio' not in r.stdout:
-        return False, "No audio stream found , music/voice missing!"
+        return False, "No audio stream found — music/voice missing!"
     return True, "Audio stream present ✓"
 
 
@@ -76,10 +76,10 @@ def check_has_audio(vid_dir: Path) -> tuple[bool, str]:
 def check_thumbnail_exists(vid_dir: Path) -> tuple[bool, str]:
     thumb = vid_dir / 'thumbnail.jpg'
     if not thumb.exists():
-        return False, "thumbnail.jpg MISSING , required for YouTube"
+        return False, "thumbnail.jpg MISSING — required for YouTube"
     size = thumb.stat().st_size
     if size < 10000:
-        return False, f"thumbnail.jpg too small ({size} bytes) , likely blank/corrupt"
+        return False, f"thumbnail.jpg too small ({size} bytes) — likely blank/corrupt"
     return True, f"thumbnail.jpg exists ({size/1024:.0f}KB) ✓"
 
 
@@ -99,7 +99,7 @@ def check_thumbnail_not_black(vid_dir: Path) -> tuple[bool, str]:
     # Fallback: just check file size > 50KB (black JPEG compresses tiny)
     size_kb = thumb.stat().st_size / 1024
     if size_kb < 20:
-        return False, f"Thumbnail suspiciously small ({size_kb:.0f}KB) , may be black/blank"
+        return False, f"Thumbnail suspiciously small ({size_kb:.0f}KB) — may be black/blank"
     return True, f"Thumbnail has content ({size_kb:.0f}KB) ✓"
 
 
@@ -120,7 +120,7 @@ def check_thumbnail_card(vid_dir: Path) -> tuple[bool, str]:
     first_frame.unlink(missing_ok=True)
     # Thumbnail cards are high-quality JPEGs, typically >50KB when extracted
     if size_kb < 5:
-        return False, f"First frame too small ({size_kb:.0f}KB) , thumbnail card may be missing"
+        return False, f"First frame too small ({size_kb:.0f}KB) — thumbnail card may be missing"
     return True, f"First frame present ({size_kb:.0f}KB) ✓"
 
 
@@ -130,9 +130,9 @@ def check_voice_humanized(vid_dir: Path) -> tuple[bool, str]:
     human = vid_dir / 'voice_human.mp3'
     voice = vid_dir / 'voice.mp3'
     if not voice.exists():
-        return False, "voice.mp3 missing , TTS was not run"
+        return False, "voice.mp3 missing — TTS was not run"
     if not human.exists():
-        return False, "voice_human.mp3 missing , humanizer was NOT applied!"
+        return False, "voice_human.mp3 missing — humanizer was NOT applied!"
     return True, "voice.mp3 + voice_human.mp3 both present ✓"
 
 
@@ -161,7 +161,7 @@ def check_resolution(vid_dir: Path) -> tuple[bool, str]:
 def check_tg_version(vid_dir: Path) -> tuple[bool, str]:
     tg = vid_dir / 'tg.mp4'
     if not tg.exists():
-        return False, "tg.mp4 missing , Telegram version not generated"
+        return False, "tg.mp4 missing — Telegram version not generated"
     mb = tg.stat().st_size / 1024 / 1024
     if mb > 50:
         return False, f"tg.mp4 too large: {mb:.1f}MB (Telegram limit 50MB)"
@@ -175,12 +175,12 @@ def check_thumbnail_grok_bg(vid_dir: Path) -> tuple[bool, str]:
         return False, "thumbnail.jpg missing"
     size_kb = thumb.stat().st_size / 1024
     if size_kb < 200:
-        return False, f"Thumbnail only {size_kb:.0f}KB , likely no Grok background (need >200KB)"
+        return False, f"Thumbnail only {size_kb:.0f}KB — likely no Grok background (need >200KB)"
     # Check for bg source file
     bg_files = list(vid_dir.glob('*_bg.jpg')) + list(vid_dir.glob('thumbnail_bg.jpg'))
     if not bg_files:
-        # Warn but don't fail , bg might be in analytics dir
-        return True, f"Thumbnail {size_kb:.0f}KB ✓ (bg source not in dir , ok if in analytics)"
+        # Warn but don't fail — bg might be in analytics dir
+        return True, f"Thumbnail {size_kb:.0f}KB ✓ (bg source not in dir — ok if in analytics)"
     return True, f"Thumbnail {size_kb:.0f}KB ✓, bg source: {bg_files[0].name}"
 
 
@@ -200,7 +200,7 @@ def check_title_hook(vid_dir: Path) -> tuple[bool, str]:
             pass
 
     if not title:
-        return True, "Could not find title , skipping hook check"
+        return True, "Could not find title — skipping hook check"
 
     has_number = bool(re.search(r'\d+', title))
     power_words = ['free', 'secret', 'nobody', 'everyone', 'banned', 'quit', 'lost', 'never', 'always', 'real', 'first']
@@ -210,7 +210,7 @@ def check_title_hook(vid_dir: Path) -> tuple[bool, str]:
         return True, f"Title has specific number ✓: '{title}'"
     if has_power:
         return True, f"Title has power word ✓: '{title}'"
-    return False, f"Weak title , no number or power word: '{title}' (add stat like '295%' or '9 AIs')"
+    return False, f"Weak title — no number or power word: '{title}' (add stat like '295%' or '9 AIs')"
 
 
 @check("no_nope_pile")
@@ -231,7 +231,7 @@ def check_nope_pile(vid_dir: Path) -> tuple[bool, str]:
     text_lower = text_to_check.lower()
     hits = [p for p in NOPE if p in text_lower]
     if hits:
-        return False, f"NOPE PILE topics detected: {hits} , algorithm suppression risk!"
+        return False, f"NOPE PILE topics detected: {hits} — algorithm suppression risk!"
     return True, "No NOPE PILE topics ✓"
 
 
@@ -240,7 +240,7 @@ def check_caption_timing(vid_dir: Path) -> tuple[bool, str]:
     """
     Verify captions use NATURAL timestamps (start near 0s, not shifted by 2.5s).
     Correct architecture: voice + captions start at t=0, thumbnail card is just the visual backdrop.
-    First word should start between 0.0s and 1.0s , NOT at 2.5s+.
+    First word should start between 0.0s and 1.0s — NOT at 2.5s+.
     """
     ts_file = vid_dir / 'timestamps.json'
     if ts_file.exists():
@@ -250,24 +250,24 @@ def check_caption_timing(vid_dir: Path) -> tuple[bool, str]:
             if words:
                 first_start = float(words[0].get('start', 0))
                 if first_start > 2.0:
-                    return False, f"Caption timestamps are shifted: first word at {first_start:.2f}s , should be ~0s (natural). Do NOT shift timestamps by 2.5s."
+                    return False, f"Caption timestamps are shifted: first word at {first_start:.2f}s — should be ~0s (natural). Do NOT shift timestamps by 2.5s."
                 return True, f"First caption at {first_start:.2f}s ✓ (natural, unshifted)"
         except Exception:
             pass
 
-    return True, "No timestamps.json to verify , skipping timing check"
+    return True, "No timestamps.json to verify — skipping timing check"
 
 
 @check("captions_have_timestamps")
 def check_captions_timestamps(vid_dir: Path) -> tuple[bool, str]:
     ts = vid_dir / 'timestamps.json'
     if not ts.exists():
-        return False, "timestamps.json missing , captions may not have been generated from real Whisper transcription!"
+        return False, "timestamps.json missing — captions may not have been generated from real Whisper transcription!"
     try:
         data = json.load(open(ts))
         word_count = len(data) if isinstance(data, list) else len(data.get('words', []))
         if word_count < 5:
-            return False, f"timestamps.json has only {word_count} words , seems incomplete"
+            return False, f"timestamps.json has only {word_count} words — seems incomplete"
         return True, f"timestamps.json has {word_count} words ✓"
     except Exception:
         return False, "timestamps.json exists but could not parse"
@@ -287,10 +287,10 @@ def check_audio_has_music(vid_dir: Path) -> tuple[bool, str]:
         info = json.loads(r.stdout)
         br = int(info['streams'][0].get('bit_rate', 0))
         if br < 64000:
-            return False, f"Audio bitrate very low ({br//1000}kbps) , music may not be mixed"
+            return False, f"Audio bitrate very low ({br//1000}kbps) — music may not be mixed"
         return True, f"Audio bitrate {br//1000}kbps ✓"
     except Exception:
-        return True, "Could not check audio bitrate , skipping"
+        return True, "Could not check audio bitrate — skipping"
 
 
 @check("thumbnail_card_duration")
@@ -299,7 +299,7 @@ def check_thumb_card_duration(vid_dir: Path) -> tuple[bool, str]:
     final = vid_dir / 'final.mp4'
     bg = vid_dir / 'bg.mp4'
     if not final.exists() or not bg.exists():
-        return True, "Cannot verify (missing bg.mp4) , skipping"
+        return True, "Cannot verify (missing bg.mp4) — skipping"
 
     def get_dur(p):
         r = subprocess.run([
@@ -336,10 +336,10 @@ def check_green_highlights(vid_dir: Path) -> tuple[bool, str]:
     try:
         dur = float(r.stdout.strip())
     except:
-        return True, "Could not get duration , skipping vision check"
+        return True, "Could not get duration — skipping vision check"
 
     if dur < 6:
-        return True, "Video too short for vision check , skipping"
+        return True, "Video too short for vision check — skipping"
 
     # Extract 3 frames from video body (after thumbnail card)
     frames = []
@@ -355,7 +355,7 @@ def check_green_highlights(vid_dir: Path) -> tuple[bool, str]:
             frames.append(frame_path)
 
     if not frames:
-        return True, "Could not extract frames , skipping vision check"
+        return True, "Could not extract frames — skipping vision check"
 
     # Use Anthropic Claude vision to check for green text
     try:
@@ -364,7 +364,7 @@ def check_green_highlights(vid_dir: Path) -> tuple[bool, str]:
         api_key = config.get('anthropic_api_key') or os.environ.get('ANTHROPIC_API_KEY','')
         if not api_key:
             for f in frames: f.unlink(missing_ok=True)
-            return True, "No Anthropic key , skipping vision check"
+            return True, "No Anthropic key — skipping vision check"
 
         client = anthropic.Anthropic(api_key=api_key)
 
@@ -406,7 +406,7 @@ def check_green_highlights(vid_dir: Path) -> tuple[bool, str]:
             return True, f"Vision: Captions ✓ + green highlights ✓. {notes}"
         else:
             for f in frames: f.unlink(missing_ok=True)
-            return True, f"Vision response unparseable , skipping: {result_text[:100]}"
+            return True, f"Vision response unparseable — skipping: {result_text[:100]}"
 
     except Exception as e:
         for f in frames: f.unlink(missing_ok=True)
@@ -442,11 +442,11 @@ def check_hook_quality(vid_dir: Path) -> tuple[bool, str]:
         break
 
     if not title:
-        return True, "No title found in queue , skipping hook check"
+        return True, "No title found in queue — skipping hook check"
 
     # Skip kids videos (different quality criteria)
     if 'kids' in vid_dir.name.lower() or 'bedtime' in vid_dir.name.lower():
-        return True, "Kids video , hook scoring skipped"
+        return True, "Kids video — hook scoring skipped"
 
     try:
         from groq import Groq
@@ -486,13 +486,13 @@ Score 8-10 = viral potential. 6-7 = acceptable. Below 6 = needs rework."""
             suggestion = result.get('suggestion', '')
 
             if score < 6:
-                msg = f"Hook score {score}/10 , WEAK. {reason}"
+                msg = f"Hook score {score}/10 — WEAK. {reason}"
                 if suggestion:
                     msg += f" Fix: {suggestion}"
                 return False, msg
-            return True, f"Hook score {score}/10 ✓ , {reason}"
+            return True, f"Hook score {score}/10 ✓ — {reason}"
         else:
-            return True, f"LLM response unparseable , skipping: {result_text[:80]}"
+            return True, f"LLM response unparseable — skipping: {result_text[:80]}"
 
     except Exception as e:
         return True, f"Hook check error (non-blocking): {str(e)[:80]}"
@@ -556,7 +556,7 @@ def check_no_voice_delay(vid_dir: Path) -> tuple[bool, str]:
             if m:
                 mean_db = float(m.group(1))
                 if mean_db < -60:
-                    return False, f'Voice likely delayed , mean volume at t=2.5-4.0s is {mean_db:.1f}dB (silence)'
+                    return False, f'Voice likely delayed — mean volume at t=2.5-4.0s is {mean_db:.1f}dB (silence)'
                 return True, f'Voice starts OK (mean {mean_db:.1f}dB at t=2.5s)'
     except Exception:
         pass
@@ -601,11 +601,11 @@ def run_qc(vid_dir: str | Path, strict: bool = True) -> dict:
     print(f"\nResult: {passed}/{passed+failed} checks passed")
 
     if failed > 0:
-        print(f"❌ QC FAILED , {failed} check(s) failed. DO NOT SEND TO OWNER.")
+        print(f"❌ QC FAILED — {failed} check(s) failed. DO NOT SEND TO OWNER.")
         if strict:
             raise ValueError(f"QC failed for {vid_dir.name}: {failed} failures")
     else:
-        print(f"✅ QC PASSED , {vid_dir.name} is ready to send")
+        print(f"✅ QC PASSED — {vid_dir.name} is ready to send")
 
     print(f"{'='*60}\n")
     return {'passed': passed, 'failed': failed, 'results': results}

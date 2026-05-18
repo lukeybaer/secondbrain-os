@@ -1,5 +1,5 @@
 """
-build_video.py , Canonical video builder. All production rules enforced here.
+build_video.py — Canonical video builder. All production rules enforced here.
 Import and call build_video() for every Channel1 short.
 
 RULES ARE IN CODE. This is not optional reading.
@@ -58,7 +58,7 @@ def generate_voice(script: str, out_path: Path, kids: bool = False) -> Path:
     style = 0.20 if kids else VOICE_STYLE
 
     # Clean script
-    script = re.sub(r'[,-]', ' ', script)
+    script = re.sub(r'[—–]', ' ', script)
     script = re.sub(r'["\u201c\u201d\u2018\u2019]', '', script)
 
     r = requests.post(
@@ -275,13 +275,13 @@ if __name__ == '__main__':
     parser.add_argument('--description', required=True, help='Topic/description for the video')
     args = parser.parse_args()
 
-    # Rejection note from env , set by regenRejectedVideos() in video-pipeline.ts
+    # Rejection note from env — set by regenRejectedVideos() in video-pipeline.ts
     rejection_note = os.environ.get('REJECTION_NOTE', '').strip()
     regen_id = os.environ.get('REGEN_VIDEO_ID', '').strip()
 
     description = args.description
     if rejection_note:
-        print(f"[build_video] REGEN mode , rejection feedback: {rejection_note}")
+        print(f"[build_video] REGEN mode — rejection feedback: {rejection_note}")
 
     print(f"[build_video] channel={args.channel} style={args.style}")
     print(f"[build_video] output_dir={args.output_dir}")
@@ -294,5 +294,5 @@ if __name__ == '__main__':
     # args are received and the REJECTION_NOTE is passed through correctly.
     # The actual render pipeline reads these env vars and incorporates the rejection
     # feedback into the script generation LLM prompt before calling generate_voice().
-    print("[build_video] stub: production build runs on EC2 VM , REJECTION_NOTE passed correctly")
+    print("[build_video] stub: production build runs on EC2 VM — REJECTION_NOTE passed correctly")
     sys.exit(0)

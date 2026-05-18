@@ -7,7 +7,7 @@
  * per_task_limit pattern in main.log), ran, hit a rate limit mid-execution,
  * and wrote nothing to nightly-enhancements.jsonl. The existing
  * parseSchedDispatchLog probe did not fire because dispatch itself succeeded.
- * The failure was only discovered when the owner manually triggered a catch-up run.
+ * The failure was only discovered when Luke manually triggered a catch-up run.
  *
  * Fix: probeNightlyEnhancements(thresholdHours, appDataOverride) checks the
  * last entry timestamp in nightly-enhancements.jsonl directly. Fires red if

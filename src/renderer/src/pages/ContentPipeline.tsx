@@ -84,7 +84,7 @@ const DEMO_PENDING: PendingVideo[] = [
   },
   {
     id: 'ai_agent_income_formula',
-    title: 'She Replaced Her $1,400/Month VA , Income Doubled',
+    title: 'She Replaced Her $1,400/Month VA — Income Doubled',
     channel: 'Channel1',
     status: 'pending_approval',
     generated_date: '2026-03-14',
@@ -119,7 +119,7 @@ const DEMO_PENDING: PendingVideo[] = [
 // Next scheduled upload times: 9am, 1pm, 5pm CT
 function nextUploadTime(): Date {
   const now = new Date();
-  // Convert to CT offset (UTC-6 standard, UTC-5 daylight , approximate as UTC-6 for display)
+  // Convert to CT offset (UTC-6 standard, UTC-5 daylight — approximate as UTC-6 for display)
   const CT_OFFSET_MS = 6 * 60 * 60 * 1000;
   const nowCT = new Date(now.getTime() - CT_OFFSET_MS);
   const y = nowCT.getUTCFullYear();
@@ -148,7 +148,7 @@ function formatNextUpload(date: Date): string {
 
 // Use the registered media:// protocol to serve local files.
 // Using file:// directly in <video src> fails when the renderer is loaded from
-// http://localhost (dev mode) , Chromium's media pipeline blocks cross-protocol
+// http://localhost (dev mode) — Chromium's media pipeline blocks cross-protocol
 // loads even when webSecurity is disabled.  The media:// scheme is privileged
 // and streams files via net.fetch in the main process, bypassing this restriction.
 // URL format: media://local/C:/path/to/file.mp4
@@ -265,7 +265,7 @@ function ChannelBadge({ channel }: { channel: PendingVideo['channel'] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Video card (pending review) , Shorts layout (9:16 tall + thumbnail beside)
+// Video card (pending review) — Shorts layout (9:16 tall + thumbnail beside)
 // ---------------------------------------------------------------------------
 
 // Shorts are 9:16. Render video + thumbnail at matching height side-by-side.
@@ -318,7 +318,7 @@ const SHORTS_HEIGHT = 400;
 const SHORTS_WIDTH = Math.round((SHORTS_HEIGHT * 9) / 16); // 225px
 
 // ---------------------------------------------------------------------------
-// Custom video player , replaces broken native controls at 225px width.
+// Custom video player — replaces broken native controls at 225px width.
 // Chromium's native <video controls> collapse at narrow widths: the progress
 // bar becomes undraggable, seek buttons overlap, and forward sometimes
 // triggers backward. This component provides a working scrubber + skip.
@@ -424,7 +424,7 @@ function ShortsPlayer({
 
   return (
     <div style={{ width }}>
-      {/* Video element , no native controls */}
+      {/* Video element — no native controls */}
       <video
         ref={ref}
         preload="metadata"
@@ -440,7 +440,7 @@ function ShortsPlayer({
         src={src}
       />
 
-      {/* Scrubber bar , click or drag to seek */}
+      {/* Scrubber bar — click or drag to seek */}
       <div
         ref={scrubRef}
         onMouseDown={onScrubDown}
@@ -598,7 +598,7 @@ function VideoCard({
     const el = videoRef.current;
     if (!el) return;
     el.volume = 1.0;
-    // Detect audio: audioTracks API (Chromium supports it) , null means unknown
+    // Detect audio: audioTracks API (Chromium supports it) — null means unknown
     const audioTrackCount = (el as any).audioTracks?.length ?? null;
     const hasAudio = audioTrackCount === null ? null : audioTrackCount > 0;
     const diag = {
@@ -669,9 +669,9 @@ function VideoCard({
         </div>
       </div>
 
-      {/* Media row , video (9:16) + thumbnail (9:16) side by side */}
+      {/* Media row — video (9:16) + thumbnail (9:16) side by side */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 12, alignItems: 'flex-start' }}>
-        {/* Video , Shorts 9:16 */}
+        {/* Video — Shorts 9:16 */}
         <div style={{ flexShrink: 0 }}>
           <div
             style={{
@@ -727,7 +727,7 @@ function VideoCard({
           )}
         </div>
 
-        {/* Thumbnail , same 9:16 dimensions */}
+        {/* Thumbnail — same 9:16 dimensions */}
         <div style={{ flexShrink: 0 }}>
           <div
             style={{
@@ -889,7 +889,7 @@ function VideoCard({
               (w: { word: string; start: number; end: number; emphasis?: boolean }, i: number) => (
                 <span
                   key={i}
-                  title={`${w.start.toFixed(2)}s , ${w.end.toFixed(2)}s`}
+                  title={`${w.start.toFixed(2)}s — ${w.end.toFixed(2)}s`}
                   style={{
                     color: w.emphasis ? '#00FF88' : '#ccc',
                     fontWeight: w.emphasis ? 700 : 400,
@@ -1018,7 +1018,7 @@ function UploadRow({
             )}
             {uploadStatus === 'uploading' && (
               <span style={{ fontSize: 11, color: '#60a5fa' }}>
-                Queued on EC2 , next upload slot
+                Queued on EC2 — next upload slot
               </span>
             )}
             {uploadStatus === 'posted' && video.youtube_url && (
@@ -1177,7 +1177,7 @@ function UploadRow({
 }
 
 // ---------------------------------------------------------------------------
-// Rejected row , awaiting regeneration (read-only)
+// Rejected row — awaiting regeneration (read-only)
 // ---------------------------------------------------------------------------
 
 function RejectedRow({
@@ -1329,7 +1329,7 @@ function RejectedRow({
 }
 
 // ---------------------------------------------------------------------------
-// Published video row , compact playable card with YouTube link
+// Published video row — compact playable card with YouTube link
 // ---------------------------------------------------------------------------
 
 function PublishedRow({ video }: { video: PublishedVideo }) {
@@ -1893,7 +1893,7 @@ function SocialPostsTab() {
         pending,
         'No posts pending review. Amy will queue drafts here for your approval.',
       )}
-      {renderSection('Approved , Ready to Publish', approved, 'No approved posts waiting.')}
+      {renderSection('Approved — Ready to Publish', approved, 'No approved posts waiting.')}
       {renderSection('Posted', posted, 'No posts published yet.')}
       {rejected.length > 0 && renderSection('Rejected', rejected, '')}
     </div>
@@ -1982,7 +1982,7 @@ function YouTubeVideosTab() {
     try {
       await ipcInvoke('empire:approveVideo', id);
     } catch {
-      /* IPC not wired yet , update local state only */
+      /* IPC not wired yet — update local state only */
     }
     setVideos((prev) => prev.map((v) => (v.id === id ? { ...v, status: 'approved' } : v)));
     // Auto-advance: keep activeIndex pointed at next pending video
@@ -1997,9 +1997,9 @@ function YouTubeVideosTab() {
     try {
       await ipcInvoke('empire:rejectVideo', id, target, note);
     } catch {
-      /* IPC not wired yet , update local state only */
+      /* IPC not wired yet — update local state only */
     }
-    // RSL: fire-and-forget , classify feedback, update rubric, append LEARNINGS.md
+    // RSL: fire-and-forget — classify feedback, update rubric, append LEARNINGS.md
     if (note && video) {
       ipcInvoke('empire:processRejectionLearning', {
         videoId: id,
@@ -2065,7 +2065,7 @@ function YouTubeVideosTab() {
       <div style={{ ...s.subtitle, marginBottom: 16 }}>
         {loading
           ? 'Loading...'
-          : `${pending.length} video${pending.length !== 1 ? 's' : ''} pending review${usingDemo ? ' , demo data' : ''}`}
+          : `${pending.length} video${pending.length !== 1 ? 's' : ''} pending review${usingDemo ? ' — demo data' : ''}`}
       </div>
 
       {/* Pending Review */}
@@ -2191,7 +2191,7 @@ function YouTubeVideosTab() {
       {/* Rejected */}
       {rejected.length > 0 && (
         <div style={{ marginTop: 32 }}>
-          <div style={s.sectionTitle}>Rejected , Awaiting Regeneration ({rejected.length})</div>
+          <div style={s.sectionTitle}>Rejected — Awaiting Regeneration ({rejected.length})</div>
           {rejected.map((v) => (
             <RejectedRow key={v.id} video={v} />
           ))}

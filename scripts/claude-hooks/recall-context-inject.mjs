@@ -12,7 +12,7 @@
 // Cross-repo: works in any Claude Code session in any repo because it
 // reads user-level state, not project-scoped. This is the "any session
 // should be able to do this too, and it's all one query" piece
-// (2026-04-30).
+// (Luke, 2026-04-30).
 //
 // Hook contract: prints JSON to stdout. Claude Code merges
 // hookSpecificOutput.additionalContext into the prompt context.

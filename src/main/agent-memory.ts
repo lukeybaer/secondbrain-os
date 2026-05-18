@@ -2,7 +2,7 @@
 // Generic persistent memory system for AI agents in SecondBrain.
 //
 // Each agent has its own memory file (Markdown) that persists across all
-// interactions , calls, Telegram, in-app. The agent reads it before acting
+// interactions — calls, Telegram, in-app. The agent reads it before acting
 // and updates it after every interaction.
 //
 // Usage:
@@ -55,14 +55,14 @@ export function getAgentMemory(agentId: string): AgentMemory {
 const AGENT_SEEDS: Record<string, { fileName: string; initialContent: string }> = {
   ea: {
     fileName: 'EA_MEMORY.md',
-    initialContent: `# EA Agent Memory , Executive Assistant
+    initialContent: `# EA Agent Memory — Executive Assistant
 *Last updated: ${new Date().toISOString()}*
 *Agent: EA (Executive Assistant)*
 
 ---
 
 ## Identity & Role
-I am an autonomous executive assistant. Not a chatbot , an agent. I take calls, research, make decisions, and execute on the owner's behalf. I track everything, learn from every interaction, and get better over time.
+I am an autonomous executive assistant. Not a chatbot — an agent. I take calls, research, make decisions, and execute on the owner's behalf. I track everything, learn from every interaction, and get better over time.
 
 My core function: reduce cognitive load on the owner. Handle it, report back, iterate.
 
@@ -73,7 +73,7 @@ My core function: reduce cognitive load on the owner. Handle it, report back, it
 **Personal**
 - Full name: (configure in Settings or edit this file)
 - Location: (configure in Settings)
-- Phone (test/personal): (configure in Settings) , always test new call scripts on this number first
+- Phone (test/personal): (configure in Settings) — always test new call scripts on this number first
 - Timezone: (e.g. America/Chicago)
 
 **Career**
@@ -393,16 +393,16 @@ Be specific and actionable. These notes will be written to your memory and used 
       if (block.type === 'text') reflection = block.text.trim();
     } catch (err) {
       console.error(`[agent-memory:${this.agentId}] reflection LLM error:`, err);
-      reflection = `Call ${input.callId} (${input.outcome}) , manual review needed.`;
+      reflection = `Call ${input.callId} (${input.outcome}) — manual review needed.`;
     }
 
-    const header = `**Call with ${input.contactName || input.phoneNumber}** , ${input.outcome}`;
+    const header = `**Call with ${input.contactName || input.phoneNumber}** — ${input.outcome}`;
     await this.appendLearning(`${header}\n${reflection}`);
 
     // Also append to three-tier archive and update working memory
     try {
       appendToArchive(
-        `## Call Reflection , ${input.contactName || input.phoneNumber}\n**Outcome:** ${input.outcome}\n${reflection}`,
+        `## Call Reflection — ${input.contactName || input.phoneNumber}\n**Outcome:** ${input.outcome}\n${reflection}`,
       );
       appendWorkingMemory(`Call with ${input.contactName || input.phoneNumber}: ${input.outcome}`);
 
@@ -456,7 +456,7 @@ Be specific and actionable. These notes will be written to your memory and used 
       await this.upsertContact({
         name: input.contactName || input.phoneNumber,
         phone: input.phoneNumber,
-        notes: `${input.outcome} , ${new Date().toLocaleDateString()}`,
+        notes: `${input.outcome} — ${new Date().toLocaleDateString()}`,
         lastContactDate: new Date().toISOString().slice(0, 10),
       });
     }
@@ -547,7 +547,7 @@ export async function buildUnifiedContext(
         parts.push(graphitiContext);
       }
     } catch {
-      /* Graphiti unavailable , continue without it */
+      /* Graphiti unavailable — continue without it */
     }
   }
 
@@ -561,7 +561,7 @@ export async function buildUnifiedContext(
     /* Non-critical */
   }
 
-  // Source 4: Session archive search , prior Claude Code conversations
+  // Source 4: Session archive search — prior Claude Code conversations
   // with the owner that mention this query. Closes the "you forgot what I
   // wanted" problem by surfacing the actual prior claims and answers
   // from the session history. Falls back silently if the local FTS
@@ -573,7 +573,7 @@ export async function buildUnifiedContext(
         parts.push(sessionContext);
       }
     } catch {
-      /* Non-critical , session archive is an optional retrieval tier */
+      /* Non-critical — session archive is an optional retrieval tier */
     }
   }
 

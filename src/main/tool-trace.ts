@@ -3,7 +3,7 @@
 // Lightweight tool-call tracer inspired by Composio's tool manifest + Letta's
 // action logs. Every wrapped tool invocation emits a single JSONL line with
 // duration, success flag, payload sizes, and content snippets so the nightly
-// briefing and observability layer can reason about what Amy actually did ,
+// briefing and observability layer can reason about what Amy actually did —
 // and reconstruct exactly what happened after any failure without reading logs.
 //
 // Design goals:
@@ -11,7 +11,7 @@
 //   - Failures in tracing never break the traced tool (logging is best-effort).
 //   - Append-only JSONL so concurrent writers are safe on one process.
 //   - input_snippet / output_snippet: first 200 chars of JSON for post-mortem.
-//     Inspired by Microsoft Agent Framework's middleware pipeline pattern ,
+//     Inspired by Microsoft Agent Framework's middleware pipeline pattern —
 //     every agent step emits structured before/after events for reconstruction.
 //
 // Consumers can inject a custom writer for tests; production callers pass

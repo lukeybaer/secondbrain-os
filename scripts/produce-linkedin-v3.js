@@ -18,7 +18,7 @@ const WORK = path.join(APPDATA, 'secondbrain/data/studio/recordings/linkedin_v3'
 const LOGO = '${SECONDBRAIN_ROOT:-/path/to/secondbrain}/channel1-logo.png';
 const FONT = 'C\\:/Windows/Fonts/arialbd.ttf';
 const FONT_REG = 'C\\:/Windows/Fonts/arial.ttf';
-// 16:9 for LinkedIn , preserves full screen share without cropping
+// 16:9 for LinkedIn — preserves full screen share without cropping
 const W = 1920,
   H = 1080;
 const W16 = 1920,
@@ -27,8 +27,8 @@ const FPS = 30;
 
 // Source files
 const SRC = {
-  front: path.join(REC, 'front.mp4'), // NexiGo 1280x720 , primary, 77s
-  side: path.join(REC, 'side.mp4'), // Integrated 640x480 , secondary, 112s
+  front: path.join(REC, 'front.mp4'), // NexiGo 1280x720 — primary, 77s
+  side: path.join(REC, 'side.mp4'), // Integrated 640x480 — secondary, 112s
   screen: path.join(REC, 'screen.mp4'), // 1920x1080 + audio, 114s
 };
 
@@ -38,15 +38,15 @@ const SRC = {
 // screen when showing slides/demos
 // front only has 77s of footage, so after ~75s use side as face cam
 const EDL = [
-  // Open with front face , "My friends, I built an AI that's like making calls for me"
+  // Open with front face — "My friends, I built an AI that's like making calls for me"
   { type: 'front', start: 0, end: 7.3 },
-  // "So in the next 60 seconds, you're going to get a quick rundown" , still front
+  // "So in the next 60 seconds, you're going to get a quick rundown" — still front
   { type: 'front', start: 7.3, end: 12.4 },
-  // "because I'm cool like that" , flip to side for the swagger moment
+  // "because I'm cool like that" — flip to side for the swagger moment
   { type: 'side', start: 12.4, end: 15.5 },
-  // "So yeah, built a second brain, it never forgets" , front
+  // "So yeah, built a second brain, it never forgets" — front
   { type: 'front', start: 15.5, end: 22 },
-  // Screen share starts here and STAYS , the owner in PIP box
+  // Screen share starts here and STAYS — the owner in PIP box
   // Front camera dies at ~77s so switch PIP to side camera at 75s
   { type: 'screen', start: 22, end: 75, pipCam: 'front' },
   { type: 'screen', start: 75, end: 106.5, pipCam: 'side' },
@@ -191,7 +191,7 @@ function main() {
 
           // Text: channel name + tagline
           `[fl]drawtext=fontfile='${FONT}':text='AI Life Hacks':fontsize=42:fontcolor=white:x=210:y=h-158:enable='between(t\\,0.6\\,5.8)',`,
-          `drawtext=fontfile='${FONT_REG}':text='by the owner':fontsize=26:fontcolor=#00FF88:x=210:y=h-110:enable='between(t\\,0.8\\,5.8)'[ft];`,
+          `drawtext=fontfile='${FONT_REG}':text='by owner Baer':fontsize=26:fontcolor=#00FF88:x=210:y=h-110:enable='between(t\\,0.8\\,5.8)'[ft];`,
 
           // Corner logo persists
           `[ft][logocorner]overlay=W-w-20:15:eof_action=repeat[out]`,
@@ -263,7 +263,7 @@ function main() {
           `color=c=#0a0a1a:s=${W}x${H}:d=${outroDur}:r=${FPS}[bg];`,
           `[0:v]scale=200:-1[logo];`,
           `[bg][logo]overlay=(W-w)/2:(H/2-h-40):eof_action=repeat[l1];`,
-          `[l1]drawtext=fontfile='${FONT}':text='AI Life Hacks by the owner':fontsize=34:fontcolor=white:x=(w-text_w)/2:y=h/2+40:enable='gte(t\\,0.2)',`,
+          `[l1]drawtext=fontfile='${FONT}':text='AI Life Hacks by owner Baer':fontsize=34:fontcolor=white:x=(w-text_w)/2:y=h/2+40:enable='gte(t\\,0.2)',`,
           `drawtext=fontfile='${FONT_REG}':text='youtube.com/@Channel1byownerBaer':fontsize=22:fontcolor=#00FF88:x=(w-text_w)/2:y=h/2+85:enable='gte(t\\,0.5)',`,
           `drawtext=fontfile='${FONT_REG}':text='Subscribe for more':fontsize=20:fontcolor=white@0.7:x=(w-text_w)/2:y=h/2+115:enable='gte(t\\,0.8)'[out]`,
           `"`,

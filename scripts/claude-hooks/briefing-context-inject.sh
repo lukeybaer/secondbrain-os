@@ -10,7 +10,7 @@
 # The canonical spec lives at:
 #   ${SECONDBRAIN_ROOT}\memory\project_briefing_spec.md
 #
-# This spec is authoritative , do NOT merge from project_ea_vision.md (stale).
+# This spec is authoritative — do NOT merge from project_ea_vision.md (stale).
 
 PROMPT=$(node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);console.log((j.prompt||j.user_prompt||'').toLowerCase())}catch{console.log('')}})" 2>/dev/null)
 

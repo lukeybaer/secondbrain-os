@@ -20,7 +20,7 @@ const BACKLOG_PATH = path.join(REPO, 'data', 'agent', 'feature-backlog.json');
 const PAIN_SEVERITY = {
   rejection: 20,        // video rejected by owner
   health_red: 20,       // health check red status
-  gap_trigger: 25,      // explicit #gap from the owner
+  gap_trigger: 25,      // explicit #gap from Luke
   bug_fix_commit: 15,   // git commit fixing a bug
   health_yellow: 10,    // health check yellow status
   recurring_rejection: 25, // same video, same issue, again

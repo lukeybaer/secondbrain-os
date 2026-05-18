@@ -329,7 +329,7 @@ async function captureOnce(): Promise<void> {
   const timestamp = now.toISOString();
   const dateStr = now.toISOString().slice(0, 10);
 
-  // Take screenshot (fast , ~200ms)
+  // Take screenshot (fast — ~200ms)
   const result = await captureScreenshot();
   if (!result) return;
 
@@ -337,7 +337,7 @@ async function captureOnce(): Promise<void> {
   const dup = isDuplicate(filePath, fileSize);
 
   if (dup) {
-    // Duplicate , delete immediately, insert minimal record
+    // Duplicate — delete immediately, insert minimal record
     try {
       fs.unlinkSync(filePath);
     } catch {
@@ -381,7 +381,7 @@ async function captureOnce(): Promise<void> {
           }
         })
         .catch(() => {
-          /* S3 failure , file stays local */
+          /* S3 failure — file stays local */
         });
     })
     .catch((err) => {

@@ -1,5 +1,5 @@
 /**
- * Tests for briefing.ts , focuses on the new dedup logic and article-fetch helpers.
+ * Tests for briefing.ts — focuses on the new dedup logic and article-fetch helpers.
  *
  * Strategy:
  *  - Mock electron, fs, https, and config so no real I/O occurs
@@ -67,6 +67,10 @@ vi.mock('../src/main/linkedin-intel', () => ({
   markContactEventsReported: vi.fn(),
 }));
 
+vi.mock('../src/main/sermons', () => ({
+  generateSermonBriefingSection: vi.fn(() => ''),
+}));
+
 vi.mock('../src/main/ingest-hooks', () => ({
   onDataIngested: vi.fn(),
   briefingEvent: vi.fn(() => ({})),
@@ -123,7 +127,7 @@ type NewsArticle = {
 
 function makeArticles(count: number, prefix = 'Article'): NewsArticle[] {
   return Array.from({ length: count }, (_, i) => ({
-    title: `${prefix} ${i + 1} , some interesting headline here`,
+    title: `${prefix} ${i + 1} — some interesting headline here`,
     url: `https://example.com/${prefix.toLowerCase()}-${i + 1}`,
     author: 'Staff',
     publishedAt: '2026-04-07',
@@ -133,7 +137,7 @@ function makeArticles(count: number, prefix = 'Article'): NewsArticle[] {
 }
 
 // ---------------------------------------------------------------------------
-// Tests , dedup logic (tested via module-level helper equivalents)
+// Tests — dedup logic (tested via module-level helper equivalents)
 // ---------------------------------------------------------------------------
 
 describe('articleKey dedup logic', () => {
@@ -141,7 +145,7 @@ describe('articleKey dedup logic', () => {
     // Two articles with same URL should produce same key
     const a1 = { title: 'Mortgage rates rise', url: 'https://example.com/123' } as NewsArticle;
     const a2 = { title: 'Different title', url: 'https://example.com/123' } as NewsArticle;
-    // Both should map to the same key , we verify indirectly via sendDailyBriefing dedup behavior
+    // Both should map to the same key — we verify indirectly via sendDailyBriefing dedup behavior
     expect(a1.url).toBe(a2.url); // structural check
   });
 
@@ -185,16 +189,16 @@ describe('dedup caps and limits', () => {
 
   it('filters articles already in globalSeen', () => {
     const aiArticles = makeArticles(3, 'AI');
-    const companyRaw = [
-      ...makeArticles(1, 'AI'), // same URL as AI article , should be deduped
-      ...makeArticles(2, 'Employer'), // new , should pass through
+    const onityRaw = [
+      ...makeArticles(1, 'AI'), // same URL as AI article — should be deduped
+      ...makeArticles(2, 'Employer'), // new — should pass through
     ];
 
     const globalSeen = new Set(
       aiArticles.map((a) => (a.url || a.title.toLowerCase().slice(0, 50)).trim()),
     );
     const result: NewsArticle[] = [];
-    for (const a of companyRaw) {
+    for (const a of onityRaw) {
       if (result.length >= 2) break;
       const key = (a.url || a.title.toLowerCase().slice(0, 50)).trim();
       if (!globalSeen.has(key)) {
@@ -237,7 +241,7 @@ describe('dedup caps and limits', () => {
   });
 });
 
-describe('sendDailyBriefing , integration', () => {
+describe('sendDailyBriefing — integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

@@ -1,5 +1,5 @@
 """
-thumbnail_styles.py , Multiple thumbnail templates for A/B testing.
+thumbnail_styles.py — Multiple thumbnail templates for A/B testing.
 
 Usage:
     from thumbnail_styles import make_thumbnail_v2, STYLES
@@ -12,7 +12,7 @@ import math, colorsys
 FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 W, H = 1080, 1920
-SAFE_W = 920  # max text width , 80px padding each side
+SAFE_W = 920  # max text width — 80px padding each side
 
 
 def _fit_font(path, text, max_size, min_size=32):
@@ -72,7 +72,7 @@ def _wrap_lines(text, max_chars=18):
 
 
 # ─────────────────────────────────────────────
-# STYLE 1: Split Red , high energy, danger/alert
+# STYLE 1: Split Red — high energy, danger/alert
 # ─────────────────────────────────────────────
 def style_split_red(img, draw, headline, subline):
     """Bold red diagonal slash, white on dark, urgent energy."""
@@ -99,7 +99,7 @@ def style_split_red(img, draw, headline, subline):
 
 
 # ─────────────────────────────────────────────
-# STYLE 2: Glow Neon , futuristic, tech, AI
+# STYLE 2: Glow Neon — futuristic, tech, AI
 # ─────────────────────────────────────────────
 def style_glow_neon(img, draw, headline, subline):
     """Cyan/purple neon glow on near-black. Tech/AI aesthetic."""
@@ -130,7 +130,7 @@ def style_glow_neon(img, draw, headline, subline):
 
 
 # ─────────────────────────────────────────────
-# STYLE 3: Classified , government/conspiracy
+# STYLE 3: Classified — government/conspiracy
 # ─────────────────────────────────────────────
 def style_classified(img, draw, headline, subline):
     """Classified document stamp aesthetic. Red CLASSIFIED diagonal stamp."""
@@ -170,7 +170,7 @@ def style_classified(img, draw, headline, subline):
 
 
 # ─────────────────────────────────────────────
-# STYLE 4: Gold Money , wealth/income
+# STYLE 4: Gold Money — wealth/income
 # ─────────────────────────────────────────────
 def style_gold_money(img, draw, headline, subline):
     """Dark bg with gold gradient headline. Money/opportunity feel."""
@@ -178,7 +178,7 @@ def style_gold_money(img, draw, headline, subline):
     for i, y in enumerate(range(0, H, 8)):
         v = int(15 + 10 * math.sin(i * 0.3))
         draw.line([(0,y),(W,y)], fill=(v, int(v*0.8), 0), width=1)
-    # Gold gradient text simulation , draw 3 layers
+    # Gold gradient text simulation — draw 3 layers
     fb = _font(FONT_BOLD, 115)
     lines = _wrap_lines(headline, 14)
     y = H//2 - len(lines)*130//2 - 60
@@ -205,7 +205,7 @@ def style_gold_money(img, draw, headline, subline):
 
 
 # ─────────────────────────────────────────────
-# STYLE 5: Minimal Bold , clean, authoritative
+# STYLE 5: Minimal Bold — clean, authoritative
 # ─────────────────────────────────────────────
 def style_minimal_bold(img, draw, headline, subline):
     """White bg, massive black headline, accent color block. Clean authority."""
@@ -241,7 +241,7 @@ def style_minimal_bold(img, draw, headline, subline):
 # DISPATCHER
 # ─────────────────────────────────────────────
 STYLES = {
-    'navy_bold':    None,          # original , plain navy + white text
+    'navy_bold':    None,          # original — plain navy + white text
     'split_red':    style_split_red,
     'glow_neon':    style_glow_neon,
     'classified':   style_classified,

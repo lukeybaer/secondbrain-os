@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 
 // ── Re-implement the pure functions from ec2-server.js for testing ──────────
-// (ec2-server.js is CJS / plain Node , we test the logic, not the module)
+// (ec2-server.js is CJS / plain Node — we test the logic, not the module)
 
 function inWindow(
   time: { hour: number; minute: number },

@@ -99,7 +99,7 @@ async function transcribeSegment(startTime: string, endTime: string): Promise<st
   // For MVP, transcribe the full hourly file that contains this segment
 
   return new Promise((resolve, reject) => {
-    // Placeholder , will be wired to actual audio file extraction
+    // Placeholder — will be wired to actual audio file extraction
     resolve('');
   });
 }

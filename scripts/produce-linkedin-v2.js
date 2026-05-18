@@ -33,7 +33,7 @@ const MAIN_OFFSET = INTRO_TRIM_DUR - MAIN_TRIM_START; // 1.5
 // Edit Decision List: camera cuts
 // combined_time → main_time = combined_time - 1.5 (for main portion)
 // 'face' = full-screen side camera, 'screen' = screen share + face PIP
-// Popups at main 16.5-21, 76.5-80.5, 96.5-100.5 , cuts timed to avoid them!
+// Popups at main 16.5-21, 76.5-80.5, 96.5-100.5 — cuts timed to avoid them!
 const EDL = [
   { type: 'text', start: 0, dur: 4.0 }, // Hook text card
   { type: 'face', start: 4, dur: 9.5 }, // "OK so I've built a second brain"
@@ -262,7 +262,7 @@ function main() {
           `color=c=#0a0a1a:s=${W}x${H}:d=${seg.dur}:r=${FPS}[bg];`,
           `[0:v]scale=200:-1[logo];`,
           `[bg][logo]overlay=(W-w)/2:(H/2-h-40):eof_action=repeat[l1];`,
-          `[l1]drawtext=fontfile='${FONT}':text='AI Life Hacks by the owner':fontsize=34:fontcolor=white:x=(w-text_w)/2:y=h/2+40:enable='gte(t\\,0.2)',`,
+          `[l1]drawtext=fontfile='${FONT}':text='AI Life Hacks by owner Baer':fontsize=34:fontcolor=white:x=(w-text_w)/2:y=h/2+40:enable='gte(t\\,0.2)',`,
           `drawtext=fontfile='${FONT_REG}':text='youtube.com/@Channel1byownerBaer':fontsize=22:fontcolor=#00FF88:x=(w-text_w)/2:y=h/2+85:enable='gte(t\\,0.5)',`,
           `drawtext=fontfile='${FONT_REG}':text='Subscribe for more':fontsize=20:fontcolor=white@0.7:x=(w-text_w)/2:y=h/2+115:enable='gte(t\\,0.8)'[out]`,
           `"`,

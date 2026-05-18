@@ -1,5 +1,5 @@
 // briefing.ts
-// Daily morning briefing generator , news, pending videos, Amy call activity, channel stats.
+// Daily morning briefing generator — news, pending videos, Amy call activity, channel stats.
 // Delivers via Telegram. Called by the scheduler at 5:30 AM CT.
 //
 // Format:
@@ -19,10 +19,7 @@ import * as https from 'https';
 import { app } from 'electron';
 import { getConfig } from './config';
 import { sendMessage } from './telegram';
-// Optional theme-section generator. Stubbed in the OS repo because the upstream
-// theme collection (podcasts, lectures, custom themes) is owner-specific. Replace
-// with your own implementation that returns a string section or null.
-function generateThemeBriefingSection(): string | null { return null; }
+import { generateSermonBriefingSection } from './sermons';
 import { buildContactIntelSection, markContactEventsReported } from './linkedin-intel';
 import { listCallRecords } from './calls';
 import { runClaudeCode } from './claude-runner';
@@ -111,7 +108,7 @@ async function sendTelegramSplit(chatId: string, text: string): Promise<void> {
   }
 }
 
-// ── RSS parser , extracts title, link, author, pubDate from items ─────────────
+// ── RSS parser — extracts title, link, author, pubDate from items ─────────────
 
 interface RssItem {
   title: string;
@@ -169,7 +166,7 @@ function parseRssItems(xml: string, max = 10): RssItem[] {
   return items;
 }
 
-// ── News fetch , World ────────────────────────────────────────────────────────
+// ── News fetch — World ────────────────────────────────────────────────────────
 
 async function fetchWorldNewsArticles(): Promise<NewsArticle[]> {
   const cfg = getConfig();
@@ -203,7 +200,7 @@ async function fetchWorldNewsArticles(): Promise<NewsArticle[]> {
     }
   }
 
-  // RSS fallback , BBC
+  // RSS fallback — BBC
   try {
     const xml = await fetchUrl('https://feeds.bbci.co.uk/news/rss.xml');
     const items = parseRssItems(xml, 10);
@@ -220,7 +217,7 @@ async function fetchWorldNewsArticles(): Promise<NewsArticle[]> {
     /* continue */
   }
 
-  // Last resort , AP News
+  // Last resort — AP News
   try {
     const xml = await fetchUrl('https://rsshub.app/apnews/topics/apf-topnews');
     const items = parseRssItems(xml, 10);
@@ -237,12 +234,12 @@ async function fetchWorldNewsArticles(): Promise<NewsArticle[]> {
   }
 }
 
-// ── News fetch , AI / Tech ────────────────────────────────────────────────────
+// ── News fetch — AI / Tech ────────────────────────────────────────────────────
 
 async function fetchAITechArticles(): Promise<NewsArticle[]> {
   const cfg = getConfig();
 
-  // NewsAPI everything , AI/tech query
+  // NewsAPI everything — AI/tech query
   if (cfg.newsApiKey) {
     try {
       const query = encodeURIComponent('artificial intelligence OR AI OR ChatGPT OR LLM OR OpenAI');
@@ -276,7 +273,7 @@ async function fetchAITechArticles(): Promise<NewsArticle[]> {
     }
   }
 
-  // RSS fallback , TechCrunch + Ars Technica
+  // RSS fallback — TechCrunch + Ars Technica
   const feeds = [
     { url: 'https://techcrunch.com/category/artificial-intelligence/feed/', source: 'TechCrunch' },
     { url: 'https://arstechnica.com/feed/', source: 'Ars Technica' },
@@ -312,7 +309,7 @@ async function fetchAITechArticles(): Promise<NewsArticle[]> {
 }
 
 // ── Per-article summarization via Claude (Max plan, free) ────────────────────
-// Uses claude-runner.ts (claude -p CLI) , zero marginal cost on Max plan.
+// Uses claude-runner.ts (claude -p CLI) — zero marginal cost on Max plan.
 // Falls back to plain list if claude is unavailable.
 
 async function summarizeArticlesWithGroq(
@@ -346,12 +343,12 @@ async function summarizeArticlesWithGroq(
   try {
     const { output, success } = await runClaudeCode(prompt, { timeoutMs: 60000 });
     if (success && output.trim()) return output.trim();
-    console.warn('[briefing] claude-runner summarization failed , using plain list');
+    console.warn('[briefing] claude-runner summarization failed — using plain list');
   } catch (err) {
     console.warn('[briefing] claude-runner error:', (err as Error).message);
   }
 
-  // Claude unavailable , plain fallback
+  // Claude unavailable — plain fallback
   return articles
     .map((a) => {
       const citation = [a.source, a.publishedAt, a.author ? `By ${a.author}` : '']
@@ -362,7 +359,7 @@ async function summarizeArticlesWithGroq(
     .join('\n\n');
 }
 
-// ── Dedup helper , key = url || title-prefix ─────────────────────────────────
+// ── Dedup helper — key = url || title-prefix ─────────────────────────────────
 
 function articleKey(a: NewsArticle): string {
   return (a.url || a.title.toLowerCase().slice(0, 50)).trim();
@@ -385,7 +382,7 @@ function deduplicateAgainst(
   return result;
 }
 
-// ── News fetch , Employer. ─────────────────────────────────────────────
+// ── News fetch — Employer. ─────────────────────────────────────────────
 
 async function fetchEmployerArticles(): Promise<NewsArticle[]> {
   const cfg = getConfig();
@@ -423,7 +420,7 @@ async function fetchEmployerArticles(): Promise<NewsArticle[]> {
     }
   }
 
-  // RSS fallback , Google News search for Employer
+  // RSS fallback — Google News search for Employer
   try {
     const query = encodeURIComponent('Employer');
     const xml = await fetchUrl(
@@ -443,7 +440,7 @@ async function fetchEmployerArticles(): Promise<NewsArticle[]> {
   }
 }
 
-// ── News fetch , Mortgage Industry ───────────────────────────────────────────
+// ── News fetch — Mortgage Industry ───────────────────────────────────────────
 
 async function fetchMortgageArticles(): Promise<NewsArticle[]> {
   const cfg = getConfig();
@@ -483,7 +480,7 @@ async function fetchMortgageArticles(): Promise<NewsArticle[]> {
     }
   }
 
-  // RSS fallback , HousingWire + Mortgage News Daily + MBA
+  // RSS fallback — HousingWire + Mortgage News Daily + MBA
   const feeds = [
     { url: 'https://www.housingwire.com/feed/', source: 'HousingWire' },
     { url: 'https://www.mortgagenewsdaily.com/rss/news', source: 'Mortgage News Daily' },
@@ -605,7 +602,7 @@ function loadRecentInboundCalls(limit = 5): AmyInboundCall[] {
   }
 }
 
-// ── Contact Intelligence , delegated to linkedin-intel.ts ────────────────────
+// ── Contact Intelligence — delegated to linkedin-intel.ts ────────────────────
 // buildContactIntelSection() reads linkedin-intel.json (written by the nightly
 // crawl at midnight) and returns ranked events for the past 7 days + 48 hours.
 
@@ -615,20 +612,20 @@ export async function sendDailyBriefing(): Promise<void> {
   const FLAG = 'briefing-sent';
 
   if (flagExists(FLAG)) {
-    console.log('[briefing] daily briefing already sent today , skipping');
+    console.log('[briefing] daily briefing already sent today — skipping');
     return;
   }
 
   const cfg = getConfig();
   if (!cfg.telegramBotToken || !cfg.telegramChatId) {
-    console.warn('[briefing] Telegram not configured , skipping daily briefing');
+    console.warn('[briefing] Telegram not configured — skipping daily briefing');
     return;
   }
 
   const [
     aiArticlesRaw,
     worldArticlesRaw,
-    companyArticlesRaw,
+    onityArticlesRaw,
     mortgageArticlesRaw,
     pendingVideos,
     inboundCalls,
@@ -649,14 +646,14 @@ export async function sendDailyBriefing(): Promise<void> {
     ...worldArticlesRaw.map(articleKey),
   ]);
 
-  const companyArticles = deduplicateAgainst(companyArticlesRaw, globalSeen, 2);
+  const onityArticles = deduplicateAgainst(onityArticlesRaw, globalSeen, 2);
   const mortgageArticles = deduplicateAgainst(mortgageArticlesRaw, globalSeen, 3);
 
-  const [aiSummary, worldSummary, companySummary, mortgageSummary] = await Promise.all([
+  const [aiSummary, worldSummary, onitySummary, mortgageSummary] = await Promise.all([
     summarizeArticlesWithGroq(aiArticlesRaw, 'AI/TECH NEWS'),
     summarizeArticlesWithGroq(worldArticlesRaw, 'WORLD NEWS'),
-    companyArticles.length > 0
-      ? summarizeArticlesWithGroq(companyArticles, 'Employer GROUP NEWS')
+    onityArticles.length > 0
+      ? summarizeArticlesWithGroq(onityArticles, 'Employer GROUP NEWS')
       : Promise.resolve(''),
     mortgageArticles.length > 0
       ? summarizeArticlesWithGroq(mortgageArticles, 'MORTGAGE INDUSTRY NEWS')
@@ -665,7 +662,7 @@ export async function sendDailyBriefing(): Promise<void> {
 
   // ── Message 1: Header + AI/Tech news ───────────────────────────────────────
   const msg1Lines: string[] = [];
-  msg1Lines.push(`Good morning , ${friendlyDate()}`);
+  msg1Lines.push(`Good morning the owner — ${friendlyDate()}`);
   msg1Lines.push('');
   msg1Lines.push('AI/TECH NEWS:');
   msg1Lines.push(aiSummary);
@@ -677,11 +674,11 @@ export async function sendDailyBriefing(): Promise<void> {
 
   // ── Message 3: Employer + Mortgage industry ──────────────────────────────────
   const msg3Lines: string[] = [];
-  if (companyArticles.length > 0) {
+  if (onityArticles.length > 0) {
     msg3Lines.push(
-      `Employer GROUP NEWS (${companyArticles.length} article${companyArticles.length !== 1 ? 's' : ''}):`,
+      `Employer GROUP NEWS (${onityArticles.length} article${onityArticles.length !== 1 ? 's' : ''}):`,
     );
-    msg3Lines.push(companySummary);
+    msg3Lines.push(onitySummary);
     msg3Lines.push('');
   } else {
     msg3Lines.push('Employer GROUP NEWS: no articles found today');
@@ -701,7 +698,7 @@ export async function sendDailyBriefing(): Promise<void> {
   const msg4Lines: string[] = [];
   const isSaturday = new Date().getDay() === 6;
 
-  // Contact intelligence , ranked events from linkedin-intel.json (daily)
+  // Contact intelligence — ranked events from linkedin-intel.json (daily)
   const { text: contactIntel, reportedIds: contactReportedIds } = buildContactIntelSection();
   if (contactIntel) {
     msg4Lines.push(contactIntel);
@@ -724,7 +721,7 @@ export async function sendDailyBriefing(): Promise<void> {
   }
   msg4Lines.push('');
 
-  // Amy , inbound calls received in the last 24h
+  // Amy — inbound calls received in the last 24h
   if (inboundCalls.length === 0) {
     msg4Lines.push('Amy: no inbound calls in the last 24h');
   } else {
@@ -739,29 +736,29 @@ export async function sendDailyBriefing(): Promise<void> {
         hour12: true,
       });
       const dur = c.durationSeconds ? ` (${Math.round(c.durationSeconds / 60)}m)` : '';
-      const status = c.completed ? '✓' : ',';
-      const summary = c.summary ? ` , ${c.summary.slice(0, 80)}` : '';
+      const status = c.completed ? '✓' : '—';
+      const summary = c.summary ? ` — ${c.summary.slice(0, 80)}` : '';
       msg4Lines.push(`  ${status} ${c.phoneNumber} @ ${time}${dur}${summary}`);
     }
   }
   msg4Lines.push('');
 
-  // LinkedIn engagement ops , Saturdays only
+  // LinkedIn engagement ops — Saturdays only
   if (isSaturday) {
     msg4Lines.push('LINKEDIN (weekly):');
     msg4Lines.push(
-      '  Review warm network , any new job changes or published posts to engage with?',
+      '  Review warm network — any new job changes or published posts to engage with?',
     );
     msg4Lines.push('');
   }
 
   try {
-    // Saturday: add theme section before the operational block
+    // Saturday: add sermon section before the operational block
     if (isSaturday) {
       try {
-        const themeSection = generateThemeBriefingSection();
-        if (themeSection) {
-          msg4Lines.unshift(themeSection, '');
+        const sermonSection = generateSermonBriefingSection();
+        if (sermonSection) {
+          msg4Lines.unshift(sermonSection, '');
         }
       } catch {
         /* non-critical */
@@ -769,7 +766,7 @@ export async function sendDailyBriefing(): Promise<void> {
     }
 
     // Morning briefing is no longer delivered via Telegram (policy changed 2026-04-20).
-    // the owner reads the daily briefing at the mobile dashboard URL (server.ts /briefing)
+    // Luke reads the daily briefing at the mobile dashboard URL (server.ts /briefing)
     // or in the Electron Briefing page. Gmail draft + on-disk markdown remain the
     // authoritative deliverables. See memory/feedback_telegram_policy.md for the
     // current policy and memory/feedback_amy_email_dispatch_convention.md for the
@@ -802,38 +799,38 @@ export async function sendDailyBriefing(): Promise<void> {
   }
 }
 
-// ── Saturday weekly theme briefing ──────────────────────────────────────────
+// ── Saturday weekly sermon briefing ──────────────────────────────────────────
 
-export async function sendWeeklyThemeBriefing(): Promise<void> {
-  const FLAG = 'theme-briefing-sent';
+export async function sendWeeklySermonBriefing(): Promise<void> {
+  const FLAG = 'sermon-briefing-sent';
 
   if (flagExists(FLAG)) {
-    console.log('[briefing] weekly theme briefing already sent today , skipping');
+    console.log('[briefing] weekly sermon briefing already sent today — skipping');
     return;
   }
 
   const cfg = getConfig();
   if (!cfg.telegramBotToken || !cfg.telegramChatId) {
-    console.warn('[briefing] Telegram not configured , skipping theme briefing');
+    console.warn('[briefing] Telegram not configured — skipping sermon briefing');
     return;
   }
 
-  const themeSection = generateThemeBriefingSection();
+  const sermonSection = generateSermonBriefingSection();
 
   const text = [
-    `Weekly Theme Briefing , ${friendlyDate()}`,
+    `Weekly Sermon Briefing — ${friendlyDate()}`,
     '',
-    themeSection,
-    'theme collection project: actively collecting.',
+    sermonSection,
+    'sermon collection project: actively collecting.',
   ].join('\n');
 
   try {
     await sendMessage(cfg.telegramChatId, text);
     writeFlag(FLAG);
-    console.log('[briefing] weekly theme briefing sent successfully');
+    console.log('[briefing] weekly sermon briefing sent successfully');
   } catch (err) {
     console.error(
-      '[briefing] failed to send theme briefing:',
+      '[briefing] failed to send sermon briefing:',
       err instanceof Error ? err.message : String(err),
     );
   }

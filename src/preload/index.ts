@@ -168,7 +168,7 @@ const api = {
       ipcRenderer.invoke('calls:syncInbound'),
     hangUp: (callId: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('calls:hangUp', callId),
-    // Push-based status updates , eliminates renderer polling for active calls.
+    // Push-based status updates — eliminates renderer polling for active calls.
     // Fires whenever any call record changes (initiated, status refresh, ended).
     onStatusPush: (cb: (record: any) => void) => {
       ipcRenderer.on('calls:statusPush', (_e, record) => cb(record));
@@ -189,6 +189,21 @@ const api = {
       ipcRenderer.invoke('projects:updateTask', projectId, taskId, updates),
     deleteTask: (projectId: string, taskId: string) =>
       ipcRenderer.invoke('projects:deleteTask', projectId, taskId),
+  },
+
+  tasks: {
+    list: (filter?: object): Promise<any[]> => ipcRenderer.invoke('tasks:list', filter),
+    get: (id: string): Promise<any> => ipcRenderer.invoke('tasks:get', id),
+    run: (input: { kind?: string; origin?: string; prompt: string; title?: string }): Promise<any> =>
+      ipcRenderer.invoke('tasks:run', input),
+    cancel: (id: string): Promise<any> => ipcRenderer.invoke('tasks:cancel', id),
+    approve: (id: string, approved?: boolean): Promise<any> =>
+      ipcRenderer.invoke('tasks:approve', id, approved),
+    // Push-based updates: fires whenever any task is created or changes state.
+    onPush: (cb: (task: any) => void) => {
+      ipcRenderer.on('tasks:push', (_e, task) => cb(task));
+    },
+    offPush: () => ipcRenderer.removeAllListeners('tasks:push'),
   },
 
   todos: {

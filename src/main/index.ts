@@ -80,7 +80,7 @@ function createWindow(): BrowserWindow {
     mainWindow.show();
     const wtWarning = detectWorktree();
     mainWindow.setTitle(
-      wtWarning ? `⚠ WORKTREE , WRONG REPO , SecondBrain` : `SecondBrain [${getGitHash()}]`,
+      wtWarning ? `⚠ WORKTREE — WRONG REPO — SecondBrain` : `SecondBrain [${getGitHash()}]`,
     );
     if (is.dev) {
       mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -201,11 +201,11 @@ protocol.registerSchemesAsPrivileged([
 app
   .whenReady()
   .then(async () => {
-    writeLog('info', `App starting , userData: ${app.getPath('userData')}`);
+    writeLog('info', `App starting — userData: ${app.getPath('userData')}`);
     electronApp.setAppUserModelId('com.secondbrain.app');
     loadConfig();
 
-    // Deny camera/mic access , SecondBrain has no UI that needs the camera or mic.
+    // Deny camera/mic access — SecondBrain has no UI that needs the camera or mic.
     // This prevents the app from competing with Google Meet and other video call tools.
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
       if (permission === 'media') {
@@ -229,7 +229,7 @@ app
       }
     });
 
-    // Validate known fix preconditions , warns loudly if something regressed.
+    // Validate known fix preconditions — warns loudly if something regressed.
     // Must run AFTER protocol.handle("media") so isProtocolHandled returns true.
     runStartupChecks().catch((err) => console.error('[startup-checks] Error:', err));
 
@@ -299,7 +299,7 @@ app
     let _mainWindow: BrowserWindow | null = mainWindowRef;
     registerClaudeOverlayHandlers(() => _mainWindow);
 
-    // Start Otter transcript polling , every 5 minutes
+    // Start Otter transcript polling — every 5 minutes
     startOtterPolling(5 * 60 * 1000);
 
     // Start local HTTP server (Vapi webhooks, Claude Code command endpoint)
@@ -319,6 +319,20 @@ app
       }
     });
     startCommandQueueWorker();
+
+    // Start the Task Spine intake watcher: drains data/agent/dispatch-queue.jsonl
+    // (the actionable directives extracted from calls, emails, and Otter notes)
+    // into durable Tasks so every surface's work shows up in one list.
+    try {
+      const { startIntakeWatcher } = await import('./task-intake');
+      startIntakeWatcher();
+      // The act worker auto-runs queued Tasks. It is disabled unless
+      // SECONDBRAIN_TASK_WORKER=on, so this call is a safe no-op by default.
+      const { startTaskWorker } = await import('./task-worker');
+      startTaskWorker();
+    } catch (err) {
+      writeLog('task-intake-autostart', err);
+    }
 
     // Start knowledge query worker (answers mid-call knowledge queries from Vapi)
     startKnowledgeWorker();

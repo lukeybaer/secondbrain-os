@@ -11,6 +11,7 @@
 import { app } from "electron";
 import { getConfig } from "./config";
 import { runClaudeCodeAndSummarize } from "./claude-runner";
+import { runTask } from "./task-service";
 import { searchConversations } from "./database";
 
 const POLL_INTERVAL_MS = 5_000;
@@ -51,7 +52,7 @@ let workerRunning = false;
 let stopRequested = false;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
-// Active session ID tracked locally , set when we start a claude task, used for continue routing
+// Active session ID tracked locally — set when we start a claude task, used for continue routing
 let activeSessionId: string | null = null;
 
 function getBaseUrl(): string {
@@ -142,7 +143,7 @@ async function handleCommand(cmd: PendingCommand): Promise<void> {
         result = hits
           .map(
             (h, i) =>
-              `${i + 1}. ${h.title ?? "(untitled)"} , ${h.date ?? ""} (${h.durationMinutes ?? 0} min)`
+              `${i + 1}. ${h.title ?? "(untitled)"} — ${h.date ?? ""} (${h.durationMinutes ?? 0} min)`
           )
           .join("\n");
       }
@@ -152,24 +153,39 @@ async function handleCommand(cmd: PendingCommand): Promise<void> {
       const prompt = cmd.prompt ?? "";
       const continueSession = routingType === "continue";
 
-      if (!continueSession) {
-        // Register new session in EC2 registry before starting
+      if (continueSession) {
+        // continue routing is preserved unchanged: resume the most recent
+        // session. It does not flow through the Task Spine because it has no
+        // standalone task identity, it is a follow-up on prior work.
+        const { summary, success: ok } = await runClaudeCodeAndSummarize(prompt, {
+          cwd: app.getAppPath(),
+          continueSession: true,
+        });
+        result = summary;
+        success = ok;
+      } else {
+        // new_task routing goes through the Task Spine so every remote
+        // dispatch becomes a durable, queryable Task instead of fire-and-
+        // forget. We still register the EC2 session and await the result so
+        // completion is reported back to EC2 exactly as before.
         const topic = prompt.slice(0, 80) + (prompt.length > 80 ? "…" : "");
         const sessionId = await registerSession(topic);
         if (sessionId) activeSessionId = sessionId;
-      }
 
-      const { summary, success: ok } = await runClaudeCodeAndSummarize(prompt, {
-        cwd: app.getAppPath(),
-        continueSession,
-      });
-      result = summary;
-      success = ok;
+        const { completion } = runTask({
+          kind: "action",
+          origin: "command-queue",
+          prompt,
+          cwd: app.getAppPath(),
+        });
+        const taskResult = await completion;
+        result = taskResult.summary;
+        success = taskResult.success;
 
-      // Close session on completion
-      if (!continueSession && activeSessionId) {
-        await completeSession(activeSessionId);
-        activeSessionId = null;
+        if (activeSessionId) {
+          await completeSession(activeSessionId);
+          activeSessionId = null;
+        }
       }
 
     } else {

@@ -1,5 +1,5 @@
 #!/bin/bash
-# SessionStart hook variant , INGEST MODE.
+# SessionStart hook variant — INGEST MODE.
 #
 # Emits a ~200-token stub instead of the full Tier 1 context load used by
 # session-start-inject.sh. Fires when SECONDBRAIN_SESSION_MODE=ingest is set in
@@ -9,7 +9,7 @@
 #
 # Why: Tier 1 injection is ~10K tokens of identity, hooks catalog, state map,
 # and rules. Ingest workers that drain secondbrain/data/ingest-queue/ do not
-# need any of that , the queue item carries its own context, and the handful
+# need any of that — the queue item carries its own context, and the handful
 # of rules ingest actually needs (raw archival, fail-loud, Graphiti cascade,
 # escalation path) fit in ~200 tokens.
 #
@@ -19,7 +19,7 @@
 #
 # Registered indirectly: session-start-inject.sh early-routes to this script
 # when SECONDBRAIN_SESSION_MODE=ingest. Do not register this script directly
-# in settings.json , that would break interactive sessions.
+# in settings.json — that would break interactive sessions.
 #
 # Lives at secondbrain/scripts/claude-hooks/session-start-inject-ingest.sh
 # (tracked), reached from ~/.claude/hooks/ via the junction.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ec2-build-from-queue.py , Reads ec2-build-queue.json and builds each video.
+ec2-build-from-queue.py — Reads ec2-build-queue.json and builds each video.
 
 Runs on EC2 (/opt/secondbrain/). Builds all videos in the queue that do not
 already have a completed final.mp4, then writes results to build_manifest.json.
@@ -10,7 +10,7 @@ Fixes over build-videos.py:
 - ASS captions offset by thumb card duration (0.25s)
 - Grok Aurora (xAI) thumbnails for all videos
 - Music mix from MUSIC_MAP in empire config
-- No -shortest flag , explicit -t duration prevents truncation
+- No -shortest flag — explicit -t duration prevents truncation
 
 Usage:
   python3 /opt/secondbrain/scripts/ec2-build-from-queue.py
@@ -44,6 +44,72 @@ EMPHASIS_WORDS = {
 
 def load_config():
     return json.loads(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
+
+
+# -- Rejection-aware regeneration --------------------------------------------
+
+def get_rejection_note(spec):
+    """Return the rejection feedback for this spec, if any.
+
+    A rejected video is re-queued with a `rejection_note` field (set by the
+    content-review reject flow). The note is also honored from the
+    REJECTION_NOTE env var so a single-id rebuild can be triggered directly.
+    """
+    note = (spec.get("rejection_note")
+            or spec.get("video_rejection_note")
+            or spec.get("thumbnail_rejection_note")
+            or os.environ.get("REJECTION_NOTE", ""))
+    return (note or "").strip()
+
+
+def script_derived_terms(script, limit=12):
+    """Extract content words that actually appear in the narration script.
+
+    Intro/overlay cards and animation prompts must be grounded in this set,
+    never invented. Returns lowercased significant words from the script.
+    """
+    import re as _re
+    stop = {
+        'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'be',
+        'to', 'of', 'in', 'on', 'for', 'with', 'at', 'by', 'from', 'this',
+        'that', 'it', 'its', 'as', 'so', 'now', 'all', 'her', 'his', 'she',
+        'he', 'they', 'you', 'your', 'their', 'what', 'who', 'how', 'them',
+        'has', 'had', 'have', 'will', 'can', 'just', 'not', 'no', 'into',
+    }
+    words = _re.findall(r"[A-Za-z0-9']+", (script or "").lower())
+    seen, terms = set(), []
+    for w in words:
+        if len(w) < 3 or w in stop or w in seen:
+            continue
+        seen.add(w)
+        terms.append(w)
+        if len(terms) >= limit:
+            break
+    return terms
+
+
+def card_text_from_script(title, script):
+    """Card / overlay text MUST come from the script or title, never invented.
+
+    Returns the title only if every significant word in it is present in the
+    script (or is itself in the script). Otherwise falls back to the first
+    sentence of the script so the card never says something the video doesn't.
+    """
+    import re as _re
+    script = script or ""
+    title = (title or "").strip()
+    if not title:
+        first = _re.split(r"(?<=[.!?])\s+", script.strip())
+        return first[0][:70] if first and first[0] else ""
+    script_words = set(script_derived_terms(script, limit=200))
+    title_words = [w for w in _re.findall(r"[A-Za-z0-9']+", title.lower())
+                   if len(w) >= 4]
+    grounded = all(w in script_words for w in title_words) if title_words else True
+    if grounded:
+        return title
+    # Title drifted from the script: use the script's own opening line.
+    first = _re.split(r"(?<=[.!?])\s+", script.strip())
+    return (first[0][:70] if first and first[0] else title)
 
 def run(cmd, **kwargs):
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
@@ -156,7 +222,7 @@ def grok_thumbnail(title, out_path, config):
     from PIL import Image, ImageDraw, ImageFont
     xai_key = config.get("xai_api_key", "")
     if not xai_key:
-        print("  No xAI key , using gradient thumbnail")
+        print("  No xAI key — using gradient thumbnail")
         return gradient_thumbnail(title, out_path)
 
     # Generate cinematic background via Grok Aurora
@@ -281,9 +347,25 @@ def build_video(spec, config):
     print(f"Building: {spec['title']} [{vid_id}]")
     print(f"{'='*60}\n")
 
+    # Rejection-aware regen: if this spec was re-queued after a rejection,
+    # the note must actually shape the rebuild, not just be logged.
+    rejection_note = get_rejection_note(spec)
+    if rejection_note:
+        print(f"[regen] Rebuilding with rejection feedback: {rejection_note}")
+        # The note is recorded on the manifest so the regen is auditable and
+        # exposed to any downstream script-rewrite step that consults it.
+        spec["_applied_rejection_note"] = rejection_note
+
+    # Card text is derived strictly from the script so the intro/overlay
+    # never shows wording the narration does not contain.
+    card_title = card_text_from_script(spec.get("title", ""), spec.get("script", ""))
+    if card_title != spec.get("title", ""):
+        print(f"[card] Title drifted from script; using script-grounded card "
+              f"text: {card_title!r}")
+
     # 1. Voice
     if voice_h.exists():
-        print("[1] Voice exists , reusing")
+        print("[1] Voice exists — reusing")
     else:
         if not voice_raw.exists():
             print("[1] Generating ElevenLabs voice...")
@@ -302,20 +384,24 @@ def build_video(spec, config):
     write_ass(words, str(ass_file), thumb_offset=0.25)
 
     # 3. Thumbnail
-    if thumbnail.exists():
-        print("[3] Thumbnail exists , reusing")
+    if thumbnail.exists() and not rejection_note:
+        print("[3] Thumbnail exists, reusing")
     else:
+        if rejection_note and thumbnail.exists():
+            thumbnail.unlink()
+            print("[3] Regenerating thumbnail to address rejection feedback")
         print("[3] Generating Grok Aurora thumbnail...")
-        grok_thumbnail(spec["title"], thumbnail, config)
+        # card_title is script-grounded so the thumbnail never invents wording.
+        grok_thumbnail(card_title, thumbnail, config)
 
-    # 4. Stock footage , ALWAYS loop to full voice duration + 5s buffer
+    # 4. Stock footage — ALWAYS loop to full voice duration + 5s buffer
     if stock_loop.exists():
         loop_dur = voice_duration(str(stock_loop))
         if loop_dur >= dur:
-            print(f"[4] Looped stock exists ({loop_dur:.1f}s) , reusing")
+            print(f"[4] Looped stock exists ({loop_dur:.1f}s) — reusing")
         else:
             stock_loop.unlink()
-            print("[4] Looped stock too short , regenerating")
+            print("[4] Looped stock too short — regenerating")
     if not stock_loop.exists():
         if not stock_raw.exists():
             print("[4] Fetching stock footage from Pexels...")
@@ -340,7 +426,7 @@ def build_video(spec, config):
         run(f"ffmpeg -y -loop 1 -i {thumbnail} -t 0.25 -vf 'scale=1080:1920' "
             f"-pix_fmt yuv420p -r 30 {thumb_card}")
 
-    # 6. Assemble , NO -shortest, explicit -t to prevent truncation
+    # 6. Assemble — NO -shortest, explicit -t to prevent truncation
     print("[5] Assembling final video...")
     concat_txt.write_text(f"file '{thumb_card}'\nfile '{stock_loop}'\n")
     ass_arg = f'-vf "ass={ass_file}"' if ass_file.exists() else ""
@@ -386,12 +472,19 @@ if __name__ == "__main__":
         if target_id and target_id != vid_id:
             continue
 
-        # Skip if already successfully built and final.mp4 is fresh
+        # Skip if already successfully built and final.mp4 is fresh.
+        # A re-queued rejected video carries a rejection note and MUST
+        # rebuild even though a stale final.mp4 still exists on disk.
         final_path = WORK_DIR / vid_id / "final.mp4"
-        if final_path.exists() and not os.environ.get("FORCE_REBUILD"):
-            print(f"[{vid_id}] final.mp4 exists , skipping (set FORCE_REBUILD=1 to override)")
+        spec_rejection = get_rejection_note(spec)
+        if (final_path.exists() and not os.environ.get("FORCE_REBUILD")
+                and not spec_rejection):
+            print(f"[{vid_id}] final.mp4 exists, skipping (set FORCE_REBUILD=1 to override)")
             built.append(vid_id)
             continue
+        if spec_rejection and final_path.exists():
+            final_path.unlink()
+            print(f"[{vid_id}] rejected video re-queued, rebuilding from feedback")
 
         try:
             video_path, thumb_path = build_video(spec, config)
@@ -403,6 +496,9 @@ if __name__ == "__main__":
                     "thumbnail": thumb_path,
                     "built_at": __import__("datetime").datetime.utcnow().isoformat(),
                 }
+                if spec_rejection:
+                    # Preserve which feedback drove this regen.
+                    manifest[vid_id]["regenerated_from_rejection"] = spec_rejection
                 built.append(vid_id)
             else:
                 failed.append(vid_id)

@@ -1,4 +1,4 @@
-"""video_utils.py , Shared video utilities"""
+"""video_utils.py — Shared video utilities"""
 import subprocess
 from pathlib import Path
 

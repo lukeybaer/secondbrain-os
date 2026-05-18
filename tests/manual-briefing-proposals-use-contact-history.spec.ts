@@ -1,8 +1,8 @@
 /**
- * Regression guard: 2026-04-20 , proposals must draw on contact history, not
+ * Regression guard: 2026-04-20 — proposals must draw on contact history, not
  * just the LinkedIn bio string.
  *
- * the owner flagged the 2026-04-20 briefing's Friedrich and Adi proposals as
+ * Luke flagged the 2026-04-20 briefing's Friedrich and Adi proposals as
  * "out of touch" because they read like the generator had never met either
  * person. Root cause: getLinkedInIntel() in manual-briefing-v3.js built its
  * prompt from (contactName + cleanedDetail from the scraper) only, with no

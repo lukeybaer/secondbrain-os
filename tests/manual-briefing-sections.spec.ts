@@ -1,8 +1,8 @@
 /**
- * Regression guard: 2026-04-16 owner-requested briefing reshape.
+ * Regression guard: 2026-04-16 Luke-requested briefing reshape.
  *
- * 1. Drop INNER CIRCLE "5+ days since last logged activity" block , not helpful.
- * 2. Drop COMMUNICATIONS SUMMARY (exec-level) , no signal over §6 action items.
+ * 1. Drop INNER CIRCLE "5+ days since last logged activity" block — not helpful.
+ * 2. Drop COMMUNICATIONS SUMMARY (exec-level) — no signal over §6 action items.
  * 3. LinkedIn section must be drafted reach-outs capped at 5 per contact dedupe.
  * 4. Upload queue must flag stale (>=3d) items so a silent pipeline fails loud.
  * 5. Reputation scan must actively query Google News with negative-sentiment

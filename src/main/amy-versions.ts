@@ -61,7 +61,7 @@ const SKILL_CATALOG: AmySkill[] = [
   {
     name: 'Answer Questions',
     description:
-      'Answer general knowledge questions using AI intelligence , anything from quantum physics to cooking tips',
+      'Answer general knowledge questions using AI intelligence — anything from quantum physics to cooking tips',
     triggerPhrases: ['how does', 'what is', 'explain', 'tell me about', 'why does'],
     requiresBackend: false,
     availability: 'ready',
@@ -82,7 +82,7 @@ const SKILL_CATALOG: AmySkill[] = [
   },
   {
     name: 'Check Todos',
-    description: "Query the owner's personal todo list , items, priorities, assignees, due dates",
+    description: "Query the owner's personal todo list — items, priorities, assignees, due dates",
     triggerPhrases: ["what's on my todo", 'what do I need to do', 'any todos', 'my tasks'],
     toolName: 'check_todos',
     requiresBackend: true,
@@ -105,7 +105,7 @@ const SKILL_CATALOG: AmySkill[] = [
   {
     name: 'Queue Coding Task',
     description:
-      'Send a coding task to Claude Code for execution , bug fixes, features, refactors, deployments',
+      'Send a coding task to Claude Code for execution — bug fixes, features, refactors, deployments',
     triggerPhrases: ['fix the bug', 'add a feature', 'write code', 'deploy', 'update the app'],
     toolName: 'run_claude_code',
     requiresBackend: true,
@@ -170,7 +170,7 @@ const SKILL_CATALOG: AmySkill[] = [
   },
   {
     name: 'Web Research',
-    description: 'Search the web for information , businesses, contact info, prices, reviews, news',
+    description: 'Search the web for information — businesses, contact info, prices, reviews, news',
     triggerPhrases: ['look up', 'search for', 'find me', 'research', 'google'],
     toolName: 'web_search',
     requiresBackend: true,
@@ -180,11 +180,11 @@ const SKILL_CATALOG: AmySkill[] = [
 
 // ── Amy Identity ─────────────────────────────────────────────────────────────
 
-const AMY_IDENTITY = `You are the EA, the owner's executive assistant. You are highly intelligent, resourceful, and proactive. You have access to the owner's projects, tasks, conversation history, and a suite of tools to help manage his life and business.
+const AMY_IDENTITY = `You are Amy, the owner's executive assistant. You are highly intelligent, resourceful, and proactive. You have access to the owner's projects, tasks, conversation history, and a suite of tools to help manage his life and business.
 
-You are not just a call handler , you ARE the assistant. Everything the owner's machines and tools can do, you can do. Claude Code, the SecondBrain app, Telegram, email, calendars , these are all extensions of you. When someone asks you to do something, you either do it directly or use your tools to make it happen.
+You are not just a call handler — you ARE the assistant. Everything the owner's machines and tools can do, you can do. Claude Code, the SecondBrain app, Telegram, email, calendars — these are all extensions of you. When someone asks you to do something, you either do it directly or use your tools to make it happen.
 
-You speak naturally and warmly. You're sharp but not robotic. You know the owner well , his preferences, his projects, his style. You don't over-explain or hedge when you know the answer.`;
+You speak naturally and warmly. You're sharp but not robotic. You know the owner well — his preferences, his projects, his style. You don't over-explain or hedge when you know the answer.`;
 
 // ── Tool Builders ────────────────────────────────────────────────────────────
 
@@ -203,7 +203,7 @@ function buildBaseTools(): any[] {
             task: {
               type: 'string',
               description:
-                'Clear description of the coding task , include file names, what to change, expected behavior.',
+                'Clear description of the coding task — include file names, what to change, expected behavior.',
             },
             priority: {
               type: 'string',
@@ -294,7 +294,7 @@ function buildBaseTools(): any[] {
         parameters: {
           type: 'object',
           properties: {
-            caller_name: { type: 'string', description: "Caller's name , ask if unknown." },
+            caller_name: { type: 'string', description: "Caller's name — ask if unknown." },
             topic: { type: 'string', description: 'One-sentence reason they want the owner.' },
           },
           required: ['caller_name', 'topic'],
@@ -319,7 +319,7 @@ function buildV2Tools(): any[] {
           properties: {
             project_name: {
               type: 'string',
-              description: 'Optional , filter to a specific project by name (partial match).',
+              description: 'Optional — filter to a specific project by name (partial match).',
             },
           },
         },
@@ -427,7 +427,7 @@ function buildRulesSection(rules: string[]): string {
 
 function buildIntegritySection(): string {
   return `
-## Integrity rules , non-negotiable
+## Integrity rules — non-negotiable
 - NEVER fabricate or make up information. If you don't know, say "I don't know" or "let me check."
 - NEVER guess at numbers, costs, policy details, or coverage specifics.
 - If unsure about your authority, say "I'd want to verify that before we proceed."
@@ -441,7 +441,7 @@ function buildToolUsageSection(version: AmyVersion): string {
 
   sections.push(`
 ## How to Use Your Tools
-When the caller asks something you can look up , USE YOUR TOOLS. Don't guess. Don't say "I think..." when you can check.`);
+When the caller asks something you can look up — USE YOUR TOOLS. Don't guess. Don't say "I think..." when you can check.`);
 
   if (version.skills.some((s) => s.toolName === 'check_project_status')) {
     sections.push(`
@@ -449,7 +449,7 @@ When the caller asks something you can look up , USE YOUR TOOLS. Don't guess. Do
 When the owner asks about projects, tasks, or status:
 - Use check_project_status immediately
 - Say "Let me check on that..." while it runs
-- Read the results naturally , don't dump raw data`);
+- Read the results naturally — don't dump raw data`);
   }
 
   if (version.skills.some((s) => s.toolName === 'check_todos')) {
@@ -457,7 +457,7 @@ When the owner asks about projects, tasks, or status:
 ### Todo List
 When the owner asks about his todos or what needs doing:
 - Use check_todos immediately
-- Summarize by priority , high items first`);
+- Summarize by priority — high items first`);
   }
 
   if (version.skills.some((s) => s.toolName === 'manage_task')) {
@@ -465,26 +465,26 @@ When the owner asks about his todos or what needs doing:
 ### Task Management
 When the owner says to add a task, mark something done, or create a todo:
 - Use manage_task immediately
-- Confirm what you did: "Done , I've added that to your list."`);
+- Confirm what you did: "Done — I've added that to your list."`);
   }
 
   sections.push(`
 ### Coding Tasks
 When the owner asks to write code, fix a bug, or make a technical change:
 - Use run_claude_code immediately
-- Say "I've queued that for Claude Code. I'll call you back when it's done , usually within a few minutes."
+- Say "I've queued that for Claude Code. I'll call you back when it's done — usually within a few minutes."
 - End the call gracefully
 
 ### Knowledge Queries
 When the owner asks about past conversations, decisions, or contacts:
-- Use query_knowledge IMMEDIATELY , don't try to answer from memory
+- Use query_knowledge IMMEDIATELY — don't try to answer from memory
 - Say "Give me just a moment, checking your notes..."
 - Read the result naturally
 
 ### Connecting Callers to the Owner
 When a caller asks to speak with the owner:
 - Ask their name: "Who should I say is calling?"
-- Say "Let me get them for you , one moment."
+- Say "Let me get them for you — one moment."
 - Call bridge_in_owner IMMEDIATELY`);
 
   return sections.join('\n');
@@ -540,7 +540,7 @@ function loadAmyPersonaFile(overrideRepoRoot?: string): string {
     }
   }
 
-  // File not found , cache empty to avoid repeated fs probes
+  // File not found — cache empty to avoid repeated fs probes
   amyPersonaCache = { content: '', loadedAt: now };
   return '';
 }
@@ -625,18 +625,18 @@ export async function buildVersionedSystemPrompt(
 
   // Conversation style
   parts.push(`
-## LIVE MIC DISCIPLINE , read this first
+## LIVE MIC DISCIPLINE — read this first
 Your microphone is ALWAYS hot on this call. Everything you emit is heard by the other party in real time. Do NOT narrate your internal state, actions, waits, or thoughts. Specifically:
-- NEVER say "Pressing 3", "Selecting option 2", "I'll press", "Pressing parts" , just use the DTMF tool silently.
-- NEVER say "Waiting silently for a human", "Let me wait", "Standing by" , just stay silent.
-- NEVER say "Processing", "Let me think", "One moment while I check internally" , that's internal state, do not voice it.
-- If you are going to do something, DO IT. Do not describe it. Acceptable bridging phrases exist only when you are actually looking something up on tools ("Let me check on that…" while a tool runs) , never as a substitute for silence.
+- NEVER say "Pressing 3", "Selecting option 2", "I'll press", "Pressing parts" — just use the DTMF tool silently.
+- NEVER say "Waiting silently for a human", "Let me wait", "Standing by" — just stay silent.
+- NEVER say "Processing", "Let me think", "One moment while I check internally" — that's internal state, do not voice it.
+- If you are going to do something, DO IT. Do not describe it. Acceptable bridging phrases exist only when you are actually looking something up on tools ("Let me check on that…" while a tool runs) — never as a substitute for silence.
 ## How to handle this call
-- Speak naturally , do NOT read goals as a script. Have a real conversation.
+- Speak naturally — do NOT read goals as a script. Have a real conversation.
 - If they seem busy, be brief. If they want to chat, engage warmly.
 - Stay in character throughout.
 ## Phone tree / IVR navigation
-- If you reach an automated menu, use the DTMF tool to press keys. NEVER voice the action , silent DTMF only.
+- If you reach an automated menu, use the DTMF tool to press keys. NEVER voice the action — silent DTMF only.
 - Wait for the FULL menu to finish (at least 2 seconds of silence) before pressing any key.
 - After pressing a key, stay silent for at least 8 seconds to let the transfer complete. Only speak once a human greets you.
 ## Pronunciation guide
@@ -676,22 +676,22 @@ Your microphone is ALWAYS hot on this call. Everything you emit is heard by the 
 const V1_RULES = [
   'Do NOT reveal that you are an AI unless directly and sincerely asked',
   "If asked who you are on outbound calls, say you're calling on behalf of a customer",
-  "Receive inbound calls naturally , 'Hey, thanks for calling back!'",
-  "Reference prior call context only if relevant , don't robotically repeat it",
+  "Receive inbound calls naturally — 'Hey, thanks for calling back!'",
+  "Reference prior call context only if relevant — don't robotically repeat it",
 ];
 
 const V2_RULES = [
   ...V1_RULES,
-  "When asked about projects, tasks, or status , use your tools, don't guess",
+  "When asked about projects, tasks, or status — use your tools, don't guess",
   "When you can check something, always check rather than saying 'I think...'",
   'If a tool call fails, tell the caller honestly and offer alternatives',
-  'You are part of a unified system , Claude Code, Telegram, SecondBrain are all you',
+  'You are part of a unified system — Claude Code, Telegram, SecondBrain are all you',
 ];
 
 const BUILT_IN_VERSIONS: AmyVersion[] = [
   {
     version: 1,
-    name: 'Amy v1 , Classic',
+    name: 'Amy v1 — Classic',
     createdAt: '2025-04-01T00:00:00Z',
     description:
       'Original Amy: gpt-4o, basic tools (code tasks, knowledge queries, approvals, bridge-in). No skill awareness.',
@@ -712,7 +712,7 @@ const BUILT_IN_VERSIONS: AmyVersion[] = [
   },
   {
     version: 2,
-    name: 'Amy v2 , Skill-Aware',
+    name: 'Amy v2 — Skill-Aware',
     createdAt: new Date().toISOString(),
     description:
       'Full skill catalog, project/todo queries, task management, direct tool execution. Still gpt-4o.',
@@ -725,7 +725,7 @@ const BUILT_IN_VERSIONS: AmyVersion[] = [
   },
   {
     version: 3,
-    name: 'Amy v3 , Receptionist (gpt-4o voice + Claude dispatch)',
+    name: 'Amy v3 — Receptionist (gpt-4o voice + Claude dispatch)',
     createdAt: new Date().toISOString(),
     description:
       'Receptionist pattern: gpt-4o for voice (1-2s first token, no cold start) + Claude Code backend for actual work via run_claude_code dispatch. Claude-on-voice (custom-llm) was reverted 2026-04-18 after it produced 10-15s per-turn cold start on live calls (voice went dead). Restore Claude-on-voice only after session pinning (claude --resume) is proven to keep cold start under 2s.',
@@ -802,7 +802,7 @@ export function getLlmConfigForVersion(version: AmyVersion): any {
   if (version.llm.provider === 'custom-llm') {
     // Prefer explicit customEndpoint on the version. Fall back to the
     // ec2BaseUrl + /chat/completions so v3 works out-of-the-box as soon
-    // as the Claude Max proxy + SSH reverse tunnel come online , without
+    // as the Claude Max proxy + SSH reverse tunnel come online — without
     // needing a manual saved version override. Rule: Claude Max only for
     // production call paths (memory/feedback_no_fabrication_in_briefings.md,
     // src/main/__tests__/llm-routing-guard.test.ts).
@@ -817,7 +817,7 @@ export function getLlmConfigForVersion(version: AmyVersion): any {
         url,
       };
     }
-    // No endpoint anywhere , last-resort fall back to openai so Amy stays
+    // No endpoint anywhere — last-resort fall back to openai so Amy stays
     // on the air. Telegram alert + llm-routing-guard test will notice.
     console.warn(
       '[amy-versions] v' +

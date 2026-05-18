@@ -9,10 +9,10 @@
  * routes to the Claude Max proxy).
  *
  * Requirements this test enforces:
- *   1. Voice layer is gpt-4o (or a future fast alternative) , openai is OK
- *   2. run_claude_code dispatch tool is present , without it EA cannot
+ *   1. Voice layer is gpt-4o (or a future fast alternative) — openai is OK
+ *   2. run_claude_code dispatch tool is present — without it Amy cannot
  *      reach Claude and degrades to role-playing from stale memory
- *   3. query_knowledge tool is present , for fast historical recall
+ *   3. query_knowledge tool is present — for fast historical recall
  *   4. firstMessage greets the owner by name (not "Hi there, how can I help")
  *
  * Root incident 2026-04-16: toggled between pure Claude-on-voice (too slow)
@@ -54,7 +54,7 @@ function listToolNames(a: any): string[] {
     .map((t: any) => t.function.name);
 }
 
-describe('Vapi callback assistant , receptionist dispatches to Claude', () => {
+describe('Vapi callback assistant — receptionist dispatches to Claude', () => {
   const config = loadConfig();
   const hasCreds = config.vapiApiKey && config.callbackAssistantId;
   const itOrSkip = hasCreds ? it : it.skip;
@@ -90,10 +90,10 @@ describe('Vapi callback assistant , receptionist dispatches to Claude', () => {
   itOrSkip('firstMessage greets the owner by name, not generic desk pickup', async () => {
     const a = await fetchVapiAssistant(config.callbackAssistantId, config.vapiApiKey);
     const fm = (a?.firstMessage || '').toLowerCase();
-    const owner = (config.ownerName || 'Owner').toLowerCase();
+    const owner = (config.ownerName || 'Luke').toLowerCase();
     expect(
       fm,
-      `firstMessage "${a?.firstMessage}" must address ${config.ownerName || 'Owner'} by name. ` +
+      `firstMessage "${a?.firstMessage}" must address ${config.ownerName || 'Luke'} by name. ` +
         `Generic "Hi there, how can I help you?" means the assistant has drifted from the ` +
         `owner-inbound config.`,
     ).toContain(owner);
@@ -106,7 +106,7 @@ describe('Vapi callback assistant , receptionist dispatches to Claude', () => {
       sp,
       `System prompt must instruct Amy to use run_claude_code for substantive work. ` +
         `Without explicit dispatch instructions, gpt-4o tries to answer from its own ` +
-        `knowledge and makes things up about sessions, briefings, and the owner's projects.`,
+        `knowledge and makes things up about sessions, briefings, and Luke's projects.`,
     ).toContain('run_claude_code');
   });
 });

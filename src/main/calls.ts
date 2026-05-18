@@ -113,7 +113,7 @@ async function extractAndStoreCallPattern(
   transcript: string,
   completed: boolean,
 ): Promise<void> {
-  // Simple heuristic extraction , no LLM cost, just pattern matching on the transcript.
+  // Simple heuristic extraction — no LLM cost, just pattern matching on the transcript.
   // Pull first substantive Amy turn as the opening, collect lines that resolve objections.
   const lines = transcript.split('\n').filter((l) => l.trim().length > 10);
   const amyLines = lines
@@ -149,7 +149,7 @@ function saveCallRecord(record: CallRecord): void {
     JSON.stringify(record, null, 2),
     'utf-8',
   );
-  // Push to renderer immediately via ipc-handlers subscription , no polling needed
+  // Push to renderer immediately via ipc-handlers subscription — no polling needed
   callStatusEmitter.emit('status', record);
 }
 
@@ -207,15 +207,15 @@ async function buildSystemPrompt(
 
   let base: string;
   if (personaInstructions?.trim()) {
-    // When a persona is set, it owns the voicemail instructions , don't override with generic text.
+    // When a persona is set, it owns the voicemail instructions — don't override with generic text.
     base = `${personaInstructions.trim()}
 
 ## Your goal for this call
 ${instructions.trim()}
 ${contextSection}
 ## How to handle this call
-- Speak naturally , do NOT read the goal as a script or monologue. Have a real conversation.
-- The goal above tells you WHAT to accomplish. HOW you get there is up to you , be human, adapt, listen.
+- Speak naturally — do NOT read the goal as a script or monologue. Have a real conversation.
+- The goal above tells you WHAT to accomplish. HOW you get there is up to you — be human, adapt, listen.
 - If they seem busy or distracted, be brief. If they want to chat, engage warmly.
 - Stay in character throughout.
 ## Phone tree / IVR navigation
@@ -229,12 +229,12 @@ ${contextSection}
 ## Ending the call
 - When the goal is accomplished (or clearly can't be), wrap up warmly and say goodbye.
 - Don't drag it out once the purpose is fulfilled.
-## Integrity rules , non-negotiable
+## Integrity rules — non-negotiable
 - NEVER fabricate or make up information. If you don't know something, say "I don't know" or "I'm not sure about that, let me check."
 - NEVER guess at numbers, costs, policy details, or coverage specifics. Only state facts you've been explicitly given.
 - When proposing an action or pathway, if you're not sure it's within your authority or instructions, say "I'd want to verify that before we proceed."
 - Know the boundaries of what you can and can't do. If something is outside your scope, say so clearly.
-- Be factual. No embellishment. No filler. If the briefing has 5 data points, deliver 5 data points , don't pad with assumptions.
+- Be factual. No embellishment. No filler. If the briefing has 5 data points, deliver 5 data points — don't pad with assumptions.
 - When delivering a briefing or summary, cite where the information came from (which email, which document, which person said it).`;
   } else {
     base = `You are a helpful AI assistant making a phone call on behalf of the user.
@@ -243,8 +243,8 @@ ${contextSection}
 ${instructions.trim()}
 ${contextSection}
 ## How to handle this call
-- Speak naturally , do NOT read the goal as a script or monologue. Have a real conversation.
-- The goal above tells you WHAT to accomplish. HOW you get there is up to you , listen, adapt, be genuine.
+- Speak naturally — do NOT read the goal as a script or monologue. Have a real conversation.
+- The goal above tells you WHAT to accomplish. HOW you get there is up to you — listen, adapt, be genuine.
 - If asked who you are, say you're calling on behalf of a customer.
 - Do NOT reveal that you are an AI unless directly and sincerely asked.
 ${buildVoicemailSection(leaveVoicemail)}
@@ -258,12 +258,12 @@ ${buildVoicemailSection(leaveVoicemail)}
 - "RSU" → say "R S U"
 ## Ending the call
 - When the goal is accomplished (or clearly can't be), wrap up politely and say goodbye.
-## Integrity rules , non-negotiable
+## Integrity rules — non-negotiable
 - NEVER fabricate or make up information. If you don't know something, say "I don't know" or "I'm not sure about that, let me check."
 - NEVER guess at numbers, costs, policy details, or coverage specifics. Only state facts you've been explicitly given.
 - When proposing an action or pathway, if you're not sure it's within your authority or instructions, say "I'd want to verify that before we proceed."
 - Know the boundaries of what you can and can't do. If something is outside your scope, say so clearly.
-- Be factual. No embellishment. No filler. If the briefing has 5 data points, deliver 5 data points , don't pad with assumptions.
+- Be factual. No embellishment. No filler. If the briefing has 5 data points, deliver 5 data points — don't pad with assumptions.
 - When delivering a briefing or summary, cite where the information came from (which email, which document, which person said it).`;
   }
 
@@ -484,7 +484,7 @@ export async function refreshCallStatus(
         syncCallbackAssistant(existing.phoneNumber);
       });
     } else {
-      // No transcript to analyze , still sync so callback assistant is up to date
+      // No transcript to analyze — still sync so callback assistant is up to date
       syncCallbackAssistant(existing.phoneNumber);
     }
   }
@@ -547,10 +547,10 @@ async function buildCallbackAssistantConfig(callerPhone: string): Promise<object
     : undefined;
   const identitySection =
     !callerIsOwner && personaInstructions?.trim()
-      ? `## Your identity (persona)\n${personaInstructions.trim()}\n\n> IMPORTANT: You are RECEIVING this call, not making it. Do NOT use language like "I'm calling on behalf of..." , answer naturally as if you picked up the phone.`
+      ? `## Your identity (persona)\n${personaInstructions.trim()}\n\n> IMPORTANT: You are RECEIVING this call, not making it. Do NOT use language like "I'm calling on behalf of..." — answer naturally as if you picked up the phone.`
       : undefined;
 
-  // Build call history text , hide outbound campaign history from the owner,
+  // Build call history text — hide outbound campaign history from the owner,
   // it is noise for him and pollutes his prompt with dentist scripts.
   const historyText =
     !callerIsOwner && history.length > 0
@@ -561,12 +561,12 @@ async function buildCallbackAssistantConfig(callerPhone: string): Promise<object
             const outcome =
               r.summary ??
               (r.transcript ? 'See transcript excerpt below.' : 'No answer / voicemail.');
-            return `### Call ${i + 1} , ${date} , ${statusLabel}\nGoal: ${r.instructions.trim()}\nOutcome: ${outcome}${r.transcript ? `\nTranscript:\n${r.transcript.slice(0, 500)}` : ''}`;
+            return `### Call ${i + 1} — ${date} — ${statusLabel}\nGoal: ${r.instructions.trim()}\nOutcome: ${outcome}${r.transcript ? `\nTranscript:\n${r.transcript.slice(0, 500)}` : ''}`;
           })
           .join('\n\n')
       : undefined;
 
-  // Build goal instruction , only for non-owner callbacks. Owner inbound
+  // Build goal instruction — only for non-owner callbacks. Owner inbound
   // gets NO "goal" injected so Amy behaves as a general-purpose EA.
   const goalInstruction = callerIsOwner
     ? undefined
@@ -702,7 +702,7 @@ export async function fetchAndSyncInboundCalls(): Promise<void> {
 
     // Always re-sync the callback assistant after any inbound call lands.
     // This is load-bearing: without it, the Vapi prompt drifts from the
-    // current memory / contacts / config state and goes stale , the owner
+    // current memory / contacts / config state and goes stale — the owner
     // noticed on 2026-04-15 that Amy didn't know who he was because the
     // prompt was three days stale. Sync fires on EVERY new inbound call,
     // not only on completion detection.
@@ -715,7 +715,7 @@ export async function fetchAndSyncInboundCalls(): Promise<void> {
 /**
  * After an incomplete call ends, update the dedicated callback Vapi assistant's system
  * prompt with the full call history so the next inbound callback gets full context.
- * The assistant is already linked to the phone number , we just update its content.
+ * The assistant is already linked to the phone number — we just update its content.
  */
 /** Link the callback assistant to the current phone number (idempotent). Does NOT touch assistant content. */
 export async function linkCallbackAssistantToPhoneNumber(): Promise<void> {
@@ -745,7 +745,7 @@ export async function syncCallbackAssistant(callerPhone: string): Promise<void> 
       body: JSON.stringify(assistantBody),
     });
   } catch {
-    // Best-effort , don't throw
+    // Best-effort — don't throw
   }
 
   // Keep phone number linked in case it changed in settings
@@ -762,7 +762,7 @@ export async function handleVapiFunctionCall(
   parameters: Record<string, any>,
 ): Promise<{ result: string } | null> {
   const ec2Url = getConfig().ec2BaseUrl;
-  if (!ec2Url) return null; // Backend URL not configured , set in Settings
+  if (!ec2Url) return null; // Backend URL not configured — set in Settings
 
   if (functionName === 'run_claude_code') {
     const task: string = parameters.task;
@@ -850,7 +850,7 @@ export async function handleVapiFunctionCall(
           },
         }).catch(() => resolve());
 
-        // Timeout after 55s , Vapi holds the function call for up to 60s
+        // Timeout after 55s — Vapi holds the function call for up to 60s
         setTimeout(() => resolve(), 55_000);
       });
 
@@ -869,7 +869,7 @@ export async function handleVapiFunctionCall(
   if (functionName === 'bridge_in_owner') {
     const callerName: string = parameters.caller_name ?? 'someone';
     const topic: string = parameters.topic ?? 'unknown topic';
-    // We don't have the live call ID here, so use a placeholder , the bridge session
+    // We don't have the live call ID here, so use a placeholder — the bridge session
     // tracking in initiateBridgeIn handles the outbound dial to the owner's private SIM.
     const callerPhone: string = parameters.caller_phone ?? '';
     try {
@@ -881,7 +881,7 @@ export async function handleVapiFunctionCall(
       );
       if (result.success) {
         return {
-          result: `Calling the owner now , ${callerName}, please hold while I connect you.`,
+          result: `Calling the owner now — ${callerName}, please hold while I connect you.`,
         };
       }
       return {
@@ -903,7 +903,7 @@ export async function handleVapiFunctionCall(
       transcript_excerpt: parameters.excerpt,
     });
 
-    // Security alert , reputation risk always goes to Telegram immediately
+    // Security alert — reputation risk always goes to Telegram immediately
     const config = getConfig();
     if (config.telegramChatId) {
       sendMessage(
@@ -984,11 +984,11 @@ export async function handleVapiFunctionCall(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         type: 'claude',
-        prompt: `Amy requested: ${action} , "${title}"${parameters.project_name ? ` in project "${parameters.project_name}"` : ''}`,
+        prompt: `Amy requested: ${action} — "${title}"${parameters.project_name ? ` in project "${parameters.project_name}"` : ''}`,
         replyTo: 'telegram',
       }),
     }).catch(console.error);
-    return { result: `Got it , I've queued that ${action} for "${title}".` };
+    return { result: `Got it — I've queued that ${action} for "${title}".` };
   }
 
   if (functionName === 'send_message') {
@@ -1019,7 +1019,7 @@ export interface BridgeSession {
   connected_at?: string;
 }
 
-// In-memory bridge sessions (short-lived , only active during a call)
+// In-memory bridge sessions (short-lived — only active during a call)
 const activeBridgeSessions = new Map<string, BridgeSession>();
 
 /**
@@ -1046,7 +1046,7 @@ export async function initiateBridgeIn(
 
   const privateSim = config.ownerPrivateSim;
   if (!privateSim) {
-    return { success: false, error: 'Private SIM not configured , add it in Settings' };
+    return { success: false, error: 'Private SIM not configured — add it in Settings' };
   }
 
   const sessionId = `bridge_${Date.now()}`;
@@ -1060,7 +1060,7 @@ export async function initiateBridgeIn(
   activeBridgeSessions.set(sessionId, session);
 
   // Initiate outbound call to the owner's private SIM
-  const bridgePrompt = `You are the EA, the owner's executive assistant. You are bridging a live call. A caller named ${callerName} is on hold about: "${topic}". Tell the owner who is holding and ask: "Want me to connect you?" If the owner says Yes, use the connect_caller tool. If the owner says No, end this call and tell the other line the owner isn't available.`;
+  const bridgePrompt = `You are Amy, the owner's executive assistant. You are bridging a live call. A caller named ${callerName} is on hold about: "${topic}". Tell the owner who is holding and ask: "Want me to connect you?" If the owner says Yes, use the connect_caller tool. If the owner says No, end this call and tell the other line the owner isn't available.`;
 
   const body = {
     phoneNumberId: config.vapiPhoneNumberId,
@@ -1084,7 +1084,7 @@ export async function initiateBridgeIn(
         ],
       },
       voice: { provider: '11labs', voiceId: 'paula' },
-      firstMessage: `Hey the owner , it's Amy. You've got ${callerName} holding about "${topic}". Want me to connect you?`,
+      firstMessage: `Hey the owner — it's Amy. You've got ${callerName} holding about "${topic}". Want me to connect you?`,
       endCallPhrases: ['goodbye', 'no thanks', 'not now'],
     },
     metadata: { bridge_session_id: sessionId, live_call_id: liveCallId },

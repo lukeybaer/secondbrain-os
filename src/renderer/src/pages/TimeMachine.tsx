@@ -232,7 +232,7 @@ export default function TimeMachine() {
     return () => window.removeEventListener('keydown', onKey);
   }, [fullScreenUrl, selectedIdx, frames]);
 
-  // ── Thumbnail loading , parallel batch ────────────────────────────────
+  // ── Thumbnail loading — parallel batch ────────────────────────────────
 
   async function loadThumbnailsBatch() {
     const visible = frames.slice(0, 50);

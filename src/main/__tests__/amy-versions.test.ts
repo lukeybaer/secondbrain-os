@@ -1,5 +1,5 @@
 /**
- * Tests for Amy versioning system , version CRUD, skill catalog,
+ * Tests for Amy versioning system — version CRUD, skill catalog,
  * prompt building, tool generation, and data snapshots.
  */
 
@@ -149,7 +149,7 @@ describe('Amy Versions', () => {
       const custom = {
         ...getAmyVersion(2)!,
         version: 4,
-        name: 'Amy v4 , Custom',
+        name: 'Amy v4 — Custom',
         description: 'Custom test version',
       };
       saveAmyVersion(custom);
@@ -157,7 +157,7 @@ describe('Amy Versions', () => {
       const versions = listAmyVersions();
       const v4 = versions.find((v) => v.version === 4);
       expect(v4).toBeDefined();
-      expect(v4!.name).toBe('Amy v4 , Custom');
+      expect(v4!.name).toBe('Amy v4 — Custom');
     });
   });
 
@@ -218,7 +218,7 @@ describe('Amy Versions', () => {
       expect(v2Config.provider).toBe('openai');
     });
 
-    it('v3 uses openai/gpt-4o for voice , receptionist pattern dispatches work to Claude via run_claude_code', () => {
+    it('v3 uses openai/gpt-4o for voice — receptionist pattern dispatches work to Claude via run_claude_code', () => {
       // Claude-on-voice (custom-llm) was reverted 2026-04-18: 10-15s per-turn
       // cold start killed live calls. Restore only after session pinning
       // (claude --resume) proves cold start <2s.
@@ -288,7 +288,7 @@ describe('Amy Versions', () => {
       expect(prompt).toContain('[EA MEMORY INJECTED]');
     });
 
-    // Regression: 2026-04-11 , Amy twice narrated internal state out loud
+    // Regression: 2026-04-11 — Amy twice narrated internal state out loud
     // on Pat Lobb Toyota calls ("Pressing 3 was the appropriate action",
     // "Waiting silently for a human to answer"). The DTMF rule was already
     // in the prompt but the broader hot-mic principle was not. This test

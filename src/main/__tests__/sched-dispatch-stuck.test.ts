@@ -9,7 +9,7 @@
  * fired. The loop was dark and the owner only noticed because dispatch was visibly
  * broken in the UI.
  *
- * The fix was `parseSchedDispatchLog()` , a pure parser that scans the last
+ * The fix was `parseSchedDispatchLog()` — a pure parser that scans the last
  * 24h of `AppData/Roaming/Claude/logs/main.log` for the stuck signatures and
  * flags the daily health check red. This test locks the parser patterns so
  * they can never silently drift.
@@ -59,7 +59,7 @@ describe('parseSchedDispatchLog', () => {
       `  transcript_size_bytes: 17071447`,
       `}`,
     ].join('\n');
-    // Only the line with a timestamp prefix will be parsed , match the exact
+    // Only the line with a timestamp prefix will be parsed — match the exact
     // production log shape where the error appears on a timestamped line.
     const logWithTsOnErrorLine = [
       `${ts(1, now)} [info] [APIError] error_message: 'This conversation is too long to continue. Start a new session, or remove some tools to free up space.'`,

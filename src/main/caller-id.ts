@@ -9,7 +9,7 @@
 //
 // Owner phones, verification keyword, and contacts are loaded from
 // %APPDATA%\secondbrain\data\agent\contacts.json at runtime. That file
-// is private user state , it MUST NOT be committed to git or shipped
+// is private user state — it MUST NOT be committed to git or shipped
 // in any source file. Historically this module had a hardcoded default
 // registry with real phone numbers, relationships, and personal notes,
 // which leaked to the public sync until 2026-04-11. Stripped entirely.
@@ -41,7 +41,7 @@ export interface Contact {
 }
 
 export interface ContactsStore {
-  owner_phones: string[]; // Owner's verified numbers , full access
+  owner_phones: string[]; // Owner's verified numbers — full access
   keyword: string; // spoken keyword that grants full access from unknown number
   contacts: Contact[];
   last_updated: string;
@@ -86,7 +86,7 @@ function getDefaultContactsStore(): ContactsStore {
   // loadContactsStore(), so this only fires on a clean clone / first run.
   // Historically this returned a hardcoded seed with real names, phone
   // numbers, and personal details, which shipped to the public repo as
-  // part of src/. Stripped 2026-04-11 , users populate contacts.json
+  // part of src/. Stripped 2026-04-11 — users populate contacts.json
   // themselves. See memory/feedback_no_pii_in_source.md for the rule.
   return {
     owner_phones: [],

@@ -15,7 +15,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { parseBriefing, pruneOldBriefings, listBriefingFiles } from '../briefing-parser';
 
-const SAMPLE = `Good morning -- Monday, April 20, 2026
+const SAMPLE = `Good morning Luke -- Monday, April 20, 2026
 Daily Executive Briefing
 Generated: 2026-04-20T10:46:12.862Z
 LLM: claude-haiku-4-5 via Claude Max plan (claude CLI subprocess)

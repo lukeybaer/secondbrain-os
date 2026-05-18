@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Standalone WhatsApp ingestion , runs outside Electron via pure Node.js.
+ * Standalone WhatsApp ingestion — runs outside Electron via pure Node.js.
  * Connects to WhatsApp via whatsapp-web.js, fetches all chats, and feeds
  * each conversation to Graphiti knowledge graph + saves transcripts to disk.
  *
@@ -182,7 +182,7 @@ async function main() {
       } catch {}
     });
     client.on('authenticated', () => console.log('[wa] Authenticated'));
-    client.on('loading_screen', (pct, msg) => console.log(`[wa] Loading: ${pct}% , ${msg}`));
+    client.on('loading_screen', (pct, msg) => console.log(`[wa] Loading: ${pct}% — ${msg}`));
     client.on('ready', () => {
       console.log('[wa] Ready!');
       resolve();
@@ -302,7 +302,7 @@ async function main() {
     console.log('Errors:', errors.slice(0, 5).join('; '));
   }
 
-  // Don't destroy , keep session alive for the Electron app
+  // Don't destroy — keep session alive for the Electron app
   console.log('\nKeeping session alive. Press Ctrl+C to exit.');
   // Give Graphiti time to process
   await new Promise((r) => setTimeout(r, 5000));

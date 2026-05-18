@@ -1,6 +1,6 @@
-// whitelist.ts , caller screening / tier lookup
+// whitelist.ts — caller screening / tier lookup
 // Backed by SQLite (pending_approvals table lives in database-sqlite.ts).
-// API is identical to the old JSON-on-disk version , callers don't need changes.
+// API is identical to the old JSON-on-disk version — callers don't need changes.
 
 import {
   upsertWhitelistEntry,
@@ -13,10 +13,10 @@ import {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /** Screening tier:
- *  0 = VIP  , instant transfer, bypass EA entirely
- *  1 = Known , EA bridges (introduces itself and passes call through)
- *  2 = Unknown , EA screens (asks caller's name / purpose before deciding)
- *  3 = Block , hang up immediately
+ *  0 = VIP  — instant transfer, bypass EA entirely
+ *  1 = Known — EA bridges (introduces itself and passes call through)
+ *  2 = Unknown — EA screens (asks caller's name / purpose before deciding)
+ *  3 = Block — hang up immediately
  */
 export type WhitelistTier = 0 | 1 | 2 | 3;
 
@@ -47,9 +47,9 @@ function tierToAction(tier: WhitelistTier): ScreeningResult["action"] {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/** No-op , initialization is handled by database-sqlite.ts's initDatabase() at startup. */
+/** No-op — initialization is handled by database-sqlite.ts's initDatabase() at startup. */
 export async function initWhitelist(): Promise<void> {
-  // SQLite init + seed happens in initDatabase() , nothing to do here
+  // SQLite init + seed happens in initDatabase() — nothing to do here
 }
 
 /**
@@ -90,7 +90,7 @@ export async function getWhitelist(): Promise<WhitelistEntry[]> {
 
 /**
  * Seeds the whitelist with default trusted contacts.
- * Safe to call on every startup , handled by database-sqlite.ts's seedDefaultWhitelistDb().
+ * Safe to call on every startup — handled by database-sqlite.ts's seedDefaultWhitelistDb().
  */
 export async function seedDefaultWhitelist(): Promise<void> {
   // Handled automatically by initDatabase()

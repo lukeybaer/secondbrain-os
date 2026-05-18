@@ -123,6 +123,7 @@ import { processRejectionLearning } from './rejection-skill-learning';
 import { regenRejectedVideos, RegenResult } from './video-pipeline';
 
 import { makeTracedHandle } from './ipc-trace-middleware';
+import { registerTaskHandlers } from './ipc-handlers/tasks';
 
 const AUDIO_DIAG_FILE = path.join(app.getPath('userData'), 'audio-diag.log');
 
@@ -136,6 +137,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   callStatusEmitter.on('status', (record) => {
     if (!mainWindow.isDestroyed()) send('calls:statusPush', record);
   });
+
+  // Task Spine handlers (tasks:list / get / run / cancel + tasks:push).
+  registerTaskHandlers(mainWindow);
 
   ipcMain.handle('diag:writeAudio', (_e, line: string, firstFrameHex?: string) => {
     const timestamp = new Date().toISOString();
@@ -158,7 +162,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  // Otter: open in-app browser for Google SSO login , captures session cookies + userId
+  // Otter: open in-app browser for Google SSO login — captures session cookies + userId
   ipcMain.handle('otter:openLoginWindow', async () => {
     return new Promise<{ ok: boolean; message: string }>((resolve) => {
       const win = new BrowserWindow({
@@ -194,13 +198,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         if (url.includes('/login') || url.includes('accounts.google') || url.includes('oauth'))
           return;
 
-        // Looks like a post-login page , grab cookies
+        // Looks like a post-login page — grab cookies
         try {
           const cookies = await win.webContents.session.cookies.get({ domain: '.otter.ai' });
           const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
 
           if (!cookieStr) {
-            // Not logged in yet , wait for more navigation
+            // Not logged in yet — wait for more navigation
             return;
           }
 
@@ -266,7 +270,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     });
   });
 
-  // Fetch list from Otter , streams batches back via import:listBatch events
+  // Fetch list from Otter — streams batches back via import:listBatch events
   ipcMain.handle('import:fetchList', async () => {
     try {
       const local = listAllConversations();
@@ -411,7 +415,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  // Auto-tag in background after each exchange , first call does AI tagging,
+  // Auto-tag in background after each exchange — first call does AI tagging,
   // subsequent calls just refresh the transcript (no extra OpenAI spend)
   ipcMain.handle('chats:autoTag', (_e, sessionData: ChatSession) => {
     // Fire-and-forget: don't await, don't block the renderer
@@ -419,7 +423,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return { success: true };
   });
 
-  // WhatsApp (whatsapp-web.js , personal account)
+  // WhatsApp (whatsapp-web.js — personal account)
   ipcMain.handle('whatsapp:connect', () => {
     waAllowQR();
     return waInit();
@@ -499,7 +503,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       if (phoneNumber) {
         await syncCallbackAssistant(phoneNumber);
       } else {
-        // Called from Settings button , only link the phone number, don't wipe assistant context
+        // Called from Settings button — only link the phone number, don't wipe assistant context
         await linkCallbackAssistantToPhoneNumber();
       }
       return { success: true };
@@ -591,7 +595,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // /youtube/queue. Used by empire:queueForUpload AND by empire:approveVideo
   // so approval flows straight into the 9am/1pm/5pm scheduler. Before
   // 2026-04-20, approval only wrote the local JSON, so videos sat forever
-  // waiting on a second manual click that the owner never made (18+ day stall).
+  // waiting on a second manual click that Luke never made (18+ day stall).
   async function pushVideoToEc2(id: string): Promise<{ success: boolean; error?: string; position?: number }> {
     const { execSync } = require('child_process');
     const queuePath = path.join(contentRoot, 'content-review', 'upload-queue.json');
@@ -714,7 +718,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         if (!fs.existsSync(learningsFile)) {
           fs.writeFileSync(
             learningsFile,
-            `# Content Production Learnings\n\nFeedback from review sessions , read this before generating new videos.\n\n## Rejection Feedback\n\n`,
+            `# Content Production Learnings\n\nFeedback from review sessions — read this before generating new videos.\n\n## Rejection Feedback\n\n`,
             'utf8',
           );
         }
@@ -758,7 +762,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  // RSL , Rejection-Skill-Learning: classify feedback, update rubric, append LEARNINGS.md
+  // RSL — Rejection-Skill-Learning: classify feedback, update rubric, append LEARNINGS.md
   // Also called fire-and-forget from ContentPipeline.tsx after handleReject
   ipcMain.handle(
     'empire:processRejectionLearning',
@@ -826,7 +830,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     });
   });
 
-  // Published videos , historical OpenClaw published videos
+  // Published videos — historical OpenClaw published videos
   ipcMain.handle('empire:getPublishedVideos', () => {
     const publishedDir = path.join(contentRoot, 'content-review', 'published');
     const manifestPath = path.join(publishedDir, 'manifest.json');
@@ -1003,7 +1007,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       queue.push(entry);
       writeSocialQueue(queue);
 
-      // Telegram is daily-briefing-only , social post drafts visible in Content Pipeline UI
+      // Telegram is daily-briefing-only — social post drafts visible in Content Pipeline UI
       console.log(`[social] New ${entry.platform.toUpperCase()} post draft ready for review`);
 
       return { success: true, post: entry };
@@ -1112,7 +1116,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       const post = queue.find((p: any) => p.id === id);
       if (!post) return { success: false, error: 'Post not found' };
       if (!post.tweet_id)
-        return { success: false, error: 'No tweet ID , post may not have been published' };
+        return { success: false, error: 'No tweet ID — post may not have been published' };
 
       const engagement = await getTweetEngagement(post.tweet_id);
       if (!engagement) return { success: false, error: 'Could not fetch engagement' };
@@ -1309,7 +1313,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('studio:config:get', () => loadStudioConfig());
   ipcMain.handle('studio:config:save', (_e, config: any) => saveStudioConfig(config));
   ipcMain.handle('studio:detectDevices', async () => {
-    // Use cached devices if available , dshow hangs on repeated ffmpeg -list_devices calls
+    // Use cached devices if available — dshow hangs on repeated ffmpeg -list_devices calls
     let devices: { name: string; type: string }[] = [];
     try {
       devices = await detectDevices();

@@ -10,7 +10,7 @@
 // scheduled task could not hit all 118 warm contacts because it ran as a
 // detached `claude -p` subprocess that did not inherit the parent session's
 // Claude_in_Chrome MCP. Spawned children have no browser tools. The fix is
-// to drive Chromium directly via Playwright , no MCP, no session dependency,
+// to drive Chromium directly via Playwright — no MCP, no session dependency,
 // unattended nightly run. See feedback_linkedin_scan_needs_standalone.md.
 //
 // Usage:
@@ -32,7 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 
-// Paths are derived at runtime , no hardcoded user paths. The privacy-scrubbing
+// Paths are derived at runtime — no hardcoded user paths. The privacy-scrubbing
 // linter in this repo replaces literal hardcoded user paths with shell
 // placeholders like ${USERPROFILE:-~} which are INVALID inside JS string
 // literals and break the scanner on next run. Derive APPDATA from env and
@@ -275,7 +275,7 @@ function writeIntel(results, errors, elapsedMs) {
 
   // ── md ────────────────────────────────────────────────────────────────────
   const lines = [];
-  lines.push(`# LinkedIn Daily Intel , ${today}`);
+  lines.push(`# LinkedIn Daily Intel — ${today}`);
   lines.push('');
   lines.push(`**Date**: ${today}`);
   lines.push(
@@ -323,7 +323,7 @@ function writeIntel(results, errors, elapsedMs) {
         `- **${r.contact.name}**: ${r.recentPosts
           .filter((p) => isRecent(p.age, 30))
           .slice(0, 2)
-          .map((p) => `${p.age} ago , ${p.text.slice(0, 160)}`)
+          .map((p) => `${p.age} ago — ${p.text.slice(0, 160)}`)
           .join(' | ')}`,
       );
     }
@@ -356,7 +356,7 @@ function writeIntel(results, errors, elapsedMs) {
         )
           ? 'job_change'
           : 'engagement',
-        headline: `${r.contact.name} , ${p.text.slice(0, 120)}`,
+        headline: `${r.contact.name} — ${p.text.slice(0, 120)}`,
         detail: `${p.age} ago. ${p.text.slice(0, 320)}`,
         source: 'linkedin_bulk_scan',
         detectedAt: new Date().toISOString(),
@@ -380,7 +380,7 @@ function writeIntel(results, errors, elapsedMs) {
 
 (async () => {
   const started = Date.now();
-  log(`starting linkedin-bulk-scan , mode=${LOGIN_MODE ? 'login' : 'scan'} headless=${HEADLESS}`);
+  log(`starting linkedin-bulk-scan — mode=${LOGIN_MODE ? 'login' : 'scan'} headless=${HEADLESS}`);
 
   ensureDir(CHROME_PROFILE);
   const context = await chromium.launchPersistentContext(CHROME_PROFILE, {
@@ -424,7 +424,7 @@ function writeIntel(results, errors, elapsedMs) {
     });
     const url = page.url();
     if (/\/login|\/checkpoint|\/authwall/i.test(url)) {
-      log('SESSION EXPIRED , run with --login to sign in again');
+      log('SESSION EXPIRED — run with --login to sign in again');
       await context.close();
       process.exit(2);
     }
@@ -448,7 +448,7 @@ function writeIntel(results, errors, elapsedMs) {
       errors.push({ contact: c, error: res.error });
       results.push({ contact: c, recentPosts: [], error: res.error });
       if (res.error === 'LOGIN_REQUIRED') {
-        log('fatal: login wall hit , stopping scan, run with --login');
+        log('fatal: login wall hit — stopping scan, run with --login');
         break;
       }
     } else {
@@ -473,7 +473,7 @@ function writeIntel(results, errors, elapsedMs) {
 
   writeIntel(results, errors, Date.now() - started);
   log(
-    `scan complete , scanned=${results.length} errors=${errors.length} elapsedSec=${Math.round(
+    `scan complete — scanned=${results.length} errors=${errors.length} elapsedSec=${Math.round(
       (Date.now() - started) / 1000,
     )}`,
   );

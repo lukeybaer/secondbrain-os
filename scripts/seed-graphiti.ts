@@ -13,7 +13,7 @@
 //
 // Expected runtime: ~5-8 minutes for ~400 episodes at ~1s each.
 //
-// Safe to re-run , Graphiti dedupes by content hash + name.
+// Safe to re-run — Graphiti dedupes by content hash + name.
 
 import * as fs from 'fs';
 import * as path from 'path';

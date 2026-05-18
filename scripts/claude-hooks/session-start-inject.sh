@@ -1,5 +1,5 @@
 #!/bin/bash
-# SessionStart hook , runs once at the start of every new Claude Code session,
+# SessionStart hook — runs once at the start of every new Claude Code session,
 # regardless of repo or cwd. Injects Tier 1 memory + state locations + the
 # first 80 lines of AMY_REQUIREMENTS so the session starts with the full
 # architectural map loaded, not a blank slate.
@@ -23,7 +23,7 @@ SECONDBRAIN="${SECONDBRAIN//\\//}"
 
 # Early route: if this is an ingest session, delegate to the stub variant.
 # Ingest sessions drain secondbrain/data/ingest-queue/ and do not need Tier 1
-# context (~10K tokens) , they use a ~200-400 token stub instead. Env var is
+# context (~10K tokens) — they use a ~200-400 token stub instead. Env var is
 # set by runClaudeCodeIngest in src/main/claude-runner.ts or by
 # scripts/ingest-queue-drain.ts before spawning the claude subprocess.
 if [ "${SECONDBRAIN_SESSION_MODE:-}" = "ingest" ]; then
@@ -59,7 +59,7 @@ const stateLocations = fs.readFileSync('$STATE_LOCATIONS', 'utf8');
 const requirements = fs.readFileSync('$REQUIREMENTS', 'utf8').split('\n').slice(0, 80).join('\n');
 
 const msg = [
-  'AMY SESSION START , canonical context auto-injected.',
+  'AMY SESSION START — canonical context auto-injected.',
   'You are in a new Claude Code session. Before your first action, read the following.',
   'These files are loaded from secondbrain/memory/ via the junction, tracked in git, and survive reclone.',
   '',

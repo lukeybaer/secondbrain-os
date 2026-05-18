@@ -98,7 +98,7 @@ function getTodayVideoSpecs(): VideoSpec[] {
     {
       channel: 'Channel1',
       style: 'income_opportunity',
-      description: 'Income/opportunity angle , how AI makes money or saves time',
+      description: 'Income/opportunity angle — how AI makes money or saves time',
     },
     {
       channel: 'Channel1',
@@ -108,12 +108,12 @@ function getTodayVideoSpecs(): VideoSpec[] {
     {
       channel: 'Channel2',
       style: 'grok_aurora_illustrated',
-      description: 'Gentle illustrated story , Grok Aurora 3-scene animation with lullaby music',
+      description: 'Gentle illustrated story — Grok Aurora 3-scene animation with lullaby music',
     },
     {
       channel: 'Channel2',
       style: 'grok_aurora_illustrated',
-      description: 'Second illustrated story , different character and setting',
+      description: 'Second illustrated story — different character and setting',
     },
   ];
 }
@@ -183,7 +183,7 @@ async function buildSingleVideo(spec: VideoSpec, index: number): Promise<Manifes
   // Check if build_video.py actually exists
   if (!fs.existsSync(buildScript)) {
     console.log(
-      `[video-pipeline] build_video.py not found at ${buildScript} , generating placeholder`,
+      `[video-pipeline] build_video.py not found at ${buildScript} — generating placeholder`,
     );
     // Create a placeholder manifest entry so the Content Pipeline tab has something to show
     const placeholderEntry: ManifestEntry = {
@@ -260,7 +260,7 @@ export async function runVideoPipeline(): Promise<PipelineResult> {
 
   // One run per day
   if (!acquireLock(lockKey, 'video-pipeline', 90)) {
-    console.log('[video-pipeline] Already ran today , skipping');
+    console.log('[video-pipeline] Already ran today — skipping');
     return { ran: false, built: 0, qcPassed: 0, entries: [] };
   }
 
@@ -268,11 +268,11 @@ export async function runVideoPipeline(): Promise<PipelineResult> {
   const specs = getTodayVideoSpecs();
   const results: ManifestEntry[] = [];
 
-  console.log(`[video-pipeline] Starting , building ${specs.length} videos`);
+  console.log(`[video-pipeline] Starting — building ${specs.length} videos`);
 
-  // Telegram is daily-briefing-only , log pipeline start to console instead
+  // Telegram is daily-briefing-only — log pipeline start to console instead
   console.log(
-    `[video-pipeline] Starting , building ${specs.length} videos (3 Channel1 + 2 Channel2)`,
+    `[video-pipeline] Starting — building ${specs.length} videos (3 Channel1 + 2 Channel2)`,
   );
 
   let buildErrors = 0;
@@ -280,7 +280,7 @@ export async function runVideoPipeline(): Promise<PipelineResult> {
     try {
       const entry = await buildSingleVideo(specs[i], i);
       results.push(entry);
-      console.log(`[video-pipeline] ${entry.id} , QC ${entry.qc_passed ? 'PASSED' : 'FAILED'}`);
+      console.log(`[video-pipeline] ${entry.id} — QC ${entry.qc_passed ? 'PASSED' : 'FAILED'}`);
     } catch (err: any) {
       buildErrors++;
       console.error(`[video-pipeline] Error building video ${i + 1}:`, err.message);
@@ -297,7 +297,7 @@ export async function runVideoPipeline(): Promise<PipelineResult> {
     acquireLock(`${lockKey}-done`, 'video-pipeline-done', 24 * 60);
   }
 
-  // Telegram is daily-briefing-only , log results to console
+  // Telegram is daily-briefing-only — log results to console
   console.log(`[video-pipeline] Complete: ${qcPassed}/${built} passed QC`);
 
   console.log(`[video-pipeline] Done. ${built} built, ${qcPassed} passed QC`);
@@ -341,7 +341,7 @@ export async function buildRejectedVideo(
     return {
       videoId,
       success: false,
-      error: 'build_video.py not found , rebuild must run on the production VM',
+      error: 'build_video.py not found — rebuild must run on the production VM',
     };
   }
 
@@ -421,7 +421,7 @@ export async function regenRejectedVideos(contentRoot: string): Promise<RegenRes
     );
 
     if (result.success) {
-      // Clear regen flags , video is back in pending_approval
+      // Clear regen flags — video is back in pending_approval
       video.video_needs_regen = false;
       video.thumbnail_needs_regen = false;
       video.regen_status = 'done';

@@ -21,7 +21,7 @@ const TEST_USER_DATA = path.join(os.tmpdir(), "sb-cfg-test-userdata");
 const CONFIG_FILE = path.join(TEST_USER_DATA, "config.json");
 
 // ---------------------------------------------------------------------------
-// Electron mock , must happen before config is imported
+// Electron mock — must happen before config is imported
 // ---------------------------------------------------------------------------
 
 vi.mock("electron", () => ({
@@ -43,7 +43,7 @@ function removeConfigFile() {
 }
 
 /**
- * Ensure the userData directory exists (config.ts does NOT create it , it only
+ * Ensure the userData directory exists (config.ts does NOT create it — it only
  * creates the config file inside the already-existing userData dir that Electron
  * normally guarantees exists).  Tests must create it themselves.
  */
@@ -90,10 +90,10 @@ afterEach(() => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// getConfig / loadConfig , default values
+// getConfig / loadConfig — default values
 // ──────────────────────────────────────────────────────────────────────────────
 
-describe("getConfig , default values", () => {
+describe("getConfig — default values", () => {
   it("returns an AppConfig object", async () => {
     const { getConfig } = await import("../src/main/config");
     const cfg = getConfig();
@@ -154,10 +154,10 @@ describe("getConfig , default values", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// saveConfig , partial updates / persistence
+// saveConfig — partial updates / persistence
 // ──────────────────────────────────────────────────────────────────────────────
 
-describe("saveConfig , persistence", () => {
+describe("saveConfig — persistence", () => {
   it("persists a written value and returns the merged config", async () => {
     const { saveConfig, getConfig } = await import("../src/main/config");
     const result = saveConfig({ vapiApiKey: "my-vapi-key" });
@@ -200,10 +200,10 @@ describe("saveConfig , persistence", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// loadConfig , reads from disk
+// loadConfig — reads from disk
 // ──────────────────────────────────────────────────────────────────────────────
 
-describe("loadConfig , reads from disk", () => {
+describe("loadConfig — reads from disk", () => {
   it("config file is written to userData directory", async () => {
     const { saveConfig } = await import("../src/main/config");
     saveConfig({ vapiApiKey: "disk-test-key" });
@@ -238,15 +238,15 @@ describe("loadConfig , reads from disk", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Missing required fields , validation from calls.ts perspective
+// Missing required fields — validation from calls.ts perspective
 // ──────────────────────────────────────────────────────────────────────────────
 
-describe("config validation , call-related required fields", () => {
+describe("config validation — call-related required fields", () => {
   it("vapiApiKey defaults to empty string (calls must guard against this)", async () => {
     await resetConfigCache();
     const { getConfig } = await import("../src/main/config");
     const cfg = getConfig();
-    // Empty string is falsy , callers should treat it as "not configured"
+    // Empty string is falsy — callers should treat it as "not configured"
     expect(cfg.vapiApiKey).toBeFalsy();
   });
 
@@ -267,7 +267,7 @@ describe("config validation , call-related required fields", () => {
   it("both vapiApiKey and vapiPhoneNumberId must be truthy for outbound calls", async () => {
     const { saveConfig, getConfig } = await import("../src/main/config");
 
-    // Only key set , phoneNumberId still empty
+    // Only key set — phoneNumberId still empty
     saveConfig({ vapiApiKey: "some-key", vapiPhoneNumberId: "" });
     const cfg = getConfig();
     const canCall = !!(cfg.vapiApiKey && cfg.vapiPhoneNumberId);

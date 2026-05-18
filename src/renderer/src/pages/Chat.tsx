@@ -844,7 +844,7 @@ function ProjectConfirmCard({
 
       {status === "created" && (
         <div style={{ color: "#6dbf6d", fontSize: 13 }}>
-          ✓ Project created , check the Projects tab
+          ✓ Project created — check the Projects tab
         </div>
       )}
 

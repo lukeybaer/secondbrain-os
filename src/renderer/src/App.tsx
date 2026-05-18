@@ -7,6 +7,7 @@ import WhatsApp from './pages/WhatsApp';
 import Calls from './pages/Calls';
 import Personas from './pages/Personas';
 import Projects from './pages/Projects';
+import Tasks from './pages/Tasks';
 import Settings from './pages/Settings';
 import ContentPipeline from './pages/ContentPipeline';
 import Todos from './pages/Todos';
@@ -16,8 +17,6 @@ import TimeMachine from './pages/TimeMachine';
 import Briefing from './pages/Briefing';
 import ClaudeChatOverlay from './components/ClaudeChatOverlay';
 import ToastProvider, { useToast } from './components/ToastProvider';
-import OnboardingWizard from './components/OnboardingWizard';
-import SecretsReminderBanner from './components/SecretsReminderBanner';
 
 // Error boundary to catch and display React render errors instead of white screen
 class ErrorBoundary extends React.Component<
@@ -78,6 +77,7 @@ type Page =
   | 'whatsapp'
   | 'calls'
   | 'projects'
+  | 'tasks'
   | 'todos'
   | 'personas'
   | 'content-pipeline'
@@ -95,6 +95,7 @@ const NAV_ITEMS: { id: Page; label: string; hint: string }[] = [
   { id: 'whatsapp', label: 'WhatsApp', hint: 'Personal WhatsApp account' },
   { id: 'calls', label: 'Phone Calls', hint: 'Make AI-powered outbound calls' },
   { id: 'projects', label: 'Projects', hint: 'Manage workflows and task queues' },
+  { id: 'tasks', label: 'Tasks', hint: "Everything Amy is working on, from every surface" },
   { id: 'todos', label: 'To-Dos', hint: 'Tasks and reminders' },
   { id: 'personas', label: 'Personas', hint: 'Configure AI personas for calls' },
   {
@@ -134,62 +135,7 @@ function AppContent() {
   const [convCount, setConvCount] = useState(0);
   const [pendingCall, setPendingCall] = useState<PendingCall | null>(null);
   const [autoListen, setAutoListen] = useState(false);
-  const [onboardingState, setOnboardingState] = useState<{
-    completedAt: string | null;
-    currentStep: number;
-    skippedTour: boolean;
-    briefingSections: Record<string, boolean>;
-    secretsDeferred: string[];
-    lastReminderShownAt: string | null;
-  } | null>(null);
   const { addToast } = useToast();
-
-  // Load onboarding state from config on mount.
-  useEffect(() => {
-    (async () => {
-      try {
-        const cfg = await window.api.config.get();
-        if (cfg?.onboarding) {
-          setOnboardingState(cfg.onboarding);
-        }
-      } catch { /* config load failed, treat as no onboarding state */ }
-    })();
-  }, []);
-
-  // Persist a partial onboarding update (used as the user clicks through steps).
-  async function saveOnboardingPartial(currentStep: number) {
-    if (!onboardingState) return;
-    const next = { ...onboardingState, currentStep };
-    setOnboardingState(next);
-    await window.api.config.save({ onboarding: next });
-  }
-
-  async function handleOnboardingSkipTour() {
-    if (!onboardingState) return;
-    const next = { ...onboardingState, skippedTour: true };
-    setOnboardingState(next);
-    await window.api.config.save({ onboarding: next });
-  }
-
-  async function handleOnboardingComplete(state: { briefingSections: Record<string, boolean>; secretsDeferred: string[] }) {
-    if (!onboardingState) return;
-    const next = {
-      ...onboardingState,
-      completedAt: new Date().toISOString(),
-      briefingSections: state.briefingSections,
-      secretsDeferred: state.secretsDeferred,
-      lastReminderShownAt: null, // Show banner on first dashboard load if there are deferred keys
-    };
-    setOnboardingState(next);
-    await window.api.config.save({ onboarding: next });
-  }
-
-  async function handleDismissReminderForWeek() {
-    if (!onboardingState) return;
-    const next = { ...onboardingState, lastReminderShownAt: new Date().toISOString() };
-    setOnboardingState(next);
-    await window.api.config.save({ onboarding: next });
-  }
 
   function handleCallNow(phoneNumber: string, instructions: string, personaId?: string) {
     setPendingCall({ phoneNumber, instructions, listenIn: true, personaId });
@@ -228,36 +174,9 @@ function AppContent() {
     };
   }
 
-  // First-run gate: if onboarding hasn't been completed, show the wizard
-  // overlay instead of the main UI. The wizard persists progress to config
-  // so quitting mid-wizard resumes on next launch.
-  const showWizard = onboardingState !== null && onboardingState.completedAt === null;
-  const showSecretsBanner =
-    onboardingState !== null &&
-    onboardingState.completedAt !== null &&
-    onboardingState.secretsDeferred.length > 0;
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0f0f0f' }}>
-      {showWizard && (
-        <OnboardingWizard
-          initialStep={onboardingState!.currentStep}
-          initialBriefingSections={onboardingState!.briefingSections}
-          onComplete={handleOnboardingComplete}
-          onSkipTour={handleOnboardingSkipTour}
-          onSavePartial={saveOnboardingPartial}
-        />
-      )}
-      {showSecretsBanner && (
-        <SecretsReminderBanner
-          deferredKeys={onboardingState!.secretsDeferred}
-          lastShownAt={onboardingState!.lastReminderShownAt}
-          onOpenSettings={() => setPage('settings')}
-          onDismissForWeek={handleDismissReminderForWeek}
-        />
-      )}
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        {/* Sidebar */}
+    <div style={{ display: 'flex', height: '100vh', background: '#0f0f0f' }}>
+      {/* Sidebar */}
       <div
         style={{
           width: 200,
@@ -321,7 +240,7 @@ function AppContent() {
         </div>
       </div>
 
-      {/* Main , all pages always mounted, only one visible */}
+      {/* Main — all pages always mounted, only one visible */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         <div style={show('briefing')}>
           <Briefing />
@@ -351,6 +270,9 @@ function AppContent() {
             onSetAutoListen={setAutoListen}
           />
         </div>
+        <div style={show('tasks')}>
+          <Tasks active={page === 'tasks'} />
+        </div>
         <div style={show('todos')}>
           <Todos />
         </div>
@@ -374,9 +296,8 @@ function AppContent() {
         </div>
       </div>
 
-      {/* Claude Code floating overlay , lives on top of every page */}
+      {/* Claude Code floating overlay — lives on top of every page */}
       <ClaudeChatOverlay currentPage={page} />
-      </div>
     </div>
   );
 }

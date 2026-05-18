@@ -3,7 +3,7 @@
  *
  * Verifies that the ingest variant sets SECONDBRAIN_SESSION_MODE=ingest in
  * the child process environment and merges extraEnv correctly. The actual
- * spawn is stubbed , we only care that the env passed to child_process.spawn
+ * spawn is stubbed — we only care that the env passed to child_process.spawn
  * carries the ingest marker, because that is what the session-start-inject.sh
  * hook reads to decide which Tier 1 payload to emit.
  */
@@ -97,7 +97,7 @@ describe('runClaudeCodeIngest', () => {
     expect(env!['BAZ']).toBe('qux');
   });
 
-  it('extraEnv cannot override the ingest marker , the mode is sticky', async () => {
+  it('extraEnv cannot override the ingest marker — the mode is sticky', async () => {
     await runClaudeCodeIngest('do the thing', {
       extraEnv: { SECONDBRAIN_SESSION_MODE: 'full' },
     });
@@ -107,7 +107,7 @@ describe('runClaudeCodeIngest', () => {
 });
 
 describe('runClaudeCode (control)', () => {
-  it('does NOT set SECONDBRAIN_SESSION_MODE , full Tier 1 load is the default', async () => {
+  it('does NOT set SECONDBRAIN_SESSION_MODE — full Tier 1 load is the default', async () => {
     await runClaudeCode('do the thing');
     const env = capturedSpawns[0].options.env;
     expect(env!['SECONDBRAIN_SESSION_MODE']).toBeUndefined();

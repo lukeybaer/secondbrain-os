@@ -1,5 +1,5 @@
 #!/bin/bash
-# PostToolUse hook: validate memory file writes , check frontmatter, check MEMORY.md index
+# PostToolUse hook: validate memory file writes — check frontmatter, check MEMORY.md index
 
 FILE=$(node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);console.log(j.tool_input?.file_path||'')}catch{console.log('')}})" 2>/dev/null)
 
@@ -32,7 +32,7 @@ if echo "$FILE" | grep -qi "memory"; then
   BASENAME=$(basename "$FILE")
   if [ -f "$MEMORY_DIR/MEMORY.md" ] && [ "$BASENAME" != "MEMORY.md" ]; then
     if ! grep -q "$BASENAME" "$MEMORY_DIR/MEMORY.md" 2>/dev/null; then
-      echo "WARNING: $BASENAME is not indexed in MEMORY.md , add it or future sessions won't know it exists." >&2
+      echo "WARNING: $BASENAME is not indexed in MEMORY.md — add it or future sessions won't know it exists." >&2
     fi
   fi
 fi
