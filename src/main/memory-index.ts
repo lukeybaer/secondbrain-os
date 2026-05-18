@@ -9,8 +9,9 @@
 //   Tier 2 — Indexed Memory (memory/*.md + index.json)
 //     One file per topic. Loaded on demand. Scored by weight.
 //     weight range: 0.0 – 1.0
-//     decay: weight -= decay_rate per day (reset on access)
-//     promotion: mentions ≥ 3 → weight = 0.8
+//     decay: weight *= (1 - decay_rate) ** days_since_access  (multiplicative)
+//     promotion: mentions ≥ 3 → weight = 0.8, decay_rate = 0.02 (defaults only;
+//                custom weight ≥ 0.5 and custom decay_rate are preserved)
 //
 //   Tier 3 — Archive (memory/archive/YYYY-MM-DD.md)
 //     Daily append-only. Loaded only on explicit recall.
@@ -42,6 +43,18 @@ try {
 } catch {
   /* graphiti-client not available in this runtime (e.g. tests) */
 }
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const WORKING_MEMORY_MAX_LINES = 50;
+const ARCHIVE_THRESHOLD = 0.05;
+const PROMOTION_MENTIONS = 3;
+const PROMOTION_WEIGHT = 0.8;
+const PROMOTION_WEIGHT_CEILING = 0.5; // promotion only fires if weight is below this
+const INITIAL_WEIGHT = 0.2;
+const INITIAL_DECAY = 0.1;
+const PROMOTED_DECAY = 0.02;
+const INDEX_SCHEMA_VERSION = 1;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -91,41 +104,142 @@ function archiveFilePath(date: string): string {
   return path.join(archiveDir(), `${date}.md`);
 }
 
+// ── Storage type safety ───────────────────────────────────────────────────────
+
+// Lib-target-agnostic finite check: `n - n === 0` is true for finite numbers
+// and false for NaN, Infinity, -Infinity. Stricter than the global `isNaN`,
+// works without `lib: es2015+` exposing `Number.isFinite`.
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && v - v === 0;
+}
+
+function isMemoryEntry(raw: unknown): raw is MemoryEntry {
+  if (!raw || typeof raw !== 'object') return false;
+  const e = raw as Record<string, unknown>;
+  return (
+    typeof e.id === 'string' &&
+    typeof e.topic === 'string' &&
+    typeof e.file === 'string' &&
+    isFiniteNumber(e.weight) &&
+    isFiniteNumber(e.mentions) &&
+    typeof e.last_accessed === 'string' &&
+    isFiniteNumber(e.decay_rate) &&
+    typeof e.valid_at === 'string' &&
+    (e.tier === 1 || e.tier === 2 || e.tier === 3) &&
+    (e.invalid_at === undefined || typeof e.invalid_at === 'string')
+  );
+}
+
+function validateIndex(raw: unknown): MemoryIndex | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const i = raw as Record<string, unknown>;
+  if (typeof i.version !== 'number') return null;
+  if (typeof i.last_updated !== 'string') return null;
+  if (!Array.isArray(i.entries) || !i.entries.every(isMemoryEntry)) return null;
+  if (!Array.isArray(i.hashes) || !i.hashes.every((h) => typeof h === 'string')) return null;
+  return {
+    version: i.version,
+    last_updated: i.last_updated,
+    entries: i.entries as MemoryEntry[],
+    hashes: i.hashes as string[],
+  };
+}
+
+function freshIndex(): MemoryIndex {
+  return {
+    version: INDEX_SCHEMA_VERSION,
+    last_updated: now(),
+    entries: [],
+    hashes: [],
+  };
+}
+
+// Renames a corrupt index aside so we never silently overwrite user data.
+function backupCorruptIndex(p: string, reason: string): void {
+  try {
+    const backup = `${p}.corrupt.${Date.now()}`;
+    fs.renameSync(p, backup);
+    console.warn(
+      `[memory-index] index.json invalid (${reason}); backed up to ${path.basename(backup)}`,
+    );
+  } catch (err) {
+    console.warn(`[memory-index] failed to back up corrupt index: ${err}`);
+  }
+}
+
 // ── Index I/O ─────────────────────────────────────────────────────────────────
 
-let _indexCache: MemoryIndex | null = null;
-let _indexCachedAt = 0;
-const INDEX_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+// Cache is invalidated by file mtime rather than wall-clock TTL: any external
+// write to index.json (other process, manual edit, test setup) will bump mtime
+// and force a fresh read. The path is part of the cache key so tests that
+// rotate `app.getPath('userData')` between cases get clean state.
+interface CacheState {
+  path: string;
+  mtimeMs: number;
+  data: MemoryIndex;
+}
+let _cache: CacheState | null = null;
+
+/** Clear the in-memory index cache. Tests and external writers can call this
+ *  if they need to guarantee a fresh disk read on the next loadIndex. */
+export function invalidateIndexCache(): void {
+  _cache = null;
+}
+
+function readIndexFromDisk(p: string): MemoryIndex {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch (err) {
+    backupCorruptIndex(p, `JSON parse failed: ${(err as Error).message}`);
+    const fresh = freshIndex();
+    writeIndexToDisk(fresh);
+    return fresh;
+  }
+  const validated = validateIndex(raw);
+  if (!validated) {
+    backupCorruptIndex(p, 'schema validation failed');
+    const fresh = freshIndex();
+    writeIndexToDisk(fresh);
+    return fresh;
+  }
+  return validated;
+}
+
+function writeIndexToDisk(index: MemoryIndex): void {
+  const dir = memoryRoot();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(indexPath(), JSON.stringify(index, null, 2), 'utf-8');
+}
 
 export function loadIndex(): MemoryIndex {
-  if (_indexCache && Date.now() - _indexCachedAt < INDEX_CACHE_TTL) {
-    return _indexCache;
-  }
-
   const p = indexPath();
+
   if (!fs.existsSync(p)) {
-    const fresh: MemoryIndex = { version: 1, last_updated: now(), entries: [], hashes: [] };
+    const fresh = freshIndex();
     saveIndex(fresh);
     return fresh;
   }
 
-  try {
-    _indexCache = JSON.parse(fs.readFileSync(p, 'utf-8')) as MemoryIndex;
-    _indexCachedAt = Date.now();
-    return _indexCache;
-  } catch {
-    const fresh: MemoryIndex = { version: 1, last_updated: now(), entries: [], hashes: [] };
-    return fresh;
+  const stat = fs.statSync(p);
+  if (_cache && _cache.path === p && _cache.mtimeMs === stat.mtimeMs) {
+    return _cache.data;
   }
+
+  const data = readIndexFromDisk(p);
+  // readIndexFromDisk may have rewritten the file (corruption recovery),
+  // so re-stat to get the canonical mtime before caching.
+  const freshStat = fs.statSync(p);
+  _cache = { path: p, mtimeMs: freshStat.mtimeMs, data };
+  return data;
 }
 
 function saveIndex(index: MemoryIndex): void {
-  const dir = memoryRoot();
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   index.last_updated = now();
-  fs.writeFileSync(indexPath(), JSON.stringify(index, null, 2), 'utf-8');
-  _indexCache = index;
-  _indexCachedAt = Date.now();
+  writeIndexToDisk(index);
+  const p = indexPath();
+  const stat = fs.statSync(p);
+  _cache = { path: p, mtimeMs: stat.mtimeMs, data: index };
 }
 
 function now(): string {
@@ -137,8 +251,6 @@ function md5(content: string): string {
 }
 
 // ── Working Memory (Tier 1) ───────────────────────────────────────────────────
-
-const WORKING_MEMORY_MAX_LINES = 50;
 
 export function readWorkingMemory(): string {
   const p = workingMemoryPath();
@@ -170,7 +282,10 @@ export function appendWorkingMemory(line: string): void {
 
 /**
  * Add or update a memory entry. MD5 dedup — if content is identical, just
- * bumps the mention count and resets the decay clock.
+ * bumps the mention count and resets the decay clock. The decay_rate is
+ * switched to PROMOTED_DECAY only at the exact promotion transition and only
+ * if the entry was using the default INITIAL_DECAY; custom rates are
+ * preserved across re-access.
  */
 export function upsertMemory(
   topic: string,
@@ -180,14 +295,24 @@ export function upsertMemory(
   const index = loadIndex();
   const hash = md5(content);
 
-  // Dedup check
+  // Dedup check (active entries only — invalidated entries with the same hash
+  // are skipped so a re-upsert after invalidation creates a fresh row).
   const existingEntry = index.entries.find((e) => e.id === hash && !e.invalid_at);
   if (existingEntry) {
+    const wasPromoted = existingEntry.mentions >= PROMOTION_MENTIONS;
     existingEntry.mentions++;
     existingEntry.last_accessed = now();
-    existingEntry.decay_rate = existingEntry.mentions >= 3 ? 0.02 : 0.1;
-    if (existingEntry.mentions >= 3 && existingEntry.weight < 0.5) {
-      existingEntry.weight = 0.8; // promotion
+    const isNowPromoted = existingEntry.mentions >= PROMOTION_MENTIONS;
+
+    // Only act at the actual promotion transition, and only on defaults.
+    // A caller-supplied decay rate or a manually-bumped weight is left alone.
+    if (!wasPromoted && isNowPromoted) {
+      if (existingEntry.weight < PROMOTION_WEIGHT_CEILING) {
+        existingEntry.weight = PROMOTION_WEIGHT;
+      }
+      if (existingEntry.decay_rate === INITIAL_DECAY) {
+        existingEntry.decay_rate = PROMOTED_DECAY;
+      }
     }
     existingEntry.weight = Math.min(1.0, existingEntry.weight);
     saveIndex(index);
@@ -200,10 +325,10 @@ export function upsertMemory(
     id: hash,
     topic,
     file: fileName,
-    weight: 0.2,
+    weight: INITIAL_WEIGHT,
     mentions: 1,
     last_accessed: now(),
-    decay_rate: opts?.decayRate ?? 0.1,
+    decay_rate: opts?.decayRate ?? INITIAL_DECAY,
     valid_at: now(),
     tier: 2,
   };
@@ -338,7 +463,7 @@ export function runNightlyDecay(): { decayed: number; archived: number; pruned: 
     }
 
     // Archive entries below threshold
-    if (entry.weight < 0.05 && !entry.invalid_at) {
+    if (entry.weight < ARCHIVE_THRESHOLD && !entry.invalid_at) {
       const filePath = tier2FilePath(entry.file);
       if (fs.existsSync(filePath)) {
         const content = fs.readFileSync(filePath, 'utf-8');
