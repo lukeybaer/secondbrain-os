@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { getConfig } from './config';
 import { ConversationMeta } from './storage';
+import { truncateAtBoundary } from './text-splitter';
 
 function getOpenAI(): OpenAI {
   return new OpenAI({ apiKey: getConfig().openaiApiKey });
@@ -34,6 +35,33 @@ IMPORTANT ANCHORING RULES:
 
 Return ONLY valid JSON, no markdown, no explanation.`;
 
+function emptyMeta(
+  otterId: string,
+  title: string,
+  date: string,
+  durationMinutes: number,
+): ConversationMeta {
+  return {
+    id: `otter_${otterId}`,
+    otterId,
+    title,
+    date,
+    durationMinutes,
+    speakers: [],
+    myRole: 'participant',
+    meetingType: 'other',
+    summary: '',
+    topics: [],
+    keywords: [],
+    peopleMentioned: [],
+    companiesMentioned: [],
+    decisions: [],
+    sentiment: 'routine',
+    transcriptFile: 'transcript.txt',
+    taggedAt: new Date().toISOString(),
+  };
+}
+
 export async function tagConversation(
   otterId: string,
   title: string,
@@ -42,14 +70,22 @@ export async function tagConversation(
   transcript: string,
   breadcrumb?: string | null,
 ): Promise<ConversationMeta> {
-  const openai = getOpenAI();
   const config = getConfig();
+  // Fallback: missing key → return empty meta instead of crashing the ingest pipeline.
+  if (!config.openaiApiKey) {
+    console.warn('[tagger] openaiApiKey not configured — returning untagged meta');
+    return emptyMeta(otterId, title, date, durationMinutes);
+  }
+  const openai = getOpenAI();
 
-  // Truncate to avoid token limits (~80k chars ≈ ~20k tokens)
+  // Token-aware boundary-respecting truncation. Prior `slice(0, 80000)` cut
+  // at an arbitrary char count mid-sentence; 20k tokens is the same effective
+  // budget but split at the cleanest available paragraph/sentence boundary.
+  const truncatedBody = truncateAtBoundary(transcript, 20_000);
   const truncated =
-    transcript.length > 80000
-      ? transcript.slice(0, 80000) + '\n[transcript truncated]'
-      : transcript;
+    truncatedBody.length < transcript.length
+      ? truncatedBody + '\n[transcript truncated]'
+      : truncatedBody;
 
   const breadcrumbSection = breadcrumb
     ? `\n\nBREADCRUMB (post-call voice note from user -- THIS IS THE HIGHEST PRIORITY SIGNAL about what matters):\n${breadcrumb}`

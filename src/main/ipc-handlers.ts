@@ -145,7 +145,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const timestamp = new Date().toISOString();
     let entry = `[${timestamp}] ${line}\n`;
     if (firstFrameHex) entry += `  first frame (hex): ${firstFrameHex}\n`;
-    fs.appendFileSync(AUDIO_DIAG_FILE, entry, 'utf-8');
+    // Async + error-tolerant: this is a diagnostic-only log. A locked/full
+    // disk must not block the IPC thread or crash main.
+    fs.appendFile(AUDIO_DIAG_FILE, entry, 'utf-8', (err) => {
+      if (err) console.error('[diag:writeAudio] append failed:', err.message);
+    });
   });
 
   // Config
@@ -290,12 +294,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
           status: taggedIds.has(s.id) ? 'tagged' : 'remote',
         }));
 
-        // Merge into accumulated (dedupe by otterId)
+        // Merge into accumulated (dedupe by otterId) — O(1) per item via Map,
+        // instead of O(n) findIndex which scaled badly with batch count.
+        const indexByOtterId = new Map<string, number>();
+        for (let i = 0; i < accumulated.length; i++) indexByOtterId.set(accumulated[i].otterId, i);
         for (const item of items) {
-          const idx = accumulated.findIndex((i) => i.otterId === item.otterId);
-          if (idx >= 0) {
+          const idx = indexByOtterId.get(item.otterId);
+          if (idx !== undefined) {
             accumulated[idx] = item;
           } else {
+            indexByOtterId.set(item.otterId, accumulated.length);
             accumulated.push(item);
           }
         }

@@ -12,6 +12,7 @@
 // Falls back gracefully to the three-tier memory system if unavailable.
 
 import { getConfig } from './config';
+import { splitText } from './text-splitter';
 
 // ��─ Types ──────────��───────────────────────���──────────────────────────────────
 
@@ -295,18 +296,44 @@ export async function ingestCallTranscript(opts: {
   outcome: string;
   calledAt: string;
 }): Promise<boolean> {
-  const name = opts.callerName
+  const baseName = opts.callerName
     ? `Call with ${opts.callerName} (${opts.callerPhone})`
     : `Call with ${opts.callerPhone}`;
 
-  const body = `Outcome: ${opts.outcome}\n\nTranscript:\n${opts.transcript.slice(0, 2000)}`;
+  // First episode carries the outcome header; subsequent episodes carry the
+  // continuing transcript. Splitting the transcript (not the outcome header)
+  // keeps the outcome attached to the first chunk where it belongs.
+  const transcriptChunks = splitText(opts.transcript);
+  if (transcriptChunks.length === 0) {
+    return addEpisode({
+      name: baseName,
+      episode_body: `Outcome: ${opts.outcome}`,
+      source_description: `call-transcript:${opts.callId}`,
+      reference_time: opts.calledAt,
+    });
+  }
 
-  return addEpisode({
-    name,
-    episode_body: body,
-    source_description: `call-transcript:${opts.callId}`,
-    reference_time: opts.calledAt,
-  });
+  // TODO(graphiti-concurrency): see note in ingest-hooks.ts — sequential
+  // until Graphiti's entity-extractor LLM config on EC2 is confirmed.
+  let allOk = true;
+  for (let i = 0; i < transcriptChunks.length; i++) {
+    const name =
+      transcriptChunks.length === 1
+        ? baseName
+        : `${baseName} (${i + 1}/${transcriptChunks.length})`;
+    const body =
+      i === 0
+        ? `Outcome: ${opts.outcome}\n\nTranscript:\n${transcriptChunks[i]}`
+        : `Transcript (cont.):\n${transcriptChunks[i]}`;
+    const ok = await addEpisode({
+      name,
+      episode_body: body,
+      source_description: `call-transcript:${opts.callId}`,
+      reference_time: opts.calledAt,
+    });
+    if (!ok) allOk = false;
+  }
+  return allOk;
 }
 
 /**

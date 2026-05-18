@@ -181,6 +181,31 @@ export async function runStartupChecks(): Promise<void> {
     pass('Anthropic API key configured');
   }
 
+  // 5a-extra: OpenAI API key — currently used by tagger.ts, chat.ts, calls.ts
+  // for structured-JSON extraction. README pitches a Claude-only architecture,
+  // but the code still depends on OpenAI for these flows. Surface the gap loudly
+  // instead of letting tagging/chat/call-detection silently return empty results.
+  if (!config.openaiApiKey) {
+    warn(
+      'openaiApiKey missing',
+      'Conversation tagging, transcript search, and call-completion detection will return empty/default results.\n' +
+        'Set openaiApiKey in Settings.',
+    );
+  } else {
+    pass('OpenAI API key configured');
+  }
+
+  // 5a-extra: Telegram bot token + chat ID (approval loop, daily briefings)
+  if (!config.telegramBotToken || !config.telegramChatId) {
+    warn(
+      'Telegram credentials missing',
+      'Approval messages and daily briefings will not be delivered.\n' +
+        'Set telegramBotToken and telegramChatId in Settings.',
+    );
+  } else {
+    pass('Telegram credentials configured');
+  }
+
   // 5b: Graphiti URL resolves to port 8000 (not the old 3003)
   try {
     // We can't call graphitiUrl directly (private), but we can health-check

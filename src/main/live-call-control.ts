@@ -102,12 +102,18 @@ export async function endCall(callId: string): Promise<{ success: boolean; error
   }
 }
 
-// Clean up stale entries (calls that ended but weren't unregistered)
+// Clean up stale entries (calls that ended but weren't unregistered).
+// Wrap in try/catch — an unhandled throw here permanently kills the timer
+// (Node's setInterval does not restart on listener exception).
 setInterval(() => {
-  const cutoff = Date.now() - 30 * 60 * 1000; // 30 minutes
-  for (const [id, ctrl] of activeControls) {
-    if (new Date(ctrl.startedAt).getTime() < cutoff) {
-      activeControls.delete(id);
+  try {
+    const cutoff = Date.now() - 30 * 60 * 1000; // 30 minutes
+    for (const [id, ctrl] of activeControls) {
+      if (new Date(ctrl.startedAt).getTime() < cutoff) {
+        activeControls.delete(id);
+      }
     }
+  } catch (err) {
+    console.error('[live-call-control] cleanup error:', err);
   }
 }, 5 * 60 * 1000);

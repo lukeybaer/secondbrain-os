@@ -113,10 +113,19 @@ async function postMultipart(
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function sendMessage(chatId: string, text: string): Promise<void> {
+  // Retry once after 1s — covers transient network blips and Telegram 502s
+  // without queuing infrastructure. Approval-loop messages cannot silently drop.
   try {
     await postJson("sendMessage", { chat_id: chatId, text });
+    return;
   } catch (err) {
-    log("sendMessage", err);
+    log("sendMessage (attempt 1)", err);
+  }
+  try {
+    await new Promise((r) => setTimeout(r, 1000));
+    await postJson("sendMessage", { chat_id: chatId, text });
+  } catch (err) {
+    log("sendMessage (attempt 2 — giving up)", err);
   }
 }
 

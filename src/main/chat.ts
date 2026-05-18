@@ -1,4 +1,10 @@
 import OpenAI from "openai";
+// Real tokenizer (o200k_base) — matches gpt-4o / gpt-4o-mini, which are the
+// models actually used in this file. cl100k for gpt-4/3.5 differs by ≤5% on
+// English; both are vastly more accurate than the char-based approximation
+// this replaces. Falls back to a conservative 4-char/token estimate only if
+// encoding throws (e.g. malformed UTF-16 surrogates).
+import { encode as encodeTokens } from "gpt-tokenizer/model/gpt-4o-mini";
 import { getConfig } from "./config";
 import { getAllConversationMeta } from "./database";
 import { loadConversation, ConversationMeta } from "./storage";
@@ -53,10 +59,15 @@ export interface ChatResult {
 
 // Conservative token budget per API call (leaves room for system prompt + history + response)
 const CALL_TOKEN_BUDGET = 100_000;
-const CHARS_PER_TOKEN = 3.5;
 
 function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
+  try {
+    return encodeTokens(text).length;
+  } catch {
+    // Defensive fallback — should be unreachable for well-formed strings.
+    // 4 chars/token is closer to the o200k average than the prior 3.5.
+    return Math.ceil(text.length / 4);
+  }
 }
 
 // Detect aggregate/count questions at the code level — never rely on the AI
@@ -457,6 +468,42 @@ function searchByPlan(plan: SearchPlan, candidates?: ConversationMeta[]): Conver
 
 // ── Phase 3: AI relevance filter ───────────────────────────────────────────
 
+// Pull a windowed snippet from a transcript around the first occurrence of any
+// query term — gives the reranker real content signal instead of relying on
+// the tagger-generated summary, which is often too high-level to disambiguate.
+// Falls back to the head of the transcript when no term matches. Returns ""
+// (not an exception) on read errors so one bad file doesn't kill the rerank.
+function transcriptSnippet(
+  meta: ConversationMeta,
+  terms: string[],
+  windowChars = 400,
+): string {
+  const transcriptPath = path.join(
+    getConfig().dataDir,
+    "conversations",
+    meta.id,
+    "transcript.txt",
+  );
+  try {
+    const text = fs.readFileSync(transcriptPath, "utf-8");
+    const lower = text.toLowerCase();
+    for (const term of terms) {
+      const idx = lower.indexOf(term);
+      if (idx >= 0) {
+        const half = Math.floor(windowChars / 2);
+        const start = Math.max(0, idx - half);
+        const end = Math.min(text.length, idx + half);
+        const prefix = start > 0 ? "…" : "";
+        const suffix = end < text.length ? "…" : "";
+        return (prefix + text.slice(start, end) + suffix).replace(/\s+/g, " ").trim();
+      }
+    }
+    return text.slice(0, windowChars).replace(/\s+/g, " ").trim();
+  } catch {
+    return "";
+  }
+}
+
 async function filterToRelevant(
   metas: ConversationMeta[],
   question: string,
@@ -465,19 +512,35 @@ async function filterToRelevant(
 ): Promise<ConversationMeta[]> {
   if (metas.length <= 12) return metas;
 
-  // No hard cap — send all candidates so we don't silently drop matches.
-  // Summaries are compact (~50 tokens each), so 300 candidates = ~15k tokens.
   const candidates = metas;
-  const summaries = candidates.map((m, i) =>
-    `[${i}] ${m.title} (${m.date}) | Speakers: ${m.speakers.join(", ")} | People: ${m.peopleMentioned.join(", ")} | ${m.summary}`
-  ).join("\n");
+  // Build query terms once for snippet extraction. Same shape as searchByPlan
+  // uses — flat list of lowercased fragments from people/topics/keywords.
+  const terms = [
+    ...plan.people.flatMap((p) => p.toLowerCase().split(/\s+/)),
+    ...plan.topics.flatMap((t) => t.toLowerCase().split(/\s+/)),
+    ...plan.keywords.map((k) => k.toLowerCase()),
+  ].filter((t) => t.length > 1);
+
+  // Include transcript snippets for the first ~50 candidates — adds real
+  // content signal to the rerank prompt. Above 50, token cost dominates the
+  // win, so fall back to the prior summary-only shape. 50 candidates × ~400
+  // chars ≈ 5k extra tokens, well within the rerank model's budget.
+  const SNIPPET_CAP = 50;
+  const lines = candidates.map((m, i) => {
+    const base = `[${i}] ${m.title} (${m.date}) | Speakers: ${m.speakers.join(", ")} | People: ${m.peopleMentioned.join(", ")} | ${m.summary}`;
+    if (i >= SNIPPET_CAP) return base;
+    const snippet = transcriptSnippet(m, terms);
+    return snippet ? `${base}\nExcerpt: "${snippet}"` : base;
+  });
+  const summaries = lines.join("\n");
 
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
       {
         role: "system",
-        content: `Review meeting summaries and identify which are relevant to the question.
+        content: `Review meeting summaries with excerpts and identify which are relevant to the question.
+Each entry has metadata plus (for the top candidates) an "Excerpt" — a snippet from the actual transcript around the query terms. Weight the excerpt heavily when it directly addresses the question.
 Return JSON: {"relevant": [0, 3, 7, ...]} — indices of relevant meetings.
 Be inclusive. Searching for: ${plan.explanation}`,
       },

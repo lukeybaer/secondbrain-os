@@ -30,6 +30,7 @@ import {
 import { buildKnowledgeContext, ingestCallTranscript } from './graphiti-client';
 import { buildSessionArchiveContext } from './session-archive';
 import { readCanonicalMemory } from './memory-sync';
+import { truncateAtBoundary } from './text-splitter';
 
 // ── Agent registry ────────────────────────────────────────────────────────────
 
@@ -355,10 +356,19 @@ ${context}
   async runPostCallReflection(input: PostCallReflectionInput): Promise<string> {
     const memory = await this.read();
 
+    // Token-aware boundary-respecting truncation — prior `slice(0, N)` cut
+    // mid-sentence and used a char count untethered from the real token budget.
+    // ~500 tokens (memory) and ~400 tokens (transcript) keep the reflection
+    // prompt comfortably under Haiku's 200K context with room for the task.
+    const memoryExcerpt = truncateAtBoundary(memory, 500);
+    const transcriptExcerpt = input.transcript
+      ? truncateAtBoundary(input.transcript, 400)
+      : '';
+
     const prompt = `You are a self-improving AI executive assistant reviewing your own performance on a phone call.
 
 ## Your Current Memory (excerpt)
-${memory.slice(0, 2000)}
+${memoryExcerpt}
 
 ## Call Details
 - Contact: ${input.contactName || input.phoneNumber}
@@ -366,7 +376,7 @@ ${memory.slice(0, 2000)}
 - Outcome: ${input.outcome}
 - Duration: ${input.durationSeconds !== undefined ? Math.round(input.durationSeconds / 60) + ' min' : 'unknown'}
 ${input.userFeedback ? `- the owner's feedback: ${input.userFeedback}` : ''}
-${input.transcript ? `\n## Transcript (excerpt)\n${input.transcript.slice(0, 1500)}` : ''}
+${transcriptExcerpt ? `\n## Transcript (excerpt)\n${transcriptExcerpt}` : ''}
 
 ## Your Reflection Task
 Write 3-6 bullet points covering:

@@ -51,10 +51,13 @@ export function startDataSync(): void {
   syncRunning = true;
   stopRequested = false;
   console.log("[data-sync] started (every 15s → EC2)");
-  // Initial sync immediately
-  syncOnce().then(() => {
-    syncTimer = setTimeout(pollLoop, SYNC_INTERVAL_MS);
-  });
+  // Initial sync immediately — always schedule the poll loop even if the
+  // first sync rejects (EC2 unreachable at startup should not stop polling).
+  syncOnce()
+    .catch((err) => console.error('[data-sync] initial sync failed:', err))
+    .finally(() => {
+      syncTimer = setTimeout(pollLoop, SYNC_INTERVAL_MS);
+    });
 }
 
 export function stopDataSync(): void {

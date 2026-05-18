@@ -39,6 +39,15 @@ export function ensureDataDirs(): void {
   }
 }
 
+// In-memory cache for listAllConversations — the dir scan + per-file JSON.parse
+// is called from multiple hot paths (chat search, import handlers). Invalidated
+// on saveConversation and after a short TTL.
+let convListCache: { value: ConversationMeta[]; expiresAt: number } | null = null;
+const CONV_LIST_TTL_MS = 30_000;
+function invalidateConvListCache(): void {
+  convListCache = null;
+}
+
 export function saveConversation(meta: ConversationMeta, transcript: string): void {
   ensureDataDirs();
   const convDir = path.join(getConvsDir(), meta.id);
@@ -47,6 +56,7 @@ export function saveConversation(meta: ConversationMeta, transcript: string): vo
   }
   fs.writeFileSync(path.join(convDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf-8');
   fs.writeFileSync(path.join(convDir, 'transcript.txt'), transcript, 'utf-8');
+  invalidateConvListCache();
 }
 
 export function loadConversation(
@@ -68,6 +78,9 @@ export function loadConversation(
 }
 
 export function listAllConversations(): ConversationMeta[] {
+  if (convListCache && convListCache.expiresAt > Date.now()) {
+    return convListCache.value;
+  }
   ensureDataDirs();
   const convsDir = getConvsDir();
   const results: ConversationMeta[] = [];
@@ -87,7 +100,9 @@ export function listAllConversations(): ConversationMeta[] {
   } catch {
     // dir doesn't exist yet
   }
-  return results.sort((a, b) => b.date.localeCompare(a.date));
+  const sorted = results.sort((a, b) => b.date.localeCompare(a.date));
+  convListCache = { value: sorted, expiresAt: Date.now() + CONV_LIST_TTL_MS };
+  return sorted;
 }
 
 export function conversationExists(otterId: string): boolean {

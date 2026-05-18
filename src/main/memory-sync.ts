@@ -131,6 +131,30 @@ async function ingestMemoryFile(file: MemoryFile): Promise<boolean> {
   });
 }
 
+// Ingest a list of files into Graphiti in concurrent batches. Each batch waits
+// for completion before the next starts — bounds in-flight requests so the
+// entity-extractor LLM on EC2 isn't flooded, but eliminates the prior fully-
+// serial loop. Concurrency tuned to 3 as a safe default; raise if EC2 confirms
+// Claude-backed Graphiti (Pro subscription).
+async function ingestFilesBatched(
+  files: MemoryFile[],
+  concurrency = 3,
+): Promise<{ ingested: number; failed: number }> {
+  let ingested = 0;
+  let failed = 0;
+  for (let i = 0; i < files.length; i += concurrency) {
+    const batch = files.slice(i, i + concurrency);
+    const results = await Promise.all(
+      batch.map((f) => ingestMemoryFile(f).catch(() => false)),
+    );
+    for (const ok of results) {
+      if (ok) ingested++;
+      else failed++;
+    }
+  }
+  return { ingested, failed };
+}
+
 /**
  * Full seed — ingest ALL markdown files into Graphiti.
  * Run once to populate an empty graph, then use incrementalSync for updates.
@@ -143,22 +167,7 @@ export async function fullGraphitiSeed(): Promise<{
   const files = discoverMemoryFiles(claudeMemoryDir());
   console.log(`[memory-sync] Full seed: found ${files.length} memory files`);
 
-  let ingested = 0;
-  let failed = 0;
-
-  for (const file of files) {
-    const ok = await ingestMemoryFile(file);
-    if (ok) {
-      ingested++;
-    } else {
-      failed++;
-    }
-
-    // Rate-limit to avoid overwhelming Graphiti
-    if (ingested % 10 === 0) {
-      await new Promise((r) => setTimeout(r, 500));
-    }
-  }
+  const { ingested, failed } = await ingestFilesBatched(files);
 
   console.log(
     `[memory-sync] Seed complete — total:${files.length} ingested:${ingested} failed:${failed}`,
@@ -188,14 +197,7 @@ export async function incrementalGraphitiSync(): Promise<{
   const files = discoverMemoryFiles(claudeMemoryDir());
   const changed = files.filter((f) => f.modifiedAt > lastSync);
 
-  let ingested = 0;
-  let failed = 0;
-
-  for (const file of changed) {
-    const ok = await ingestMemoryFile(file);
-    if (ok) ingested++;
-    else failed++;
-  }
+  const { ingested, failed } = await ingestFilesBatched(changed);
 
   // Update sync state
   const dir = path.dirname(stateFile);

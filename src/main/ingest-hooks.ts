@@ -11,6 +11,7 @@
 
 import { addEpisode } from './graphiti-client';
 import { appendWorkingMemory } from './memory-index';
+import { splitText } from './text-splitter';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -66,17 +67,30 @@ export function onDataIngested(event: IngestEvent): void {
 // ── Graphiti hook ────────────────────────────────────────────────────────────
 
 async function ingestToGraphiti(event: IngestEvent): Promise<void> {
-  // Truncate body to 3000 chars (Graphiti's practical limit for entity extraction)
-  const body = event.body.slice(0, 3000);
-  if (body.length < 10) return; // skip trivially short content
+  if (event.body.trim().length < 10) return; // skip trivially short content
 
-  await addEpisode({
-    name: event.name,
-    episode_body: body,
-    source_description: `${event.source}:${event.sourceId ?? 'unknown'}`,
-    reference_time: event.timestamp ?? new Date().toISOString(),
-    group_id: 'owner-ea',
-  });
+  // Split long bodies into multiple coherent chunks. Graphiti dedupes entities
+  // across episodes, so N short episodes give a richer graph than 1 truncated
+  // episode — and nothing past the prior 3000-char cut is dropped.
+  const chunks = splitText(event.body);
+  if (chunks.length === 0) return;
+
+  // TODO(graphiti-concurrency): currently sequential. If Graphiti's entity
+  // extractor on EC2 is configured to use Claude via the Pro subscription,
+  // these can run in parallel (concurrency 3-5) for ~5× faster ingest. If it
+  // uses metered OpenAI, sequential keeps costs predictable. Resolve by
+  // checking docker-compose.graphiti.yml on EC2.
+  for (let i = 0; i < chunks.length; i++) {
+    const name =
+      chunks.length === 1 ? event.name : `${event.name} (${i + 1}/${chunks.length})`;
+    await addEpisode({
+      name,
+      episode_body: chunks[i],
+      source_description: `${event.source}:${event.sourceId ?? 'unknown'}`,
+      reference_time: event.timestamp ?? new Date().toISOString(),
+      group_id: 'owner-ea',
+    });
+  }
 }
 
 // ── Working memory hook (Tier 1 recency buffer) ─────────────────────────────
