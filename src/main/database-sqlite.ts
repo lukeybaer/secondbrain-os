@@ -190,6 +190,45 @@ function runMigrations(db: Database.Database): void {
         CREATE INDEX IF NOT EXISTS idx_tm_conv_start ON tm_conversations(start_time);
       `,
     },
+    {
+      version: 4,
+      sql: `
+        -- Append-only security audit trail for user, AI, tool, and external actions.
+        CREATE TABLE IF NOT EXISTS audit_logs (
+          id            TEXT PRIMARY KEY,
+          created_at    TEXT NOT NULL,
+          actor_type    TEXT NOT NULL,
+          actor_id      TEXT,
+          source        TEXT NOT NULL,
+          action        TEXT NOT NULL,
+          risk_level    TEXT NOT NULL
+            CHECK(risk_level IN ('low','medium','high','critical')),
+          decision      TEXT NOT NULL,
+          approval_id   TEXT,
+          target_type   TEXT,
+          target_id     TEXT,
+          summary       TEXT NOT NULL,
+          metadata_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action, created_at);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_approval ON audit_logs(approval_id);
+
+        -- Richer metadata for approvals created by centralized policy.
+        ALTER TABLE pending_approvals ADD COLUMN actor_type TEXT;
+        ALTER TABLE pending_approvals ADD COLUMN actor_id TEXT;
+        ALTER TABLE pending_approvals ADD COLUMN source TEXT;
+        ALTER TABLE pending_approvals ADD COLUMN action TEXT;
+        ALTER TABLE pending_approvals ADD COLUMN risk_level TEXT;
+        ALTER TABLE pending_approvals ADD COLUMN target_type TEXT;
+        ALTER TABLE pending_approvals ADD COLUMN target_id TEXT;
+        ALTER TABLE pending_approvals ADD COLUMN policy_reason TEXT;
+        ALTER TABLE pending_approvals ADD COLUMN metadata_json TEXT;
+        ALTER TABLE pending_approvals ADD COLUMN expires_at TEXT;
+        CREATE INDEX IF NOT EXISTS idx_approvals_action ON pending_approvals(action, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_approvals_target ON pending_approvals(target_type, target_id);
+      `,
+    },
   ];
 
   for (const m of migrations) {
@@ -217,19 +256,51 @@ export interface DbApproval {
   status: 'pending' | 'approved' | 'denied' | 'timed_out';
   resolved_at?: string;
   response_data?: string;
+  actor_type?: string;
+  actor_id?: string;
+  source?: string;
+  action?: string;
+  risk_level?: 'low' | 'medium' | 'high' | 'critical';
+  target_type?: string;
+  target_id?: string;
+  policy_reason?: string;
+  metadata_json?: string;
+  expires_at?: string;
 }
 
 export function createApproval(approval: Omit<DbApproval, 'status'>): DbApproval {
   const db = getDb();
   const row: DbApproval = { ...approval, status: 'pending' };
+  const params = {
+    id: row.id,
+    call_id: row.call_id ?? null,
+    request_type: row.request_type,
+    description: row.description,
+    data_category: row.data_category ?? null,
+    created_at: row.created_at,
+    actor_type: row.actor_type ?? null,
+    actor_id: row.actor_id ?? null,
+    source: row.source ?? null,
+    action: row.action ?? null,
+    risk_level: row.risk_level ?? null,
+    target_type: row.target_type ?? null,
+    target_id: row.target_id ?? null,
+    policy_reason: row.policy_reason ?? null,
+    metadata_json: row.metadata_json ?? null,
+    expires_at: row.expires_at ?? null,
+  };
   db.prepare(
     `
     INSERT INTO pending_approvals
-      (id, call_id, request_type, description, data_category, created_at, status)
+      (id, call_id, request_type, description, data_category, created_at, status,
+       actor_type, actor_id, source, action, risk_level, target_type, target_id,
+       policy_reason, metadata_json, expires_at)
     VALUES
-      (@id, @call_id, @request_type, @description, @data_category, @created_at, 'pending')
+      (@id, @call_id, @request_type, @description, @data_category, @created_at, 'pending',
+       @actor_type, @actor_id, @source, @action, @risk_level, @target_type, @target_id,
+       @policy_reason, @metadata_json, @expires_at)
   `,
-  ).run(row);
+  ).run(params);
   return row;
 }
 

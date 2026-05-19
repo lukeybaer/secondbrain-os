@@ -17,6 +17,7 @@
 
 import { listTasks, type Task } from './task-store';
 import { runQueuedTask } from './task-service';
+import { auditAndAuthorize } from './security/approval-policy';
 
 // Conservative cap: at most this many act-worker runs in flight at once.
 const CONCURRENCY_CAP = 2;
@@ -53,13 +54,35 @@ let timer: ReturnType<typeof setInterval> | null = null;
 
 function tick(): void {
   let ids: string[];
+  let queued: Task[];
   try {
-    ids = selectQueuedToRun(listTasks({ status: 'queued' }), CONCURRENCY_CAP, active);
+    queued = listTasks({ status: 'queued' });
+    ids = selectQueuedToRun(queued, CONCURRENCY_CAP, active);
   } catch (err) {
     console.error('[task-worker] tick error:', err);
     return;
   }
   for (const id of ids) {
+    const task = queued.find((t) => t.id === id);
+    const auth = auditAndAuthorize({
+      actor: 'tool',
+      source: 'task-worker',
+      action: 'run_task',
+      summary: `Run approved queued task ${id}`,
+      targetType: 'task',
+      targetId: id,
+      approved: task?.approved === true,
+      metadata: {
+        origin: task?.origin,
+        kind: task?.kind,
+        title: task?.title,
+      },
+    });
+    if (!auth.allowed) {
+      console.warn(`[task-worker] blocked task ${id}: ${auth.error ?? 'approval required'}`);
+      continue;
+    }
+
     active++;
     try {
       const { completion } = runQueuedTask(id);

@@ -11,6 +11,7 @@ import {
   ParsedBriefing,
   BriefingSummary,
 } from './briefing-parser';
+import { assertString, assertDateString, validateExternalUrl } from './ipc-validation';
 
 const DISPATCH_LOG = (): string =>
   path.join(
@@ -131,7 +132,7 @@ export function registerBriefingIpc(): void {
   });
 
   ipcMain.handle('briefing:get', async (_e, date: string): Promise<ParsedBriefing | null> => {
-    return loadBriefingByDate(date);
+    return loadBriefingByDate(assertDateString(date));
   });
 
   ipcMain.handle(
@@ -141,7 +142,11 @@ export function registerBriefingIpc(): void {
       params: { date: string; sectionTitle: string; comment: string },
     ): Promise<{ ok: boolean; error?: string }> => {
       if (!params?.comment?.trim()) return { ok: false, error: 'empty comment' };
-      return dispatchAmyComment(params);
+      return dispatchAmyComment({
+        date: assertDateString(params.date),
+        sectionTitle: assertString(params.sectionTitle, 'sectionTitle', 300),
+        comment: assertString(params.comment, 'comment', 5000),
+      });
     },
   );
 
@@ -149,14 +154,13 @@ export function registerBriefingIpc(): void {
     'briefing:export',
     async (e, date: string): Promise<{ ok: boolean; filePath?: string; error?: string }> => {
       const win = BrowserWindow.fromWebContents(e.sender);
-      return exportBriefing(win, date);
+      return exportBriefing(win, assertDateString(date));
     },
   );
 
   ipcMain.handle('briefing:openExternal', async (_e, url: string): Promise<{ ok: boolean }> => {
-    if (typeof url !== 'string' || !/^https?:\/\//.test(url)) return { ok: false };
     try {
-      await shell.openExternal(url);
+      await shell.openExternal(validateExternalUrl(url));
       return { ok: true };
     } catch {
       return { ok: false };

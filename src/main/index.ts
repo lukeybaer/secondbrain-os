@@ -3,6 +3,7 @@ import { join } from 'path';
 import { electronApp, optimizer, is } from '@electron-toolkit/utils';
 import { registerIpcHandlers } from './ipc-handlers';
 import { registerBriefingIpc } from './briefing-api';
+import { registerSystemIpc } from './system-ipc';
 import { loadConfig } from './config';
 import { startOtterPolling } from './otter-ingest';
 import { startCommandQueueWorker, setCommandStatusHandler } from './command-queue';
@@ -67,8 +68,11 @@ function createWindow(): BrowserWindow {
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
       sandbox: false,
       backgroundThrottling: false,
+      allowRunningInsecureContent: false,
       // Allow file:// URLs to load in the renderer when running against the
       // Vite dev server (http://localhost).  In production the renderer is
       // loaded from file:// itself so this flag isn't needed.
@@ -88,8 +92,22 @@ function createWindow(): BrowserWindow {
   });
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url);
+    if (isSafeExternalUrl(details.url)) {
+      shell.openExternal(details.url).catch((err) => writeLog('openExternal', err));
+    }
     return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    const rendererUrl = process.env['ELECTRON_RENDERER_URL'];
+    const isDevRenderer = is.dev && rendererUrl ? targetUrl.startsWith(rendererUrl) : false;
+    const isPackagedRenderer = targetUrl.startsWith('file://');
+    if (isDevRenderer || isPackagedRenderer) return;
+
+    event.preventDefault();
+    if (isSafeExternalUrl(targetUrl)) {
+      shell.openExternal(targetUrl).catch((err) => writeLog('navigation-openExternal', err));
+    }
   });
 
   // Log renderer-side uncaught errors to the same file
@@ -105,6 +123,7 @@ function createWindow(): BrowserWindow {
 
   registerIpcHandlers(mainWindow);
   registerBriefingIpc();
+  registerSystemIpc();
   return mainWindow;
 }
 
@@ -205,14 +224,11 @@ app
     electronApp.setAppUserModelId('com.secondbrain.app');
     loadConfig();
 
-    // Deny camera/mic access — SecondBrain has no UI that needs the camera or mic.
-    // This prevents the app from competing with Google Meet and other video call tools.
+    // Deny browser permission prompts by default. Native integrations are mediated
+    // by main-process services and explicit IPC handlers, not renderer permissions.
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-      if (permission === 'media') {
-        callback(false);
-      } else {
-        callback(true);
-      }
+      writeLog('permission-denied', permission);
+      callback(false);
     });
 
     // Handle media:// URLs by proxying through net.fetch with the file:// protocol.
@@ -221,7 +237,16 @@ app
     protocol.handle('media', (request) => {
       try {
         const url = new URL(request.url);
-        const filePath = url.pathname.replace(/^\//, '');
+        const filePath = path.resolve(url.pathname.replace(/^\//, ''));
+        const contentRoot =
+          process.env.SECONDBRAIN_ROOT ??
+          (app.isPackaged ? app.getPath('userData') : app.getAppPath());
+        const allowedRoots = [app.getPath('userData'), path.join(contentRoot, 'content-review')];
+        const allowed = allowedRoots.some((root) => {
+          const rel = path.relative(path.resolve(root), filePath);
+          return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+        });
+        if (!allowed) return new Response('Forbidden', { status: 403 });
         return net.fetch(`file:///${filePath}`);
       } catch (e) {
         writeLog('media-protocol', e);

@@ -6,6 +6,10 @@ import { app, BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fsP from 'fs/promises';
 import { createRequire } from 'module';
+import {
+  auditAndAuthorize,
+  type ApprovalPolicyContext,
+} from './security/approval-policy';
 
 // Use Node's native require to bypass electron-vite's module resolution
 const nativeRequire = createRequire(path.join(app.getAppPath(), 'node_modules', '.package.json'));
@@ -376,12 +380,33 @@ export async function getChatHistory(chatId: string, limit = 50): Promise<WAMess
 export async function sendWhatsAppMessage(
   to: string,
   text: string,
+  options?: { policy?: Partial<ApprovalPolicyContext> },
 ): Promise<{ success: boolean; error?: string }> {
+  const chatId = to.includes('@') ? to : `${to.replace(/\D/g, '')}@c.us`;
+  const auth = auditAndAuthorize({
+    actor: options?.policy?.actor ?? 'renderer',
+    actorId: options?.policy?.actorId,
+    source: options?.policy?.source ?? 'renderer:whatsapp:send',
+    action: 'send_whatsapp',
+    summary: `Send WhatsApp message to ${chatId}`,
+    targetType: 'whatsapp_chat',
+    targetId: chatId,
+    text,
+    approved: options?.policy?.approved,
+    approvalId: options?.policy?.approvalId,
+    metadata: {
+      textChars: text.length,
+      ...(options?.policy?.metadata ?? {}),
+    },
+  });
+  if (!auth.allowed) {
+    return { success: false, error: auth.error ?? 'WhatsApp send requires approval.' };
+  }
+
   if (!client || currentStatus !== 'ready') {
     return { success: false, error: 'WhatsApp not connected' };
   }
   try {
-    const chatId = to.includes('@') ? to : `${to.replace(/\D/g, '')}@c.us`;
     await client.sendMessage(chatId, text);
     return { success: true };
   } catch (e: any) {

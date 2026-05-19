@@ -13,6 +13,9 @@
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import * as crypto from 'crypto';
+import { Transform } from 'stream';
+import { pipeline } from 'stream/promises';
 import { execSync } from 'child_process';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const Database: any = require('better-sqlite3');
@@ -30,6 +33,37 @@ const DATA_DIR = path.join(USER_DATA, 'data');
 const CONFIG_PATH = path.join(USER_DATA, 'config.json');
 const MANIFEST_PATH = path.join(BACKUPS_ROOT, 'manifest.json');
 
+const ENCRYPTION_ALGORITHM: BackupAlgorithm = 'AES-256-GCM';
+const ENCRYPTED_PAYLOAD_DIR = 'payload';
+const ENCRYPTED_FILE_MAGIC = 'SBENC1';
+const BACKUP_KEY_FILE = '.backup-key';
+const BACKUP_KEY_ENV = 'SECONDBRAIN_BACKUP_KEY';
+const BACKUP_PASSPHRASE_ENV = 'SECONDBRAIN_BACKUP_PASSPHRASE';
+const BACKUP_PASSPHRASE_SALT_ENV = 'SECONDBRAIN_BACKUP_PASSPHRASE_SALT';
+const PBKDF2_ITERATIONS = 310_000;
+
+interface BackupKeyInfo {
+  key: Buffer;
+  keyId: string;
+}
+
+interface EncryptedFileHeader {
+  version: 1;
+  algorithm: BackupAlgorithm;
+  iv: string;
+  authTag: string;
+  plaintextSha256: string;
+  plaintextBytes: number;
+  keyId: string;
+}
+
+interface EncryptedFileIntegrity {
+  relativePath: string;
+  plaintextSha256: string;
+  ciphertextSha256: string;
+  plaintextBytes: number;
+}
+
 // ── Types (duplicated to avoid Electron imports) ─────────────────────────────
 
 type BackupTier =
@@ -41,6 +75,14 @@ type BackupTier =
   | 'yearly'
   | 'pre-restore';
 
+type BackupAlgorithm = 'AES-256-GCM';
+
+interface SnapshotIntegrity {
+  plaintextTreeSha256: string;
+  ciphertextTreeSha256?: string;
+  keyId: string;
+}
+
 interface SnapshotMeta {
   id: string;
   timestamp: string;
@@ -48,6 +90,9 @@ interface SnapshotMeta {
   fileCount: number;
   dataBytes: number;
   durationMs: number;
+  encrypted: boolean;
+  algorithm?: BackupAlgorithm;
+  integrity?: SnapshotIntegrity;
   note?: string;
 }
 
@@ -61,7 +106,7 @@ interface BackupManifest {
 function loadManifest(): BackupManifest {
   try {
     if (fs.existsSync(MANIFEST_PATH)) {
-      return JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf-8'));
+      return normalizeManifest(JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf-8')));
     }
   } catch {
     /* start fresh */
@@ -71,7 +116,277 @@ function loadManifest(): BackupManifest {
 
 function saveManifest(m: BackupManifest): void {
   fs.mkdirSync(BACKUPS_ROOT, { recursive: true });
-  fs.writeFileSync(MANIFEST_PATH, JSON.stringify(m, null, 2));
+  fs.writeFileSync(MANIFEST_PATH, JSON.stringify(normalizeManifest(m), null, 2));
+}
+
+function redactSecrets(input: string): string {
+  return input
+    .replace(/sk-[A-Za-z0-9_-]{10,}/g, 'sk-[REDACTED]')
+    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, 'AWS_[REDACTED]')
+    .replace(
+      /\b(api[_-]?key|token|secret|password|passwd|pwd|authorization|bearer)\b\s*[:=]\s*["']?[^"',\s)]+/gi,
+      '$1=[REDACTED]',
+    )
+    .replace(/secondbrain-backend-key\.pem/gi, '[SSH_KEY]');
+}
+
+function redactForManifest(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  return redactSecrets(value).slice(0, 500);
+}
+
+function redactForLog(value: unknown): string {
+  return redactSecrets(String(value ?? ''));
+}
+
+function safeLogPath(fullPath: string): string {
+  const candidates: Array<[string, string]> = [
+    ['data', DATA_DIR],
+    ['backups', BACKUPS_ROOT],
+    ['userData', USER_DATA],
+  ];
+  for (const [label, root] of candidates) {
+    const rel = path.relative(root, fullPath);
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+      return `${label}/${rel.replace(/\\/g, '/')}`;
+    }
+  }
+  return path.basename(fullPath);
+}
+
+function normalizeSnapshotMeta(raw: any): SnapshotMeta {
+  const encrypted = raw?.encrypted === true || raw?.algorithm === ENCRYPTION_ALGORITHM;
+  const meta: SnapshotMeta = {
+    id: String(raw?.id ?? ''),
+    timestamp: String(raw?.timestamp ?? new Date(0).toISOString()),
+    tier: (raw?.tier ?? 'daily') as BackupTier,
+    fileCount: Number(raw?.fileCount ?? 0),
+    dataBytes: Number(raw?.dataBytes ?? 0),
+    durationMs: Number(raw?.durationMs ?? 0),
+    encrypted,
+  };
+  if (raw?.algorithm) meta.algorithm = raw.algorithm as BackupAlgorithm;
+  if (raw?.integrity && typeof raw.integrity === 'object') {
+    meta.integrity = {
+      plaintextTreeSha256: String(raw.integrity.plaintextTreeSha256 ?? ''),
+      ciphertextTreeSha256: raw.integrity.ciphertextTreeSha256
+        ? String(raw.integrity.ciphertextTreeSha256)
+        : undefined,
+      keyId: String(raw.integrity.keyId ?? ''),
+    };
+  }
+  const note = redactForManifest(raw?.note);
+  if (note) meta.note = note;
+  return meta;
+}
+
+function normalizeManifest(raw: any): BackupManifest {
+  return {
+    version: 1,
+    snapshots: Array.isArray(raw?.snapshots)
+      ? raw.snapshots.map(normalizeSnapshotMeta).filter((s) => s.id)
+      : [],
+  };
+}
+
+function backupKeyId(key: Buffer): string {
+  return crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
+}
+
+function decodeBackupKey(raw: string): Buffer {
+  const trimmed = raw.trim();
+  if (/^[a-f0-9]{64}$/i.test(trimmed)) return Buffer.from(trimmed, 'hex');
+  const base64 = Buffer.from(trimmed, 'base64');
+  if (base64.length === 32) return base64;
+  return crypto.createHash('sha256').update(trimmed, 'utf8').digest();
+}
+
+function loadBackupKey(opts?: { createIfMissing?: boolean }): BackupKeyInfo {
+  const envKey = process.env[BACKUP_KEY_ENV];
+  if (envKey) {
+    const key = decodeBackupKey(envKey);
+    return { key, keyId: backupKeyId(key) };
+  }
+
+  const passphrase = process.env[BACKUP_PASSPHRASE_ENV];
+  if (passphrase) {
+    const salt = process.env[BACKUP_PASSPHRASE_SALT_ENV] ?? 'secondbrain-backup-v1';
+    const key = crypto.pbkdf2Sync(
+      passphrase,
+      salt,
+      PBKDF2_ITERATIONS,
+      32,
+      'sha256',
+    );
+    return { key, keyId: backupKeyId(key) };
+  }
+
+  const keyPath = path.join(BACKUPS_ROOT, BACKUP_KEY_FILE);
+  if (fs.existsSync(keyPath)) {
+    const key = decodeBackupKey(fs.readFileSync(keyPath, 'utf-8'));
+    if (key.length !== 32) throw new Error('Backup encryption key is invalid');
+    return { key, keyId: backupKeyId(key) };
+  }
+
+  if (!opts?.createIfMissing) {
+    throw new Error(
+      `Backup encryption key missing. Restore requires ${BACKUP_KEY_ENV}, ${BACKUP_PASSPHRASE_ENV}, or ${safeLogPath(keyPath)}.`,
+    );
+  }
+
+  fs.mkdirSync(BACKUPS_ROOT, { recursive: true });
+  const key = crypto.randomBytes(32);
+  fs.writeFileSync(keyPath, `${key.toString('base64')}\n`, { mode: 0o600 });
+  return { key, keyId: backupKeyId(key) };
+}
+
+function normalizeRelativePath(relativePath: string): string {
+  const clean = relativePath.replace(/\\/g, '/');
+  if (
+    clean.length === 0 ||
+    clean.includes('\0') ||
+    clean.startsWith('/') ||
+    /^[a-zA-Z]:/.test(clean) ||
+    clean.split('/').some((part) => part === '..')
+  ) {
+    throw new Error(`Unsafe snapshot path: ${redactForLog(relativePath)}`);
+  }
+  return clean
+    .split('/')
+    .filter((part) => part && part !== '.')
+    .join('/');
+}
+
+function payloadRelative(root: string, fullPath: string): string {
+  return normalizeRelativePath(path.relative(root, fullPath).replace(/\\/g, '/'));
+}
+
+function fileAad(snapshotId: string, relativePath: string): Buffer {
+  return Buffer.from(
+    `secondbrain-backup-file:v1:${snapshotId}:${normalizeRelativePath(relativePath)}`,
+    'utf-8',
+  );
+}
+
+function hashTransform(hash: crypto.Hash, counter?: { bytes: number }): Transform {
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      hash.update(buf);
+      if (counter) counter.bytes += buf.length;
+      callback(null, chunk);
+    },
+  });
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  const hash = crypto.createHash('sha256');
+  await new Promise<void>((resolve, reject) => {
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', resolve);
+  });
+  return hash.digest('hex');
+}
+
+async function encryptFile(
+  src: string,
+  dest: string,
+  relativePath: string,
+  snapshotId: string,
+  keyInfo: BackupKeyInfo,
+): Promise<EncryptedFileIntegrity> {
+  await fsp.mkdir(path.dirname(dest), { recursive: true });
+  const bodyPath = `${dest}.cipher-${process.pid}-${Date.now()}`;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', keyInfo.key, iv);
+  cipher.setAAD(fileAad(snapshotId, relativePath));
+
+  const plaintextHash = crypto.createHash('sha256');
+  const counter = { bytes: 0 };
+  try {
+    await pipeline(
+      fs.createReadStream(src),
+      hashTransform(plaintextHash, counter),
+      cipher,
+      fs.createWriteStream(bodyPath, { mode: 0o600 }),
+    );
+
+    const header: EncryptedFileHeader = {
+      version: 1,
+      algorithm: ENCRYPTION_ALGORITHM,
+      iv: iv.toString('base64'),
+      authTag: cipher.getAuthTag().toString('base64'),
+      plaintextSha256: plaintextHash.digest('hex'),
+      plaintextBytes: counter.bytes,
+      keyId: keyInfo.keyId,
+    };
+    await fsp.writeFile(
+      dest,
+      `${ENCRYPTED_FILE_MAGIC}:${Buffer.from(JSON.stringify(header)).toString('base64')}\n`,
+      { mode: 0o600 },
+    );
+    await pipeline(fs.createReadStream(bodyPath), fs.createWriteStream(dest, { flags: 'a' }));
+    return {
+      relativePath,
+      plaintextSha256: header.plaintextSha256,
+      ciphertextSha256: await sha256File(dest),
+      plaintextBytes: header.plaintextBytes,
+    };
+  } finally {
+    if (fs.existsSync(bodyPath)) await fsp.rm(bodyPath, { force: true });
+  }
+}
+
+async function encryptPayloadDir(
+  srcRoot: string,
+  destRoot: string,
+  snapshotId: string,
+): Promise<{ fileCount: number; dataBytes: number; integrity: SnapshotIntegrity }> {
+  const keyInfo = loadBackupKey({ createIfMissing: true });
+  const plaintextTree = crypto.createHash('sha256');
+  const ciphertextTree = crypto.createHash('sha256');
+  let fileCount = 0;
+  let dataBytes = 0;
+
+  async function walk(srcDir: string): Promise<void> {
+    const relDir = path.relative(srcRoot, srcDir).replace(/\\/g, '/');
+    const destDir = relDir ? path.join(destRoot, relDir) : destRoot;
+    await fsp.mkdir(destDir, { recursive: true });
+    if (relDir) plaintextTree.update(`dir:${normalizeRelativePath(relDir)}\n`);
+
+    const entries = (await fsp.readdir(srcDir, { withFileTypes: true })).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    for (const entry of entries) {
+      const src = path.join(srcDir, entry.name);
+      const rel = payloadRelative(srcRoot, src);
+      const dest = path.join(destRoot, rel);
+      if (entry.isDirectory()) {
+        await walk(src);
+      } else {
+        const result = await encryptFile(src, dest, rel, snapshotId, keyInfo);
+        fileCount++;
+        dataBytes += result.plaintextBytes;
+        plaintextTree.update(
+          `file:${result.relativePath}:${result.plaintextBytes}:${result.plaintextSha256}\n`,
+        );
+        ciphertextTree.update(`file:${result.relativePath}:${result.ciphertextSha256}\n`);
+      }
+    }
+  }
+
+  await walk(srcRoot);
+  return {
+    fileCount,
+    dataBytes,
+    integrity: {
+      plaintextTreeSha256: plaintextTree.digest('hex'),
+      ciphertextTreeSha256: ciphertextTree.digest('hex'),
+      keyId: keyInfo.keyId,
+    },
+  };
 }
 
 // Paths we NEVER back up — transient, large, rebuildable browser cache that
@@ -120,7 +435,7 @@ async function copyDir(src: string, dest: string): Promise<void> {
         const code = err && err.code;
         if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') {
           copySkipCount++;
-          console.warn(`  skip-locked: ${s} (${code})`);
+          console.warn(`  skip-locked: ${safeLogPath(s)} (${code})`);
           continue;
         }
         throw err;
@@ -189,7 +504,7 @@ function s3Upload(localPath: string, s3Key: string): void {
       lastErr = e;
       if (attempt < MAX_ATTEMPTS) {
         const waitSec = attempt * 30; // 30s, 60s
-        console.warn(`    S3 upload attempt ${attempt} failed — retrying in ${waitSec}s: ${(e as Error).message?.slice(0, 120)}`);
+        console.warn(`    S3 upload attempt ${attempt} failed - retrying in ${waitSec}s: ${redactForLog((e as Error).message).slice(0, 120)}`);
         execSync(`ping -n ${waitSec + 1} 127.0.0.1 > nul`, { stdio: 'ignore' });
       }
     }
@@ -273,13 +588,17 @@ async function createSnapshot(): Promise<SnapshotMeta> {
   const now = new Date();
   const id = toSlug(now);
   const dest = path.join(BACKUPS_ROOT, id);
+  const staging = path.join(BACKUPS_ROOT, `_staging-${id}`);
 
   if (fs.existsSync(dest)) await fsp.rm(dest, { recursive: true, force: true });
+  if (fs.existsSync(staging)) await fsp.rm(staging, { recursive: true, force: true });
   await fsp.mkdir(dest, { recursive: true });
+  await fsp.mkdir(staging, { recursive: true });
 
+  try {
   // Copy data directory
   if (fs.existsSync(DATA_DIR)) {
-    await copyDir(DATA_DIR, path.join(dest, 'data'));
+    await copyDir(DATA_DIR, path.join(staging, 'data'));
   }
 
   // SQLite backup
@@ -288,36 +607,43 @@ async function createSnapshot(): Promise<SnapshotMeta> {
     try {
       const srcDb = new Database(dbPath, { readonly: true });
       srcDb.pragma('journal_mode = WAL');
-      await srcDb.backup(path.join(dest, 'secondbrain.db'));
+      await srcDb.backup(path.join(staging, 'secondbrain.db'));
       srcDb.close();
       // Clean WAL/SHM from copy, replace with clean backup
       for (const suffix of ['-wal', '-shm']) {
-        const wal = path.join(dest, 'data', `secondbrain.db${suffix}`);
+        const wal = path.join(staging, 'data', `secondbrain.db${suffix}`);
         if (fs.existsSync(wal)) fs.unlinkSync(wal);
       }
-      const dataCopyDb = path.join(dest, 'data', 'secondbrain.db');
+      const dataCopyDb = path.join(staging, 'data', 'secondbrain.db');
       if (fs.existsSync(dataCopyDb)) fs.unlinkSync(dataCopyDb);
-      fs.copyFileSync(path.join(dest, 'secondbrain.db'), dataCopyDb);
-      fs.unlinkSync(path.join(dest, 'secondbrain.db'));
+      fs.copyFileSync(path.join(staging, 'secondbrain.db'), dataCopyDb);
+      fs.unlinkSync(path.join(staging, 'secondbrain.db'));
     } catch (e: any) {
-      console.warn(`SQLite backup fallback (file copy used): ${e.message}`);
+      console.warn(`SQLite backup fallback (file copy used): ${redactForLog(e.message)}`);
     }
   }
 
   // Copy config
   if (fs.existsSync(CONFIG_PATH)) {
-    await fsp.copyFile(CONFIG_PATH, path.join(dest, 'config.json'));
+    await fsp.copyFile(CONFIG_PATH, path.join(staging, 'config.json'));
   }
 
-  const stats = await dirStats(dest);
-  const meta: SnapshotMeta = {
+  const encryptedPayload = await encryptPayloadDir(
+    staging,
+    path.join(dest, ENCRYPTED_PAYLOAD_DIR),
+    id,
+  );
+  const meta: SnapshotMeta = normalizeSnapshotMeta({
     id,
     timestamp: now.toISOString(),
     tier: 'daily',
-    fileCount: stats.fileCount,
-    dataBytes: stats.dataBytes,
+    fileCount: encryptedPayload.fileCount,
+    dataBytes: encryptedPayload.dataBytes,
     durationMs: Date.now() - start,
-  };
+    encrypted: true,
+    algorithm: ENCRYPTION_ALGORITHM,
+    integrity: encryptedPayload.integrity,
+  });
 
   fs.writeFileSync(path.join(dest, 'meta.json'), JSON.stringify(meta, null, 2));
 
@@ -326,6 +652,12 @@ async function createSnapshot(): Promise<SnapshotMeta> {
   saveManifest(manifest);
 
   return meta;
+  } catch (err) {
+    await fsp.rm(dest, { recursive: true, force: true });
+    throw err;
+  } finally {
+    await fsp.rm(staging, { recursive: true, force: true });
+  }
 }
 
 const RETENTION = [
@@ -504,7 +836,7 @@ async function main(): Promise<void> {
         }
         synced++;
       } catch (e: any) {
-        console.error(`  S3 sync failed for ${snap.id}: ${e.message}`);
+        console.error(`  S3 sync failed for ${snap.id}: ${redactForLog(e.message)}`);
         skipped++;
       }
     }
@@ -543,7 +875,11 @@ async function main(): Promise<void> {
   if (fs.existsSync(BACKUPS_ROOT)) {
     const entries = await fsp.readdir(BACKUPS_ROOT);
     for (const entry of entries) {
-      if (entry.startsWith('_test-restore-')) {
+      if (
+        entry.startsWith('_test-restore-') ||
+        entry.startsWith('_restore-') ||
+        entry.startsWith('_staging-')
+      ) {
         await fsp.rm(path.join(BACKUPS_ROOT, entry), { recursive: true, force: true });
       }
     }
@@ -562,7 +898,7 @@ async function main(): Promise<void> {
     const { archiveSize } = await syncToS3(meta.id);
     console.log(`    Uploaded: ${formatBytes(archiveSize)} compressed`);
   } catch (e: any) {
-    console.error(`  S3 upload failed (local backup still safe): ${e.message}`);
+    console.error(`  S3 upload failed (local backup still safe): ${redactForLog(e.message)}`);
   }
 
   // 5. Sync manifest to S3
@@ -576,6 +912,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('Backup failed:', err);
+  console.error('Backup failed:', redactForLog(err?.message ?? err));
   process.exit(1);
 });

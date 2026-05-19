@@ -39,6 +39,12 @@ describe('src/main/backups.ts hardening (drift parity with backup-cli.ts)', () =
     // restore. Excluded per Luke's 2026-04-16 directive.
     expect(electronSrc).toMatch(/sms[^\n]*raw/);
   });
+
+  it('encrypts new snapshots by default', () => {
+    expect(electronSrc).toMatch(/AES-256-GCM/);
+    expect(electronSrc).toMatch(/encrypted:\s*true/);
+    expect(electronSrc).toMatch(/ENCRYPTED_PAYLOAD_DIR/);
+  });
 });
 
 describe('scripts/backup-cli.ts hardening (drift detector)', () => {
@@ -104,5 +110,12 @@ describe('scripts/backup-cli.ts hardening (drift detector)', () => {
     expect(src).toMatch(/--no-progress/);
     expect(src).toMatch(/maxBuffer/);
     expect(src).toMatch(/timeout.*90|90.*timeout/);
+  });
+
+  it('encrypts scheduled-task snapshots by default and redacts logs', () => {
+    expect(src).toMatch(/AES-256-GCM/);
+    expect(src).toMatch(/encrypted:\s*true/);
+    expect(src).toMatch(/ENCRYPTED_PAYLOAD_DIR/);
+    expect(src).toMatch(/redactForLog/);
   });
 });

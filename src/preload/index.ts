@@ -7,6 +7,18 @@ const api = {
     save: (config: any): Promise<any> => ipcRenderer.invoke('config:save', config),
   },
 
+  system: {
+    health: (): Promise<any> => ipcRenderer.invoke('system:health'),
+  },
+
+  audit: {
+    list: (limit?: number): Promise<any[]> => ipcRenderer.invoke('audit:list', limit),
+  },
+
+  activity: {
+    list: (limit?: number): Promise<any[]> => ipcRenderer.invoke('activity:list', limit),
+  },
+
   briefing: {
     listDays: (): Promise<
       { date: string; filename: string; filePath: string; sizeBytes: number; mtimeMs: number }[]

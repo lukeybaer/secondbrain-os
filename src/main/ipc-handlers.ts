@@ -124,6 +124,21 @@ import { regenRejectedVideos, RegenResult } from './video-pipeline';
 
 import { makeTracedHandle } from './ipc-trace-middleware';
 import { registerTaskHandlers } from './ipc-handlers/tasks';
+import {
+  assertOptionalInteger,
+  assertPlainObject,
+  assertSafeId,
+  assertString,
+  assertStringArray,
+  validateCallInitiateArgs,
+  validateConfigPatch,
+  validateMessageSend,
+  validateOptionalRelativePath,
+  validatePathUnderBase,
+  validateReadOnlySql,
+  validateRelativePath,
+  validateS3Key,
+} from './ipc-validation';
 
 const AUDIO_DIAG_FILE = path.join(app.getPath('userData'), 'audio-diag.log');
 
@@ -150,7 +165,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   // Config
   ipcMain.handle('config:get', () => getConfig());
-  ipcMain.handle('config:save', (_e, config) => saveConfig(config));
+  ipcMain.handle('config:save', (_e, config) => saveConfig(validateConfigPatch(config) as any));
 
   // Otter: test authentication
   ipcMain.handle('otter:testConnection', async () => {
@@ -326,10 +341,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   // Process specific conversations (download transcript + AI tag)
   ipcMain.handle('import:processIds', async (_e, otterIds: string[]) => {
+    const safeOtterIds = assertStringArray(otterIds, 'otterIds', 100);
     let processed = 0;
     let failed = 0;
 
-    for (const otterId of otterIds) {
+    for (const otterId of safeOtterIds) {
       send('import:itemProgress', { otterId, status: 'downloading' });
       try {
         const speech = await getSpeech(otterId);
@@ -371,13 +387,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   // Conversations
   ipcMain.handle('conversations:list', () => listAllConversations());
-  ipcMain.handle('conversations:search', (_e, query: string) => searchConversations(query, 50));
-  ipcMain.handle('conversations:get', (_e, id: string) => loadConversation(id));
+  ipcMain.handle('conversations:search', (_e, query: string) =>
+    searchConversations(assertString(query, 'query', 500), 50),
+  );
+  ipcMain.handle('conversations:get', (_e, id: string) => loadConversation(assertSafeId(id)));
 
   // Chat
   tracedHandle('chat:send', async (_e, question: string, history: ChatMessage[]) => {
     try {
-      const result = await chat(question, history, (delta) => {
+      const safeQuestion = assertString(question, 'question', 20000);
+      const safeHistory = Array.isArray(history) ? history.slice(-50) : [];
+      const result = await chat(safeQuestion, safeHistory as ChatMessage[], (delta) => {
         send('chat:delta', delta);
       });
       return { success: true, response: result.response, action: result.action };
@@ -431,10 +451,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('whatsapp:status', () => ({ status: waGetStatus() }));
   ipcMain.handle('whatsapp:chats', () => waGetChats());
   ipcMain.handle('whatsapp:messages', (_e, chatId: string, limit?: number) =>
-    waGetHistory(chatId, limit),
+    waGetHistory(assertSafeId(chatId, 'chatId'), assertOptionalInteger(limit, 'limit', 1, 500)),
   );
-  ipcMain.handle('whatsapp:send', async (_e, to: string, text: string) => waSend(to, text));
-  ipcMain.handle('whatsapp:search', (_e, query: string) => waSearch(query));
+  ipcMain.handle('whatsapp:send', async (_e, to: string, text: string) => {
+    const msg = validateMessageSend({ to, text });
+    return waSend(msg.to, msg.body);
+  });
+  ipcMain.handle('whatsapp:search', (_e, query: string) =>
+    waSearch(assertString(query, 'query', 500)),
+  );
   ipcMain.handle('whatsapp:disconnect', () => waDisconnect());
   ipcMain.handle('whatsapp:ingestAll', async () => {
     const { ingestAllWhatsAppHistory } = await import('./whatsapp-ingest');
@@ -455,22 +480,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // SMS (Twilio)
-  ipcMain.handle('sms:list', (_e, limit?: number) => listSmsMessages(limit ?? 500));
+  ipcMain.handle('sms:list', (_e, limit?: number) =>
+    listSmsMessages(assertOptionalInteger(limit, 'limit', 1, 1000) ?? 500),
+  );
   ipcMain.handle('sms:search', (_e, query: string, limit?: number) =>
-    searchSmsMessages(query, limit),
+    searchSmsMessages(
+      assertString(query, 'query', 500),
+      assertOptionalInteger(limit, 'limit', 1, 1000),
+    ),
   );
-  ipcMain.handle('sms:send', async (_e, to: string, body: string, mediaUrl?: string) =>
-    sendSms(to, body, mediaUrl),
-  );
+  ipcMain.handle('sms:send', async (_e, to: string, body: string, mediaUrl?: string) => {
+    const msg = validateMessageSend({ to, body, mediaUrl });
+    return sendSms(msg.to, msg.body, msg.mediaUrl);
+  });
   ipcMain.handle('sms:ingest', async (_e, fields: Record<string, string>) =>
-    ingestSmsWebhook(fields),
+    ingestSmsWebhook(assertPlainObject(fields, 'fields') as Record<string, string>),
   );
 
   // Personas
   ipcMain.handle('personas:list', () => listPersonas());
-  ipcMain.handle('personas:save', (_e, persona: any) => savePersona(persona));
-  ipcMain.handle('personas:delete', (_e, id: string) => deletePersona(id));
-  ipcMain.handle('personas:summarize', async (_e, id: string) => summarizePersona(id));
+  ipcMain.handle('personas:save', (_e, persona: any) =>
+    savePersona(assertPlainObject(persona, 'persona') as any),
+  );
+  ipcMain.handle('personas:delete', (_e, id: string) => deletePersona(assertSafeId(id)));
+  ipcMain.handle('personas:summarize', async (_e, id: string) =>
+    summarizePersona(assertSafeId(id)),
+  );
 
   // Phone calls (Vapi)
   tracedHandle(
@@ -487,21 +522,42 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         maxDurationSeconds?: number;
         amyVersion?: number;
       },
-    ) =>
-      initiateCall(phoneNumber, instructions, personalContext, personaId, leaveVoicemail, options),
+    ) => {
+      const args = validateCallInitiateArgs(
+        phoneNumber,
+        instructions,
+        personalContext,
+        personaId,
+        leaveVoicemail,
+        options,
+      );
+      return initiateCall(
+        args.phoneNumber,
+        args.instructions,
+        args.personalContext,
+        args.personaId,
+        args.leaveVoicemail,
+        args.options,
+      );
+    },
   );
-  tracedHandle('calls:refresh', async (_e, callId: string) => refreshCallStatus(callId));
-  ipcMain.handle('calls:get', (_e, callId: string) => loadCallRecord(callId));
+  tracedHandle('calls:refresh', async (_e, callId: string) =>
+    refreshCallStatus(assertSafeId(callId, 'callId')),
+  );
+  ipcMain.handle('calls:get', (_e, callId: string) => loadCallRecord(assertSafeId(callId, 'callId')));
   ipcMain.handle('calls:list', () => listCallRecords());
   ipcMain.handle('calls:markComplete', (_e, callId: string, completed: boolean) =>
-    markCallCompleted(callId, completed),
+    markCallCompleted(assertSafeId(callId, 'callId'), completed === true),
   );
-  ipcMain.handle('calls:hangUp', (_e, callId: string) => hangUpCall(callId));
+  ipcMain.handle('calls:hangUp', (_e, callId: string) =>
+    hangUpCall(assertSafeId(callId, 'callId')),
+  );
 
   ipcMain.handle('calls:syncCallback', async (_e, phoneNumber: string) => {
     try {
-      if (phoneNumber) {
-        await syncCallbackAssistant(phoneNumber);
+      const safePhone = assertString(phoneNumber ?? '', 'phoneNumber', 100).trim();
+      if (safePhone) {
+        await syncCallbackAssistant(safePhone);
       } else {
         // Called from Settings button — only link the phone number, don't wipe assistant context
         await linkCallbackAssistantToPhoneNumber();
@@ -514,9 +570,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   // User profile (knowledge base about the owner)
   ipcMain.handle('profile:list', () => listFacts());
-  ipcMain.handle('profile:save', (_e, fact: any) => saveFact(fact));
+  ipcMain.handle('profile:save', (_e, fact: any) =>
+    saveFact(assertPlainObject(fact, 'fact') as any),
+  );
   ipcMain.handle('profile:delete', (_e, id: string) => {
-    deleteFact(id);
+    deleteFact(assertSafeId(id));
     return { success: true };
   });
 
@@ -531,25 +589,30 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   // Projects
   ipcMain.handle('projects:list', () => listProjects());
-  ipcMain.handle('projects:get', (_e, id: string) => getProject(id));
+  ipcMain.handle('projects:get', (_e, id: string) => getProject(assertSafeId(id)));
   ipcMain.handle('projects:create', (_e, data: Parameters<typeof createProject>[0]) =>
-    createProject(data),
+    createProject(assertPlainObject(data, 'project') as Parameters<typeof createProject>[0]),
   );
   ipcMain.handle(
     'projects:update',
-    (_e, id: string, updates: Parameters<typeof updateProject>[1]) => updateProject(id, updates),
+    (_e, id: string, updates: Parameters<typeof updateProject>[1]) =>
+      updateProject(assertSafeId(id), assertPlainObject(updates, 'updates') as any),
   );
-  ipcMain.handle('projects:delete', (_e, id: string) => deleteProject(id));
+  ipcMain.handle('projects:delete', (_e, id: string) => deleteProject(assertSafeId(id)));
   ipcMain.handle('projects:addTask', (_e, projectId: string, data: Parameters<typeof addTask>[1]) =>
-    addTask(projectId, data),
+    addTask(assertSafeId(projectId, 'projectId'), assertPlainObject(data, 'task') as any),
   );
   ipcMain.handle(
     'projects:updateTask',
     (_e, projectId: string, taskId: string, updates: Parameters<typeof updateTask>[2]) =>
-      updateTask(projectId, taskId, updates),
+      updateTask(
+        assertSafeId(projectId, 'projectId'),
+        assertSafeId(taskId, 'taskId'),
+        assertPlainObject(updates, 'updates') as any,
+      ),
   );
   ipcMain.handle('projects:deleteTask', (_e, projectId: string, taskId: string) =>
-    deleteTask(projectId, taskId),
+    deleteTask(assertSafeId(projectId, 'projectId'), assertSafeId(taskId, 'taskId')),
   );
 
   // Empire / Content Pipeline
@@ -1152,7 +1215,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('agent:writeMemory', async (_e, content: string) => {
     try {
-      await writeMemory(content);
+      await writeMemory(assertString(content, 'content', 200000));
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -1195,11 +1258,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('backups:list', () => listSnapshots());
 
-  ipcMain.handle('backups:get', (_e, id: string) => getSnapshot(id));
+  ipcMain.handle('backups:get', (_e, id: string) => getSnapshot(assertSafeId(id)));
 
   ipcMain.handle('backups:inspect', async (_e, id: string, subPath?: string) => {
     try {
-      const result = await inspectSnapshot(id, subPath);
+      const result = await inspectSnapshot(
+        assertSafeId(id),
+        validateOptionalRelativePath(subPath, 'subPath'),
+      );
       return { success: true, ...result };
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -1208,7 +1274,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('backups:readFile', async (_e, id: string, relativePath: string) => {
     try {
-      const content = await readSnapshotFile(id, relativePath);
+      const content = await readSnapshotFile(assertSafeId(id), validateRelativePath(relativePath));
       return { success: true, content };
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -1217,7 +1283,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('backups:queryDb', (_e, id: string, sql: string) => {
     try {
-      const rows = querySnapshotDb(id, sql);
+      const rows = querySnapshotDb(assertSafeId(id), validateReadOnlySql(sql));
       return { success: true, rows };
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -1226,7 +1292,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('backups:testRestore', async (_e, id: string) => {
     try {
-      const tempPath = await testRestore(id);
+      const tempPath = await testRestore(assertSafeId(id));
       return { success: true, tempPath };
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -1235,7 +1301,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('backups:commitRestore', async (_e, id: string) => {
     try {
-      const result = await commitRestore(id);
+      const result = await commitRestore(assertSafeId(id));
       return { success: true, ...result };
     } catch (e: any) {
       return { success: false, error: e.message };
@@ -1271,47 +1337,58 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   // Todos
   ipcMain.handle('todos:list', () => listTodos());
-  ipcMain.handle('todos:add', (_e, data: Parameters<typeof addTodo>[0]) => addTodo(data));
+  ipcMain.handle('todos:add', (_e, data: Parameters<typeof addTodo>[0]) =>
+    addTodo(assertPlainObject(data, 'todo') as any),
+  );
   ipcMain.handle('todos:update', (_e, id: string, updates: Parameters<typeof updateTodo>[1]) =>
-    updateTodo(id, updates),
+    updateTodo(assertSafeId(id), assertPlainObject(updates, 'updates') as any),
   );
   ipcMain.handle('todos:delete', (_e, id: string) => {
-    deleteTodo(id);
+    deleteTodo(assertSafeId(id));
     return { success: true };
   });
   ipcMain.handle('todos:reorder', (_e, ids: string[]) => {
-    reorderTodos(ids);
+    reorderTodos(assertStringArray(ids, 'ids', 1000));
     return { success: true };
   });
 
   // Amy Versions
   ipcMain.handle('amy:listVersions', () => listAmyVersions());
-  ipcMain.handle('amy:getVersion', (_e, version: number) => getAmyVersion(version));
+  ipcMain.handle('amy:getVersion', (_e, version: number) =>
+    getAmyVersion(assertOptionalInteger(version, 'version', 1, 100) ?? 1),
+  );
   ipcMain.handle('amy:getActiveVersion', () => getActiveAmyVersion());
   ipcMain.handle('amy:saveVersion', (_e, version: any) => {
-    saveAmyVersion(version);
+    saveAmyVersion(assertPlainObject(version, 'version') as any);
     return { success: true };
   });
   ipcMain.handle('amy:setActiveVersion', (_e, version: number) => {
     const config = getConfig();
-    saveConfig({ ...config, amyVersion: version } as any);
-    return { success: true, activeVersion: version };
+    const safeVersion = assertOptionalInteger(version, 'version', 1, 100) ?? 1;
+    saveConfig({ ...config, amyVersion: safeVersion } as any);
+    return { success: true, activeVersion: safeVersion };
   });
 
   // Live Call Control
   ipcMain.handle(
     'liveCall:injectContext',
     async (_e, callId: string, content: string, triggerResponse?: boolean) =>
-      injectContext(callId, content, triggerResponse),
+      injectContext(
+        assertSafeId(callId, 'callId'),
+        assertString(content, 'content', 12000),
+        triggerResponse === true,
+      ),
   );
   ipcMain.handle('liveCall:injectSpeech', async (_e, callId: string, text: string) =>
-    injectSpeech(callId, text),
+    injectSpeech(assertSafeId(callId, 'callId'), assertString(text, 'text', 4000)),
   );
   ipcMain.handle('liveCall:getActive', () => getActiveCallControls());
 
   // Studio
   ipcMain.handle('studio:config:get', () => loadStudioConfig());
-  ipcMain.handle('studio:config:save', (_e, config: any) => saveStudioConfig(config));
+  ipcMain.handle('studio:config:save', (_e, config: any) =>
+    saveStudioConfig(assertPlainObject(config, 'studio config') as any),
+  );
   ipcMain.handle('studio:detectDevices', async () => {
     // Use cached devices if available — dshow hangs on repeated ffmpeg -list_devices calls
     let devices: { name: string; type: string }[] = [];
@@ -1356,16 +1433,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
   ipcMain.handle('studio:stop', async () => studioStopRecording());
   ipcMain.handle('studio:marker', (_e, type: string, label?: string) =>
-    addMarker(type as any, label),
+    addMarker(assertString(type, 'type', 100) as any, label ? assertString(label, 'label', 500) : label),
   );
   ipcMain.handle('studio:active', () => getActiveRecording());
   ipcMain.handle('studio:list', () => listRecordings());
-  ipcMain.handle('studio:get', (_e, id: string) => loadRecording(id));
-  ipcMain.handle('studio:delete', async (_e, id: string) => deleteRecording(id));
+  ipcMain.handle('studio:get', (_e, id: string) => loadRecording(assertSafeId(id)));
+  ipcMain.handle('studio:delete', async (_e, id: string) => deleteRecording(assertSafeId(id)));
   ipcMain.handle('studio:process', async (_e, id: string) => {
     try {
-      const result = await processRecording(id, (stage, pct) => {
-        send('studio:progress', { id, stage, pct });
+      const safeId = assertSafeId(id);
+      const result = await processRecording(safeId, (stage, pct) => {
+        send('studio:progress', { id: safeId, stage, pct });
       });
       return result;
     } catch (e: any) {
@@ -1380,23 +1458,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('tm:resume', () => resumeTimeMachine());
   ipcMain.handle('tm:status', () => getTimeMachineStatus());
   ipcMain.handle('tm:config:get', () => loadTimeMachineConfig());
-  ipcMain.handle('tm:config:save', (_e, config: any) => saveTimeMachineConfig(config));
-  ipcMain.handle('tm:frames:recent', (_e, limit?: number) => getRecentFrames(limit));
-  ipcMain.handle('tm:frames:range', (_e, start: string, end: string) =>
-    getFramesInRange(start, end),
+  ipcMain.handle('tm:config:save', (_e, config: any) =>
+    saveTimeMachineConfig(assertPlainObject(config, 'Time Machine config') as any),
   );
-  ipcMain.handle('tm:audio:range', (_e, start: string, end: string) => getAudioInRange(start, end));
-  ipcMain.handle('tm:search', (_e, query: string, limit?: number) => searchAll(query, limit));
+  ipcMain.handle('tm:frames:recent', (_e, limit?: number) =>
+    getRecentFrames(assertOptionalInteger(limit, 'limit', 1, 500)),
+  );
+  ipcMain.handle('tm:frames:range', (_e, start: string, end: string) =>
+    getFramesInRange(assertString(start, 'start', 50), assertString(end, 'end', 50)),
+  );
+  ipcMain.handle('tm:audio:range', (_e, start: string, end: string) =>
+    getAudioInRange(assertString(start, 'start', 50), assertString(end, 'end', 50)),
+  );
+  ipcMain.handle('tm:search', (_e, query: string, limit?: number) =>
+    searchAll(assertString(query, 'query', 500), assertOptionalInteger(limit, 'limit', 1, 500)),
+  );
   ipcMain.handle('tm:stats', () => getStorageStats());
   ipcMain.handle('tm:prune', async () => pruneTimeMachineData());
   ipcMain.handle('tm:screenshot', async (_e, localPath: string | null, s3Key: string | null) => {
+    const safeLocalPath = validatePathUnderBase(localPath, app.getPath('userData'), 'localPath');
+    const safeS3Key = validateS3Key(s3Key);
     // Try local file first
-    if (localPath && fs.existsSync(localPath)) {
-      const data = fs.readFileSync(localPath);
+    if (safeLocalPath && fs.existsSync(safeLocalPath)) {
+      const data = fs.readFileSync(safeLocalPath);
       return { success: true, dataUrl: `data:image/jpeg;base64,${data.toString('base64')}` };
     }
     // Try S3
-    if (s3Key) {
+    if (safeS3Key) {
       try {
         const { loadTimeMachineConfig: loadTmCfg } = await import('./timemachine');
         const tmCfg = loadTmCfg();
@@ -1406,7 +1494,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
           [
             's3',
             'presign',
-            `s3://${tmCfg.s3Bucket}/${s3Key}`,
+            `s3://${tmCfg.s3Bucket}/${safeS3Key}`,
             '--expires-in',
             '300',
             '--region',

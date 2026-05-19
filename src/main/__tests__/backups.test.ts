@@ -74,23 +74,33 @@ describe("createSnapshot", () => {
     const meta = await createSnapshot();
     expect(meta.id).toMatch(/^\d{8}T\d{6}_\d{3}$/);
     expect(meta.tier).toBe("daily");
+    expect(meta.encrypted).toBe(true);
+    expect(meta.algorithm).toBe("AES-256-GCM");
+    expect(meta.integrity?.plaintextTreeSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(meta.integrity?.ciphertextTreeSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(meta.fileCount).toBeGreaterThan(0);
     expect(meta.dataBytes).toBeGreaterThan(0);
     expect(meta.durationMs).toBeGreaterThanOrEqual(0);
   });
 
-  it("copies data files into the snapshot", async () => {
+  it("encrypts data files in the snapshot", async () => {
     const meta = await createSnapshot();
-    const snapshotData = path.join(testRoot, "backups", meta.id, "data");
-    expect(fs.existsSync(path.join(snapshotData, "conversations", "conv-001", "meta.json"))).toBe(true);
-    expect(fs.existsSync(path.join(snapshotData, "projects", "proj-001.json"))).toBe(true);
+    const snapshotRoot = path.join(testRoot, "backups", meta.id);
+    expect(fs.existsSync(path.join(snapshotRoot, "data"))).toBe(false);
+    expect(fs.existsSync(path.join(snapshotRoot, "payload", "data", "conversations", "conv-001", "meta.json"))).toBe(true);
+    const encryptedBytes = fs.readFileSync(path.join(snapshotRoot, "payload", "data", "conversations", "conv-001", "transcript.txt"), "utf-8");
+    expect(encryptedBytes).toContain("SBENC1:");
+    expect(encryptedBytes).not.toContain("Hello world transcript");
   });
 
-  it("copies config.json into the snapshot", async () => {
+  it("encrypts config.json and decrypts it only during restore", async () => {
     const meta = await createSnapshot();
-    const configCopy = path.join(testRoot, "backups", meta.id, "config.json");
-    expect(fs.existsSync(configCopy)).toBe(true);
-    const parsed = JSON.parse(fs.readFileSync(configCopy, "utf-8"));
+    const configCopy = path.join(testRoot, "backups", meta.id, "payload", "config.json");
+    expect(fs.existsSync(path.join(testRoot, "backups", meta.id, "config.json"))).toBe(false);
+    expect(fs.readFileSync(configCopy, "utf-8")).not.toContain("sk-test");
+
+    const tempDir = await testRestore(meta.id);
+    const parsed = JSON.parse(fs.readFileSync(path.join(tempDir, "config.json"), "utf-8"));
     expect(parsed.openaiApiKey).toBe("sk-test");
   });
 
@@ -101,6 +111,8 @@ describe("createSnapshot", () => {
     const parsed = JSON.parse(fs.readFileSync(metaFile, "utf-8"));
     expect(parsed.id).toBe(meta.id);
     expect(parsed.tier).toBe("daily");
+    expect(parsed.encrypted).toBe(true);
+    expect(parsed.algorithm).toBe("AES-256-GCM");
   });
 });
 
@@ -166,6 +178,45 @@ describe("inspectSnapshot / readSnapshotFile", () => {
     const meta = await createSnapshot();
     const content = await readSnapshotFile(meta.id, "nonexistent.json");
     expect(content).toBeNull();
+  });
+
+  it("keeps legacy unencrypted snapshots readable", async () => {
+    const legacyId = "20260101T000000_000";
+    const legacyData = path.join(testRoot, "backups", legacyId, "data", "projects");
+    await fsp.mkdir(legacyData, { recursive: true });
+    fs.writeFileSync(path.join(legacyData, "legacy.json"), JSON.stringify({ name: "Legacy Project" }));
+    fs.writeFileSync(
+      path.join(testRoot, "backups", legacyId, "meta.json"),
+      JSON.stringify({
+        id: legacyId,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        tier: "daily",
+        fileCount: 1,
+        dataBytes: 25,
+        durationMs: 1,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(testRoot, "backups", "manifest.json"),
+      JSON.stringify({
+        version: 1,
+        snapshots: [{
+          id: legacyId,
+          timestamp: "2026-01-01T00:00:00.000Z",
+          tier: "daily",
+          fileCount: 1,
+          dataBytes: 25,
+          durationMs: 1,
+        }],
+      }),
+    );
+
+    const result = await inspectSnapshot(legacyId, "projects");
+    expect(result?.files.map(f => f.name)).toContain("legacy.json");
+    const content = await readSnapshotFile(legacyId, "projects/legacy.json");
+    expect(JSON.parse(content!).name).toBe("Legacy Project");
+    const tempDir = await testRestore(legacyId);
+    expect(JSON.parse(fs.readFileSync(path.join(tempDir, "data", "projects", "legacy.json"), "utf-8")).name).toBe("Legacy Project");
   });
 });
 

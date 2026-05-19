@@ -6,9 +6,15 @@ export default function Settings() {
   const [linkStatus, setLinkStatus] = useState<"idle" | "linking" | "ok" | "err">("idle");
   const [otterTestStatus, setOtterTestStatus] = useState<"idle" | "testing" | "ok" | "err">("idle");
   const [otterTestMsg, setOtterTestMsg] = useState("");
+  const [systemHealth, setSystemHealth] = useState<any>(null);
+  const [auditEvents, setAuditEvents] = useState<any[]>([]);
+  const [activityEvents, setActivityEvents] = useState<any[]>([]);
+  const [systemLoading, setSystemLoading] = useState(false);
+  const [systemError, setSystemError] = useState("");
 
   useEffect(() => {
     window.api.config.get().then(setConfig);
+    refreshSystemPanels();
   }, []);
 
   async function save() {
@@ -17,13 +23,42 @@ export default function Settings() {
     setTimeout(() => setSaved(false), 2000);
   }
 
+  async function refreshSystemPanels() {
+    setSystemLoading(true);
+    setSystemError("");
+    try {
+      const api = (window as any).api;
+      const [health, audit, activity] = await Promise.all([
+        api.system.health(),
+        api.audit.list(30),
+        api.activity.list(40),
+      ]);
+      setSystemHealth(health);
+      setAuditEvents(Array.isArray(audit) ? audit : []);
+      setActivityEvents(Array.isArray(activity) ? activity : []);
+    } catch (e: any) {
+      setSystemError(e?.message || "System panels failed to load.");
+    } finally {
+      setSystemLoading(false);
+    }
+  }
+
   if (!config) {
     return <div style={{ padding: 32, color: "#444", fontSize: 14 }}>Loading...</div>;
   }
 
   return (
-    <div style={{ padding: 36, maxWidth: 560, color: "#e0e0e0", overflow: "auto", flex: 1 }}>
-      <h1 style={{ fontSize: 18, fontWeight: 700, color: "#fff", marginBottom: 28 }}>Settings</h1>
+    <div style={{ padding: 36, maxWidth: 980, color: "#e0e0e0", overflow: "auto", flex: 1 }}>
+      <h1 style={{ fontSize: 18, fontWeight: 700, color: "#fff", marginBottom: 20 }}>Settings</h1>
+
+      <SystemPanels
+        health={systemHealth}
+        auditEvents={auditEvents}
+        activityEvents={activityEvents}
+        loading={systemLoading}
+        error={systemError}
+        onRefresh={refreshSystemPanels}
+      />
 
       <SettingsSection title="Otter.ai Account">
         <div style={{ fontSize: 12, color: "#555", marginBottom: 14, lineHeight: 1.6 }}>
@@ -347,6 +382,196 @@ export default function Settings() {
       </button>
     </div>
   );
+}
+
+function SystemPanels({
+  health,
+  auditEvents,
+  activityEvents,
+  loading,
+  error,
+  onRefresh,
+}: {
+  health: any;
+  auditEvents: any[];
+  activityEvents: any[];
+  loading: boolean;
+  error: string;
+  onRefresh: () => void;
+}) {
+  const checks = Array.isArray(health?.checks) ? health.checks : [];
+  const backupCheck = checks.find((check: any) => check.id === "backupEncryption");
+  const healthChecks = checks.filter((check: any) => check.id !== "backupEncryption");
+
+  return (
+    <div style={{ marginBottom: 30 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>System Status</div>
+          {health?.overallStatus && <StatusBadge status={health.overallStatus} />}
+          {health?.generatedAt && (
+            <span style={{ fontSize: 11, color: "#555" }}>{formatWhen(health.generatedAt)}</span>
+          )}
+        </div>
+        <button
+          onClick={onRefresh}
+          disabled={loading}
+          style={{
+            padding: "5px 12px",
+            background: "#1e1e1e",
+            border: "1px solid #333",
+            borderRadius: 5,
+            color: loading ? "#555" : "#aaa",
+            cursor: loading ? "default" : "pointer",
+            fontSize: 12,
+          }}
+        >
+          {loading ? "Refreshing..." : "Refresh"}
+        </button>
+      </div>
+
+      {error && (
+        <div style={{ color: "#f87171", background: "#1a0a0a", border: "1px solid #7f1d1d", borderRadius: 6, padding: "8px 12px", fontSize: 12, marginBottom: 12 }}>
+          {error}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.2fr) minmax(280px, 0.8fr)", gap: 14, marginBottom: 14 }}>
+        <Panel title="System Health">
+          {healthChecks.length === 0 ? (
+            <EmptyLine text={loading ? "Loading health checks..." : "No health checks yet."} />
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 8 }}>
+              {healthChecks.map((check: any) => (
+                <HealthCheckRow key={check.id || check.label} check={check} />
+              ))}
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Backup Security">
+          {backupCheck ? <HealthCheckDetail check={backupCheck} /> : <EmptyLine text="No backup security check yet." />}
+        </Panel>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14 }}>
+        <Panel title="Activity">
+          <EventList events={activityEvents.slice(0, 8)} emptyText="No recent activity." />
+        </Panel>
+        <Panel title="Audit">
+          <EventList events={auditEvents.slice(0, 8)} emptyText="No audit events found." />
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{ border: "1px solid #242424", borderRadius: 8, padding: 14, background: "#121212", minWidth: 0 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: "#777", textTransform: "uppercase", marginBottom: 10 }}>
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function HealthCheckRow({ check }: { check: any }) {
+  return (
+    <div style={{ border: "1px solid #222", borderRadius: 6, padding: 10, background: "#101010", minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <StatusDot status={check.status} />
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#ddd", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {check.label}
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: "#777", lineHeight: 1.45 }}>{check.summary}</div>
+      {check.detail && <div style={{ fontSize: 10, color: "#555", lineHeight: 1.4, marginTop: 4, wordBreak: "break-word" }}>{check.detail}</div>}
+    </div>
+  );
+}
+
+function HealthCheckDetail({ check }: { check: any }) {
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <StatusBadge status={check.status} />
+        <span style={{ fontSize: 12, color: "#bbb" }}>{check.summary}</span>
+      </div>
+      {check.detail && <div style={{ fontSize: 11, color: "#666", lineHeight: 1.5, marginBottom: 10 }}>{check.detail}</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {(check.facts || []).map((fact: any) => (
+          <div key={fact.label} style={{ display: "grid", gridTemplateColumns: "130px minmax(0, 1fr)", gap: 8, fontSize: 11 }}>
+            <span style={{ color: "#666" }}>{fact.label}</span>
+            <span style={{ color: statusColor(fact.status || "info"), wordBreak: "break-word" }}>{fact.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EventList({ events, emptyText }: { events: any[]; emptyText: string }) {
+  if (events.length === 0) return <EmptyLine text={emptyText} />;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 7, maxHeight: 300, overflow: "auto" }}>
+      {events.map((event, idx) => {
+        const title = event.title || event.summary || event.action || event.source || "event";
+        return (
+          <div key={`${event.timestamp || idx}-${idx}`} style={{ display: "grid", gridTemplateColumns: "70px minmax(0, 1fr)", gap: 8, borderBottom: "1px solid #1c1c1c", paddingBottom: 7 }}>
+            <div style={{ fontSize: 10, color: "#555" }}>{event.timestamp ? formatClock(event.timestamp) : ""}</div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                <StatusDot status={event.status || "info"} />
+                <span style={{ fontSize: 12, color: "#ddd", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+              </div>
+              <div style={{ fontSize: 10, color: "#555", marginTop: 2 }}>
+                {event.source || event.kind || "system"}
+                {typeof event.durationMs === "number" ? ` - ${event.durationMs}ms` : ""}
+              </div>
+              {event.detail && <div style={{ fontSize: 11, color: "#777", lineHeight: 1.4, marginTop: 3, wordBreak: "break-word" }}>{event.detail}</div>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function EmptyLine({ text }: { text: string }) {
+  return <div style={{ fontSize: 12, color: "#555", padding: "8px 0" }}>{text}</div>;
+}
+
+function StatusBadge({ status }: { status: string }) {
+  return (
+    <span style={{ color: statusColor(status), border: `1px solid ${statusColor(status)}55`, borderRadius: 999, padding: "2px 8px", fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>
+      {status || "info"}
+    </span>
+  );
+}
+
+function StatusDot({ status }: { status: string }) {
+  return <span style={{ width: 7, height: 7, borderRadius: "50%", background: statusColor(status), flex: "0 0 auto" }} />;
+}
+
+function statusColor(status: string) {
+  if (status === "ok") return "#22c55e";
+  if (status === "warn") return "#f59e0b";
+  if (status === "error") return "#f87171";
+  return "#60a5fa";
+}
+
+function formatWhen(iso: string) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function formatClock(iso: string) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
 function SettingsSection({ title, children }: { title: string; children: React.ReactNode }) {

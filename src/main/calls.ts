@@ -16,8 +16,15 @@ import {
   getCallScriptContext,
   formatCallScriptContextBlock,
 } from './call-script-memory';
-import { createApproval, createReputationEvent } from './database-sqlite';
-import { sendApprovalRequest, sendMessage } from './telegram';
+import { createReputationEvent } from './database-sqlite';
+import { sendMessage } from './telegram';
+import {
+  auditAndAuthorize,
+  containsSensitiveText,
+  ensureActionApproved,
+  type ApprovalPolicyContext,
+  type PolicyActorType,
+} from './security/approval-policy';
 import {
   getActiveAmyVersion,
   getAmyVersion,
@@ -289,6 +296,37 @@ export interface CallOptions {
   silenceTimeoutSeconds?: number;
   maxDurationSeconds?: number;
   amyVersion?: number; // Override Amy version for this call
+  policy?: Partial<ApprovalPolicyContext>;
+}
+
+function actionContext(
+  action: string,
+  summary: string,
+  policy: Partial<ApprovalPolicyContext> | undefined,
+  defaults: {
+    actor?: PolicyActorType;
+    source: string;
+    targetType?: string;
+    targetId?: string;
+    metadata?: Record<string, unknown>;
+  },
+): ApprovalPolicyContext {
+  return {
+    actor: policy?.actor ?? defaults.actor ?? 'renderer',
+    ...(policy?.actorId ? { actorId: policy.actorId } : {}),
+    source: policy?.source ?? defaults.source,
+    action,
+    summary,
+    targetType: policy?.targetType ?? defaults.targetType,
+    targetId: policy?.targetId ?? defaults.targetId,
+    ...(policy?.dataCategory ? { dataCategory: policy.dataCategory } : {}),
+    ...(policy?.riskLevel ? { riskLevel: policy.riskLevel } : {}),
+    ...(policy?.text ? { text: policy.text } : {}),
+    ...(policy?.containsPii !== undefined ? { containsPii: policy.containsPii } : {}),
+    ...(policy?.approved !== undefined ? { approved: policy.approved } : {}),
+    ...(policy?.approvalId ? { approvalId: policy.approvalId } : {}),
+    metadata: { ...(defaults.metadata ?? {}), ...(policy?.metadata ?? {}) },
+  };
 }
 
 export async function initiateCall(
@@ -299,6 +337,24 @@ export async function initiateCall(
   leaveVoicemail?: boolean,
   options?: CallOptions,
 ): Promise<{ success: boolean; callId?: string; listenUrl?: string; error?: string }> {
+  const normalizedPhone = normalizePhone(phoneNumber);
+  const auth = auditAndAuthorize(
+    actionContext('initiate_call', `Initiate outbound call to ${normalizedPhone}`, options?.policy, {
+      source: 'renderer:calls:initiate',
+      targetType: 'phone',
+      targetId: normalizedPhone,
+      metadata: {
+        personaId: personaId ?? null,
+        leaveVoicemail: leaveVoicemail ?? false,
+        instructionChars: instructions.length,
+        personalContextChars: personalContext.length,
+      },
+    }),
+  );
+  if (!auth.allowed) {
+    return { success: false, error: auth.error ?? 'Call initiation requires approval.' };
+  }
+
   const config = getConfig();
   if (!config.vapiApiKey || !config.vapiPhoneNumberId) {
     return {
@@ -335,7 +391,7 @@ export async function initiateCall(
 
   const body = {
     phoneNumberId: config.vapiPhoneNumberId,
-    customer: { number: normalizePhone(phoneNumber) },
+    customer: { number: normalizedPhone },
     assistant: assistantConfig,
   };
 
@@ -381,7 +437,7 @@ export async function initiateCall(
   const record: CallRecord = {
     id: data.id,
     createdAt: new Date().toISOString(),
-    phoneNumber: normalizePhone(phoneNumber),
+    phoneNumber: normalizedPhone,
     instructions,
     personalContext,
     personaId: personaId || undefined,
@@ -481,18 +537,36 @@ export async function refreshCallStatus(
           );
         }
         // Always update callback assistant so it has latest context for this number
-        syncCallbackAssistant(existing.phoneNumber);
+        syncCallbackAssistant(existing.phoneNumber, {
+          policy: { actor: 'system', source: 'calls:ended:auto-sync' },
+        });
       });
     } else {
       // No transcript to analyze — still sync so callback assistant is up to date
-      syncCallbackAssistant(existing.phoneNumber);
+      syncCallbackAssistant(existing.phoneNumber, {
+        policy: { actor: 'system', source: 'calls:ended:auto-sync' },
+      });
     }
   }
 
   return { success: true, record: updated };
 }
 
-export async function hangUpCall(callId: string): Promise<{ success: boolean; error?: string }> {
+export async function hangUpCall(
+  callId: string,
+  options?: { policy?: Partial<ApprovalPolicyContext> },
+): Promise<{ success: boolean; error?: string }> {
+  const auth = auditAndAuthorize(
+    actionContext('hang_up_call', `Hang up call ${callId}`, options?.policy, {
+      source: 'renderer:calls:hangUp',
+      targetType: 'call',
+      targetId: callId,
+    }),
+  );
+  if (!auth.allowed) {
+    return { success: false, error: auth.error ?? 'Hang-up requires approval.' };
+  }
+
   const config = getConfig();
   if (!config.vapiApiKey) return { success: false, error: 'Vapi API key not configured.' };
   try {
@@ -707,7 +781,9 @@ export async function fetchAndSyncInboundCalls(): Promise<void> {
     // prompt was three days stale. Sync fires on EVERY new inbound call,
     // not only on completion detection.
     if (record.status === 'ended') {
-      syncCallbackAssistant(callerPhone);
+      syncCallbackAssistant(callerPhone, {
+        policy: { actor: 'system', source: 'calls:inbound:auto-sync' },
+      });
     }
   }
 }
@@ -718,7 +794,18 @@ export async function fetchAndSyncInboundCalls(): Promise<void> {
  * The assistant is already linked to the phone number — we just update its content.
  */
 /** Link the callback assistant to the current phone number (idempotent). Does NOT touch assistant content. */
-export async function linkCallbackAssistantToPhoneNumber(): Promise<void> {
+export async function linkCallbackAssistantToPhoneNumber(options?: {
+  policy?: Partial<ApprovalPolicyContext>;
+}): Promise<void> {
+  const auth = auditAndAuthorize(
+    actionContext('sensitive_sync', 'Link callback assistant to Vapi phone number', options?.policy, {
+      source: 'renderer:calls:syncCallback',
+      targetType: 'vapi_phone_number',
+      metadata: { operation: 'link_callback_assistant' },
+    }),
+  );
+  if (!auth.allowed) return;
+
   const config = getConfig();
   if (!config.vapiApiKey || !config.callbackAssistantId || !config.vapiPhoneNumberId) return;
   try {
@@ -733,7 +820,20 @@ export async function linkCallbackAssistantToPhoneNumber(): Promise<void> {
 }
 
 /** Update the callback assistant's system prompt with the latest call history for callerPhone. */
-export async function syncCallbackAssistant(callerPhone: string): Promise<void> {
+export async function syncCallbackAssistant(
+  callerPhone: string,
+  options?: { policy?: Partial<ApprovalPolicyContext> },
+): Promise<void> {
+  const auth = auditAndAuthorize(
+    actionContext('sensitive_sync', `Sync callback assistant context for ${callerPhone}`, options?.policy, {
+      source: 'renderer:calls:syncCallback',
+      targetType: 'phone',
+      targetId: callerPhone,
+      metadata: { operation: 'sync_callback_assistant' },
+    }),
+  );
+  if (!auth.allowed) return;
+
   const config = getConfig();
   if (!config.vapiApiKey || !config.callbackAssistantId) return;
 
@@ -749,7 +849,15 @@ export async function syncCallbackAssistant(callerPhone: string): Promise<void> 
   }
 
   // Keep phone number linked in case it changed in settings
-  await linkCallbackAssistantToPhoneNumber();
+  await linkCallbackAssistantToPhoneNumber({
+    policy: {
+      actor: options?.policy?.actor ?? 'renderer',
+      source: options?.policy?.source ?? 'renderer:calls:syncCallback',
+      approved: true,
+      approvalId: auth.approvalId,
+      metadata: { parent_action: 'sync_callback_assistant' },
+    },
+  });
 }
 
 /**
@@ -757,15 +865,77 @@ export async function syncCallbackAssistant(callerPhone: string): Promise<void> 
  * Returns the result object to send back to Vapi, or null if the
  * function name is not recognised.
  */
+export interface VapiFunctionCallContext {
+  actor?: PolicyActorType;
+  source?: string;
+  callId?: string;
+  callerPhone?: string;
+  approved?: boolean;
+  approvalId?: string;
+}
+
+async function authorizeVapiAction(
+  action: string,
+  summary: string,
+  functionName: string,
+  parameters: Record<string, any>,
+  context: VapiFunctionCallContext | undefined,
+  extra?: Partial<ApprovalPolicyContext>,
+): Promise<{ allowed: boolean; approvalId?: string; error?: string }> {
+  const result = await ensureActionApproved({
+    actor: context?.actor ?? 'ai',
+    source: context?.source ?? `vapi:function:${functionName}`,
+    action,
+    summary,
+    targetType: extra?.targetType ?? (context?.callId ? 'call' : undefined),
+    targetId: extra?.targetId ?? context?.callId,
+    dataCategory: extra?.dataCategory,
+    text: extra?.text,
+    containsPii: extra?.containsPii,
+    approved: context?.approved ?? extra?.approved,
+    approvalId: context?.approvalId ?? extra?.approvalId,
+    metadata: {
+      functionName,
+      parameterKeys: Object.keys(parameters),
+      callerPhone: context?.callerPhone,
+      ...(extra?.metadata ?? {}),
+    },
+  });
+  return { allowed: result.allowed, approvalId: result.approvalId, error: result.error };
+}
+
 export async function handleVapiFunctionCall(
   functionName: string,
   parameters: Record<string, any>,
+  context?: VapiFunctionCallContext,
 ): Promise<{ result: string } | null> {
   const ec2Url = getConfig().ec2BaseUrl;
-  if (!ec2Url) return null; // Backend URL not configured — set in Settings
+
+  auditAndAuthorize({
+    actor: context?.actor ?? 'ai',
+    source: context?.source ?? `vapi:function:${functionName}`,
+    action: 'vapi_function_call',
+    summary: `Vapi function call: ${functionName}`,
+    targetType: context?.callId ? 'call' : undefined,
+    targetId: context?.callId,
+    metadata: { functionName, parameterKeys: Object.keys(parameters) },
+  });
 
   if (functionName === 'run_claude_code') {
     const task: string = parameters.task;
+    if (!ec2Url) {
+      return { result: 'Backend URL is not configured. I cannot queue that task right now.' };
+    }
+    const auth = await authorizeVapiAction(
+      'run_task',
+      `Queue Claude task from Vapi: ${(task ?? '').slice(0, 120)}`,
+      functionName,
+      parameters,
+      context,
+      { text: task },
+    );
+    if (!auth.allowed) return { result: auth.error ?? 'The owner did not approve that task.' };
+
     // Fire-and-forget POST to /commands
     fetch(`${ec2Url}/commands`, {
       method: 'POST',
@@ -782,6 +952,19 @@ export async function handleVapiFunctionCall(
 
   if (functionName === 'query_knowledge') {
     const question: string = parameters.question;
+    if (!ec2Url) {
+      return { result: 'Knowledge backend is not configured right now.' };
+    }
+    auditAndAuthorize({
+      actor: context?.actor ?? 'ai',
+      source: context?.source ?? 'vapi:function:query_knowledge',
+      action: 'query_knowledge',
+      summary: `Query knowledge from Vapi: ${(question ?? '').slice(0, 120)}`,
+      targetType: context?.callId ? 'call' : undefined,
+      targetId: context?.callId,
+      metadata: { questionChars: (question ?? '').length },
+    });
+
     let queryId: string;
     try {
       const resp = await fetch(`${ec2Url}/queries`, {
@@ -804,7 +987,26 @@ export async function handleVapiFunctionCall(
       try {
         const statusResp = await fetch(`${ec2Url}/queries/${queryId}`);
         const status = await statusResp.json();
-        if (status.answer) return { result: status.answer };
+        if (status.answer) {
+          const answer = String(status.answer);
+          if (containsSensitiveText(answer)) {
+            const auth = await authorizeVapiAction(
+              'reveal_pii',
+              `Share sensitive knowledge-base answer for: ${(question ?? '').slice(0, 120)}`,
+              functionName,
+              parameters,
+              context,
+              { text: answer, dataCategory: 'knowledge_answer' },
+            );
+            if (!auth.allowed) {
+              return {
+                result:
+                  "I found an answer, but it may contain sensitive information and the owner did not approve sharing it.",
+              };
+            }
+          }
+          return { result: answer };
+        }
       } catch {
         // keep polling
       }
@@ -816,54 +1018,32 @@ export async function handleVapiFunctionCall(
   }
 
   if (functionName === 'request_approval') {
-    const approvalId = `appr_${Date.now()}`;
-    const now = new Date().toISOString();
-    const config = getConfig();
+    const requestType = String(parameters.request_type ?? 'commit_to_action');
+    const action =
+      requestType === 'share_pii'
+        ? 'reveal_pii'
+        : requestType === 'transfer_call'
+          ? 'bridge_call'
+          : 'run_task';
+    const auth = await authorizeVapiAction(
+      action,
+      parameters.description ?? 'EA requesting approval',
+      functionName,
+      parameters,
+      context,
+      {
+        dataCategory: parameters.data_category,
+        text: parameters.description,
+        containsPii: requestType === 'share_pii',
+      },
+    );
 
-    createApproval({
-      id: approvalId,
-      request_type: (parameters.request_type as any) ?? 'commit_to_action',
-      description: parameters.description ?? 'EA requesting approval',
-      data_category: parameters.data_category,
-      created_at: now,
-    });
-
-    if (config.telegramChatId) {
-      // Build PendingApproval shape for sendApprovalRequest
-      const approval = {
-        id: approvalId,
-        request_type: (parameters.request_type as any) ?? 'commit_to_action',
-        description: parameters.description ?? 'EA requesting approval',
-        data_category: parameters.data_category,
-        created_at: now,
-        status: 'pending' as const,
-      };
-
-      let resolved: { approved: boolean } | null = null;
-
-      await new Promise<void>((resolve) => {
-        sendApprovalRequest(config.telegramChatId!, {
-          ...approval,
-          resolve: (r) => {
-            resolved = r;
-            resolve();
-          },
-        }).catch(() => resolve());
-
-        // Timeout after 55s — Vapi holds the function call for up to 60s
-        setTimeout(() => resolve(), 55_000);
-      });
-
-      if (resolved?.approved) {
-        return { result: 'Approved by the owner. You may share the requested information.' };
-      }
-      return {
-        result:
-          "the owner declined. Do not share that information. Let the caller know it's not available.",
-      };
+    if (auth.allowed) {
+      return { result: 'Approved by the owner. You may proceed with the approved action.' };
     }
-
-    return { result: 'Approval system not configured. Cannot share sensitive information.' };
+    return {
+      result: 'The owner did not approve that. Do not share information or take the action.',
+    };
   }
 
   if (functionName === 'bridge_in_owner') {
@@ -872,12 +1052,31 @@ export async function handleVapiFunctionCall(
     // We don't have the live call ID here, so use a placeholder — the bridge session
     // tracking in initiateBridgeIn handles the outbound dial to the owner's private SIM.
     const callerPhone: string = parameters.caller_phone ?? '';
+    const auth = await authorizeVapiAction(
+      'bridge_call',
+      `Bridge caller ${callerName} to the owner about ${topic}`,
+      functionName,
+      parameters,
+      context,
+      { targetType: 'call', targetId: parameters.live_call_id ?? context?.callId },
+    );
+    if (!auth.allowed) {
+      return { result: auth.error ?? 'The owner did not approve bridging this call.' };
+    }
     try {
       const result = await initiateBridgeIn(
         parameters.live_call_id ?? 'unknown',
         callerPhone,
         callerName,
         topic,
+        {
+          policy: {
+            actor: context?.actor ?? 'ai',
+            source: context?.source ?? 'vapi:function:bridge_in_owner',
+            approved: true,
+            approvalId: auth.approvalId,
+          },
+        },
       );
       if (result.success) {
         return {
@@ -894,8 +1093,22 @@ export async function handleVapiFunctionCall(
 
   if (functionName === 'flag_reputation_risk') {
     const eventId = `rep_${Date.now()}`;
+    auditAndAuthorize({
+      actor: context?.actor ?? 'ai',
+      source: context?.source ?? 'vapi:function:flag_reputation_risk',
+      action: 'reputation_risk',
+      summary: parameters.description ?? 'Reputation risk flagged',
+      targetType: context?.callId ? 'call' : undefined,
+      targetId: context?.callId,
+      metadata: {
+        eventId,
+        category: parameters.category ?? 'other',
+        severity: parameters.severity ?? 'medium',
+      },
+    });
     createReputationEvent({
       id: eventId,
+      call_id: context?.callId,
       flagged_at: new Date().toISOString(),
       category: parameters.category ?? 'other',
       description: parameters.description ?? 'Reputation risk flagged',
@@ -979,6 +1192,19 @@ export async function handleVapiFunctionCall(
     // Queue for Claude Code to handle (needs file write access)
     const action = parameters.action ?? 'unknown';
     const title = parameters.title ?? parameters.notes ?? 'Untitled';
+    if (!ec2Url) {
+      return { result: 'Backend URL is not configured. I cannot queue that task right now.' };
+    }
+    const auth = await authorizeVapiAction(
+      'run_task',
+      `Queue task management action from Vapi: ${action} ${title}`,
+      functionName,
+      parameters,
+      context,
+      { text: `${action} ${title}` },
+    );
+    if (!auth.allowed) return { result: auth.error ?? 'The owner did not approve that task.' };
+
     fetch(`${ec2Url}/commands`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -995,6 +1221,17 @@ export async function handleVapiFunctionCall(
     if (parameters.channel === 'telegram' && parameters.message) {
       const config = getConfig();
       if (config.telegramChatId) {
+        const auth = await authorizeVapiAction(
+          'send_telegram',
+          `Send Telegram message from Amy: ${String(parameters.message).slice(0, 120)}`,
+          functionName,
+          parameters,
+          context,
+          { text: String(parameters.message), targetType: 'telegram_chat', targetId: config.telegramChatId },
+        );
+        if (!auth.allowed) {
+          return { result: auth.error ?? 'The owner did not approve sending that message.' };
+        }
         sendMessage(config.telegramChatId, `From Amy: ${parameters.message}`).catch(
           () => undefined,
         );
@@ -1038,7 +1275,19 @@ export async function initiateBridgeIn(
   callerPhone: string,
   callerName: string,
   topic: string,
+  options?: { policy?: Partial<ApprovalPolicyContext> },
 ): Promise<{ success: boolean; sessionId?: string; error?: string }> {
+  const auth = auditAndAuthorize(
+    actionContext('bridge_call', `Initiate bridge call for ${callerName}: ${topic}`, options?.policy, {
+      actor: 'ai',
+      source: 'vapi:function:bridge_in_owner',
+      targetType: 'call',
+      targetId: liveCallId,
+      metadata: { callerPhone, callerName },
+    }),
+  );
+  if (!auth.allowed) return { success: false, error: auth.error ?? 'Bridge call requires approval' };
+
   const config = getConfig();
   if (!config.vapiApiKey) {
     return { success: false, error: 'Vapi not configured' };

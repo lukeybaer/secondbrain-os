@@ -5,7 +5,7 @@
 import * as http from 'http';
 import { BrowserWindow } from 'electron';
 import { getConfig } from './config';
-import { initiateCall, listCallRecords } from './calls';
+import { handleVapiFunctionCall, initiateCall, listCallRecords } from './calls';
 import { PendingApproval, sendApprovalRequest, sendMessage } from './telegram';
 import {
   createApproval,
@@ -15,7 +15,12 @@ import {
   createReputationEvent,
   type DbApproval,
 } from './database-sqlite';
-import { ingestSmsWebhook } from './twilio-sms';
+import { ingestSmsWebhook, validateTwilioSignature } from './twilio-sms';
+import {
+  auditAndAuthorize,
+  ensureActionApproved,
+  resolvePolicyApproval,
+} from './security/approval-policy';
 import { listBriefingFiles, loadBriefingByDate, pruneOldBriefings } from './briefing-parser';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -119,6 +124,14 @@ function jsonResponse(res: http.ServerResponse, status: number, body: unknown): 
   res.end(payload);
 }
 
+function publicRequestUrl(req: http.IncomingMessage): string {
+  const protoHeader = req.headers['x-forwarded-proto'];
+  const hostHeader = req.headers['x-forwarded-host'] ?? req.headers.host;
+  const proto = Array.isArray(protoHeader) ? protoHeader[0] : protoHeader || 'http';
+  const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader || `localhost:${PORT}`;
+  return `${proto}://${host}${req.url ?? ''}`;
+}
+
 // ── Route: GET /health ────────────────────────────────────────────────────────
 
 route('GET', '/health', async (_req, res, _body) => {
@@ -143,6 +156,24 @@ route('POST', '/vapi/webhook', async (_req, res, body) => {
     const msg = (event.message ?? event) as Record<string, unknown>;
     const fnCall = msg?.functionCall as Record<string, unknown> | undefined;
     const fnName = fnCall?.name as string | undefined;
+
+    if (fnName) {
+      const params = (fnCall?.parameters ?? {}) as Record<string, unknown>;
+      const callObj = (msg?.call ?? event?.call) as Record<string, unknown> | undefined;
+      const callerPhone = (callObj?.customer as Record<string, unknown> | undefined)?.number as
+        | string
+        | undefined;
+      const handled = await handleVapiFunctionCall(fnName, params, {
+        actor: 'ai',
+        source: 'vapi:webhook',
+        callId: callObj?.id as string | undefined,
+        callerPhone,
+      });
+      if (handled) {
+        jsonResponse(res, 200, handled);
+        return;
+      }
+    }
 
     if (fnName === 'request_approval') {
       const params = (fnCall?.parameters ?? {}) as Record<string, unknown>;
@@ -380,8 +411,25 @@ route('POST', '/telegram/webhook', async (_req, res, body) => {
     if (dbApproval && dbApproval.status === 'pending') {
       const newStatus = approved ? 'approved' : 'denied';
       resolveApproval(dbApproval.id, newStatus, text);
+      resolvePolicyApproval(dbApproval.id, { approved, data: text });
       resolveCallbacks.get(dbApproval.id)?.({ approved, data: text });
       resolveCallbacks.delete(dbApproval.id);
+      auditAndAuthorize({
+        actor: 'user',
+        actorId: chatId,
+        source: 'telegram:webhook',
+        action: 'approval_resolution',
+        summary: `${approved ? 'Approved' : 'Denied'} approval ${dbApproval.id}`,
+        targetType: 'approval',
+        targetId: dbApproval.id,
+        approved: true,
+        approvalId: dbApproval.id,
+        metadata: {
+          request_type: dbApproval.request_type,
+          action: dbApproval.action,
+          response: approved ? 'YES' : 'NO',
+        },
+      });
 
       sendMessage(chatId, approved ? 'Approved.' : 'Denied.').catch(() => undefined);
 
@@ -396,16 +444,39 @@ route('POST', '/telegram/webhook', async (_req, res, body) => {
 // ── Route: POST /calls/initiate ───────────────────────────────────────────────
 
 route('POST', '/calls/initiate', async (_req, res, body) => {
-  const { phoneNumber, instructions, personalContext, personaId, leaveVoicemail } = body as {
+  const { phoneNumber, instructions, personalContext, personaId, leaveVoicemail, options } = body as {
     phoneNumber?: string;
     instructions?: string;
     personalContext?: string;
     personaId?: string;
     leaveVoicemail?: boolean;
+    options?: {
+      silenceTimeoutSeconds?: number;
+      maxDurationSeconds?: number;
+      amyVersion?: number;
+    };
   };
 
   if (!phoneNumber || !instructions) {
     jsonResponse(res, 400, { error: 'phoneNumber and instructions are required' });
+    return;
+  }
+
+  const approval = await ensureActionApproved({
+    actor: 'external',
+    source: 'http:/calls/initiate',
+    action: 'initiate_call',
+    summary: `External HTTP request to initiate call to ${phoneNumber}`,
+    targetType: 'phone',
+    targetId: phoneNumber,
+    text: `${instructions}\n${personalContext ?? ''}`,
+    metadata: {
+      personaId: personaId ?? null,
+      leaveVoicemail: leaveVoicemail ?? false,
+    },
+  });
+  if (!approval.allowed) {
+    jsonResponse(res, 403, { success: false, error: approval.error ?? 'Approval required' });
     return;
   }
 
@@ -415,6 +486,15 @@ route('POST', '/calls/initiate', async (_req, res, body) => {
     personalContext ?? '',
     personaId,
     leaveVoicemail,
+    {
+      ...(options ?? {}),
+      policy: {
+        actor: 'external',
+        source: 'http:/calls/initiate',
+        approved: true,
+        approvalId: approval.approvalId,
+      },
+    },
   );
 
   jsonResponse(res, result.success ? 200 : 500, result);
@@ -434,6 +514,21 @@ route('POST', '/twilio/webhook', async (req, res, _body) => {
   const raw = await readRawBody(req);
   const fields: Record<string, string> = {};
   for (const [k, v] of new URLSearchParams(raw)) fields[k] = v;
+
+  const signature = validateTwilioSignature(req.headers, publicRequestUrl(req), fields);
+  if (!signature.valid) {
+    auditAndAuthorize({
+      actor: 'external',
+      source: 'twilio:webhook',
+      action: 'read_data',
+      summary: 'Rejected Twilio webhook with invalid signature',
+      targetType: 'twilio_message',
+      targetId: fields.MessageSid || fields.SmsSid,
+      metadata: { reason: signature.reason },
+    });
+    jsonResponse(res, 403, { error: signature.reason ?? 'Invalid Twilio signature' });
+    return;
+  }
 
   const { count, message } = await ingestSmsWebhook(fields);
 
@@ -769,7 +864,7 @@ export function startServer(): void {
     }
 
     try {
-      const body = await readBody(req);
+      const body = method === 'POST' && url === '/twilio/webhook' ? {} : await readBody(req);
       await matched.handler(req, res, body);
     } catch (err) {
       console.error('[server] unhandled error:', err);

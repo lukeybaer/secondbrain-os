@@ -2,8 +2,13 @@
 // Uses raw fetch against Twilio REST API (no SDK dependency).
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { getConfig } from './config';
 import { saveSmsMessage, listSmsMessages, searchSmsMessages, SmsMessage } from './storage';
+import {
+  auditAndAuthorize,
+  type ApprovalPolicyContext,
+} from './security/approval-policy';
 
 const TWILIO_API = 'https://api.twilio.com/2010-04-01';
 
@@ -16,7 +21,31 @@ export async function sendSms(
   to: string,
   body: string,
   mediaUrl?: string,
+  options?: { policy?: Partial<ApprovalPolicyContext> },
 ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  const normalizedTo = to.replace(/[^\d+]/g, '');
+  const target = normalizedTo.startsWith('+') ? normalizedTo : `+${normalizedTo}`;
+  const auth = auditAndAuthorize({
+    actor: options?.policy?.actor ?? 'renderer',
+    actorId: options?.policy?.actorId,
+    source: options?.policy?.source ?? 'renderer:sms:send',
+    action: 'send_sms',
+    summary: `Send SMS to ${target}`,
+    targetType: 'phone',
+    targetId: target,
+    text: body,
+    approved: options?.policy?.approved,
+    approvalId: options?.policy?.approvalId,
+    metadata: {
+      bodyChars: body.length,
+      hasMedia: !!mediaUrl,
+      ...(options?.policy?.metadata ?? {}),
+    },
+  });
+  if (!auth.allowed) {
+    return { success: false, error: auth.error ?? 'SMS send requires approval.' };
+  }
+
   const config = getConfig();
   if (!config.twilioAccountSid || !config.twilioAuthToken || !config.twilioPhoneNumber) {
     return {
@@ -25,11 +54,10 @@ export async function sendSms(
     };
   }
 
-  const normalizedTo = to.replace(/\D/g, '');
   if (!normalizedTo.length) return { success: false, error: 'Invalid recipient number.' };
 
   const params = new URLSearchParams();
-  params.set('To', normalizedTo.startsWith('+') ? normalizedTo : `+${normalizedTo}`);
+  params.set('To', target);
   params.set('From', config.twilioPhoneNumber);
   params.set('Body', body);
   if (mediaUrl) params.set('MediaUrl', mediaUrl);
@@ -65,6 +93,53 @@ export async function sendSms(
     saveSmsMessage(msg);
   }
   return { success: true, messageId };
+}
+
+function getHeader(
+  headers: Record<string, string | string[] | number | undefined>,
+  name: string,
+): string | undefined {
+  const direct = headers[name] ?? headers[name.toLowerCase()];
+  if (Array.isArray(direct)) return direct[0];
+  return direct === undefined ? undefined : String(direct);
+}
+
+export function computeTwilioSignature(
+  authToken: string,
+  url: string,
+  fields: Record<string, string>,
+): string {
+  const payload =
+    url +
+    Object.keys(fields)
+      .sort()
+      .map((key) => `${key}${fields[key]}`)
+      .join('');
+  return createHmac('sha1', authToken).update(payload).digest('base64');
+}
+
+export function validateTwilioSignature(
+  headers: Record<string, string | string[] | number | undefined>,
+  url: string,
+  fields: Record<string, string>,
+): { valid: boolean; skipped?: boolean; reason?: string } {
+  if (process.env.SECONDBRAIN_SKIP_TWILIO_SIGNATURE === '1') {
+    return { valid: true, skipped: true };
+  }
+
+  const token = getConfig().twilioAuthToken;
+  if (!token) return { valid: false, reason: 'Twilio auth token is not configured.' };
+
+  const provided = getHeader(headers, 'x-twilio-signature');
+  if (!provided) return { valid: false, reason: 'Missing X-Twilio-Signature header.' };
+
+  const expected = computeTwilioSignature(token, url, fields);
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return { valid: false, reason: 'Signature length mismatch.' };
+  return timingSafeEqual(a, b)
+    ? { valid: true }
+    : { valid: false, reason: 'Invalid Twilio signature.' };
 }
 
 // Parse Twilio webhook (form-urlencoded fields).
