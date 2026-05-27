@@ -104,7 +104,8 @@ function scan(targetDir, repoRoot, denylist) {
   const hits = [];
   for (const abs of files) {
     const rel = relFromRepo(abs, repoRoot);
-    if (SELF_SKIP.has(rel)) continue;
+    const relFromTarget = path.relative(targetDir, abs).split(path.sep).join('/');
+    if (SELF_SKIP.has(rel) || SELF_SKIP.has(relFromTarget)) continue;
     let content;
     try { content = fs.readFileSync(abs, 'utf8'); } catch { continue; }
     const lines = content.split('\n');
@@ -136,13 +137,61 @@ function loadDenylist(rebuild) {
   return JSON.parse(fs.readFileSync(DENYLIST_PATH, 'utf8'));
 }
 
+// Credential patterns that GitHub Push Protection catches. These are
+// deterministic regexes, not heuristics. Update if new credential types
+// are introduced to the codebase.
+const CREDENTIAL_PATTERNS = [
+  {
+    kind: 'google-oauth-client-id',
+    // format: <project-number>-<random-suffix>.apps.googleusercontent.com
+    re: /\d{6,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com/,
+  },
+  {
+    kind: 'google-oauth-client-secret',
+    // format: GOCSPX-<random-suffix>
+    re: /GOCSPX-[A-Za-z0-9_-]{10,}/,
+  },
+];
+
+function scanCredentials(targetDir, repoRoot) {
+  const files = walk(targetDir);
+  const hits = [];
+  for (const abs of files) {
+    const rel = relFromRepo(abs, repoRoot);
+    const relFromTarget = path.relative(targetDir, abs).split(path.sep).join('/');
+    if (SELF_SKIP.has(rel) || SELF_SKIP.has(relFromTarget)) continue;
+    let content;
+    try { content = fs.readFileSync(abs, 'utf8'); } catch { continue; }
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      for (const p of CREDENTIAL_PATTERNS) {
+        const m = p.re.exec(line);
+        if (m) {
+          hits.push({
+            file: rel,
+            line: i + 1,
+            kind: p.kind,
+            match: m[0].slice(0, 40) + (m[0].length > 40 ? '...' : ''),
+            context: line.trim().slice(0, 160),
+          });
+          break;
+        }
+      }
+    }
+  }
+  return hits;
+}
+
 function main(argv) {
   const args = argv.slice(2);
   const rebuild = args.includes('--rebuild');
   const targetArg = args.find((a) => !a.startsWith('--')) || REPO;
   const target = path.resolve(targetArg);
   const denylist = loadDenylist(rebuild);
-  const hits = scan(target, REPO, denylist.denylist);
+  const piiHits = scan(target, REPO, denylist.denylist);
+  const credHits = scanCredentials(target, REPO);
+  const hits = [...piiHits, ...credHits];
 
   if (hits.length === 0) {
     console.log(`[pii-screen] CLEAN — 0 hits in ${target}`);
@@ -169,4 +218,4 @@ if (require.main === module) {
   main(process.argv);
 }
 
-module.exports = { scan, loadDenylist, walk };
+module.exports = { scan, scanCredentials, loadDenylist, walk };
