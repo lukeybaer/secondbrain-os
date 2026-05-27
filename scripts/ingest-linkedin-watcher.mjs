@@ -18,10 +18,13 @@
 import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const require = createRequire(import.meta.url);
+const { recordLinkedInMessage } = require('./lib/spine-ingress');
 const REPO_ROOT = resolve(__dirname, '..');
 const RAW_DIR = join(REPO_ROOT, 'data', 'linkedin', 'raw');
 const SEEN_PATH = join(REPO_ROOT, 'data', 'agent', 'linkedin-ingest-seen.json');
@@ -130,6 +133,13 @@ async function ingestOnce(seen) {
       continue;
     }
     const ep = buildEpisode(scrape);
+    if ((scrape.type || '').toLowerCase() === 'message') {
+      try {
+        recordLinkedInMessage(scrape, { sourceRef: scrape.id || id });
+      } catch (e) {
+        console.error(`[ingest-linkedin] spine write failed ${file}: ${e.message}`);
+      }
+    }
     if (ep.body.length < 10) {
       seen.add(id);
       skipped++;

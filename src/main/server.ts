@@ -366,6 +366,18 @@ route('POST', '/telegram/webhook', async (_req, res, body) => {
   const chatId = String(msg.chat.id);
   const text = msg.text.trim();
   const upper = text.toUpperCase();
+  try {
+    const { recordDispatchInput } = require('../../scripts/lib/spine-ingress');
+    recordDispatchInput({
+      origin: 'telegram',
+      sourceType: 'telegram-message',
+      sourceRef: String(msg.message_id || update.update_id),
+      title: 'Telegram dispatch',
+      text,
+    });
+  } catch (err) {
+    console.error('[server] telegram spine write failed:', err);
+  }
 
   // Try to resolve a pending approval: "YES [id]" or "NO [id]"
   const yesNoMatch = upper.match(/^(YES|NO)\s*([A-Za-z0-9_-]*)$/);
@@ -713,8 +725,8 @@ route('POST', '/briefing/dispatch', async (_req, res, body) => {
   );
   const proc = cp.spawn(
     python,
-    [script, '--to', 'luke.d.baer@gmail.com', '--subject', subject, '--body', bodyLines.join('\n')],
-    { stdio: ['ignore', 'pipe', 'pipe'] },
+    [script, '--to', getConfig().ownerEmail, '--subject', subject, '--body', bodyLines.join('\n')],
+    { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
   );
   let stderr = '';
   proc.stderr.on('data', (d) => (stderr += d.toString()));

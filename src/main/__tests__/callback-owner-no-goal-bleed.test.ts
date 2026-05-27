@@ -131,11 +131,11 @@ describe('buildCallbackAssistantConfig — owner callers do not inherit outbound
     const fs = require('fs');
     const callsPath = path.resolve(__dirname, '..', 'calls.ts');
     const src = fs.readFileSync(callsPath, 'utf-8');
-    expect(src).toMatch(/Hey \$\{ownerName\}, what's going on\?/);
+    expect(src).toMatch(/Hey \$\{ownerFirstName\}, what's going on\?/);
     // The legacy generic openings still exist for non-owner branches but
     // the owner branch is short-circuited above them.
     const firstMessageIdx = src.indexOf('const firstMessage = callerIsOwner');
-    const heyThanksIdx = src.indexOf("'Hey, thanks for calling back!'");
+    const heyThanksIdx = src.indexOf("this is ${ownerFirstName}'s assistant. Thanks for calling back!");
     expect(firstMessageIdx).toBeGreaterThan(-1);
     expect(heyThanksIdx).toBeGreaterThan(firstMessageIdx);
   });
@@ -163,7 +163,7 @@ describe('buildCallbackAssistantConfig — owner callers do not inherit outbound
     expect(src).toMatch(/!callerIsOwner && personaInstructions/);
 
     // firstMessage greets owner by name when ownerName set
-    expect(src).toMatch(/Hey \$\{ownerName\}/);
+    expect(src).toMatch(/Hey \$\{ownerFirstName\}/);
   });
 
   it('non-owner callbacks still inherit outbound goal and history (existing behavior)', () => {
@@ -174,7 +174,7 @@ describe('buildCallbackAssistantConfig — owner callers do not inherit outbound
     const callsPath = path.resolve(__dirname, '..', 'calls.ts');
     const src = fs.readFileSync(callsPath, 'utf-8');
     expect(src).toMatch(/Continue working toward the original goal/);
-    expect(src).toMatch(/Hey, thanks for calling back!/);
+    expect(src).toMatch(/this is \$\{ownerFirstName\}'s assistant\. Thanks for calling back!/);
   });
 
   it('inbound sync re-pushes the assistant on every new inbound call, not just on completion', () => {

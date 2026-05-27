@@ -36,6 +36,7 @@ const QUIET_HOURS_EXEMPTIONS = new Set([
   'weekly-warmth-audit',             // writes warmth report, no Telegram
   'weekly-backup-health-check',      // backup verification, no Telegram
   'monthly-memory-cleanup',          // memory consolidation, no Telegram
+  'nightly-heal-tests',              // runs vitest, writes tests-blocked.json, no Telegram
 ]);
 
 /** Parse a 5-field cron expression and return all hours it fires at (0-23). */

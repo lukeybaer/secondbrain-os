@@ -59,7 +59,11 @@ describe('MEMORY.md Tier 1 discipline', () => {
   it('lists the three non-negotiable simple needs', () => {
     expect(src).toMatch(/three non-negotiable needs/i);
     expect(src).toContain('One Amy');
-    expect(src).toContain('Git-tracked');
+    // 2026-05-23 refactor (commit a3b315dc) split "Git-tracked with raw
+    // archival" into two distinct phrasings: "Durability" (raw payload
+    // before processing) AND "Version control" (source/memory/hooks in
+    // git). Either phrasing satisfies the original intent.
+    expect(src).toMatch(/Git-tracked|Version control|Durability|version-controlled/i);
     expect(src).toContain('Zero permission prompts');
   });
 

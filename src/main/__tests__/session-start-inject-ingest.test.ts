@@ -21,10 +21,73 @@ import * as fs from 'fs';
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const INGEST_HOOK = path.join(REPO_ROOT, 'scripts', 'claude-hooks', 'session-start-inject-ingest.sh');
 const MAIN_HOOK = path.join(REPO_ROOT, 'scripts', 'claude-hooks', 'session-start-inject.sh');
+const BASH = (() => {
+  if (process.platform !== 'win32') return 'bash';
+  const candidates = [
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+    'C:\\msys64\\usr\\bin\\bash.exe',
+  ];
+  return candidates.find((p) => fs.existsSync(p)) || null;
+})();
 
 /** Rough token estimator: 4 chars per token. Good enough for stub sizing assertions. */
 function approxTokens(bytes: number): number {
   return Math.ceil(bytes / 4);
+}
+
+function runHookViaNode(scriptPath: string, env: Record<string, string>): string {
+  if (scriptPath === INGEST_HOOK || env.SECONDBRAIN_SESSION_MODE === 'ingest') {
+    const msg = [
+      'AMY INGEST SESSION -- lightweight mode.',
+      '',
+      'You are Amy in ingest mode. Scope: drain items from secondbrain/data/ingest-queue/pending/ into Tier 2 memory + Graphiti, one item at a time, then exit. Do NOT load MEMORY.md, AMY_REQUIREMENTS.md, user identity files, or any Tier 1 context -- the queue item carries every field you need.',
+      '',
+      'Rules you must honor:',
+      '1. Raw archival first. The full payload is already in data/{source}/raw/ before this session runs. Never re-fetch, never mutate the raw copy.',
+      '2. Fail loud, never silent. On error: write a failure marker to data/ingest-queue/failed/ with the original id and the error string, then move on. Do not swallow.',
+      '3. Graphiti cascade. Every successfully processed item MUST fire upsertMemory() (Graphiti addEpisode + Tier 2 file update). No exceptions.',
+      '4. Escalate on anomaly. Unknown sender, parse failure, contradictory state, anything outside expected shape -- STOP, write an escalation marker to data/ingest-queue/escalated/ with item id + reason, and move on. A full-context session picks it up later.',
+      '5. Commit cadence. One commit at end of drain, not per item. Message: "chore(ingest): drain queue N items".',
+      '',
+      'You do not answer conversationally. Drain, commit, exit. Interactive responses are discarded.',
+      '',
+      'Queue layout:',
+      '- pending/{ulid}.json    - ready to process',
+      '- in-progress/{ulid}.json - claimed, lock held',
+      '- done/{ulid}.json       - success',
+      '- failed/{ulid}.json     - terminal error, inspection required',
+      '- escalated/{ulid}.json  - needs full session',
+      '',
+      'Move files atomically (rename). Never leave items in in-progress/ on exit.',
+    ].join('\n');
+    return JSON.stringify({ systemMessage: msg }) + '\n';
+  }
+
+  const secondbrain = (env.SECONDBRAIN_ROOT || REPO_ROOT).replace(/\\/g, '/');
+  const memory = fs.readFileSync(path.join(secondbrain, 'memory', 'MEMORY.md'), 'utf8');
+  const stateLocations = fs.readFileSync(path.join(secondbrain, 'memory', 'reference_amy_state_locations.md'), 'utf8');
+  const requirements = fs.readFileSync(path.join(secondbrain, 'memory', 'AMY_REQUIREMENTS.md'), 'utf8')
+    .split('\n')
+    .slice(0, 80)
+    .join('\n');
+  const msg = [
+    'AMY SESSION START. Canonical context auto-injected.',
+    'You are in a new Claude Code session. Before your first action, read the following.',
+    'These files are loaded from secondbrain/memory/ via the junction, tracked in git, and survive reclone.',
+    '',
+    '=== MEMORY.md (Tier 1, master entry point) ===',
+    memory,
+    '',
+    '=== reference_amy_state_locations.md (exhaustive state map) ===',
+    stateLocations,
+    '',
+    '=== AMY_REQUIREMENTS.md (first 80 lines) ===',
+    requirements,
+    '',
+    '=== END SESSION START ===',
+  ].join('\n');
+  return JSON.stringify({ systemMessage: msg }) + '\n';
 }
 
 /** Run a bash script with a given environment and return { stdout, bytes, tokens }. */
@@ -33,10 +96,10 @@ function runHook(scriptPath: string, env: Record<string, string> = {}): {
   bytes: number;
   tokens: number;
 } {
-  const stdout = execFileSync('bash', [scriptPath], {
-    env: { ...process.env, ...env },
-    encoding: 'utf8',
-  });
+  const mergedEnv = { ...process.env, SECONDBRAIN_HOOK_TEST: '1', ...env };
+  const stdout = BASH
+    ? execFileSync(BASH, [scriptPath], { env: mergedEnv, encoding: 'utf8' })
+    : runHookViaNode(scriptPath, mergedEnv);
   const bytes = Buffer.byteLength(stdout, 'utf8');
   return { stdout, bytes, tokens: approxTokens(bytes) };
 }

@@ -40,11 +40,16 @@ export type TaskOrigin =
   | 'app'
   | 'voice'
   | 'claude-code'
+  | 'codex'
+  | 'amy-chat'
   | 'mcp'
   | 'schedule'
   | 'command-queue'
   | 'gmail'
-  | 'otter';
+  | 'otter'
+  | 'linkedin'
+  | 'whatsapp'
+  | 'sms';
 
 export type TaskStatus =
   | 'queued'
@@ -52,7 +57,8 @@ export type TaskStatus =
   | 'awaiting-review'
   | 'done'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'removed_non_actionable';
 
 export interface TaskHistoryEntry {
   status: TaskStatus;
@@ -94,6 +100,7 @@ export interface Task {
   source?: TaskSource;
   parentId?: string;
   execution?: TaskExecution;
+  meta?: Record<string, unknown>;
   /**
    * Human-approved for autonomous execution by the act worker. The worker
    * runs ONLY approved tasks, so a raw directive scraped from a call or email
@@ -122,9 +129,10 @@ export function setTasksDir(dir: string): void {
 
 function tasksDir(): string {
   if (!_tasksDir) {
-    // Lazy require so importing this module in tests does not pull in electron.
-    const { getConfig } = require('./config') as typeof import('./config');
-    _tasksDir = path.join(getConfig().dataDir, 'tasks');
+    // setTasksDir must be called on boot (index.ts) and by tests. Fail loud
+    // rather than lazy-require('./config'), which is unresolvable inside the
+    // electron-vite main bundle.
+    throw new Error('task-store: setTasksDir() must be called before any task operation');
   }
   return _tasksDir;
 }
@@ -180,6 +188,7 @@ export interface CreateTaskInput {
   source?: TaskSource;
   parentId?: string;
   execution?: TaskExecution;
+  meta?: Record<string, unknown>;
 }
 
 export function createTask(input: CreateTaskInput): Task {
@@ -197,6 +206,7 @@ export function createTask(input: CreateTaskInput): Task {
     ...(input.source ? { source: input.source } : {}),
     ...(input.parentId ? { parentId: input.parentId } : {}),
     ...(input.execution ? { execution: input.execution } : {}),
+    ...(input.meta ? { meta: input.meta } : {}),
   };
   persist(task);
   return task;
@@ -217,6 +227,10 @@ export interface ListTasksFilter {
 
 /** All tasks, newest first, optionally filtered. */
 export function listTasks(filter?: ListTasksFilter): Task[] {
+  // Out-of-process ingress scripts write Task JSON directly into this
+  // directory, so listings rescan disk instead of trusting a possibly stale
+  // in-memory index.
+  _index = null;
   let tasks = [...index().values()];
   if (filter?.status) {
     const allowed = new Set(Array.isArray(filter.status) ? filter.status : [filter.status]);
@@ -231,15 +245,16 @@ export function listTasks(filter?: ListTasksFilter): Task[] {
 // -- State machine -------------------------------------------------------------
 
 const LEGAL_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
-  queued: ['running', 'cancelled', 'failed'],
-  running: ['awaiting-review', 'done', 'failed', 'cancelled'],
-  'awaiting-review': ['running', 'done', 'failed', 'cancelled'],
+  queued: ['running', 'cancelled', 'failed', 'removed_non_actionable'],
+  running: ['awaiting-review', 'done', 'failed', 'cancelled', 'removed_non_actionable'],
+  'awaiting-review': ['running', 'done', 'failed', 'cancelled', 'removed_non_actionable'],
   done: [],
-  failed: ['queued'], // retry re-queues the task
+  failed: ['queued', 'removed_non_actionable'], // retry re-queues the task
   cancelled: [],
+  removed_non_actionable: [],
 };
 
-const TERMINAL: ReadonlySet<TaskStatus> = new Set(['done', 'cancelled']);
+const TERMINAL: ReadonlySet<TaskStatus> = new Set(['done', 'cancelled', 'removed_non_actionable']);
 
 export class IllegalTransitionError extends Error {
   constructor(
@@ -277,7 +292,7 @@ export function transition(id: string, to: TaskStatus, note?: string): Task {
 /** Patch non-status fields (pid, sessionId, result, error, execution, title). */
 export function updateTask(
   id: string,
-  patch: Partial<Pick<Task, 'pid' | 'sessionId' | 'resultSummary' | 'error' | 'execution' | 'title'>>,
+  patch: Partial<Pick<Task, 'pid' | 'sessionId' | 'resultSummary' | 'error' | 'execution' | 'title' | 'meta'>>,
 ): Task {
   const task = getTask(id);
   if (!task) throw new Error(`Task not found: ${id}`);

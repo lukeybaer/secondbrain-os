@@ -578,15 +578,14 @@ async function buildCallbackAssistantConfig(callerPhone: string): Promise<object
 
   // Owner gets a personal greeting by name, not a generic desk-phone pickup.
   const ownerName = getConfig().ownerName?.trim();
+  const ownerFirstName = ownerName || 'Luke';
   const firstMessage = callerIsOwner
-    ? ownerName
-      ? `Hey ${ownerName}, what's going on?`
-      : `Hey, what's going on?`
+    ? `Hey ${ownerFirstName}, what's going on?`
     : incomplete.length > 0
-      ? 'Hey, thanks for calling back!'
+      ? `Hey, this is ${ownerFirstName}'s assistant. Thanks for calling back!`
       : history.length > 0
-        ? 'Hey there! Good to hear from you.'
-        : 'Hello, how can I help you today?';
+        ? `Hey, this is ${ownerFirstName}'s assistant. Good to hear from you.`
+        : `Hello, this is ${ownerFirstName}'s assistant. How can I help you today?`;
 
   // Use versioned Amy config for the callback assistant
   const version = getActiveAmyVersion();
@@ -757,6 +756,24 @@ export async function syncCallbackAssistant(callerPhone: string): Promise<void> 
  * Returns the result object to send back to Vapi, or null if the
  * function name is not recognised.
  */
+function buildPhoneWebResearchPrompt(parameters: Record<string, any>): string {
+  const query = String(parameters.query ?? parameters.question ?? parameters.task ?? '').trim();
+  const reason = String(parameters.reason ?? '').trim();
+  return [
+    'Web research request from Amy.',
+    '',
+    'Research query:',
+    query || '(missing query)',
+    reason ? '\nContext:\n' + reason : '',
+    '',
+    'Source: Amy phone call',
+    '',
+    'Use current web sources. Summarize the answer concisely, include source links, and send a Telegram-ready result. If the answer depends on dates, include concrete dates.',
+  ]
+    .filter((part) => part !== '')
+    .join('\n');
+}
+
 export async function handleVapiFunctionCall(
   functionName: string,
   parameters: Record<string, any>,
@@ -812,6 +829,29 @@ export async function handleVapiFunctionCall(
     return {
       result:
         "I checked your notes but couldn't retrieve an answer in time. I'll send you the result on Telegram.",
+    };
+  }
+
+  if (functionName === 'web_search') {
+    const query = String(parameters.query ?? parameters.question ?? parameters.task ?? '').trim();
+    if (!query) return { result: 'I need a search query before I can start web research.' };
+    fetch(`${ec2Url}/commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'claude',
+        prompt: buildPhoneWebResearchPrompt({ ...parameters, query }),
+        replyTo: 'telegram',
+        routing: { type: 'new_task' },
+      }),
+    }).catch(console.error);
+    return { result: 'I will research that and send you what I find on Telegram.' };
+  }
+
+  if (functionName === 'check_calendar') {
+    return {
+      result:
+        'Calendar checks are wired through the live Vapi backend. Personal Google Calendar is the default; if it is not authorized yet, the owner needs to complete Google Calendar sign-in for that account.',
     };
   }
 

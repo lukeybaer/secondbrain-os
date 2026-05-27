@@ -24,6 +24,7 @@
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { resolvePythonExe } = require('./lib/python-resolver');
 
 const GRAPHITI_CLI = path.join(__dirname, 'graphiti-cli.mjs');
 const SESSION_CLI = path.join(__dirname, 'sb-session-search.py');
@@ -47,7 +48,7 @@ function queryGraphiti(text, limit, timeoutMs) {
 function querySessionsFts(text, limit, timeoutMs) {
   if (!fs.existsSync(SESSION_CLI)) return [];
   try {
-    const r = spawnSync('python', [SESSION_CLI, 'search', text, '--limit', String(limit), '--json'], {
+    const r = spawnSync(resolvePythonExe(), [SESSION_CLI, 'search', text, '--limit', String(limit), '--json'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: timeoutMs,

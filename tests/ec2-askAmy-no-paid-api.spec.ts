@@ -51,8 +51,12 @@ describe('ec2-server askAmy routing (Claude Max only)', () => {
   // The askAmy (Telegram) path below is the one that must stay Max-only.
 
   it('askAmy() prefers proxy + CLI and contains no paid-API branches', () => {
-    const start = EC2.indexOf('async function askAmy(question)');
-    expect(start).toBeGreaterThan(0);
+    // Locate the askAmy signature flexibly: tolerate additional destructured
+    // options args (e.g. `{ imagePath } = {}`) so the contract test does not
+    // bit-rot every time the signature grows a new optional param.
+    const sigMatch = EC2.match(/async function askAmy\s*\(question[^)]*\)/);
+    expect(sigMatch).not.toBeNull();
+    const start = sigMatch!.index!;
     // Walk forward to the next top-level function definition to bound askAmy
     const candidates = [
       EC2.indexOf('\nasync function ', start + 1),

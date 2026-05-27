@@ -47,6 +47,10 @@ vi.mock('../caller-id', () => ({
     identified: false,
   }),
   loadContactsStore: () => ({ keyword: 'testword', contacts: [] }),
+  buildOutboundCalleeContext: () => ({
+    mode: 'unknown',
+    systemPromptSection: '## Compartmentalization: outbound callee',
+  }),
 }));
 
 vi.mock('../personas', () => ({ listPersonas: () => [] }));

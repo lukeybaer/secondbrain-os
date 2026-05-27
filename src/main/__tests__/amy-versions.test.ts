@@ -183,7 +183,36 @@ describe('Amy Versions', () => {
       const coming = v2.skills.filter((s) => s.availability === 'coming_soon');
       expect(ready.length).toBeGreaterThan(5);
       expect(coming.length).toBeGreaterThan(0);
-      expect(coming.some((s) => s.name === 'Check Calendar')).toBe(true);
+      expect(ready.some((s) => s.name === 'Check Calendar')).toBe(true);
+      expect(coming.some((s) => s.name === 'Check Email')).toBe(true);
+    });
+
+    it('web research is a ready phone capability, not a coming-soon apology', async () => {
+      const v2 = getAmyVersion(2)!;
+      const webResearch = v2.skills.find((s) => s.name === 'Web Research');
+      expect(webResearch?.availability).toBe('ready');
+
+      const prompt = await buildVersionedSystemPrompt(v2, {
+        callDirection: 'inbound',
+      });
+      const comingSoonCatalog = /Coming soon[\s\S]*?\nIf someone/.exec(prompt)?.[0] ?? '';
+      expect(comingSoonCatalog).not.toContain('Web Research');
+      expect(prompt).toContain('Use web_search immediately');
+    });
+
+    it('calendar checks are a ready phone capability, not a coming-soon apology', async () => {
+      const v2 = getAmyVersion(2)!;
+      const calendar = v2.skills.find((s) => s.name === 'Check Calendar');
+      expect(calendar?.availability).toBe('ready');
+
+      const prompt = await buildVersionedSystemPrompt(v2, {
+        callDirection: 'inbound',
+      });
+      const comingSoonCatalog = /Coming soon[\s\S]*?\nIf someone/.exec(prompt)?.[0] ?? '';
+      expect(comingSoonCatalog).not.toContain('Check Calendar');
+      expect(prompt).toContain('Use check_calendar immediately');
+      expect(prompt).toContain('side-effect receipt');
+      expect(prompt).toContain('effect_kind');
     });
   });
 
@@ -206,6 +235,35 @@ describe('Amy Versions', () => {
       expect(funcNames).toContain('check_todos');
       expect(funcNames).toContain('manage_task');
       expect(funcNames).toContain('send_message');
+    });
+
+    it('v2 exposes the full phone-call dispatch contract', () => {
+      const v2 = getAmyVersion(2)!;
+      const tools = getToolsForVersion(v2);
+      const funcTools = tools.filter((t: any) => t.type === 'function');
+      const byName = new Map(funcTools.map((t: any) => [t.function.name, t]));
+
+      for (const name of [
+        'run_claude_code',
+        'query_knowledge',
+        'request_approval',
+        'flag_reputation_risk',
+        'bridge_in_owner',
+        'check_project_status',
+        'check_todos',
+        'manage_task',
+        'send_message',
+        'read_otter_transcripts',
+        'check_calendar',
+        'create_calendar_event',
+        'web_search',
+      ]) {
+        expect(byName.has(name), `${name} must be exposed to Vapi`).toBe(true);
+      }
+
+      expect(
+        Object.keys((byName.get('run_claude_code') as any).function.parameters.properties),
+      ).toContain('continue_session');
     });
   });
 
@@ -286,6 +344,51 @@ describe('Amy Versions', () => {
         callDirection: 'outbound',
       });
       expect(prompt).toContain('[EA MEMORY INJECTED]');
+    });
+
+    // Regression: 2026-04-27 -- the owner triggered an outbound call to a
+    // contact with instructions "tell her a joke and try to make her laugh."
+    // Amy hit the persona-set empty firstMessage path, listened first, then
+    // answered the callee with "Hi. I'm Amy, the owner's executive assistant.
+    // Can I help you today?" -- receptionist mode on an outbound call.
+    // The persona's "introduce yourself naturally" template plus the LLM's
+    // default conversational reflex won out over the implicit goal.
+    // Fix: always inject explicit "MAKING this call" annotation for
+    // outbound (was only inbound previously) and make Amy speak first via
+    // a "Hi." TTS primer instead of empty firstMessage. See
+    // memory/feedback_amy_outbound_must_drive_call.md.
+    it('outbound system prompt contains explicit "MAKING this call" annotation forbidding inbound greetings', async () => {
+      const v2 = getAmyVersion(2)!;
+      const prompt = await buildVersionedSystemPrompt(v2, {
+        callDirection: 'outbound',
+        instructions: 'Tell her a joke',
+      });
+      expect(prompt).toContain('MAKING this call');
+      expect(prompt).toMatch(/Can I help you today|How can I help you/);
+      expect(prompt.toLowerCase()).toMatch(/calling them|did not call you/);
+    });
+
+    it('inbound system prompt contains explicit "RECEIVING this call" annotation (no persona required)', async () => {
+      const v2 = getAmyVersion(2)!;
+      // No persona — guards against the prior bug where the annotation only
+      // fired when personaInstructions was set.
+      const prompt = await buildVersionedSystemPrompt(v2, {
+        callDirection: 'inbound',
+      });
+      expect(prompt).toContain('RECEIVING this call');
+    });
+
+    it('outbound buildVapiAssistantConfig sets non-empty firstMessage so Amy speaks first', async () => {
+      const v2 = getAmyVersion(2)!;
+      const config = await buildVapiAssistantConfig(v2, {
+        instructions: 'Tell her a joke',
+        personalContext: '',
+        personaId: 'p1', // Persona present — was the path that produced empty firstMessage
+        callDirection: 'outbound',
+        leaveVoicemail: false,
+      });
+      expect(config.firstMessage).toBeDefined();
+      expect(config.firstMessage.length).toBeGreaterThan(0);
     });
 
     // Regression: 2026-04-11 — Amy twice narrated internal state out loud

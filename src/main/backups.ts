@@ -241,7 +241,7 @@ export async function createSnapshot(opts?: {
       execSync(
         `ssh -i "${sshKey}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no ec2-user@98.80.164.16 ` +
           `"docker exec secondbrain-neo4j neo4j-admin database dump neo4j --to-stdout 2>/dev/null" > "${path.join(graphitiDest, 'neo4j.dump')}"`,
-        { timeout: 60000 },
+        { timeout: 60000, windowsHide: true },
       );
       console.log('[backup] Neo4j dump captured');
     }

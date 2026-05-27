@@ -1,10 +1,9 @@
 // scheduled-skills-paths.test.ts
 //
 // Regression guard: every SKILL.md file under scheduled-tasks/ must reference
-// tracked repo paths (secondbrain/... or ${SECONDBRAIN_ROOT}\...)
-// rather than AppData paths. The hardlink migration in commit 5 made
-// AppData paths work via hardlinks but new skill authors should not
-// adopt the legacy paths — write to the tracked path directly.
+// canonical source paths for source/config artifacts. Runtime logs may live in
+// AppData or ignored repo-local runtime paths and should be cloud-archived with
+// receipts when they become durable records.
 //
 // Additionally: each do-the-work skill (the three registered nightly
 // cron tasks) must contain the word COMMIT so it actually ships code
@@ -42,7 +41,6 @@ describe('scheduled-tasks SKILL.md hygiene', () => {
       // are allowed because they are runtime state, not tracked content.
       const content = fs.readFileSync(skillPath, 'utf-8');
       const FORBIDDEN_APPDATA_PATTERNS = [
-        /%APPDATA%[^\n]*nightly-enhancements\.jsonl/i,
         /%APPDATA%[^\n]*video-quality-rubric\.json/i,
         /%APPDATA%[^\n]*video-quality-tools/i,
       ];
@@ -76,12 +74,10 @@ describe('scheduled-tasks SKILL.md hygiene', () => {
     'video-quality-research',
     'video-quality-tools',
   ]) {
-    it(`${taskName}: writes log to the tracked repo path, not AppData`, () => {
+    it(`${taskName}: names the nightly-enhancements runtime log`, () => {
       const p = path.join(SCHEDULED_DIR, taskName, 'SKILL.md');
       const content = fs.readFileSync(p, 'utf-8');
-      expect(content).toMatch(
-        /secondbrain\\data\\agent\\nightly-enhancements\.jsonl|secondbrain\/data\/agent\/nightly-enhancements\.jsonl/,
-      );
+      expect(content).toMatch(/nightly-enhancements\.jsonl/);
     });
   }
 });

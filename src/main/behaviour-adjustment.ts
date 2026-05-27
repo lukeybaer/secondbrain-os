@@ -161,7 +161,7 @@ Today's date: ${new Date().toISOString().slice(0, 10)}`;
     const relPath = path.relative(process.cwd(), fullPath);
     cp.execSync(
       `git add "${relPath}" && git commit -m "skill: evolve ${path.basename(skillRelPath)} (${useCount} uses)"`,
-      { cwd: process.cwd(), timeout: 30_000 },
+      { cwd: process.cwd(), timeout: 30_000, windowsHide: true },
     );
 
     // Remove backup on success

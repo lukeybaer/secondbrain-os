@@ -7,11 +7,12 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { app } from 'electron';
 import { acquireLock, releaseLock } from './database-sqlite';
 
 import { getConfig } from './config';
+import { appendHeartbeat } from './pipeline-heartbeat';
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
@@ -38,6 +39,10 @@ function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+function heartbeatLogPath(): string {
+  return path.join(app.getPath('userData'), 'data', 'agent', 'pipeline-heartbeat.jsonl');
+}
+
 // ── Python runner ─────────────────────────────────────────────────────────────
 
 interface PythonResult {
@@ -47,18 +52,66 @@ interface PythonResult {
   exitCode: number | null;
 }
 
+// 2026-05-05 #learn (feedback_windows_python_shim_fix.md): on Windows the bare
+// `python` command resolves to the Microsoft Store WindowsApps shim by default,
+// which prints "Python was not found, run without arguments to install from the
+// Microsoft Store" and exits 9009 instead of running a script. The auto-regen
+// path silently dies on every rejected video. Resolve a real interpreter once
+// and cache it.
+let _cachedPythonExe: string | null = null;
+function resolvePythonExe(): string {
+  if (_cachedPythonExe) return _cachedPythonExe;
+  if (process.platform !== 'win32') {
+    _cachedPythonExe = 'python3';
+    return _cachedPythonExe;
+  }
+  const fs = require('fs');
+  const path = require('path');
+  const candidates: string[] = [];
+  if (process.env.PYTHON_EXE) candidates.push(process.env.PYTHON_EXE);
+  for (const v of ['314', '313', '312', '311', '310']) {
+    candidates.push(`C:\\Python${v}\\python.exe`);
+  }
+  const userBase = process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, 'Programs', 'Python')
+    : '';
+  if (userBase) {
+    try {
+      if (fs.existsSync(userBase)) {
+        for (const dir of fs.readdirSync(userBase)) {
+          if (/^Python\d{2,3}$/.test(dir)) {
+            candidates.push(path.join(userBase, dir, 'python.exe'));
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) {
+        _cachedPythonExe = c;
+        return c;
+      }
+    } catch { /* skip */ }
+  }
+  // Python launcher (py.exe) is installed with python.org. Trust PATH for it.
+  // Bare 'python' is the last resort since it can hit the WindowsApps shim.
+  _cachedPythonExe = 'py.exe';
+  return _cachedPythonExe;
+}
+
 function runPython(
   scriptPath: string,
   args: string[] = [],
   env?: Record<string, string>,
 ): Promise<PythonResult> {
   return new Promise((resolve) => {
-    // Try python3 first, fall back to python
-    const python = process.platform === 'win32' ? 'python' : 'python3';
+    const python = resolvePythonExe();
     const proc = spawn(python, [scriptPath, ...args], {
       cwd: empireDir(),
       env: { ...process.env, ...env },
       timeout: 10 * 60 * 1000, // 10 minute max per video
+      windowsHide: true,
     });
 
     let stdout = '';
@@ -78,6 +131,84 @@ function runPython(
       resolve({ success: false, stdout, stderr: err.message, exitCode: -1 });
     });
   });
+}
+
+// ── Thumbnail content gate ────────────────────────────────────────────────────
+// 2026-04-29 fix: mtime guard from 2026-04-26 catches "regen never wrote a new
+// file." This catches the next layer: regen wrote a NEW file but the new file
+// is still 96% black-with-text (Grok background failed silently and the EC2
+// fallback rendered title text on a black canvas). Same defect, fourth time,
+// "where's the QC #gap" rejection on 2026-04-29.
+//
+// The check shells out to scripts/check-thumbnail-quality.py which does a
+// pixel histogram analysis (no API, no model, ~100ms). Falls open (returns ok)
+// only when the script itself is unreachable -- never when content is bad.
+export interface ThumbnailQualityResult {
+  ok: boolean;
+  reason: string;
+  metrics?: Record<string, number>;
+}
+
+export function checkThumbnailQuality(thumbPath: string): ThumbnailQualityResult {
+  return runQualityGate(thumbPath, 'check-thumbnail-quality.py', `thumbnail file missing: ${thumbPath}`);
+}
+
+// Video content gate -- locked 2026-04-29. Catches two failure modes the
+// thumbnail gate can't see: (1) the mp4 has audio but the video stream is
+// effectively empty (video_dur << audio_dur, playback shows black), and
+// (2) the mp4 has video frames but they are all blank (B-roll never
+// rendered, just a black canvas with audio over it). Both happened in
+// today's regen output -- ai_agent_income_formula had video_dur=0.23s
+// vs audio_dur=28.2s, and three other videos had all-blank body frames.
+// Implementation lives in scripts/check-video-content-not-blank.py and
+// uses ffprobe + ffmpeg + the thumbnail gate per-frame.
+export function checkVideoContent(videoPath: string): ThumbnailQualityResult {
+  return runQualityGate(videoPath, 'check-video-content-not-blank.py', `video file missing: ${videoPath}`, 60_000);
+}
+
+function runQualityGate(
+  artifactPath: string,
+  scriptName: string,
+  missingMsg: string,
+  timeoutMs: number = 15_000,
+): ThumbnailQualityResult {
+  if (!fs.existsSync(artifactPath)) {
+    return { ok: false, reason: missingMsg };
+  }
+  const repoRoot = path.resolve(__dirname, '..', '..');
+  const script = path.join(repoRoot, 'scripts', scriptName);
+  if (!fs.existsSync(script)) {
+    return { ok: false, reason: `quality gate tool missing: ${script}` };
+  }
+  const candidates = process.platform === 'win32'
+    ? ['py', 'python', 'python3']
+    : ['python3', 'python'];
+  let lastErr = '';
+  for (const bin of candidates) {
+    const r = spawnSync(bin, [script, artifactPath], {
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      windowsHide: true,
+    });
+    if (r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT') {
+      lastErr = `${bin} not found`;
+      continue;
+    }
+    if (r.status === null) {
+      lastErr = `${bin} did not exit (timeout?)`;
+      continue;
+    }
+    try {
+      const parsed = JSON.parse((r.stdout || '').trim()) as ThumbnailQualityResult;
+      return parsed;
+    } catch {
+      return {
+        ok: false,
+        reason: `quality gate output unparseable (exit ${r.status}): ${(r.stdout || r.stderr || '').slice(0, 200)}`,
+      };
+    }
+  }
+  return { ok: false, reason: `quality gate could not run any python: ${lastErr}` };
 }
 
 // ── Video spec builder ────────────────────────────────────────────────────────
@@ -213,14 +344,27 @@ async function buildSingleVideo(spec: VideoSpec, index: number): Promise<Manifes
   ]);
 
   if (!buildResult.success) {
-    console.error(
-      `[video-pipeline] Build failed for ${videoId}:`,
-      buildResult.stderr.slice(0, 500),
-    );
-    entry.qc_notes = `Build failed: ${buildResult.stderr.slice(0, 200)}`;
+    const errSnip = buildResult.stderr.slice(0, 200);
+    console.error(`[video-pipeline] Build failed for ${videoId}:`, buildResult.stderr.slice(0, 500));
+    appendHeartbeat(heartbeatLogPath(), {
+      timestamp: new Date().toISOString(),
+      task: 'video-pipeline',
+      status: 'error',
+      video_id: videoId,
+      error_type: 'build_failed',
+      error: errSnip,
+    });
+    entry.qc_notes = `Build failed: ${errSnip}`;
     addToManifest(entry);
     return entry;
   }
+
+  appendHeartbeat(heartbeatLogPath(), {
+    timestamp: new Date().toISOString(),
+    task: 'video-pipeline',
+    status: 'video_built',
+    video_id: videoId,
+  });
 
   // Try to find produced files
   const files = fs.existsSync(outputDir) ? fs.readdirSync(outputDir) : [];
@@ -235,6 +379,13 @@ async function buildSingleVideo(spec: VideoSpec, index: number): Promise<Manifes
     const qcResult = await runPython(qcScript, [entry.video_path]);
     entry.qc_passed = qcResult.success;
     entry.qc_notes = qcResult.stdout.slice(0, 500) || qcResult.stderr.slice(0, 500);
+    appendHeartbeat(heartbeatLogPath(), {
+      timestamp: new Date().toISOString(),
+      task: 'video-pipeline',
+      status: qcResult.success ? 'qc_passed' : 'qc_failed',
+      video_id: videoId,
+      ...(qcResult.success ? {} : { error_type: 'qc_failed', error: entry.qc_notes?.slice(0, 200) }),
+    });
   }
 
   // Try to extract title from build output
@@ -268,6 +419,13 @@ export async function runVideoPipeline(): Promise<PipelineResult> {
   const specs = getTodayVideoSpecs();
   const results: ManifestEntry[] = [];
 
+  appendHeartbeat(heartbeatLogPath(), {
+    timestamp: new Date().toISOString(),
+    task: 'video-pipeline',
+    status: 'started',
+    details: `building ${specs.length} videos`,
+  });
+
   console.log(`[video-pipeline] Starting — building ${specs.length} videos`);
 
   // Telegram is daily-briefing-only — log pipeline start to console instead
@@ -289,6 +447,13 @@ export async function runVideoPipeline(): Promise<PipelineResult> {
 
   const qcPassed = results.filter((r) => r.qc_passed).length;
   const built = results.length;
+
+  appendHeartbeat(heartbeatLogPath(), {
+    timestamp: new Date().toISOString(),
+    task: 'video-pipeline',
+    status: 'completed',
+    details: `${built} built, ${qcPassed} passed QC`,
+  });
 
   // Release lock on success (keep on failure so we can retry manually)
   if (built === specs.length) {
@@ -404,6 +569,14 @@ export async function regenRejectedVideos(contentRoot: string): Promise<RegenRes
   const results: RegenResult[] = [];
   const outputBaseDir = path.join(contentRoot, 'content-review', 'pending');
 
+  function mtimeOrZero(p: string): number {
+    try {
+      return fs.statSync(p).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
   for (const video of flagged) {
     const rejectionNote = video.video_rejection_note || video.thumbnail_rejection_note || '';
 
@@ -411,6 +584,18 @@ export async function regenRejectedVideos(contentRoot: string): Promise<RegenRes
     video.regen_status = 'in_progress';
     video.regen_started_at = new Date().toISOString();
     fs.writeFileSync(pendingManifestPath, JSON.stringify(manifest, null, 2));
+
+    // Honesty contract (locked 2026-04-26): capture pre-build mtimes so
+    // success can only be claimed when the artifact actually changed. The
+    // ad-hoc "marathon dispatch" Python flow that caused the gap wrote
+    // regen_completed_at without rewriting the thumbnail jpg, cycling the
+    // SAME bad artifact back into Luke's queue. Never again.
+    const mp4Path = path.join(outputBaseDir, video.id, `${video.id}.mp4`);
+    const thumbPath = path.join(outputBaseDir, video.id, `${video.id}_thumb.jpg`);
+    const flatMp4 = path.join(outputBaseDir, `${video.id}.mp4`);
+    const flatThumb = path.join(outputBaseDir, `${video.id}_thumb.jpg`);
+    const beforeMp4 = Math.max(mtimeOrZero(mp4Path), mtimeOrZero(flatMp4));
+    const beforeThumb = Math.max(mtimeOrZero(thumbPath), mtimeOrZero(flatThumb));
 
     const result = await buildRejectedVideo(
       video.id,
@@ -421,17 +606,120 @@ export async function regenRejectedVideos(contentRoot: string): Promise<RegenRes
     );
 
     if (result.success) {
-      // Clear regen flags — video is back in pending_approval
-      video.video_needs_regen = false;
-      video.thumbnail_needs_regen = false;
+      const afterMp4 = Math.max(mtimeOrZero(mp4Path), mtimeOrZero(flatMp4));
+      const afterThumb = Math.max(mtimeOrZero(thumbPath), mtimeOrZero(flatThumb));
+      const videoChanged = afterMp4 > beforeMp4;
+      const thumbChanged = afterThumb > beforeThumb;
+
+      const failures: string[] = [];
+      if (video.video_needs_regen === true && !videoChanged) {
+        failures.push('mp4 mtime unchanged');
+      }
+      if (video.thumbnail_needs_regen === true && !thumbChanged) {
+        failures.push('thumb mtime unchanged');
+      }
+
+      if (failures.length > 0) {
+        // Build claimed success but artifact mtime didn't move --- the
+        // pipeline lied. Mark failed and leave the rejection state intact
+        // so this video does NOT cycle back into Luke's review queue.
+        video.regen_status = 'failed';
+        video.regen_error = 'mtime guard: ' + failures.join('; ');
+        video.regen_failed_at = new Date().toISOString();
+        results.push({
+          videoId: video.id,
+          success: false,
+          error: 'mtime guard: ' + failures.join('; '),
+        });
+        fs.writeFileSync(pendingManifestPath, JSON.stringify(manifest, null, 2));
+        continue;
+      }
+
+      // Quality gate (locked 2026-04-29): mtime moved but the new file might
+      // still be 96% black-with-text (Grok bg failed silently). Run the
+      // pixel-histogram check on any thumbnail that was just regenerated.
+      // If it fails, treat the regen as a failure and leave the rejection
+      // state intact -- never cycle a blank thumbnail back to Luke.
+      if (thumbChanged) {
+        const livePath = fs.existsSync(thumbPath) ? thumbPath : flatThumb;
+        const quality = checkThumbnailQuality(livePath);
+        if (!quality.ok) {
+          video.regen_status = 'failed';
+          video.regen_error = `thumbnail quality gate: ${quality.reason}`;
+          video.regen_failed_at = new Date().toISOString();
+          if (quality.metrics) video.regen_thumbnail_metrics = quality.metrics;
+          results.push({
+            videoId: video.id,
+            success: false,
+            error: `thumbnail quality gate: ${quality.reason}`,
+          });
+          fs.writeFileSync(pendingManifestPath, JSON.stringify(manifest, null, 2));
+          continue;
+        }
+        if (quality.metrics) video.regen_thumbnail_metrics = quality.metrics;
+      }
+
+      // Video content gate (locked 2026-04-29 evening): a regenerated mp4
+      // can have audio + a thumbnail card but a body that is uniformly
+      // black (B-roll never rendered) or a video stream that is empty
+      // (video_dur << audio_dur). Both happened tonight. Sample three
+      // frames from the body and run them through the thumbnail gate.
+      if (videoChanged) {
+        const liveMp4 = fs.existsSync(mp4Path) ? mp4Path : flatMp4;
+        const videoQuality = checkVideoContent(liveMp4);
+        if (!videoQuality.ok) {
+          video.regen_status = 'failed';
+          video.regen_error = `video content gate: ${videoQuality.reason}`;
+          video.regen_failed_at = new Date().toISOString();
+          if (videoQuality.metrics) video.regen_video_metrics = videoQuality.metrics;
+          results.push({
+            videoId: video.id,
+            success: false,
+            error: `video content gate: ${videoQuality.reason}`,
+          });
+          fs.writeFileSync(pendingManifestPath, JSON.stringify(manifest, null, 2));
+          continue;
+        }
+        if (videoQuality.metrics) video.regen_video_metrics = videoQuality.metrics;
+      }
+
+      // Real regen: clear only the flags for artifacts that actually moved.
+      if (videoChanged) video.video_needs_regen = false;
+      if (thumbChanged) video.thumbnail_needs_regen = false;
       video.regen_status = 'done';
       video.regen_completed_at = new Date().toISOString();
       video.status = 'pending_approval';
-      // Preserve rejection note for reference
-      video.previous_rejection_note = rejectionNote;
+      // 2026-05-05 Luke: the review screen has a "Previous Feedback" panel
+      // (ContentPipeline.tsx:818-860) wired to video.previous_feedback +
+      // video.fix_summary, but the regen flow used to save the rejection
+      // note as `previous_rejection_note` so the panel never rendered.
+      // Field rename here makes the panel light up. fix_summary is a
+      // 1-line synthesis of what actually changed in this regen, so when
+      // the video comes back to Luke he sees both his original feedback
+      // AND the change made in response to it.
+      video.previous_feedback = rejectionNote;
+      const fixParts: string[] = [];
+      if (thumbChanged) {
+        const tm = video.regen_thumbnail_metrics || {};
+        const lum = typeof tm.mean_luminance === 'number' ? `lum ${Math.round(tm.mean_luminance)}` : '';
+        const mae = typeof tm.lr_mirror_mae === 'number' ? `lr_mae ${Math.round(tm.lr_mirror_mae)}` : '';
+        fixParts.push(`thumbnail regenerated (${[lum, mae].filter(Boolean).join(', ')})`);
+      }
+      if (videoChanged) {
+        const vm = video.regen_video_metrics || {};
+        const dur = typeof vm.duration_s === 'number' ? `${vm.duration_s.toFixed(1)}s` : '';
+        const samples = (vm.samples_taken && vm.samples_blank !== undefined)
+          ? `${vm.samples_taken - (vm.samples_blank || 0)}/${vm.samples_taken} body frames clean`
+          : '';
+        fixParts.push(`video regenerated (${[dur, samples].filter(Boolean).join(', ')})`);
+      }
+      video.fix_summary = fixParts.length > 0
+        ? fixParts.join('; ')
+        : 'regenerated, no measured changes';
     } else {
       video.regen_status = 'failed';
       video.regen_error = result.error;
+      video.regen_failed_at = new Date().toISOString();
     }
 
     fs.writeFileSync(pendingManifestPath, JSON.stringify(manifest, null, 2));

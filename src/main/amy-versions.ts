@@ -12,7 +12,7 @@ import { listPersonas } from './personas';
 import { listProjects } from './projects';
 import { listTodos } from './todos';
 import { listCallRecords } from './calls';
-import { identifyCaller, loadContactsStore } from './caller-id';
+import { identifyCaller, loadContactsStore, buildOutboundCalleeContext } from './caller-id';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -103,6 +103,15 @@ const SKILL_CATALOG: AmySkill[] = [
     availability: 'ready',
   },
   {
+    name: 'Read Otter Transcripts',
+    description:
+      'Look up Otter recordings and transcripts by date, transcript id, or keyword without inventing content',
+    triggerPhrases: ['otter', 'transcript', 'recording', 'meeting notes', 'what did I say'],
+    toolName: 'read_otter_transcripts',
+    requiresBackend: true,
+    availability: 'ready',
+  },
+  {
     name: 'Queue Coding Task',
     description:
       'Send a coding task to Claude Code for execution — bug fixes, features, refactors, deployments',
@@ -113,7 +122,7 @@ const SKILL_CATALOG: AmySkill[] = [
   },
   {
     name: 'Manage Tasks',
-    description: 'Create, update, or complete project tasks and todos during the conversation',
+    description: 'Queue creation, update, or completion of project tasks and todos during the conversation',
     triggerPhrases: ['add a task', 'mark it done', 'create a todo', 'update the task'],
     toolName: 'manage_task',
     requiresBackend: true,
@@ -166,7 +175,16 @@ const SKILL_CATALOG: AmySkill[] = [
     triggerPhrases: ["what's on my calendar", 'am I free', 'any meetings', 'schedule'],
     toolName: 'check_calendar',
     requiresBackend: true,
-    availability: 'coming_soon',
+    availability: 'ready',
+  },
+  {
+    name: 'Create Calendar Event',
+    description:
+      "Create a personal Google Calendar event when the owner explicitly asks for an appointment, meeting, or calendar block",
+    triggerPhrases: ['create calendar event', 'make an appointment', 'schedule this', 'put it on my calendar'],
+    toolName: 'create_calendar_event',
+    requiresBackend: true,
+    availability: 'ready',
   },
   {
     name: 'Web Research',
@@ -174,7 +192,7 @@ const SKILL_CATALOG: AmySkill[] = [
     triggerPhrases: ['look up', 'search for', 'find me', 'research', 'google'],
     toolName: 'web_search',
     requiresBackend: true,
-    availability: 'coming_soon',
+    availability: 'ready',
   },
 ];
 
@@ -196,7 +214,7 @@ function buildBaseTools(): any[] {
       function: {
         name: 'run_claude_code',
         description:
-          "Queue a coding task for Claude Code to execute on the owner's computer. Use when asked to fix bugs, add features, write code, or make any technical change.",
+          "Dispatch substantive work to Claude Code in a detached background session. Use for coding, debugging, research, drafting, investigation, and any task too deep for a live voice answer.",
         parameters: {
           type: 'object',
           properties: {
@@ -209,6 +227,11 @@ function buildBaseTools(): any[] {
               type: 'string',
               enum: ['normal', 'urgent'],
               description: 'Urgent = immediate callback when done.',
+            },
+            continue_session: {
+              type: 'boolean',
+              description:
+                'True when this should continue the most recent Claude Code session instead of starting a new task.',
             },
           },
           required: ['task'],
@@ -311,6 +334,123 @@ function buildV2Tools(): any[] {
     {
       type: 'function',
       function: {
+        name: 'read_otter_transcripts',
+        description:
+          'Otter recordings and transcripts indexed by date. Supports list, get, and search actions with date, date_from, date_to, days, transcript_id, and query parameters. Use for live transcript recall and never invent transcript content.',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['list', 'get', 'search'],
+              description: 'list transcript inventory, get one transcript chunk, or search transcript text.',
+            },
+            date: {
+              type: 'string',
+              description: 'Date for list action, YYYY-MM-DD, today, or yesterday.',
+            },
+            date_from: { type: 'string', description: 'Start date for search, YYYY-MM-DD.' },
+            date_to: { type: 'string', description: 'End date for search, YYYY-MM-DD.' },
+            days: { type: 'integer', description: 'Rolling search window when dates are omitted.' },
+            transcript_id: {
+              type: 'string',
+              description: 'Transcript id returned by action=list.',
+            },
+            query: { type: 'string', description: 'Keyword query for action=search.' },
+          },
+          required: ['action'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'check_calendar',
+        description:
+          "Read the owner's connected calendars. This is a read-only lookup and creates no side-effect receipt. Default to the personal Google Calendar; use Outlook work calendars only when that account is authorized. Use for schedule, availability, meetings, and calendar checks. If authorization is missing or blocked by policy, say that plainly instead of apologizing as if the capability does not exist.",
+        parameters: {
+          type: 'object',
+          properties: {
+            account_label: {
+              type: 'string',
+              description:
+                "Calendar account label to check. Defaults to personal for the owner's personal Google Calendar. Use work only if he asks for the work calendar.",
+            },
+            days: {
+              type: 'integer',
+              description: 'How many days of upcoming calendar events to inspect. Defaults to 7.',
+            },
+            include_subjects: {
+              type: 'boolean',
+              description:
+                'True only when the owner asks what the meetings are; otherwise return counts and availability without reading subjects aloud.',
+            },
+          },
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'create_calendar_event',
+        description:
+          "Create an event on the owner's personal Google Calendar after the owner explicitly asks for a calendar event, meeting, appointment, or calendar block. This returns a side-effect receipt with effect_kind=calendar_event and status=succeeded/failed. Only say the event was created when that receipt status is succeeded; otherwise say the tool's failure message plainly.",
+        parameters: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Calendar event title.' },
+            date: {
+              type: 'string',
+              description: 'Event date: YYYY-MM-DD, today, or tomorrow. Defaults to today for same-day times.',
+            },
+            start_time: {
+              type: 'string',
+              description: 'Start time such as 8 PM, 20:00, or YYYY-MM-DDTHH:mm:ss.',
+            },
+            end_time: { type: 'string', description: 'Optional end time.' },
+            duration_minutes: {
+              type: 'integer',
+              description: 'Event duration in minutes. Defaults to 30.',
+            },
+            timezone: { type: 'string', description: 'IANA timezone. Defaults to America/Chicago.' },
+            description: { type: 'string', description: 'Optional event description.' },
+            account_label: {
+              type: 'string',
+              description:
+                "Calendar account label. Defaults to personal. Writes currently support the owner's personal Google Calendar.",
+            },
+          },
+          required: ['title', 'start_time'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'web_search',
+        description:
+          'Queue current web research through Claude Code and return the result out of band, usually Telegram. Use for current news, businesses, prices, reviews, facts outside local memory, and anything the owner asks Amy to look up on the internet.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'The web research question or lookup request.' },
+            reason: {
+              type: 'string',
+              description: 'Optional context explaining why the owner needs the research.',
+            },
+            priority: {
+              type: 'string',
+              enum: ['normal', 'urgent'],
+              description: 'Urgency of the research request.',
+            },
+          },
+          required: ['query'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'check_project_status',
         description:
           'Query active projects and their task statuses. Use when the owner asks about project progress, task counts, or what needs attention.',
@@ -352,7 +492,7 @@ function buildV2Tools(): any[] {
       function: {
         name: 'manage_task',
         description:
-          "Create or update a project task or todo item. Use when the owner says 'add a task', 'mark that done', or 'create a todo'.",
+          "Queue creation or update of a project task or todo item. Use when the owner says 'add a task', 'mark that done', or 'create a todo'. This returns a side-effect receipt with effect_kind=task and status=queued/succeeded/failed. Only describe the task effect that the receipt confirms.",
         parameters: {
           type: 'object',
           properties: {
@@ -465,12 +605,42 @@ When the owner asks about his todos or what needs doing:
 ### Task Management
 When the owner says to add a task, mark something done, or create a todo:
 - Use manage_task immediately
-- Confirm what you did: "Done — I've added that to your list."`);
+- Report the side-effect receipt honestly. If status is queued, say it was queued, not completed.`);
+  }
+
+  if (version.skills.some((s) => s.toolName === 'read_otter_transcripts')) {
+    sections.push(`
+### Otter Transcripts
+When the owner asks about recordings, transcripts, meetings, or what was said:
+- Use read_otter_transcripts immediately
+- Return only what the transcript tool actually provides
+- If no transcript is found, say that plainly`);
+  }
+
+  if (version.skills.some((s) => s.toolName === 'web_search')) {
+    sections.push(`
+### Web Research
+When the owner asks to look up, research, search, Google, or verify current outside information:
+- Use web_search immediately
+- Say "I'll research that and send you what I find on Telegram."
+- Do not say web research is unavailable`);
+  }
+
+  if (version.skills.some((s) => s.toolName === 'check_calendar')) {
+    sections.push(`
+### Calendar
+When the owner asks about his schedule, availability, meetings, or calendar:
+- Use check_calendar immediately
+- check_calendar is read-only
+- For completed actions, report only what a matching side-effect receipt confirms: effect_kind and status matter
+- If the owner asks to create a calendar event, use create_calendar_event and only say it was created when status=succeeded
+- If the calendar account is not authorized or the tenant blocks access, say that plainly
+- Do not say calendar checks are unavailable`);
   }
 
   sections.push(`
-### Coding Tasks
-When the owner asks to write code, fix a bug, or make a technical change:
+### Claude Code Dispatch
+When the owner asks to write code, fix a bug, make a technical change, draft, investigate, or do substantive work:
 - Use run_claude_code immediately
 - Say "I've queued that for Claude Code. I'll call you back when it's done — usually within a few minutes."
 - End the call gracefully
@@ -531,8 +701,10 @@ function loadAmyPersonaFile(overrideRepoRoot?: string): string {
     try {
       if (!fs.existsSync(p)) continue;
       const raw = fs.readFileSync(p, 'utf-8');
-      // Strip YAML frontmatter: --- ... ---
-      const body = raw.replace(/^---\n[\s\S]*?\n---\n/, '').trim();
+      // Strip YAML frontmatter: --- ... --- (tolerate CRLF line endings)
+      const body = raw
+        .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '')
+        .trim();
       amyPersonaCache = { content: body, loadedAt: now };
       return body;
     } catch {
@@ -592,11 +764,32 @@ export async function buildVersionedSystemPrompt(
   // Identity (version-specific, supplements AMY.md)
   if (context.personaInstructions?.trim()) {
     parts.push(context.personaInstructions.trim());
-    if (context.callDirection === 'inbound') {
-      parts.push(`> IMPORTANT: You are RECEIVING this call, not making it. Answer naturally.`);
-    }
   } else {
     parts.push(version.identity);
+  }
+
+  // Call direction — always inject an explicit annotation so Amy never
+  // confuses outbound (calling them with a goal) with inbound (they called
+  // me, "how can I help"). Without this, persona templates that say
+  // "introduce yourself naturally" plus the LLM's default conversational
+  // reflex produce receptionist openings on outbound calls — see
+  // memory/feedback_amy_outbound_must_drive_call.md.
+  //
+  // Outbound also gets a callee-compartmentalization guard. Inbound has
+  // caller-id tiers; outbound previously had none, so a callee asking
+  // personal questions about the owner would get answers volunteered from
+  // the EA memory dump appended at the end of this prompt. The guard
+  // mirrors the unknown-caller compartmentalization rules. See
+  // memory/feedback_outbound_callee_compartmentalization.md.
+  if (context.callDirection === 'outbound') {
+    parts.push(buildOutboundCalleeContext().systemPromptSection);
+    parts.push(
+      `\n> IMPORTANT: You are MAKING this call (outbound). You are calling them — they did not call you. Open by introducing yourself AND stating the reason for your call (the goal below). NEVER greet with "How can I help you?" or "Can I help you today?" — those are inbound greetings only.`,
+    );
+  } else {
+    parts.push(
+      `\n> IMPORTANT: You are RECEIVING this call (inbound). They called you. Answer naturally.`,
+    );
   }
 
   // Call goal
@@ -635,6 +828,7 @@ Your microphone is ALWAYS hot on this call. Everything you emit is heard by the 
 - Speak naturally — do NOT read goals as a script. Have a real conversation.
 - If they seem busy, be brief. If they want to chat, engage warmly.
 - Stay in character throughout.
+- NEVER say "This will just take a second", "Bear with me", "Hang tight", "Just give me a moment" - hold-music phrases. Do it or stay silent.
 ## Phone tree / IVR navigation
 - If you reach an automated menu, use the DTMF tool to press keys. NEVER voice the action — silent DTMF only.
 - Wait for the FULL menu to finish (at least 2 seconds of silence) before pressing any key.
@@ -876,7 +1070,14 @@ export async function buildVapiAssistantConfig(
         tools: getToolsForVersion(version),
       },
       voice: version.voice,
-      firstMessage: personaInstructions ? '' : 'Hello, is this a good time to talk?',
+      // Outbound: Amy ALWAYS speaks first. Empty firstMessage produced
+      // listen-first behavior that, combined with persona templates saying
+      // "introduce yourself naturally," caused Amy to wait for the callee,
+      // then default to receptionist mode ("Can I help you today?") — see
+      // memory/feedback_amy_outbound_must_drive_call.md (2026-04-27 Yasmin
+      // call). The "Hi." primer absorbs Vapi's TTS cold-start jitter so the
+      // LLM-generated continuation lands clean and goal-aware.
+      firstMessage: 'Hi.',
       endCallPhrases: ['goodbye', 'thank you, bye', 'have a great day', 'bye bye'],
       silenceTimeoutSeconds: 300,
       maxDurationSeconds: 1800,

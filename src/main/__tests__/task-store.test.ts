@@ -181,6 +181,14 @@ describe('transition', () => {
     expect(requeued.status).toBe('queued');
   });
 
+  it('can terminally disqualify a qualified input as non-actionable', () => {
+    const t = createTask({ kind: 'ingest', origin: 'gmail', prompt: 'scan this email' });
+    const removed = transition(t.id, 'removed_non_actionable', 'no follow-up after scan');
+    expect(removed.status).toBe('removed_non_actionable');
+    expect(removed.completedAt).toBeTruthy();
+    expect(removed.history.at(-1)?.note).toMatch(/no follow-up/i);
+  });
+
   it('persists transitions so they survive a reload', () => {
     const t = createTask({ kind: 'action', origin: 'app', prompt: 'x' });
     transition(t.id, 'running', 'spawned');

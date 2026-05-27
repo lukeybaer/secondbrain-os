@@ -172,7 +172,9 @@ export async function detectDevices(): Promise<DetectedDevice[]> {
     return cachedDevices;
   }
   return new Promise((resolve, reject) => {
-    const ffmpeg = spawn('ffmpeg', ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']);
+    const ffmpeg = spawn('ffmpeg', ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'], {
+      windowsHide: true,
+    });
 
     let stderr = '';
     let resolved = false;
@@ -288,7 +290,7 @@ async function probeCameraByName(name: string): Promise<boolean> {
       '-f',
       'null',
       '-',
-    ]);
+    ], { windowsHide: true });
     let resolved = false;
     const finish = (ok: boolean) => {
       if (resolved) return;
@@ -319,7 +321,7 @@ export async function detectAudioDevices(): Promise<DetectedDevice[]> {
 
 export async function checkNvenc(): Promise<boolean> {
   return new Promise((resolve) => {
-    const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-encoders']);
+    const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-encoders'], { windowsHide: true });
     let stdout = '';
     ffmpeg.stdout?.on('data', (data: Buffer) => {
       stdout += data.toString();
@@ -363,7 +365,7 @@ export function validateCamera(
     }
     args.push('-i', `video=${cameraName}`, '-t', '0.5', '-f', 'null', '-');
 
-    const proc = spawn('ffmpeg', args);
+    const proc = spawn('ffmpeg', args, { windowsHide: true });
     let resolved = false;
 
     const finish = (ok: boolean) => {
@@ -464,7 +466,7 @@ function buildScreenArgs(outputPath: string, _useNvenc: boolean, audioDevice?: s
 }
 
 function spawnFFmpeg(args: string[], source: string, outputPath: string): FFmpegSession {
-  const proc = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  const proc = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 
   proc.stderr?.on('data', (data: Buffer) => {
     const line = data.toString();
@@ -512,7 +514,9 @@ function stopFFmpegSession(session: FFmpegSession): Promise<string> {
 async function remuxToMp4(mkvPath: string): Promise<string> {
   const mp4Path = mkvPath.replace(/\.mkv$/, '.mp4');
   return new Promise((resolve, reject) => {
-    const proc = spawn('ffmpeg', ['-i', mkvPath, '-c', 'copy', '-y', mp4Path]);
+    const proc = spawn('ffmpeg', ['-i', mkvPath, '-c', 'copy', '-y', mp4Path], {
+      windowsHide: true,
+    });
     proc.on('exit', (code) => {
       if (code === 0) resolve(mp4Path);
       else reject(new Error(`Remux failed for ${mkvPath}`));

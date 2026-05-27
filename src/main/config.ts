@@ -61,6 +61,7 @@ export interface AppConfig {
   xAccessToken: string; // X (Twitter) Access Token
   xAccessTokenSecret: string; // X (Twitter) Access Token Secret
   ownerName: string; // Display name for the owner, used in prompt templates; leave blank for anonymous default
+  ownerEmail: string; // Owner's email address for briefing delivery; read from config, never hardcoded
 }
 
 const DEFAULTS: AppConfig = {
@@ -97,6 +98,7 @@ const DEFAULTS: AppConfig = {
   xAccessToken: '',
   xAccessTokenSecret: '',
   ownerName: '',
+  ownerEmail: '',
 };
 
 let _config: AppConfig | null = null;

@@ -385,7 +385,7 @@ async function runTimeMachineHealthChecks(): Promise<void> {
 
 function checkBinaryAvailable(name: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const proc = spawn(name, ['-version'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const proc = spawn(name, ['-version'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     proc.on('exit', (code) => resolve(code === 0));
     proc.on('error', () => resolve(false));
     setTimeout(() => {
@@ -402,7 +402,7 @@ function checkS3FileExists(bucket: string, key: string): Promise<boolean> {
     const proc = spawn(
       'aws',
       ['s3api', 'head-object', '--bucket', bucket, '--key', key, '--region', 'us-east-1'],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
+      { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
     );
     proc.on('exit', (code) => resolve(code === 0));
     proc.on('error', () => resolve(false));

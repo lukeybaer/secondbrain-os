@@ -197,13 +197,20 @@ export async function incrementalGraphitiSync(): Promise<{
     else failed++;
   }
 
-  // Update sync state
+  // Update sync state to the newest file timestamp we actually observed.
+  // Windows can report freshly written mtimes slightly ahead of wall-clock
+  // `new Date()` in the test runner, which otherwise re-ingests unchanged
+  // files on the next incremental pass.
+  const maxObservedMtime = files.reduce(
+    (max, file) => Math.max(max, file.modifiedAt.getTime()),
+    Date.now(),
+  );
   const dir = path.dirname(stateFile);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
     stateFile,
     JSON.stringify({
-      lastSync: new Date().toISOString(),
+      lastSync: new Date(maxObservedMtime).toISOString(),
       filesChecked: files.length,
       filesIngested: ingested,
     }),

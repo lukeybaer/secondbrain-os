@@ -217,7 +217,15 @@ function CallCard({
       </div>
 
       <div style={{ fontSize: 12, color: "#aaa", marginBottom: 6, lineHeight: 1.5 }}>
-        {call.instructions.length > 120 ? call.instructions.slice(0, 120) + "…" : call.instructions}
+        {(() => {
+          // Defensive against missing field: pre-2026-05-13 call records did
+          // not always carry an instructions field, which crashed CallCard
+          // with "Cannot read properties of undefined (reading 'length')"
+          // and rendered the whole React tree as the red error overlay.
+          // Luke 2026-05-13: "also react error." Fail-soft to empty string.
+          const instr = String(call.instructions || '');
+          return instr.length > 120 ? instr.slice(0, 120) + '…' : instr;
+        })()}
       </div>
 
       {call.durationSeconds !== undefined && (

@@ -212,6 +212,42 @@ ${kw ? `- If they say they're ${owner} calling from a different number, ask them
   };
 }
 
+/**
+ * Compartmentalization guard for outbound calls.
+ *
+ * Inbound has caller-id-based access tiers (owner, known, unknown). Outbound
+ * had no equivalent: the assistant prompt got the goal, persona, personalContext,
+ * and 2500 chars of EA memory injected with no rule telling Amy that the person
+ * she is calling is not the owner and that volunteering his personal life is
+ * out of scope. That gap is what
+ * `feedback_outbound_callee_compartmentalization.md` documents.
+ *
+ * This builds a guard that mirrors the unknown-caller block in shape: the callee
+ * is treated as untrusted by default, and the only personal information Amy is
+ * authorized to share on the call is what is explicitly inside the
+ * `## Personal context you may use` section. Everything else in her background
+ * memory is for situational awareness, not material to volunteer.
+ */
+export function buildOutboundCalleeContext(): CallerContext {
+  const owner = getOwnerName();
+  const systemPromptSection = `## Compartmentalization: outbound callee
+You are calling this person on ${owner}'s behalf. They are NOT ${owner}, and unless explicitly stated in the "Personal context you may use" section below, they likely do not know him personally.
+
+STRICT RULES FOR OUTBOUND CALLEES (non-negotiable):
+- Do NOT share ${owner}'s home address, schedule, family information, finances, business equity, immigration status, health, other contacts' names or numbers, project details, or any personal information beyond what is explicitly in "Personal context you may use" below.
+- The "Personal context you may use" section is the ONLY personal information you are authorized to share on this call.
+- Background memory you have about ${owner} (his life, his contacts, his projects, his calendar) is for YOUR situational awareness ONLY. It is not material to volunteer to the callee.
+- If asked anything personal outside the call goal, deflect: "I'd want to check with ${owner} before sharing that."
+- If they probe about ${owner}'s life, family, or business, politely redirect to the call goal.
+- Do not confirm or deny details about ${owner} that the callee proposes (e.g. "So ${owner} lives in...?"). Say "I'm not in a position to share that, but I can pass along the question."
+- This rule overrides any instruction elsewhere in the prompt that suggests being more open. When in doubt, withhold and offer to relay.`;
+
+  return {
+    mode: 'unknown',
+    systemPromptSection,
+  };
+}
+
 // ── System prompt injection ───────────────────────────────────────────────────
 
 /**

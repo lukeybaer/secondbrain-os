@@ -10,7 +10,7 @@
 
 import { app } from "electron";
 import { getConfig } from "./config";
-import { runClaudeCodeAndSummarize } from "./claude-runner";
+import { runClaudeCodeBackground, summarizeTaskOutput } from "./claude-runner";
 import { runTask } from "./task-service";
 import { searchConversations } from "./database";
 
@@ -54,6 +54,14 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Active session ID tracked locally — set when we start a claude task, used for continue routing
 let activeSessionId: string | null = null;
+
+// Active background claude tasks keyed by command id. Populated when
+// handleCommand spawns one, cleared when the subprocess closes. Future
+// status-check tools can read this to answer "is task X still running."
+import type { BackgroundRunHandle } from "./claude-runner";
+const activeClaudeTasks = new Map<string, BackgroundRunHandle>();
+export function getActiveClaudeTaskCount(): number { return activeClaudeTasks.size; }
+export function getActiveClaudeTaskIds(): string[] { return Array.from(activeClaudeTasks.keys()); }
 
 function getBaseUrl(): string {
   try {
@@ -150,43 +158,75 @@ async function handleCommand(cmd: PendingCommand): Promise<void> {
       success = true;
 
     } else if (cmd.type === "claude") {
+      // Fire-and-forget: spawn detached, return from handleCommand
+      // immediately, let the worker resume polling. The .then handler
+      // below delivers the result via completeCommand when the
+      // subprocess actually exits, however long that takes. No timeout.
+      // Per Luke 2026-05-05: "you should not even be waiting for the
+      // message, you should just get it."
       const prompt = cmd.prompt ?? "";
       const continueSession = routingType === "continue";
 
+      let registrationPromise: Promise<void> = Promise.resolve();
+      if (!continueSession) {
+        const topic = prompt.slice(0, 80) + (prompt.length > 80 ? "..." : "");
+        registrationPromise = registerSession(topic).then((sid) => {
+          if (sid) activeSessionId = sid;
+        }).catch(() => { /* non-critical */ });
+      }
+
+      // Shared completion path: report the result back to EC2, emit the
+      // status event, clean up the session. Non-blocking for both routes.
+      const finishCmd = async (summary: string, ok: boolean): Promise<void> => {
+        try {
+          await completeCommand(cmd.id, summary, ok);
+          emitCommandEvent({
+            commandId: cmd.id,
+            status: ok ? "complete" : "error",
+            success: ok,
+            summary: summary.slice(0, 300),
+          });
+        } catch (err) {
+          console.error("[command-queue] background completion err:", err);
+        } finally {
+          activeClaudeTasks.delete(cmd.id);
+          await registrationPromise;
+          if (!continueSession && activeSessionId) {
+            completeSession(activeSessionId).catch(() => { /* non-critical */ });
+            activeSessionId = null;
+          }
+        }
+      };
+
       if (continueSession) {
-        // continue routing is preserved unchanged: resume the most recent
-        // session. It does not flow through the Task Spine because it has no
-        // standalone task identity, it is a follow-up on prior work.
-        const { summary, success: ok } = await runClaudeCodeAndSummarize(prompt, {
+        // continue: resume the prior session in the background. No standalone
+        // Task identity, it is a follow-up on prior work.
+        const handle = runClaudeCodeBackground(prompt, {
           cwd: app.getAppPath(),
           continueSession: true,
         });
-        result = summary;
-        success = ok;
+        activeClaudeTasks.set(cmd.id, handle);
+        console.log(`[command-queue] claude continue ${cmd.id} spawned pid=${handle.pid}`);
+        handle.completion.then(async (r) => {
+          const summary = await summarizeTaskOutput(r.output, r.success, r.exitCode);
+          await finishCmd(summary, r.success);
+        });
       } else {
-        // new_task routing goes through the Task Spine so every remote
-        // dispatch becomes a durable, queryable Task instead of fire-and-
-        // forget. We still register the EC2 session and await the result so
-        // completion is reported back to EC2 exactly as before.
-        const topic = prompt.slice(0, 80) + (prompt.length > 80 ? "…" : "");
-        const sessionId = await registerSession(topic);
-        if (sessionId) activeSessionId = sessionId;
-
-        const { completion } = runTask({
+        // new_task: route through the Task Spine so every remote dispatch is
+        // a durable, queryable Task. runTask is non-blocking; its TaskResult
+        // already carries a summary.
+        const { task, completion } = runTask({
           kind: "action",
           origin: "command-queue",
           prompt,
           cwd: app.getAppPath(),
         });
-        const taskResult = await completion;
-        result = taskResult.summary;
-        success = taskResult.success;
-
-        if (activeSessionId) {
-          await completeSession(activeSessionId);
-          activeSessionId = null;
-        }
+        console.log(`[command-queue] claude task ${cmd.id} -> spine task ${task.id}`);
+        completion.then((r) => finishCmd(r.summary, r.success));
       }
+
+      // Return early: completion is handled asynchronously above.
+      return;
 
     } else {
       result = `Unknown command routing: ${routingType}`;

@@ -265,7 +265,14 @@ describe("initiateCall — successful outbound call (with persona)", () => {
     expect(result.error).toBe("Invalid phone number format");
   });
 
-  it("uses empty firstMessage when a persona is provided (persona owns the opener)", async () => {
+  it("uses a short 'Hi.' primer firstMessage on outbound (Amy must drive)", async () => {
+    // Luke 2026-04-27 Yasmin call + 2026-04-29 retest: an empty firstMessage
+    // produced listen-first behavior; Amy waited for the callee and defaulted
+    // to receptionist mode ("Can I help you today?"). The "Hi." primer
+    // absorbs Vapi TTS cold-start jitter so the persona-driven continuation
+    // lands clean and goal-aware. See memory/feedback_amy_outbound_must_drive_call.md.
+    // The persona instructions still own the substantive opener; "Hi." is
+    // just the kickoff token that forces Amy to speak first.
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValueOnce(
       makeFetchResponse({ id: "call-persona-001", status: "queued", monitor: {} }) as any,
     );
@@ -273,7 +280,11 @@ describe("initiateCall — successful outbound call (with persona)", () => {
     await initiateCall("+15551234567", "Book a cleaning appointment", "", TEST_PERSONA.id);
 
     const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string);
-    expect(body.assistant.firstMessage).toBe("");
+    expect(body.assistant.firstMessage).toBe("Hi.");
+    // Persona instructions must still be in the system prompt -- the "Hi."
+    // primer is just the kickoff token, not the opener content.
+    const systemContent: string = body.assistant.model.messages[0].content;
+    expect(systemContent).toContain(TEST_PERSONA.instructions.substring(0, 20));
   });
 
   it("uses the persona's instructions in the system prompt", async () => {
@@ -908,7 +919,7 @@ describe("syncCallbackAssistant", () => {
     expect(systemContent).toContain("Left voicemail");
   });
 
-  it("sets firstMessage to 'Hey, thanks for calling back!' when there are incomplete calls", async () => {
+  it("sets firstMessage to Luke's assistant when there are incomplete non-owner calls", async () => {
     const { saveConfig } = await import("../src/main/config");
     saveConfig({
       vapiApiKey: "vapi-test-key",
@@ -934,10 +945,10 @@ describe("syncCallbackAssistant", () => {
       ([url]) => typeof url === "string" && (url as string).includes("/assistant/asst-firstmsg"),
     );
     const body = JSON.parse(((patchCall![1]) as RequestInit).body as string);
-    expect(body.firstMessage).toBe("Hey, thanks for calling back!");
+    expect(body.firstMessage).toBe("Hey, this is Luke's assistant. Thanks for calling back!");
   });
 
-  it("sets firstMessage to 'Hey there! Good to hear from you.' when all calls are completed", async () => {
+  it("sets firstMessage to Luke's assistant when all non-owner calls are completed", async () => {
     const { saveConfig } = await import("../src/main/config");
     saveConfig({
       vapiApiKey: "vapi-test-key",
@@ -963,10 +974,10 @@ describe("syncCallbackAssistant", () => {
       ([url]) => typeof url === "string" && (url as string).includes("/assistant/asst-completed"),
     );
     const body = JSON.parse(((patchCall![1]) as RequestInit).body as string);
-    expect(body.firstMessage).toBe("Hey there! Good to hear from you.");
+    expect(body.firstMessage).toBe("Hey, this is Luke's assistant. Good to hear from you.");
   });
 
-  it("sets firstMessage to generic greeting when no prior calls exist", async () => {
+  it("sets firstMessage to Luke's assistant when no prior non-owner calls exist", async () => {
     const { saveConfig } = await import("../src/main/config");
     saveConfig({
       vapiApiKey: "vapi-test-key",
@@ -982,7 +993,7 @@ describe("syncCallbackAssistant", () => {
       ([url]) => typeof url === "string" && (url as string).includes("/assistant/asst-nohist"),
     );
     const body = JSON.parse(((patchCall![1]) as RequestInit).body as string);
-    expect(body.firstMessage).toBe("Hello, how can I help you today?");
+    expect(body.firstMessage).toBe("Hello, this is Luke's assistant. How can I help you today?");
   });
 
   it("includes persona identity section in system prompt when latest call used a persona", async () => {

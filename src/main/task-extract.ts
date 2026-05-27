@@ -99,38 +99,25 @@ export async function extractDispatch(
   };
   if (!raw) return { ...fallback, reason: 'empty directive' };
 
-  // Lazy import so importing this module (e.g. via task-intake in tests)
-  // does not pull in electron until an extraction actually runs.
-  const { getConfig } = await import('./config');
-  const config = getConfig();
-  if (!config.openaiApiKey) return fallback;
-
+  // All LLM traffic routes through the owner's Claude Max subscription via the
+  // claude CLI subprocess (see claude-runner.ts). No paid host -- this is the
+  // Claude-Max-only rule, enforced by llm-routing-guard.test.ts.
+  // Lazy import so importing this module (e.g. via task-intake in tests) does
+  // not pull in the runner / electron until an extraction actually runs.
   try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.openaiApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: config.openaiLightModel || 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          {
-            role: 'user',
-            content:
-              `Raw #amy directive:\n${raw}\n\n` +
-              (context ? `Surrounding context:\n${context}\n\n` : '') +
-              'Return the JSON now.',
-          },
-        ],
-        response_format: { type: 'json_object' },
-        max_tokens: 300,
-      }),
-    });
-    if (!res.ok) return fallback;
-    const data = await res.json();
-    const parsed = JSON.parse(data.choices?.[0]?.message?.content ?? '{}');
+    const { runClaudeCode } = await import('./claude-runner');
+    const prompt =
+      `${SYSTEM_PROMPT}\n\n` +
+      `Raw #amy directive:\n${raw}\n\n` +
+      (context ? `Surrounding context:\n${context}\n\n` : '') +
+      'Return ONLY the JSON object, nothing else.';
+    const res = await runClaudeCode(prompt, { timeoutMs: 60000 });
+    if (!res.success || !res.output) return fallback;
+    // Claude may wrap the JSON in prose or a fenced block. Pull the first
+    // balanced {...} object out of the output.
+    const jsonMatch = res.output.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return fallback;
+    const parsed = JSON.parse(jsonMatch[0]);
     const instruction = typeof parsed.instruction === 'string' ? parsed.instruction.trim() : '';
     if (!instruction) return fallback;
 

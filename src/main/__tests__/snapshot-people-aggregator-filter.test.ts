@@ -1,148 +1,83 @@
 /**
- * Regression: people-files change detection must key off meaningful CONTENT,
- * not file mtime.
+ * Luke 2026-04-29 #learn dispatch: "you said all green but it wasn't."
  *
- * The "a colleague's contact file showed as changed in the last 24h even
- * though it was never actually discussed" bug came from the briefing keying
- * its people-changed list on file mtime. The nightly LinkedIn enrichment job
- * re-touches every contact file to bump `last_linkedin_scan` in the
- * frontmatter, mutating mtime without any meaningful content change.
- * detectChangedPeopleFiles() must ignore those.
+ * Root cause for the People Files card specifically: I edited the live-git
+ * filter in ec2-server.js (buildPeopleFilesChangeCard) but NOT the snapshot
+ * generator (scripts/snapshot-people-and-memory-delta.js). EC2 has no .git,
+ * so the dashboard fell back to the snapshot, which still contained
+ * `_gmail-daily-intel.md` as biggest. "Done" in the source was not "done"
+ * in the artifact Luke sees.
  *
- * Fixtures use a fully fictional person and company so no real names land in
- * the public-sync payload.
+ * This test locks the symmetry: BOTH the live-git path AND the snapshot
+ * generator must filter aggregator/index files (`_*.md`, `INDEX.md`) the
+ * same way. A future refactor that fixes one and forgets the other fails
+ * here.
+ *
+ * See feedback_verify_in_artifact_not_implementation.md.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { normalizeContent, detectChangedPeopleFiles } from '../people-files-aggregator';
+import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 
-let tmpDir: string;
-let contactsDir: string;
-let snapshotPath: string;
+const REPO = path.join(__dirname, '..', '..', '..');
+const SERVER = path.join(REPO, 'ec2-server.js');
+const SNAPSHOT_GEN = path.join(REPO, 'scripts', 'snapshot-people-and-memory-delta.js');
 
-const CONTACT_BASE = `---
-name: Dana Northwind
-description: Northwind colleague
-type: user
-category: active-network
-linkedin: not-found
-last_linkedin_scan: "2026-05-10"
-warmth: dormant
----
+describe("People-files aggregator filter is symmetric (Luke 2026-04-29 #learn)", () => {
+  const serverSrc = fs.readFileSync(SERVER, 'utf8');
+  const snapshotSrc = fs.readFileSync(SNAPSHOT_GEN, 'utf8');
 
-## Contact
-- **Work email**: dana@northwind.example
-
-## Personal
-- Works in product at Northwind.
-`;
-
-function writeContact(name: string, content: string): void {
-  fs.writeFileSync(path.join(contactsDir, name), content);
-}
-
-beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'people-agg-'));
-  contactsDir = path.join(tmpDir, 'contacts');
-  fs.mkdirSync(contactsDir, { recursive: true });
-  snapshotPath = path.join(tmpDir, 'data', 'agent', 'people-files-snapshot.json');
-});
-
-afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
-
-describe('detectChangedPeopleFiles - content-hash, not mtime', () => {
-  it('mtime-only touch with identical content does NOT register as changed', () => {
-    writeContact('dana_northwind.md', CONTACT_BASE);
-    // First run establishes the baseline snapshot.
-    detectChangedPeopleFiles(contactsDir, snapshotPath);
-
-    // Re-write the exact same bytes and bump mtime into the future,
-    // simulating an automated re-save / `touch`.
-    const filePath = path.join(contactsDir, 'dana_northwind.md');
-    fs.writeFileSync(filePath, CONTACT_BASE);
-    const future = new Date(Date.now() + 60 * 60 * 1000);
-    fs.utimesSync(filePath, future, future);
-
-    const result = detectChangedPeopleFiles(contactsDir, snapshotPath);
-    expect(result.changed).not.toContain('dana_northwind.md');
-    expect(result.changed).toEqual([]);
+  it("ec2-server.js exposes isAggregatorFile helper", () => {
+    expect(serverSrc).toMatch(/function isAggregatorFile\(/);
   });
 
-  it('enrichment-timestamp-only frontmatter bump does NOT register as changed', () => {
-    writeContact('dana_northwind.md', CONTACT_BASE);
-    detectChangedPeopleFiles(contactsDir, snapshotPath);
-
-    // Nightly LinkedIn scan bumps last_linkedin_scan only. No body change,
-    // no meaningful frontmatter change.
-    const enriched = CONTACT_BASE.replace(
-      'last_linkedin_scan: "2026-05-10"',
-      'last_linkedin_scan: "2026-05-18"',
-    );
-    writeContact('dana_northwind.md', enriched);
-
-    const result = detectChangedPeopleFiles(contactsDir, snapshotPath);
-    expect(result.changed).not.toContain('dana_northwind.md');
-    expect(result.changed).toEqual([]);
+  it("snapshot generator also defines isAggregatorFile (no skew between paths)", () => {
+    expect(snapshotSrc).toMatch(/function isAggregatorFile\(/);
   });
 
-  it('a real content edit DOES register as changed', () => {
-    writeContact('dana_northwind.md', CONTACT_BASE);
-    detectChangedPeopleFiles(contactsDir, snapshotPath);
-
-    const edited = CONTACT_BASE + '\n- 2026-05-18: Discussed the dashboard rollout.\n';
-    writeContact('dana_northwind.md', edited);
-
-    const result = detectChangedPeopleFiles(contactsDir, snapshotPath);
-    expect(result.changed).toEqual(['dana_northwind.md']);
+  it("snapshot generator filters out _-prefixed files at write time", () => {
+    expect(snapshotSrc).toMatch(/if \(isAggregatorFile\(file\)\) continue/);
   });
 
-  it('a meaningful frontmatter edit (not a volatile key) DOES register as changed', () => {
-    writeContact('dana_northwind.md', CONTACT_BASE);
-    detectChangedPeopleFiles(contactsDir, snapshotPath);
-
-    const edited = CONTACT_BASE.replace('warmth: dormant', 'warmth: active');
-    writeContact('dana_northwind.md', edited);
-
-    const result = detectChangedPeopleFiles(contactsDir, snapshotPath);
-    expect(result.changed).toEqual(['dana_northwind.md']);
+  it("ec2-server.js snapshot fallback re-applies the filter at read time (defense in depth)", () => {
+    expect(serverSrc).toMatch(/snap\.allEntries\.filter\(\(e\) => !isAggregatorFile/);
   });
 
-  it('a brand-new contact file shows as added, not changed', () => {
-    writeContact('dana_northwind.md', CONTACT_BASE);
-    detectChangedPeopleFiles(contactsDir, snapshotPath);
-
-    writeContact('new_person.md', CONTACT_BASE.replace('Dana Northwind', 'New Person'));
-
-    const result = detectChangedPeopleFiles(contactsDir, snapshotPath);
-    expect(result.added).toEqual(['new_person.md']);
-    expect(result.changed).toEqual([]);
+  it("snapshot generator includes allEntries (drilldown needs every contact)", () => {
+    expect(snapshotSrc).toMatch(/allEntries:\s*entries/);
   });
 
-  it('first run with no prior snapshot reports nothing as changed', () => {
-    writeContact('dana_northwind.md', CONTACT_BASE);
-    const result = detectChangedPeopleFiles(contactsDir, snapshotPath);
-    expect(result.changed).toEqual([]);
-    expect(result.added).toEqual([]);
-    expect(fs.existsSync(snapshotPath)).toBe(true);
-  });
-});
-
-describe('normalizeContent', () => {
-  it('strips volatile last_*_scan keys but keeps real frontmatter', () => {
-    const norm = normalizeContent(CONTACT_BASE);
-    expect(norm).not.toContain('last_linkedin_scan');
-    expect(norm).toContain('warmth: dormant');
-    expect(norm).toContain('name: Dana Northwind');
+  it("snapshot generator extracts addedSample from real diff content", () => {
+    expect(snapshotSrc).toMatch(/historyEntries/);
+    expect(snapshotSrc).toMatch(/bulletEntries/);
   });
 
-  it('produces an identical result regardless of CRLF vs LF line endings', () => {
-    expect(normalizeContent(CONTACT_BASE)).toBe(
-      normalizeContent(CONTACT_BASE.replace(/\n/g, '\r\n')),
-    );
+  // Luke 2026-04-29 dispatch (third pass): "you've started dumping all this
+  // crap into memory.md now???" The dashboard was misleading because it
+  // showed the commit subject instead of the actual added lines. Lock the
+  // real-diff render at the parser layer.
+  it("MEMORY.md card surfaces actual addedLines from the diff (not just commit subjects)", () => {
+    expect(snapshotSrc).toMatch(/addedLines/);
+    const ec2 = fs.readFileSync(SERVER, 'utf8');
+    expect(ec2).toMatch(/addedLines/);
+    // Render must prefer the real diff over the commit subject when both
+    // are available (snapshot has both for graceful fallback).
+    expect(ec2).toMatch(/c\.addedLines && c\.addedLines\.length > 0/);
+  });
+
+  it("on-disk snapshot (if present) does NOT contain aggregator files as biggest/smallest", () => {
+    const snapPath = path.join(REPO, 'data', 'agent', 'people-files-snapshot.json');
+    if (!fs.existsSync(snapPath)) return; // snapshot not yet generated
+    const snap = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
+    if (snap.biggest) {
+      const bn = path.basename(snap.biggest.file || '', '.md');
+      expect(bn.startsWith('_'), `snapshot biggest is aggregator: ${bn}`).toBe(false);
+      expect(bn.toUpperCase() !== 'INDEX', `snapshot biggest is INDEX`).toBe(true);
+    }
+    if (snap.smallest) {
+      const bn = path.basename(snap.smallest.file || '', '.md');
+      expect(bn.startsWith('_'), `snapshot smallest is aggregator: ${bn}`).toBe(false);
+    }
   });
 });

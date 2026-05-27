@@ -169,28 +169,23 @@ export async function drainIntake(
 let watchTimer: ReturnType<typeof setInterval> | null = null;
 let draining = false;
 
-function defaultDispatchQueuePath(): string {
-  const { getConfig } = require('./config') as typeof import('./config');
-  return path.join(getConfig().dataDir, 'agent', 'dispatch-queue.jsonl');
-}
-
-function defaultConsumedPath(): string {
-  const { getConfig } = require('./config') as typeof import('./config');
-  return path.join(getConfig().dataDir, 'tasks', 'intake-consumed.json');
-}
-
 /**
  * Start polling the dispatch inbox every `intervalMs` (default 30s) and on
- * boot. Safe to call once from main-process init.
+ * boot. The caller (index.ts) passes explicit paths, the module never
+ * resolves config itself so it stays bundle-safe and testable.
  */
-export function startIntakeWatcher(intervalMs = 30_000): void {
+export function startIntakeWatcher(
+  dispatchQueuePath: string,
+  consumedPath: string,
+  intervalMs = 30_000,
+): void {
   if (watchTimer) return;
   const run = (): void => {
     // Single-flight: a slow drain (LLM extraction is async) must not overlap
     // the next 30s tick, which could double-create tasks.
     if (draining) return;
     draining = true;
-    drainIntake(defaultDispatchQueuePath(), defaultConsumedPath())
+    drainIntake(dispatchQueuePath, consumedPath)
       .catch((err) => {
         console.error('[task-intake] drain error:', err);
       })

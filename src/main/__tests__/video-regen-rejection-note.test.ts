@@ -103,6 +103,36 @@ describe('(a) ec2-build-from-queue.py ingests the rejection note', () => {
     src = fs.readFileSync(QUEUE_BUILDER, 'utf8');
     expect(src).toContain('regenerated_from_rejection');
   });
+
+  it('hydrates missing queue scripts from the original shorts proposal', () => {
+    const out = runPySnippet(
+      QUEUE_BUILDER,
+      `
+import json, tempfile
+from pathlib import Path
+tmp = Path(tempfile.mkdtemp())
+(tmp / "2026-05-10.json").write_text(json.dumps({
+  "proposals": [{
+    "id": "short004_research",
+    "script": "Use Perplexity for research. Use ChatGPT for synthesis. Use Claude for analysis. Follow for more.",
+    "stock_queries": ["research desk", "AI browser"]
+  }]
+}))
+m.PROPOSALS_DIR_LOCAL = tmp
+hydrated = m.hydrate_spec_from_proposal({"id": "short004_research", "script": "", "title": "T"})
+print(json.dumps({"script": hydrated["script"], "stock_queries": hydrated["stock_queries"]}))
+`,
+    );
+    const hydrated = JSON.parse(out);
+    expect(hydrated.script).toContain('Use Perplexity');
+    expect(hydrated.stock_queries).toEqual(['research desk', 'AI browser']);
+  });
+
+  it('refuses to build near-empty approval artifacts', () => {
+    src = fs.readFileSync(QUEUE_BUILDER, 'utf8');
+    expect(src).toContain('script missing or too short');
+    expect(src).toContain('near-empty approval artifact');
+  });
 });
 
 // -- daily-video-topic-gen.js re-queues rejected videos ----------------------

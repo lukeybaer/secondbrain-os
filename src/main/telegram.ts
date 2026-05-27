@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as http from "http";
 import { getConfig } from "./config";
+import { isNotifyCategoryAllowed, type NotifyCategory } from "./notify-policy";
 import {
   createApproval,
   getApproval,
@@ -8,6 +9,8 @@ import {
   getLatestPendingApproval,
   type DbApproval,
 } from "./database-sqlite";
+
+export type { NotifyCategory } from "./notify-policy";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -22,7 +25,18 @@ export interface PendingApproval {
   resolve?: (result: { approved: boolean; data?: string }) => void;
 }
 
-export type OnMessageCallback = (chatId: string, text: string, messageId: number) => void;
+/** Context about a message the inbound message is a reply to, if any. */
+export interface ReplyContext {
+  replyToMessageId: number;
+  replyToText?: string;
+}
+
+export type OnMessageCallback = (
+  chatId: string,
+  text: string,
+  messageId: number,
+  replyContext?: ReplyContext,
+) => void;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -110,9 +124,42 @@ async function postMultipart(
   return json;
 }
 
+// ── Notification policy ───────────────────────────────────────────────────────
+//
+// Luke gets a Telegram ONLY for these categories. Everything else (service-down
+// alerts, exceptions, error reports, per-item status chatter) is dropped at
+// this one chokepoint, no matter which caller tries to send it.
+//
+//   dispatch_complete  a dispatched unit of work finished (batched per bundle)
+//   video_regen        a video was regenerated (with a link)
+//   briefing_ready     the daily briefing is available (with a link)
+//   question_answer    an answer to a question Luke asked in Telegram
+//   approval           an interactive YES/NO prompt that needs Luke's reply
+//
+// An owner-bound message with no allowed category is suppressed (logged only).
+
+function isOwnerChat(chatId: string): boolean {
+  const owner = getConfig().telegramChatId;
+  return !!owner && String(chatId) === String(owner);
+}
+
+/** True if a message to this chat with this category is allowed to send. */
+function notifyAllowed(chatId: string, category?: NotifyCategory): boolean {
+  if (!isOwnerChat(chatId)) return true; // non-owner sends are not gated
+  return isNotifyCategoryAllowed(category);
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export async function sendMessage(chatId: string, text: string): Promise<void> {
+export async function sendMessage(
+  chatId: string,
+  text: string,
+  category?: NotifyCategory,
+): Promise<void> {
+  if (!notifyAllowed(chatId, category)) {
+    console.log(`[telegram] suppressed owner message (no allowed category): ${text.slice(0, 80)}`);
+    return;
+  }
   try {
     await postJson("sendMessage", { chat_id: chatId, text });
   } catch (err) {
@@ -120,7 +167,16 @@ export async function sendMessage(chatId: string, text: string): Promise<void> {
   }
 }
 
-export async function sendVideo(chatId: string, videoPath: string, caption: string): Promise<void> {
+export async function sendVideo(
+  chatId: string,
+  videoPath: string,
+  caption: string,
+  category?: NotifyCategory,
+): Promise<void> {
+  if (!notifyAllowed(chatId, category)) {
+    console.log("[telegram] suppressed owner video (no allowed category)");
+    return;
+  }
   try {
     await postMultipart(
       "sendVideo",
@@ -176,7 +232,7 @@ export async function sendApprovalRequest(chatId: string, approval: PendingAppro
     `⚠️ ${approval.request_type}: ${approval.description}\n\n` +
     `Reply YES to approve, NO to decline.\n` +
     `Approval ID: ${approval.id}`;
-  await sendMessage(chatId, text);
+  await sendMessage(chatId, text, 'approval');
 }
 
 /**
@@ -228,12 +284,17 @@ export function startWebhook(port: number, webhookPath: string): void {
 
 // ── Internal update handler ───────────────────────────────────────────────────
 
+interface TelegramMessage {
+  message_id: number;
+  chat: { id: number };
+  text?: string;
+}
+
 interface TelegramUpdate {
   update_id: number;
-  message?: {
-    message_id: number;
-    chat: { id: number };
-    text?: string;
+  message?: TelegramMessage & {
+    /** Present when the user replied to a previous message. */
+    reply_to_message?: TelegramMessage;
   };
 }
 
@@ -266,5 +327,10 @@ function handleUpdate(update: TelegramUpdate): void {
     }
   }
 
-  _onMessage?.(chatId, text, msg.message_id);
+  const replied = msg.reply_to_message;
+  const replyContext: ReplyContext | undefined = replied
+    ? { replyToMessageId: replied.message_id, replyToText: replied.text }
+    : undefined;
+
+  _onMessage?.(chatId, text, msg.message_id, replyContext);
 }

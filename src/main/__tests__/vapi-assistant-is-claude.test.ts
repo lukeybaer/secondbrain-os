@@ -40,11 +40,17 @@ function loadConfig(): any {
 }
 
 async function fetchVapiAssistant(id: string, key: string): Promise<any> {
-  const res = await fetch(`https://api.vapi.ai/assistant/${id}`, {
-    headers: { Authorization: `Bearer ${key}` },
-  });
-  if (!res.ok) throw new Error(`vapi GET ${res.status}`);
-  return res.json();
+  let lastStatus = 0;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const res = await fetch(`https://api.vapi.ai/assistant/${id}`, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    if (res.ok) return res.json();
+    lastStatus = res.status;
+    if (res.status !== 429) break;
+    await new Promise((resolve) => setTimeout(resolve, [1000, 5000, 10000, 20000, 40000][attempt]));
+  }
+  throw new Error(`vapi GET ${lastStatus}`);
 }
 
 function listToolNames(a: any): string[] {
@@ -58,9 +64,14 @@ describe('Vapi callback assistant — receptionist dispatches to Claude', () => 
   const config = loadConfig();
   const hasCreds = config.vapiApiKey && config.callbackAssistantId;
   const itOrSkip = hasCreds ? it : it.skip;
+  let assistantPromise: Promise<any> | null = null;
+  const getAssistant = () => {
+    assistantPromise ||= fetchVapiAssistant(config.callbackAssistantId, config.vapiApiKey);
+    return assistantPromise;
+  };
 
   itOrSkip('live Vapi model provider is openai OR custom-llm (no paid anthropic)', async () => {
-    const a = await fetchVapiAssistant(config.callbackAssistantId, config.vapiApiKey);
+    const a = await getAssistant();
     const provider = a?.model?.provider;
     expect(
       provider,
@@ -68,10 +79,10 @@ describe('Vapi callback assistant — receptionist dispatches to Claude', () => 
         `(future Claude-on-voice). Forbidden: anthropic (paid API), groq (paid), any ` +
         `other paid provider.`,
     ).toMatch(/^(openai|custom-llm)$/);
-  });
+  }, 30000);
 
   itOrSkip('live Vapi assistant has run_claude_code dispatch tool', async () => {
-    const a = await fetchVapiAssistant(config.callbackAssistantId, config.vapiApiKey);
+    const a = await getAssistant();
     const names = listToolNames(a);
     expect(
       names,
@@ -79,28 +90,47 @@ describe('Vapi callback assistant — receptionist dispatches to Claude', () => 
         `has no path to reach Claude for substantive work. She will role-play answers ` +
         `from stale memory instead of dispatching. One Amy requires the dispatch link.`,
     ).toContain('run_claude_code');
-  });
+  }, 30000);
 
   itOrSkip('live Vapi assistant has query_knowledge recall tool', async () => {
-    const a = await fetchVapiAssistant(config.callbackAssistantId, config.vapiApiKey);
+    const a = await getAssistant();
     const names = listToolNames(a);
     expect(names).toContain('query_knowledge');
-  });
+  }, 30000);
 
-  itOrSkip('firstMessage greets the owner by name, not generic desk pickup', async () => {
-    const a = await fetchVapiAssistant(config.callbackAssistantId, config.vapiApiKey);
+  itOrSkip('firstMessage is neutral, never owner-flavored (non-owner callers must not be greeted as the owner)', async () => {
+    // Inverted from the previous "must contain owner name" assertion on
+    // 2026-05-10. Reason: the same Vapi assistant answers ALL inbound calls
+    // (BAI candidates calling back, anyone dialing the number), and a
+    // Luke-flavored static firstMessage embarrassed Luke when strangers
+    // got greeted as him. The owner-branch warmth lives in calls.ts at
+    // ~line 583 (callerIsOwner ternary inside buildCallbackAssistantConfig)
+    // and is applied by the running app's syncCallbackAssistant ONLY when
+    // the previous caller was the owner. The static push-amy-vapi-config.js
+    // baseline must be neutral so non-owner inbound never hits a Luke
+    // greeting. See memory/AMY.md "Inbound call rules" section. If this
+    // test fails because firstMessage now contains the owner name, do NOT
+    // edit it back, fix the source that is reverting it, the previous
+    // failure mode caused Codex to silently overwrite the script and
+    // re-push owner-flavored greetings to live Vapi without coordination.
+    const a = await getAssistant();
     const fm = (a?.firstMessage || '').toLowerCase();
     const owner = (config.ownerName || 'Luke').toLowerCase();
     expect(
+      fm.length,
+      `firstMessage must be non-empty so the call doesn't open in dead air.`,
+    ).toBeGreaterThan(0);
+    expect(
       fm,
-      `firstMessage "${a?.firstMessage}" must address ${config.ownerName || 'Luke'} by name. ` +
-        `Generic "Hi there, how can I help you?" means the assistant has drifted from the ` +
-        `owner-inbound config.`,
-    ).toContain(owner);
-  });
+      `firstMessage "${a?.firstMessage}" must NOT address ${config.ownerName || 'Luke'} by name. ` +
+        `Static firstMessage is greeted to ALL inbound callers including strangers; ` +
+        `owner-warmth is applied dynamically by syncCallbackAssistant in calls.ts. ` +
+        `See memory/AMY.md "Inbound call rules" for the full rule.`,
+    ).not.toContain(owner);
+  }, 30000);
 
   itOrSkip('system prompt tells Amy to dispatch substantive questions to Claude', async () => {
-    const a = await fetchVapiAssistant(config.callbackAssistantId, config.vapiApiKey);
+    const a = await getAssistant();
     const sp = (a?.model?.messages?.[0]?.content || '').toLowerCase();
     expect(
       sp,
@@ -108,5 +138,5 @@ describe('Vapi callback assistant — receptionist dispatches to Claude', () => 
         `Without explicit dispatch instructions, gpt-4o tries to answer from its own ` +
         `knowledge and makes things up about sessions, briefings, and Luke's projects.`,
     ).toContain('run_claude_code');
-  });
+  }, 30000);
 });
