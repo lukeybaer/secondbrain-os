@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
+import { resolvePathWithinBase } from './path-guard';
 import { getConfig, saveConfig } from './config';
 import { streamAllSpeeches, getSpeech, getTranscript, login, invalidateSession } from './otter';
 import { tagConversation } from './tagger';
@@ -1572,10 +1573,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('tm:stats', () => getStorageStats());
   ipcMain.handle('tm:prune', async () => pruneTimeMachineData());
   ipcMain.handle('tm:screenshot', async (_e, localPath: string | null, s3Key: string | null) => {
+    // Must match timemachine.ts dataDir() — %APPDATA%/secondbrain/data/timemachine
+    const tmDataDir = path.join(app.getPath('userData'), 'data', 'timemachine');
     // Try local file first
-    if (localPath && fs.existsSync(localPath)) {
-      const data = fs.readFileSync(localPath);
-      return { success: true, dataUrl: `data:image/jpeg;base64,${data.toString('base64')}` };
+    if (localPath) {
+      let safePath: string;
+      try {
+        safePath = resolvePathWithinBase(tmDataDir, localPath);
+      } catch (err) {
+        console.warn(
+          `[tm:screenshot] rejected localPath outside Time Machine data dir (${tmDataDir}): ${localPath}`,
+          err,
+        );
+        return { success: false, error: 'Invalid local path' };
+      }
+      if (fs.existsSync(safePath)) {
+        const data = fs.readFileSync(safePath);
+        return { success: true, dataUrl: `data:image/jpeg;base64,${data.toString('base64')}` };
+      }
     }
     // Try S3
     if (s3Key) {

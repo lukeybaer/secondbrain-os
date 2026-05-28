@@ -17,6 +17,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { app } from 'electron';
 import Database from 'better-sqlite3';
+import { resolvePathWithinBase } from './path-guard';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -298,7 +299,8 @@ export async function inspectSnapshot(
 ): Promise<{
   files: { name: string; isDir: boolean; size: number }[];
 } | null> {
-  const base = path.join(snapshotDir(id), 'data', subPath ?? '');
+  const dataRoot = path.join(snapshotDir(id), 'data');
+  const base = resolvePathWithinBase(dataRoot, subPath ?? '');
   if (!fs.existsSync(base)) return null;
 
   const entries = await fsp.readdir(base, { withFileTypes: true });
@@ -316,7 +318,8 @@ export async function inspectSnapshot(
  * Read a specific file from a snapshot (for querying historical state).
  */
 export async function readSnapshotFile(id: string, relativePath: string): Promise<string | null> {
-  const filePath = path.join(snapshotDir(id), 'data', relativePath);
+  const dataRoot = path.join(snapshotDir(id), 'data');
+  const filePath = resolvePathWithinBase(dataRoot, relativePath);
   if (!fs.existsSync(filePath)) return null;
   return fsp.readFile(filePath, 'utf-8');
 }
