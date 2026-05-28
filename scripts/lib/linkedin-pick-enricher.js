@@ -77,7 +77,9 @@ function loadContactFileByName(name) {
 }
 
 function parseFrontmatter(raw) {
-  const m = raw.match(/^---\n([\s\S]*?)\n---\n/);
+  // Normalize CRLF so the regex works on both Windows-and Unix-written files.
+  const normalized = String(raw || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const m = normalized.match(/^---\n([\s\S]*?)\n---\n/);
   if (!m) return {};
   const out = {};
   for (const line of m[1].split('\n')) {
@@ -124,16 +126,24 @@ function firstMeaningfulLine(block, maxLen = 220) {
 function parseContactFile(raw) {
   if (!raw) return null;
   const fm = parseFrontmatter(raw);
+  // Try the more-specific heading first: "History (Recent)" captures rolling
+  // interaction logs written by nightly enrichers; bare "History" is the legacy
+  // fallback for older files that haven't been updated.
+  const history =
+    extractSection(raw, 'History (Recent)') ||
+    extractSection(raw, 'History');
   return {
     name: fm.name || '',
     description: fm.description || '',
     category: fm.category || '',
     warmth: fm.warmth || fm.category || '',
     linkedin: fm.linkedin || '',
+    lastInteraction: (fm.last_interaction || '').replace(/['"]/g, '').trim(),
     professional: extractSection(raw, 'Professional'),
     postsAbout: extractSection(raw, 'What They Post About'),
     beliefs: extractSection(raw, 'What They Believe In'),
-    history: extractSection(raw, 'History'),
+    relationship: extractSection(raw, 'Relationship'),
+    history,
     trending: extractSection(raw, 'Trending Toward'),
     predictions: extractSection(raw, 'Predictions'),
   };
@@ -177,6 +187,24 @@ function buildDraft(ev, cf) {
   const first = firstName((ev && ev.contactName) || (cf && cf.name) || '');
   const headline = compressHeadline((ev && ev.headline) || '');
   const postTopic = cf ? firstMeaningfulLine(cf.postsAbout, 140) : '';
+
+  // Active relationships (hot/inner-circle) get a comment-style engagement draft,
+  // not a cold-outreach message. The framing is "I saw your post, good angle" not
+  // "can we connect?"
+  if (cf && isActiveRelationship(cf)) {
+    const lines = [];
+    if (first) lines.push(`${first},`);
+    if (headline) {
+      lines.push(`solid post.${postTopic ? ' The angle on ' + postTopic.replace(/[.,]$/, '') + ' is the right frame.' : ''} Aligns with what we have been building.`);
+    } else if (postTopic) {
+      lines.push(`the ${postTopic.replace(/[.,]$/, '')} thread you are developing is exactly the right frame for what we are doing.`);
+    } else {
+      lines.push('strong perspective. The systems angle you take is the clearest framing I have seen on this.');
+    }
+    lines.push('Worth amplifying from the PixSeat side too. Luke');
+    return cleanText(lines.join(' '));
+  }
+
   const overlap = cf ? firstMeaningfulLine(cf.trending || cf.professional, 140) : '';
   const lines = [];
   if (first) lines.push(`${first},`);
@@ -195,6 +223,20 @@ function buildDraft(ev, cf) {
   lines.push('Open to a quick exchange?');
   lines.push('Luke');
   return cleanText(lines.join(' '));
+}
+
+// Returns true when the contact file signals an ACTIVE relationship (not cold outreach).
+// Used to select the right draft and relationship-history copy.
+function isActiveRelationship(cf) {
+  if (!cf) return false;
+  const warmth = (cf.warmth || '').toLowerCase();
+  const category = (cf.category || '').toLowerCase();
+  return (
+    warmth === 'hot' ||
+    warmth === 'inner-circle' ||
+    category === 'inner-circle' ||
+    category === 'active-partner'
+  );
 }
 
 function buildWhyThisNote(ev, cf) {
@@ -218,12 +260,27 @@ function buildWhyThisNote(ev, cf) {
   const mutualGoals = overlapSource
     ? `${overlapSource.replace(/[.,]$/, '')} maps to Luke priorities: ${LUKE_PRIORITY_ANCHORS.slice(0, 3).join(', ')}.`
     : `Strategic overlap on ${LUKE_PRIORITY_ANCHORS.slice(0, 2).join(' and ')}.`;
-  const lastHistoryLine = firstMeaningfulLine(cf.history, 220) || 'No interaction logged yet, treat as warm re-introduction.';
+
+  let relationshipHistory;
+  if (isActiveRelationship(cf)) {
+    // Hot/inner-circle contacts have real relationship history; never fall back to
+    // "No interaction logged" or "first-outreach" language for them.
+    const parts = [];
+    const relationshipLine = firstMeaningfulLine(cf.relationship, 120);
+    if (relationshipLine) parts.push(cleanText(relationshipLine));
+    if (cf.lastInteraction) parts.push(`Last contact: ${cf.lastInteraction}.`);
+    parts.push('Active relationship, not cold outreach.');
+    relationshipHistory = parts.join(' ');
+  } else {
+    const lastHistoryLine = firstMeaningfulLine(cf.history, 220) || 'No interaction logged yet, treat as warm re-introduction.';
+    relationshipHistory = cleanText(lastHistoryLine);
+  }
+
   return {
     theirPost: cleanText(theirPost).slice(0, 260),
     target: cleanText(target).slice(0, 240),
     mutualGoals: cleanText(mutualGoals).slice(0, 240),
-    relationshipHistory: cleanText(lastHistoryLine).slice(0, 240),
+    relationshipHistory: relationshipHistory.slice(0, 240),
   };
 }
 
@@ -269,6 +326,7 @@ module.exports = {
   candidatePaths,
   loadContactFileByName,
   parseContactFile,
+  isActiveRelationship,
   buildContext,
   buildDraft,
   buildWhyThisNote,
