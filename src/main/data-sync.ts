@@ -29,7 +29,7 @@ async function syncOnce(): Promise<void> {
       console.warn("[data-sync] sync failed: HTTP", res.status);
     }
   } catch {
-    // Silently swallow , EC2 might be temporarily unreachable
+    // Silently swallow — EC2 might be temporarily unreachable
   }
 }
 

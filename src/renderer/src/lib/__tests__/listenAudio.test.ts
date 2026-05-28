@@ -1,5 +1,5 @@
 /**
- * Tests for listenAudio , catches broken listen-in implementations.
+ * Tests for listenAudio — catches broken listen-in implementations.
  *
  * History of broken approaches:
  *  - WebSocket + μ-law decode: garbage noise (wrong format)
@@ -65,7 +65,7 @@ describe("VAPI_SAMPLE_RATE", () => {
 });
 
 // ---------------------------------------------------------------------------
-// startListening integration , mock WebSocket server
+// startListening integration — mock WebSocket server
 // ---------------------------------------------------------------------------
 
 /** Build a minimal mock AudioContext factory that vitest can use (no real Web Audio). */
@@ -88,7 +88,7 @@ function makeMockAudioContext() {
     resume: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
   };
-  // Factory function (not constructor) , avoids arrow-function-as-constructor issues
+  // Factory function (not constructor) — avoids arrow-function-as-constructor issues
   const factory = vi.fn(() => instance as unknown as AudioContext);
   return { factory, instance };
 }

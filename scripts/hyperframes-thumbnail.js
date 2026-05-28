@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// hyperframes-thumbnail.js , generate a proper YouTube thumbnail for a stuck
+// hyperframes-thumbnail.js — generate a proper YouTube thumbnail for a stuck
 // short-form video using HeyGen's open-source HyperFrames HTML-to-MP4/PNG
 // renderer. First integration of the Oct 2026 HyperFrames framework into
 // the repo's video pipeline; attacks rubric gap #30 (high-quality
@@ -117,7 +117,7 @@ function renderComposition(outDir) {
   const hyperframesBin = path.join(TOOLS_DIR, 'packages', 'cli', 'src', 'cli.ts');
   if (!fs.existsSync(hyperframesBin)) {
     console.warn(
-      `[hyperframes-thumbnail] CLI not found at ${hyperframesBin} , skipping render (composition written to ${outDir})`,
+      `[hyperframes-thumbnail] CLI not found at ${hyperframesBin} — skipping render (composition written to ${outDir})`,
     );
     return null;
   }
@@ -129,7 +129,7 @@ function renderComposition(outDir) {
     : ['tsx', hyperframesBin, 'render', '--input', path.join(outDir, 'composition.html'), '--output', path.join(outDir, 'thumbnail.png')];
   const r = spawnSync(cmd, args, { cwd: TOOLS_DIR, stdio: 'inherit' });
   if (r.status !== 0) {
-    console.warn('[hyperframes-thumbnail] render exited non-zero , composition still authored; retry manually with:');
+    console.warn('[hyperframes-thumbnail] render exited non-zero — composition still authored; retry manually with:');
     console.warn(`  cd ${TOOLS_DIR} && ${cmd} ${args.join(' ')}`);
     return null;
   }

@@ -63,7 +63,7 @@ export default function ToastProvider({ children }: { children: React.ReactNode 
   return (
     <ToastContext.Provider value={{ addToast }}>
       {children}
-      {/* Toast container , bottom-right, stacks upward */}
+      {/* Toast container — bottom-right, stacks upward */}
       <div style={{
         position: "fixed",
         bottom: 20,
@@ -100,7 +100,7 @@ export default function ToastProvider({ children }: { children: React.ReactNode 
           </div>
         ))}
       </div>
-      {/* Inline keyframes , no CSS file needed */}
+      {/* Inline keyframes — no CSS file needed */}
       <style>{`
         @keyframes toast-slide-in {
           from { opacity: 0; transform: translateX(20px); }

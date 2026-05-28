@@ -76,7 +76,7 @@ export async function login(): Promise<void> {
 
   // ── Session-cookie auth (Google SSO path) ─────────────────────────────────
   // If the user authenticated via the in-app browser, we have cookies + userId
-  // already.  Use them directly , no password needed.
+  // already.  Use them directly — no password needed.
   if (config.otterSessionCookie && config.otterUserId) {
     sessionCookies = config.otterSessionCookie;
     userId = config.otterUserId;
@@ -179,7 +179,7 @@ function normalizeSpeech(raw: any): OtterSpeech {
 }
 
 function extractTranscript(raw: any): string {
-  // Structured segments , emit speaker labels when they change
+  // Structured segments — emit speaker labels when they change
   if (Array.isArray(raw.transcripts) && raw.transcripts.length > 0) {
     // Build speaker id → display name map
     const speakerMap = new Map<string, string>();
@@ -253,7 +253,7 @@ function extractTranscript(raw: any): string {
   return "";
 }
 
-// ── Streaming fetch , calls onBatch progressively ─────────────────────────────
+// ── Streaming fetch — calls onBatch progressively ─────────────────────────────
 // Batch sizes: first 1, then 4 more (5 total), then 20s thereafter
 
 function extractId(item: any): string | undefined {
@@ -319,7 +319,7 @@ export async function streamAllSpeeches(
 
     if (!firstDone) {
       firstDone = true;
-      // Don't set cursor yet , first full page uses no cursor
+      // Don't set cursor yet — first full page uses no cursor
     } else {
       if (!responseTs) { debugLog("No last_load_ts in response, done."); break; }
       if (responseTs === lastLoadTs) { debugLog("last_load_ts unchanged, done."); break; }

@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// Stale-RED escalation , the #gap prevention locked in on 2026-04-20.
+// Stale-RED escalation — the #gap prevention locked in on 2026-04-20.
 //
 // Reads the last N days of pre-briefing-diagnostic-YYYY-MM-DD.json and finds
 // any probe that has been RED for 3+ consecutive days. For each one, writes
 // a record to data/agent/escalations.jsonl and (unless --dry-run) drafts a
-// Gmail escalation to owner@example.com with the subject
-// `[EA cannot heal] <probeName> red <N> days` so the item surfaces LOUDER
+// Gmail escalation to luke.d.baer@gmail.com with the subject
+// `[Amy cannot heal] <probeName> red <N> days` so the item surfaces LOUDER
 // than a routine briefing line.
 //
 // The premise: if a probe's canAutoHeal is false and the briefing's daily
-// "heads up" line isn't getting the owner to fix it either, the architecture has
-// failed , the item needs a louder channel. Detection without escalation is
+// "heads up" line isn't getting Luke to fix it either, the architecture has
+// failed — the item needs a louder channel. Detection without escalation is
 // a status board, not an EA.
 //
 // Memory: secondbrain/memory/feedback_canautoheal_false_is_not_a_heal.md
@@ -46,7 +46,7 @@ function computeStaleRedProbes(diagDir, opts = {}) {
   const history = [];
   for (let i = 0; i <= streakDays; i++) {
     const d = loadDiagnostic(diagDir, daysAgoStr(i));
-    if (!d) return { error: `missing diagnostic for ${daysAgoStr(i)} , cannot prove stale streak` };
+    if (!d) return { error: `missing diagnostic for ${daysAgoStr(i)} — cannot prove stale streak` };
     history.push({ date: daysAgoStr(i), checks: d.checks || {} });
   }
 
@@ -91,9 +91,9 @@ function logEscalation(logPath, entry) {
 
 function draftGmailEscalation(entry, opts) {
   const { dryRun, repo } = opts;
-  const subject = `[EA cannot heal] ${entry.probe} red ${entry.streakDays} days`;
+  const subject = `[Amy cannot heal] ${entry.probe} red ${entry.streakDays} days`;
   const body = [
-    `EA detected ${entry.probe} has been RED for ${entry.streakDays} consecutive days.`,
+    `Amy detected ${entry.probe} has been RED for ${entry.streakDays} consecutive days.`,
     ``,
     `Detail: ${entry.detail}`,
     `First RED: ${entry.firstRedDate}`,
@@ -101,13 +101,13 @@ function draftGmailEscalation(entry, opts) {
     ``,
     entry.canAutoHeal
       ? `Auto-heal is coded but something is blocking it. Investigate scripts/health-self-heal.js heal path for this probe.`
-      : `No auto-heal path exists. Either implement one, or accept this as a manual task , but the daily briefing line is not moving the needle.`,
+      : `No auto-heal path exists. Either implement one, or accept this as a manual task — but the daily briefing line is not moving the needle.`,
     ``,
     `Dispatched from scripts/stale-red-escalation.js.`,
   ].join('\n');
 
   if (dryRun) {
-    console.log(`[dry-run] would draft Gmail to owner@example.com`);
+    console.log(`[dry-run] would draft Gmail to luke.d.baer@gmail.com`);
     console.log(`  subject: ${subject}`);
     return { drafted: false, dryRun: true };
   }
@@ -119,7 +119,7 @@ function draftGmailEscalation(entry, opts) {
       return { drafted: false, error: 'send-gmail.py not found' };
     }
     execSync(
-      `python "${sendScript}" --to owner@example.com --subject "${subject.replace(/"/g, '\\"')}" --body-file -`,
+      `python "${sendScript}" --to luke.d.baer@gmail.com --subject "${subject.replace(/"/g, '\\"')}" --body-file -`,
       { input: body, encoding: 'utf8', timeout: 30000 },
     );
     return { drafted: true };
@@ -144,14 +144,14 @@ function main() {
   console.log(`[stale-red] found ${result.stale.length} stale RED probe(s)`);
   for (const s of result.stale) {
     if (hasExistingEscalation(ESCALATION_LOG, s.probe)) {
-      console.log(`[skip] ${s.probe} , already escalated in last 24h`);
+      console.log(`[skip] ${s.probe} — already escalated in last 24h`);
       continue;
     }
     const ts = new Date().toISOString();
     const drafted = draftGmailEscalation(s, { dryRun, repo: REPO });
     const entry = { ts, ...s, drafted };
     if (!dryRun) logEscalation(ESCALATION_LOG, entry);
-    console.log(`[escalate] ${s.probe} , ${s.streakDays}d red , drafted=${JSON.stringify(drafted)}`);
+    console.log(`[escalate] ${s.probe} — ${s.streakDays}d red — drafted=${JSON.stringify(drafted)}`);
   }
   process.exit(0);
 }

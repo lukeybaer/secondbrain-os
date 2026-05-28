@@ -59,7 +59,11 @@ describe('MEMORY.md Tier 1 discipline', () => {
   it('lists the three non-negotiable simple needs', () => {
     expect(src).toMatch(/three non-negotiable needs/i);
     expect(src).toContain('One Amy');
-    expect(src).toContain('Git-tracked');
+    // 2026-05-23 refactor (commit a3b315dc) split "Git-tracked with raw
+    // archival" into two distinct phrasings: "Durability" (raw payload
+    // before processing) AND "Version control" (source/memory/hooks in
+    // git). Either phrasing satisfies the original intent.
+    expect(src).toMatch(/Git-tracked|Version control|Durability|version-controlled/i);
     expect(src).toContain('Zero permission prompts');
   });
 
@@ -146,7 +150,7 @@ describe('MEMORY.md State locations table is a contract, not a description', () 
   it('NO row is flagged pending migration (table must reflect reality)', () => {
     const pending = rows.filter((r) => classifyTracked(r.tracked) === 'pending-migration');
     if (pending.length > 0) {
-      const lines = pending.map((r) => `  - "${r.what}" , tracked="${r.tracked}"`).join('\n');
+      const lines = pending.map((r) => `  - "${r.what}" — tracked="${r.tracked}"`).join('\n');
       throw new Error(
         `State locations table has ${pending.length} row(s) flagged "needs migration":\n${lines}\n\n` +
           `Either finish the migration, or update the Tracked column to reflect reality.\n` +
@@ -174,7 +178,7 @@ describe('MEMORY.md State locations table is a contract, not a description', () 
       for (const raw of row.paths) {
         const resolved = resolveStateTablePath(raw);
         if (resolved === null) {
-          attempts.push(`${raw} (skipped , not a local path)`);
+          attempts.push(`${raw} (skipped — not a local path)`);
           continue;
         }
         if (pathOrGlobExists(resolved)) {
@@ -185,7 +189,7 @@ describe('MEMORY.md State locations table is a contract, not a description', () 
       }
       if (!anyExists) {
         failures.push(
-          `"${row.what}": no path in Where column exists on disk , tried:\n      ${attempts.join('\n      ')}`,
+          `"${row.what}": no path in Where column exists on disk — tried:\n      ${attempts.join('\n      ')}`,
         );
       }
     }
@@ -236,7 +240,7 @@ describe('MEMORY.md State locations table is a contract, not a description', () 
  * EC2 path, etc.).
  */
 function resolveStateTablePath(raw: string): string | null {
-  // Strip any trailing /*.jsonl or /*/SKILL.md glob , we check the parent dir
+  // Strip any trailing /*.jsonl or /*/SKILL.md glob — we check the parent dir
   const cleaned = raw.replace(/\s*\(\d+ files\).*$/, '');
 
   if (/^https?:\/\//.test(cleaned)) return null;
@@ -254,7 +258,7 @@ function resolveStateTablePath(raw: string): string | null {
     return path.join(home, stripGlobTail(cleaned.slice(2)));
   }
 
-  // AppData, Documents, etc , relative to %USERPROFILE%
+  // AppData, Documents, etc — relative to %USERPROFILE%
   if (/^(AppData|Documents)\//.test(cleaned)) {
     const home = process.env.USERPROFILE || process.env.HOME || '';
     return path.join(home, stripGlobTail(cleaned));
@@ -265,7 +269,7 @@ function resolveStateTablePath(raw: string): string | null {
     return stripGlobTail(cleaned);
   }
 
-  // Anything else (remote URIs, SSH tunnels, etc.) , not validatable locally
+  // Anything else (remote URIs, SSH tunnels, etc.) — not validatable locally
   return null;
 }
 
@@ -327,7 +331,7 @@ describe('reference_amy_state_locations.md discipline', () => {
     expect(src).toMatch(/Claude remote triggers/);
   });
 
-  it('points at Documents/Claude/Scheduled , the path I missed on 2026-04-10', () => {
+  it('points at Documents/Claude/Scheduled — the path I missed on 2026-04-10', () => {
     expect(src).toContain('Documents/Claude/Scheduled');
   });
 

@@ -1,8 +1,8 @@
 /**
- * Regression guard: 2026-04-20 , stale-RED escalation must detect probes
+ * Regression guard: 2026-04-20 — stale-RED escalation must detect probes
  * that have been RED for 3+ consecutive days.
  *
- * On 2026-04-20 the owner woke up to a briefing that flagged staleUploads RED
+ * On 2026-04-20 Luke woke up to a briefing that flagged staleUploads RED
  * (18 days since approval) and CI RED (5 days). Both had been in the briefing
  * every morning. Neither had a louder escalation path. The daily briefing
  * line was not moving the needle; detection without escalation is a status

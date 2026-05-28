@@ -32,7 +32,7 @@ export default function Settings() {
 
         {(!config.otterEmail || !config.otterPassword) && (
           <div style={{ fontSize: 12, color: "#f87171", background: "#1a0a0a", border: "1px solid #7f1d1d", borderRadius: 6, padding: "8px 12px", marginBottom: 12 }}>
-            ⚠ Credentials missing , Otter polling is disabled. Enter email + password below and Save.
+            ⚠ Credentials missing — Otter polling is disabled. Enter email + password below and Save.
           </div>
         )}
 
@@ -158,14 +158,14 @@ export default function Settings() {
           onChange={v => setConfig({ ...config, vapiApiKey: v })}
           type="password"
           placeholder="vapi_..."
-          help="From vapi.ai → Dashboard → API Keys , use the Private Key"
+          help="From vapi.ai → Dashboard → API Keys — use the Private Key"
         />
         <Field
           label="Phone Number ID"
           value={config.vapiPhoneNumberId || ""}
           onChange={v => setConfig({ ...config, vapiPhoneNumberId: v })}
           placeholder="e.g. 3fa85f64-5717-4562-b3fc-2c963f66afa6"
-          help="From vapi.ai → Phone Numbers , the UUID of your outbound number"
+          help="From vapi.ai → Phone Numbers — the UUID of your outbound number"
         />
         <div style={{ fontSize: 12, color: "#555", lineHeight: 1.6, marginTop: 4, marginBottom: 12 }}>
           Inbound callbacks are handled automatically. If you change the Phone Number ID, click below to re-link the callback assistant to the new number.
@@ -239,20 +239,20 @@ export default function Settings() {
           value={config.telegramChatId || ""}
           onChange={v => setConfig({ ...config, telegramChatId: v })}
           placeholder="your-chat-id"
-          help="Your personal Telegram user ID , message @userinfobot to find it"
+          help="Your personal Telegram user ID — message @userinfobot to find it"
         />
       </SettingsSection>
 
       <SettingsSection title="Executive Assistant">
         <div style={{ fontSize: 12, color: "#555", marginBottom: 14, lineHeight: 1.6 }}>
-          Configuration for autonomous actions , calling, callbacks, and remote orchestration.
+          Configuration for autonomous actions — calling, callbacks, and remote orchestration.
         </div>
         <Field
           label="Private SIM (Owner's number)"
           value={config.ownerPrivateSim || ""}
           onChange={v => setConfig({ ...config, ownerPrivateSim: v })}
           placeholder="+15555555555"
-          help="Owner's private phone number , used for Vapi callbacks and call listen-in"
+          help="Owner's private phone number — used for Vapi callbacks and call listen-in"
         />
         <Field
           label="Callback Assistant ID"
@@ -266,7 +266,7 @@ export default function Settings() {
           value={config.ec2BaseUrl || ""}
           onChange={v => setConfig({ ...config, ec2BaseUrl: v })}
           placeholder="https://your-server.example.com:3001"
-          help="SecondBrain backend server , handles Telegram commands and Vapi webhooks"
+          help="SecondBrain backend server — handles Telegram commands and Vapi webhooks"
         />
       </SettingsSection>
 
@@ -280,7 +280,7 @@ export default function Settings() {
           onChange={v => setConfig({ ...config, groqApiKey: v })}
           type="password"
           placeholder="gsk_..."
-          help="From console.groq.com , free tier available"
+          help="From console.groq.com — free tier available"
         />
         <Field
           label="NewsAPI Key (optional)"
@@ -288,7 +288,7 @@ export default function Settings() {
           onChange={v => setConfig({ ...config, newsApiKey: v })}
           type="password"
           placeholder="abc123..."
-          help="From newsapi.org , free for 100 requests/day. Leave blank for RSS-only news."
+          help="From newsapi.org — free for 100 requests/day. Leave blank for RSS-only news."
         />
       </SettingsSection>
 

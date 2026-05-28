@@ -59,7 +59,7 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
-// Detect aggregate/count questions at the code level , never rely on the AI
+// Detect aggregate/count questions at the code level — never rely on the AI
 // planner for this, since it might return needsTranscripts:true and route into
 // the filter which will aggressively trim the result set.
 function isAggregateQuery(question: string): boolean {
@@ -79,7 +79,7 @@ function callRecordBlock(record: CallRecord): string {
   const date = new Date(record.createdAt).toLocaleString();
   const status = record.completed ? "✓ Completed" : record.status === "ended" ? "Ended" : record.status;
   const lines = [
-    `## ${date} , Call to ${record.phoneNumber} , ${status}`,
+    `## ${date} — Call to ${record.phoneNumber} — ${status}`,
     `Goal: ${record.instructions}`,
   ];
   if (record.personalContext) lines.push(`Context: ${record.personalContext}`);
@@ -119,7 +119,7 @@ async function detectCallIntent(
   if (SEARCH_INTENT.test(question) && !CALL_KEYWORDS.test(question)) return { isCall: false };
 
   // Quick bail-out: no explicit call keyword
-  // The botAskedForNumber bypass is intentionally removed , it caused false positives
+  // The botAskedForNumber bypass is intentionally removed — it caused false positives
   // where summarization queries triggered call detection because a prior message
   // happened to mention a phone number. Now we require an explicit call verb.
   if (!CALL_KEYWORDS.test(question)) return { isCall: false };
@@ -128,7 +128,7 @@ async function detectCallIntent(
 
   const recentHistory = history.slice(-6).map(m => `${m.role}: ${m.content}`).join("\n");
 
-  // Gather context , all best-effort, never let errors abort call detection
+  // Gather context — all best-effort, never let errors abort call detection
   let profileText = "";
   let callHistoryText = "(no call history yet)";
   let personasText = "";
@@ -141,7 +141,7 @@ async function detectCallIntent(
       callHistoryText = recentCalls.map((c, i) => {
         const date = new Date(c.createdAt).toLocaleDateString();
         const status = c.completed ? "completed" : c.status === "ended" ? "ended" : c.status;
-        return `[${i + 1}] ${date} → ${c.phoneNumber}: "${c.instructions.slice(0, 120)}" , ${status}`;
+        return `[${i + 1}] ${date} → ${c.phoneNumber}: "${c.instructions.slice(0, 120)}" — ${status}`;
       }).join("\n");
     }
   } catch { /* ignore */ }
@@ -175,7 +175,7 @@ Return ONLY valid JSON, no other text:
 {
   "isCallRequest": true | false,
   "phoneNumber": "+1XXXXXXXXXX" | null,
-  "instructions": "GOAL + APPROACH , what the AI must accomplish AND key points on how to do it. Write this as guidance for the AI caller, NOT as a script to read aloud. Example: 'Goal: Convince the person to reschedule the meeting to next week. Approach: Be friendly and understanding, acknowledge inconvenience, suggest Tuesday or Wednesday as alternatives, confirm they will get a calendar invite.' Another example: 'Goal: Make the person feel appreciated and have a good day. Approach: Call as a warm check-in, express genuine appreciation for who they are, ask how they are doing, offer support if they need anything , keep it brief and sincere, do not just read compliments.' The AI will speak naturally from this guidance , never write a pre-written script." | null,
+  "instructions": "GOAL + APPROACH — what the AI must accomplish AND key points on how to do it. Write this as guidance for the AI caller, NOT as a script to read aloud. Example: 'Goal: Convince the person to reschedule the meeting to next week. Approach: Be friendly and understanding, acknowledge inconvenience, suggest Tuesday or Wednesday as alternatives, confirm they will get a calendar invite.' Another example: 'Goal: Make the person feel appreciated and have a good day. Approach: Call as a warm check-in, express genuine appreciation for who they are, ask how they are doing, offer support if they need anything — keep it brief and sincere, do not just read compliments.' The AI will speak naturally from this guidance — never write a pre-written script." | null,
   "personalContext": "any background info the AI should know (names, account details, history, relationship context)" | null,
   "leaveVoicemail": true | false,
   "personaId": "persona-uuid" | null,
@@ -297,7 +297,7 @@ async function planSearch(
         role: "system",
         content: `Analyze a question about a meeting transcript library and extract a search plan.
 Return JSON:
-- people: names to find (e.g. ["Alice", "Alice Smith"]). Include first + last names separately.
+- people: names to find (e.g. ["Jack", "Jack Smith"]). Include first + last names separately.
 - topics: subjects/themes (e.g. ["product roadmap", "hiring"])
 - keywords: other search terms (e.g. ["deadline", "Q3"])
 - needsTranscripts: true only if the answer requires reading actual spoken text (specific quotes, detailed narrative). False for counts, lists, who attended, topic summaries.
@@ -427,7 +427,7 @@ function searchByPlan(plan: SearchPlan, candidates?: ConversationMeta[]): Conver
   const metaMatches = all.map(meta => {
     let score = 0;
     for (const term of allTerms) {
-      // Always check speakers and peopleMentioned , don't rely on the planner
+      // Always check speakers and peopleMentioned — don't rely on the planner
       // correctly categorizing names into plan.people vs plan.keywords
       if (meta.speakers.some(s => s.toLowerCase().includes(term))) score += 20;
       if (meta.peopleMentioned.some(p => p.toLowerCase().includes(term))) score += 15;
@@ -465,7 +465,7 @@ async function filterToRelevant(
 ): Promise<ConversationMeta[]> {
   if (metas.length <= 12) return metas;
 
-  // No hard cap , send all candidates so we don't silently drop matches.
+  // No hard cap — send all candidates so we don't silently drop matches.
   // Summaries are compact (~50 tokens each), so 300 candidates = ~15k tokens.
   const candidates = metas;
   const summaries = candidates.map((m, i) =>
@@ -478,7 +478,7 @@ async function filterToRelevant(
       {
         role: "system",
         content: `Review meeting summaries and identify which are relevant to the question.
-Return JSON: {"relevant": [0, 3, 7, ...]} , indices of relevant meetings.
+Return JSON: {"relevant": [0, 3, 7, ...]} — indices of relevant meetings.
 Be inclusive. Searching for: ${plan.explanation}`,
       },
       { role: "user", content: `Question: "${question}"\n\nMeetings:\n${summaries}` },
@@ -530,7 +530,7 @@ function convTokens(conv: LoadedConv, withTranscript: boolean): number {
 
 // ── Token-aware batch grouping ──────────────────────────────────────────────
 // Groups conversations into batches where each batch fits within CALL_TOKEN_BUDGET.
-// Never truncates , just splits into more batches if needed.
+// Never truncates — just splits into more batches if needed.
 
 function groupIntoBatches(convs: LoadedConv[], withTranscripts: boolean): LoadedConv[][] {
   const overhead = 2000; // system prompt + question + response buffer
@@ -594,7 +594,7 @@ Extract ALL relevant information from these conversations:
 - Relevant quotes or statements (if transcripts provided)
 - Relevant decisions or outcomes
 - Counts and patterns
-Be thorough. This is batch ${i + 1} of ${batches.length} , your findings will be combined with other batches.`,
+Be thorough. This is batch ${i + 1} of ${batches.length} — your findings will be combined with other batches.`,
         },
         { role: "user", content: context },
       ],
@@ -606,7 +606,7 @@ Be thorough. This is batch ${i + 1} of ${batches.length} , your findings will be
     return `=== Batch ${i + 1}/${batches.length}: ${batch.length} conversations (${batch.map(c => c.meta.title).slice(0, 3).join(", ")}${batch.length > 3 ? "..." : ""}) ===\n${content}`;
   });
 
-  // Run batches , process sequentially to avoid overwhelming the API
+  // Run batches — process sequentially to avoid overwhelming the API
   const findings: string[] = [];
   for (const p of findingsPromises) {
     findings.push(await p);
@@ -620,7 +620,7 @@ Be thorough. This is batch ${i + 1} of ${batches.length} , your findings will be
       content: `${systemWithDataDir}
 
 You have analyzed ALL ${convs.length} conversations across ${batches.length} batches.
-Do NOT mention batches in your answer , give a direct, complete answer based on the findings below.${aggregate ? `\nIMPORTANT: These ${convs.length} conversations are the complete result set. Count every one listed , do not refilter based on your own judgment.` : ""}
+Do NOT mention batches in your answer — give a direct, complete answer based on the findings below.${aggregate ? `\nIMPORTANT: These ${convs.length} conversations are the complete result set. Count every one listed — do not refilter based on your own judgment.` : ""}
 ${callsContext ? `\n# Call records\n${callsContext}` : ""}
 # Complete findings from all ${convs.length} conversations
 ${findings.join("\n\n")}`,
@@ -654,7 +654,7 @@ const SYSTEM_PROMPT = `You are SecondBrain, an AI assistant embedded in a deskto
 - Reference specific meetings by title and date
 - Quote relevant transcript excerpts when helpful
 - Synthesize patterns across multiple meetings when asked
-- Be direct and concise , answer the question, don't pad
+- Be direct and concise — answer the question, don't pad
 - When counting conversations, be exact based only on what's provided
 - If information isn't in the provided context, say so clearly
 
@@ -686,7 +686,7 @@ export async function chat(
     return { response: msg, action: projectIntent.action };
   }
 
-  // Phase 0b: Check for call intent , skip entirely for obvious search/summary queries
+  // Phase 0b: Check for call intent — skip entirely for obvious search/summary queries
   const callIntent = (SEARCH_INTENT.test(question) && !CALL_KEYWORDS.test(question))
     ? ({ isCall: false } as const)
     : await detectCallIntent(question, history, openai);
@@ -718,11 +718,11 @@ export async function chat(
     if (dateFiltered.length > 0) {
       candidates = dateFiltered;
     } else {
-      chatDebugLog(`Date filter yielded 0 results , using full corpus but will note in answer`);
+      chatDebugLog(`Date filter yielded 0 results — using full corpus but will note in answer`);
     }
   }
 
-  // Phase 2: Scan metadata locally , scoped to date-filtered candidates if applicable
+  // Phase 2: Scan metadata locally — scoped to date-filtered candidates if applicable
   let matchedMetas = searchByPlan(plan, candidates);
   chatDebugLog(`searchByPlan returned ${matchedMetas.length} of ${allMetas.length} total (from ${candidates.length} candidates)`);
 
@@ -739,11 +739,11 @@ export async function chat(
   let relevantMetas: ConversationMeta[];
 
   if (matchedMetas.length === 0) {
-    // Nothing matched , fall back to most-recent within the candidate set (date-filtered if active)
+    // Nothing matched — fall back to most-recent within the candidate set (date-filtered if active)
     relevantMetas = [...candidates].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 15);
     chatDebugLog(`No matches, falling back to ${relevantMetas.length} most-recent${dateFilter ? ` (date-filtered: ${dateFilter})` : ""}`);
   } else if (aggregate || !plan.needsTranscripts) {
-    // Count/list/aggregate query: NEVER filter , pass every local match.
+    // Count/list/aggregate query: NEVER filter — pass every local match.
     // Metadata is ~150 tokens each; 300 matches = ~45k tokens, well within budget.
     // Any filtering here causes undercounting and wrong answers.
     relevantMetas = matchedMetas;
@@ -765,7 +765,7 @@ export async function chat(
   chatDebugLog(`Loaded ${convs.length} conversations (${relevantMetas.length - convs.length} failed to load)`);
 
   if (convs.length === 0) {
-    // No conversations , just answer directly (but still include call records if any)
+    // No conversations — just answer directly (but still include call records if any)
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       {
         role: "system",
@@ -782,7 +782,7 @@ export async function chat(
     return { response: resp };
   }
 
-  // For aggregate queries, always use metadata-only , we need all matches to fit
+  // For aggregate queries, always use metadata-only — we need all matches to fit
   // in one call and the model must count every one without refiltering.
   const useTranscripts = plan.needsTranscripts && !aggregate;
 
@@ -791,13 +791,13 @@ export async function chat(
   const overhead = 3000; // system + history + question
 
   if (totalTokens + overhead <= CALL_TOKEN_BUDGET) {
-    // Everything fits , single call, full fidelity
+    // Everything fits — single call, full fidelity
     const context = useTranscripts
       ? convs.map(c => fullBlock(c.meta, c.transcript)).join("\n\n")
       : convs.map(c => metaBlock(c.meta)).join("\n\n");
 
     const aggregateInstruction = aggregate
-      ? `\n\nIMPORTANT: The ${convs.length} conversations below are ALL the matches from a complete scan of ${getAllConversationMeta().length} total conversations. Count or list based strictly on what is shown , do not apply your own filtering or judgment about who "really" attended.`
+      ? `\n\nIMPORTANT: The ${convs.length} conversations below are ALL the matches from a complete scan of ${getAllConversationMeta().length} total conversations. Count or list based strictly on what is shown — do not apply your own filtering or judgment about who "really" attended.`
       : "";
 
     const systemWithDataDir = SYSTEM_PROMPT.replace("{{DATA_DIR}}", config.dataDir);
@@ -827,7 +827,7 @@ export async function chat(
     return { response: fullResponse };
   }
 
-  // Phase 5b: Too large for one call , map-reduce across batches
+  // Phase 5b: Too large for one call — map-reduce across batches
   // Every conversation is fully processed, nothing dropped
   return { response: await mapReduce(convs, question, plan, aggregate, history, openai, callsContext, onDelta) };
 }

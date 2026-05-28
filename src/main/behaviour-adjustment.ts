@@ -1,5 +1,5 @@
 // behaviour-adjustment.ts
-// Skill evolution runner , after 10+ uses of a skill, a background agent reviews
+// Skill evolution runner — after 10+ uses of a skill, a background agent reviews
 // usage logs and LLM-merges improvements back into the skill file.
 //
 // Pattern: frdel/agent-zero's `behaviour_adjustment` tool.
@@ -53,7 +53,7 @@ export function logSkillUse(entry: SkillUsageLog): void {
     fs.appendFileSync(usageLogPath(), line, "utf-8");
     updateSkillMeta(entry.skill_path, entry.outcome);
   } catch {
-    // Non-critical , don't crash on logging failure
+    // Non-critical — don't crash on logging failure
   }
 }
 
@@ -83,7 +83,7 @@ function updateSkillMeta(skillRelPath: string, outcome: SkillUsageLog["outcome"]
 
 /**
  * Reviews recent usage logs for a skill and LLM-merges improvements back in.
- * Runs as a background task , does not block the caller.
+ * Runs as a background task — does not block the caller.
  */
 export async function evolveSkillInBackground(skillRelPath: string, useCount: number): Promise<void> {
   const config = getConfig();
@@ -100,7 +100,7 @@ export async function evolveSkillInBackground(skillRelPath: string, useCount: nu
   // Load recent usage logs for this skill (last 20 uses)
   const usageLogs = loadRecentUsageLogs(skillRelPath, 20);
   if (usageLogs.length < 5) {
-    console.log(`[behaviour-adjustment] Not enough usage data for ${skillRelPath} , skipping`);
+    console.log(`[behaviour-adjustment] Not enough usage data for ${skillRelPath} — skipping`);
     return;
   }
 
@@ -108,7 +108,7 @@ export async function evolveSkillInBackground(skillRelPath: string, useCount: nu
   const successes = usageLogs.filter((l) => l.outcome === "success");
 
   const logsText = usageLogs
-    .map((l) => `[${l.timestamp.slice(0, 10)}] ${l.outcome.toUpperCase()}: ${l.context}${l.notes ? ` , ${l.notes}` : ""}`)
+    .map((l) => `[${l.timestamp.slice(0, 10)}] ${l.outcome.toUpperCase()}: ${l.context}${l.notes ? ` — ${l.notes}` : ""}`)
     .join("\n");
 
   const prompt = `You are improving an AI skill file based on real-world usage logs.
@@ -129,8 +129,8 @@ Rules:
 2. Add or refine steps where failures occurred
 3. Add notes on what patterns lead to success
 4. Update the "Usage Count Tracking" section: set uses to ${useCount}, last_evolved to today
-5. Do NOT remove working content , only add or refine
-6. Keep the skill concise , max 150% of original length
+5. Do NOT remove working content — only add or refine
+6. Keep the skill concise — max 150% of original length
 7. Start directly with the updated skill content (no preamble)
 
 Today's date: ${new Date().toISOString().slice(0, 10)}`;
@@ -161,14 +161,14 @@ Today's date: ${new Date().toISOString().slice(0, 10)}`;
     const relPath = path.relative(process.cwd(), fullPath);
     cp.execSync(
       `git add "${relPath}" && git commit -m "skill: evolve ${path.basename(skillRelPath)} (${useCount} uses)"`,
-      { cwd: process.cwd(), timeout: 30_000 },
+      { cwd: process.cwd(), timeout: 30_000, windowsHide: true },
     );
 
     // Remove backup on success
     fs.unlinkSync(backup);
     console.log(`[behaviour-adjustment] Evolved and committed: ${skillRelPath}`);
   } catch (err: any) {
-    console.error(`[behaviour-adjustment] Commit failed , reverting:`, err.message);
+    console.error(`[behaviour-adjustment] Commit failed — reverting:`, err.message);
     // Restore backup
     const backup = `${fullPath}.bak`;
     if (fs.existsSync(backup)) {

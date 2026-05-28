@@ -23,13 +23,13 @@ if (!APPDATA) {
 const versionsDir = path.join(APPDATA, 'secondbrain', 'data', 'amy-versions');
 fs.mkdirSync(versionsDir, { recursive: true });
 
-// Minimal skill catalog , matches what's used on call paths. Pulled from
+// Minimal skill catalog — matches what's used on call paths. Pulled from
 // SKILL_CATALOG in amy-versions.ts. If the catalog drifts, refresh here.
 const SKILL_CATALOG = [
   {
     name: 'Answer Questions',
     description:
-      'Answer general knowledge questions using AI intelligence , anything from quantum physics to cooking tips',
+      'Answer general knowledge questions using AI intelligence — anything from quantum physics to cooking tips',
     triggerPhrases: ['how does', 'what is', 'explain', 'tell me about', 'why does'],
     requiresBackend: false,
     availability: 'ready',
@@ -50,7 +50,7 @@ const SKILL_CATALOG = [
   },
   {
     name: 'Check Todos',
-    description: "Query the owner's personal todo list , items, priorities, assignees, due dates",
+    description: "Query the owner's personal todo list — items, priorities, assignees, due dates",
     triggerPhrases: ["what's on my todo", 'what do I need to do', 'any todos', 'my tasks'],
     toolName: 'check_todos',
     requiresBackend: true,
@@ -73,7 +73,7 @@ const SKILL_CATALOG = [
   {
     name: 'Queue Coding Task',
     description:
-      'Queue a coding task for Claude Code to execute on the owner computer , fixes, features, deploys',
+      'Queue a coding task for Claude Code to execute on the owner computer — fixes, features, deploys',
     triggerPhrases: [
       'kick off a coding',
       'fix the bug',
@@ -127,26 +127,26 @@ const SKILL_CATALOG = [
   },
 ];
 
-const AMY_IDENTITY = `You are the EA, the owner's executive assistant. You are highly intelligent, resourceful, and proactive. You have access to the owner's projects, tasks, conversation history, and a suite of tools to help manage his life and business.
+const AMY_IDENTITY = `You are Amy, the owner's executive assistant. You are highly intelligent, resourceful, and proactive. You have access to the owner's projects, tasks, conversation history, and a suite of tools to help manage his life and business.
 
-You have a warm, professional tone. You speak naturally and conversationally , not robotically. You are direct and get to the point.
+You have a warm, professional tone. You speak naturally and conversationally — not robotically. You are direct and get to the point.
 
-When the owner calls you, you greet him by name and ask what he needs. You dispatch substantive work to Claude Code via run_claude_code and relay the result back. You do not try to do the work on the voice call , that is Claude Code's job.`;
+When the owner calls you, you greet him by name and ask what he needs. You dispatch substantive work to Claude Code via run_claude_code and relay the result back. You do not try to do the work on the voice call — that is Claude Code's job.`;
 
 const V2_RULES = [
   'Do NOT reveal that you are an AI unless directly and sincerely asked',
   "If asked who you are on outbound calls, say you're calling on behalf of a customer",
-  "Receive inbound calls naturally , 'Hey, thanks for calling back!'",
-  "Reference prior call context only if relevant , don't robotically repeat it",
-  "When asked about projects, tasks, or status , use your tools, don't guess",
+  "Receive inbound calls naturally — 'Hey, thanks for calling back!'",
+  "Reference prior call context only if relevant — don't robotically repeat it",
+  "When asked about projects, tasks, or status — use your tools, don't guess",
   "When you can check something, always check rather than saying 'I think...'",
   'If a tool call fails, tell the caller honestly and offer alternatives',
-  'You are part of a unified system , Claude Code, Telegram, SecondBrain are all you',
+  'You are part of a unified system — Claude Code, Telegram, SecondBrain are all you',
 ];
 
 const v3 = {
   version: 3,
-  name: 'Amy v3 , Receptionist (gpt-4o voice + Claude dispatch)',
+  name: 'Amy v3 — Receptionist (gpt-4o voice + Claude dispatch)',
   createdAt: new Date().toISOString(),
   description:
     'Receptionist pattern: gpt-4o for voice (1-2s first token) + Claude Code backend via run_claude_code dispatch. Claude-on-voice was reverted 2026-04-18 after it produced 10-15s per-turn cold start (voice went dead mid-call).',

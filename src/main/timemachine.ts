@@ -136,7 +136,7 @@ async function captureScreenshot(): Promise<{ filePath: string; fileSize: number
         '-y',
         filePath,
       ],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
+      { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
     );
 
     const timeout = setTimeout(() => {
@@ -193,7 +193,7 @@ async function ocrScreenshot(imagePath: string): Promise<string> {
     execFile(
       TESSERACT_PATH,
       [imagePath, 'stdout', '-l', 'eng', '--psm', '3'],
-      { timeout: 15000, maxBuffer: 2 * 1024 * 1024 },
+      { timeout: 15000, maxBuffer: 2 * 1024 * 1024, windowsHide: true },
       (err, stdout) => {
         if (err) {
           resolve('');
@@ -221,7 +221,7 @@ async function uploadToS3(localPath: string, s3Key: string): Promise<boolean> {
         'us-east-1',
         '--quiet',
       ],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
+      { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
     );
 
     proc.on('exit', (code) => resolve(code === 0));
@@ -269,7 +269,7 @@ async function startAudioCapture(): Promise<void> {
       '-y',
       outputPattern,
     ],
-    { stdio: ['pipe', 'pipe', 'pipe'] },
+    { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
   );
 
   audioProcess.on('exit', () => {
@@ -329,7 +329,7 @@ async function captureOnce(): Promise<void> {
   const timestamp = now.toISOString();
   const dateStr = now.toISOString().slice(0, 10);
 
-  // Take screenshot (fast , ~200ms)
+  // Take screenshot (fast — ~200ms)
   const result = await captureScreenshot();
   if (!result) return;
 
@@ -337,7 +337,7 @@ async function captureOnce(): Promise<void> {
   const dup = isDuplicate(filePath, fileSize);
 
   if (dup) {
-    // Duplicate , delete immediately, insert minimal record
+    // Duplicate — delete immediately, insert minimal record
     try {
       fs.unlinkSync(filePath);
     } catch {
@@ -381,7 +381,7 @@ async function captureOnce(): Promise<void> {
           }
         })
         .catch(() => {
-          /* S3 failure , file stays local */
+          /* S3 failure — file stays local */
         });
     })
     .catch((err) => {

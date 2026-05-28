@@ -120,9 +120,11 @@ import {
   runDailyBackup,
 } from './backups';
 import { processRejectionLearning } from './rejection-skill-learning';
+import { createTask, approveTask } from './task-store';
 import { regenRejectedVideos, RegenResult } from './video-pipeline';
 
 import { makeTracedHandle } from './ipc-trace-middleware';
+import { registerTaskHandlers } from './ipc-handlers/tasks';
 
 const AUDIO_DIAG_FILE = path.join(app.getPath('userData'), 'audio-diag.log');
 
@@ -136,6 +138,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   callStatusEmitter.on('status', (record) => {
     if (!mainWindow.isDestroyed()) send('calls:statusPush', record);
   });
+
+  // Task Spine handlers (tasks:list / get / run / cancel + tasks:push).
+  registerTaskHandlers(mainWindow);
 
   ipcMain.handle('diag:writeAudio', (_e, line: string, firstFrameHex?: string) => {
     const timestamp = new Date().toISOString();
@@ -158,7 +163,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  // Otter: open in-app browser for Google SSO login , captures session cookies + userId
+  // Otter: open in-app browser for Google SSO login — captures session cookies + userId
   ipcMain.handle('otter:openLoginWindow', async () => {
     return new Promise<{ ok: boolean; message: string }>((resolve) => {
       const win = new BrowserWindow({
@@ -194,13 +199,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         if (url.includes('/login') || url.includes('accounts.google') || url.includes('oauth'))
           return;
 
-        // Looks like a post-login page , grab cookies
+        // Looks like a post-login page — grab cookies
         try {
           const cookies = await win.webContents.session.cookies.get({ domain: '.otter.ai' });
           const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
 
           if (!cookieStr) {
-            // Not logged in yet , wait for more navigation
+            // Not logged in yet — wait for more navigation
             return;
           }
 
@@ -266,7 +271,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     });
   });
 
-  // Fetch list from Otter , streams batches back via import:listBatch events
+  // Fetch list from Otter — streams batches back via import:listBatch events
   ipcMain.handle('import:fetchList', async () => {
     try {
       const local = listAllConversations();
@@ -411,7 +416,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  // Auto-tag in background after each exchange , first call does AI tagging,
+  // Auto-tag in background after each exchange — first call does AI tagging,
   // subsequent calls just refresh the transcript (no extra OpenAI spend)
   ipcMain.handle('chats:autoTag', (_e, sessionData: ChatSession) => {
     // Fire-and-forget: don't await, don't block the renderer
@@ -419,7 +424,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return { success: true };
   });
 
-  // WhatsApp (whatsapp-web.js , personal account)
+  // WhatsApp (whatsapp-web.js — personal account)
   ipcMain.handle('whatsapp:connect', () => {
     waAllowQR();
     return waInit();
@@ -499,7 +504,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       if (phoneNumber) {
         await syncCallbackAssistant(phoneNumber);
       } else {
-        // Called from Settings button , only link the phone number, don't wipe assistant context
+        // Called from Settings button — only link the phone number, don't wipe assistant context
         await linkCallbackAssistantToPhoneNumber();
       }
       return { success: true };
@@ -591,7 +596,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // /youtube/queue. Used by empire:queueForUpload AND by empire:approveVideo
   // so approval flows straight into the 9am/1pm/5pm scheduler. Before
   // 2026-04-20, approval only wrote the local JSON, so videos sat forever
-  // waiting on a second manual click that the owner never made (18+ day stall).
+  // waiting on a second manual click that Luke never made (18+ day stall).
   async function pushVideoToEc2(id: string): Promise<{ success: boolean; error?: string; position?: number }> {
     const { execSync } = require('child_process');
     const queuePath = path.join(contentRoot, 'content-review', 'upload-queue.json');
@@ -617,14 +622,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       const scpOpts = `-i ${SSH_KEY} -o StrictHostKeyChecking=no`;
       execSync(
         `ssh ${scpOpts} ${EC2_HOST} "mkdir -p ${EC2_VIDEO_DIR}" && scp ${scpOpts} "${videoPath.replace(/\\/g, '/')}" ${EC2_HOST}:${remoteVideoPath}`,
-        { timeout: 120000 },
+        { timeout: 120000, windowsHide: true },
       );
       let remoteThumbnailPath: string | undefined;
       if (thumbPath && fs.existsSync(thumbPath)) {
         remoteThumbnailPath = `${EC2_VIDEO_DIR}/${id}_thumb.jpg`;
         execSync(
           `scp ${scpOpts} "${thumbPath.replace(/\\/g, '/')}" ${EC2_HOST}:${remoteThumbnailPath}`,
-          { timeout: 30000 },
+          { timeout: 30000, windowsHide: true },
         );
       }
       const res = await fetch(`${ec2}/youtube/queue`, {
@@ -714,7 +719,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         if (!fs.existsSync(learningsFile)) {
           fs.writeFileSync(
             learningsFile,
-            `# Content Production Learnings\n\nFeedback from review sessions , read this before generating new videos.\n\n## Rejection Feedback\n\n`,
+            `# Content Production Learnings\n\nFeedback from review sessions — read this before generating new videos.\n\n## Rejection Feedback\n\n`,
             'utf8',
           );
         }
@@ -736,6 +741,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         } catch {
           /* best-effort */
         }
+
+        // Wire the rejection into the Task Spine: a durable, approved Task
+        // for Amy to regenerate the video addressing this feedback.
+        try {
+          const regenTask = createTask({
+            kind: 'action',
+            origin: 'app',
+            title: `Regenerate video: ${video.title}`,
+            prompt: [
+              `The ${target} for video "${video.title}" was rejected.`,
+              `Rejection feedback: ${note}`,
+              '',
+              'Regenerate it addressing this feedback.',
+            ].join('\n'),
+            source: { type: 'video-rejection', ref: id },
+          });
+          approveTask(regenTask.id, true);
+        } catch (taskErr) {
+          console.error('[empire:rejectVideo] spine task failed:', taskErr);
+        }
       }
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
@@ -750,6 +775,128 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
             /* best-effort */
           });
         }
+
+        // 2026-04-26 Luke dispatch: "The comments shoudl trigger regen
+        // immediately. that's a health failure too." Spawn auto-regen as a
+        // detached background process so the IPC handler returns instantly.
+        // Idempotent -- if a previous run is still in flight, the node
+        // process just exits "no work to do."
+        // 2026-05-02: stdio is now logged to .tmp/diag/regen_<id>_<ts>.log
+        // instead of /dev/null. Yesterday's "did the rejection trigger
+        // regen?" question was unanswerable because the spawn output was
+        // discarded. This rebuilds the audit trail.
+        try {
+          const { spawn } = require('child_process');
+          const scriptPath = path.join(contentRoot, 'scripts', 'auto-regen-rejected-videos.js');
+          if (fs.existsSync(scriptPath)) {
+            const tmpDir = path.join(contentRoot, '.tmp', 'diag');
+            fs.mkdirSync(tmpDir, { recursive: true });
+            const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const logPath = path.join(tmpDir, `regen_${id}_${ts}.log`);
+            const out = fs.openSync(logPath, 'a');
+            const err = fs.openSync(logPath, 'a');
+            // 2026-05-06 Luke: Electron's spawned child env was missing
+            // USERPROFILE / PATH / HOME variables that the regen needs to
+            // resolve the SSH key for the EC2 build path. Without these,
+            // canRegenViaEc2() returns false and the regen falls back to
+            // the legacy local_aurora path that does NOT carry the new
+            // skills. Pass an explicit env that always includes the
+            // user's home + the standard PATH so SSH + Python both work.
+            // 2026-05-06: belt-and-suspenders. The auto-regen child needs
+            //   - HOME/USERPROFILE so os.homedir() resolves the SSH key
+            //   - PYTHON_EXE/PY_LAUNCHER so pythonCandidates() finds a real
+            //     interpreter before hitting the Microsoft Store shim
+            // Both populated from the parent env when present, else best-
+            // effort fallback to discovered locations.
+            const _fs = require('fs') as typeof import('fs');
+            const _path = require('path') as typeof import('path');
+            const _os = require('os') as typeof import('os');
+            let pythonExe = process.env.PYTHON_EXE || '';
+            if (!pythonExe || !_fs.existsSync(pythonExe)) {
+              for (const v of ['314', '313', '312', '311', '310']) {
+                const c = `C:\\Python${v}\\python.exe`;
+                if (_fs.existsSync(c)) { pythonExe = c; break; }
+              }
+            }
+            const childEnv: Record<string, string> = {
+              ...(process.env as Record<string, string>),
+              USERPROFILE: process.env.USERPROFILE || _os.homedir(),
+              HOME: process.env.HOME || _os.homedir(),
+            };
+            if (pythonExe) childEnv.PYTHON_EXE = pythonExe;
+            if (process.env.PY_LAUNCHER) childEnv.PY_LAUNCHER = process.env.PY_LAUNCHER;
+            const proc = spawn('node', [scriptPath, '--id', id], {
+              cwd: contentRoot,
+              detached: true,
+              stdio: ['ignore', out, err],
+              env: childEnv,
+              windowsHide: true,
+            });
+            proc.unref();
+            console.log(`[reject] spawned auto-regen for ${id} (pid ${proc.pid}, log ${logPath})`);
+          }
+        } catch (regenErr: any) {
+          console.warn('[reject] auto-regen spawn failed:', regenErr.message);
+        }
+
+        // 2026-05-02 Luke dispatch: "all feedback should go through claude
+        // code sessions, not some videos only mode." Spawn a Claude Code
+        // session that reads the manifest + rubric scores + rejection
+        // history, decides the right workflow (build new analyzer / raise
+        // threshold / fix build pipeline), and actually executes it in
+        // the same session. This replaces the "log-and-exit" pattern that
+        // produced four identical broken regens of nine_free_ai_tools_2026.
+        try {
+          const { spawn } = require('child_process');
+          const dispatchScript = path.join(
+            contentRoot, 'scripts', 'dispatch-feedback-to-claude.js',
+          );
+          if (fs.existsSync(dispatchScript)) {
+            const proc = spawn('node', [
+              dispatchScript,
+              '--kind', 'video-rejection',
+              '--id', id,
+              '--target', target,
+              '--note', note,
+            ], {
+              cwd: contentRoot,
+              detached: true,
+              stdio: 'ignore',
+              windowsHide: true,
+            });
+            proc.unref();
+            console.log(`[reject] spawned claude-code dispatch for ${id} (pid ${proc.pid})`);
+          }
+        } catch (dispatchErr: any) {
+          console.warn('[reject] claude-code dispatch spawn failed:', dispatchErr.message);
+        }
+
+        // 2026-04-30 Luke dispatch: "rubric should always be updated to
+        // keep up with my feedback." Spawn the rejection->rubric audit
+        // alongside the auto-regen. It classifies the rejection note
+        // into a defect bucket, checks whether existing rubric tools
+        // should have caught it, and queues new analyzer creation when
+        // no existing tool catches the failure mode. Detached + best-effort.
+        try {
+          const { spawn } = require('child_process');
+          const rubricScript = path.join(
+            contentRoot,
+            'scripts',
+            'process-rejection-into-rubric.js',
+          );
+          if (fs.existsSync(rubricScript)) {
+            const proc = spawn('node', [rubricScript, '--id', id], {
+              cwd: contentRoot,
+              detached: true,
+              stdio: 'ignore',
+              windowsHide: true,
+            });
+            proc.unref();
+            console.log(`[reject] spawned rejection->rubric audit for ${id} (pid ${proc.pid})`);
+          }
+        } catch (auditErr: any) {
+          console.warn('[reject] rejection->rubric audit spawn failed:', auditErr.message);
+        }
       }
 
       return { success: true };
@@ -758,7 +905,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   });
 
-  // RSL , Rejection-Skill-Learning: classify feedback, update rubric, append LEARNINGS.md
+  // RSL — Rejection-Skill-Learning: classify feedback, update rubric, append LEARNINGS.md
   // Also called fire-and-forget from ContentPipeline.tsx after handleReject
   ipcMain.handle(
     'empire:processRejectionLearning',
@@ -803,6 +950,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         cwd: contentRoot,
         env: { ...process.env, SECONDBRAIN_ROOT: contentRoot },
         timeout: 5 * 60 * 1000,
+        windowsHide: true,
       });
       let stdout = '';
       let stderr = '';
@@ -826,7 +974,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     });
   });
 
-  // Published videos , historical OpenClaw published videos
+  // Published videos — historical OpenClaw published videos
   ipcMain.handle('empire:getPublishedVideos', () => {
     const publishedDir = path.join(contentRoot, 'content-review', 'published');
     const manifestPath = path.join(publishedDir, 'manifest.json');
@@ -945,6 +1093,25 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       }
       fs.appendFileSync(learningsFile, learningLine, 'utf8');
 
+      // Wire the rejection into the Task Spine for Amy to regenerate.
+      try {
+        const regenTask = createTask({
+          kind: 'action',
+          origin: 'app',
+          title: `Regenerate video: ${item?.title ?? id}`,
+          prompt: [
+            `Uploaded video "${item?.title ?? id}" was rejected from the upload queue.`,
+            `Rejection feedback: ${note}`,
+            '',
+            'Regenerate it addressing this feedback.',
+          ].join('\n'),
+          source: { type: 'video-rejection', ref: id },
+        });
+        approveTask(regenTask.id, true);
+      } catch (taskErr) {
+        console.error('[empire:rejectUploadedVideo] spine task failed:', taskErr);
+      }
+
       // Telegram notification
       const cfg = getConfig();
       if (cfg.telegramBotToken && cfg.telegramChatId) {
@@ -954,6 +1121,25 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         ).catch(() => {
           /* best-effort */
         });
+      }
+
+      // 2026-04-26 Luke dispatch: rejection-with-comment must trigger
+      // immediate regen, not wait for the next scheduled run.
+      try {
+        const { spawn } = require('child_process');
+        const scriptPath = path.join(contentRoot, 'scripts', 'auto-regen-rejected-videos.js');
+        if (fs.existsSync(scriptPath)) {
+          const proc = spawn('node', [scriptPath, '--id', id], {
+            cwd: contentRoot,
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true,
+          });
+          proc.unref();
+          console.log(`[reject-uploaded] spawned auto-regen for ${id} (pid ${proc.pid})`);
+        }
+      } catch (regenErr: unknown) {
+        console.warn('[reject-uploaded] auto-regen spawn failed:', regenErr instanceof Error ? regenErr.message : String(regenErr));
       }
 
       return { success: true };
@@ -1003,7 +1189,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       queue.push(entry);
       writeSocialQueue(queue);
 
-      // Telegram is daily-briefing-only , social post drafts visible in Content Pipeline UI
+      // Telegram is daily-briefing-only — social post drafts visible in Content Pipeline UI
       console.log(`[social] New ${entry.platform.toUpperCase()} post draft ready for review`);
 
       return { success: true, post: entry };
@@ -1112,7 +1298,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       const post = queue.find((p: any) => p.id === id);
       if (!post) return { success: false, error: 'Post not found' };
       if (!post.tweet_id)
-        return { success: false, error: 'No tweet ID , post may not have been published' };
+        return { success: false, error: 'No tweet ID — post may not have been published' };
 
       const engagement = await getTweetEngagement(post.tweet_id);
       if (!engagement) return { success: false, error: 'Could not fetch engagement' };
@@ -1309,7 +1495,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('studio:config:get', () => loadStudioConfig());
   ipcMain.handle('studio:config:save', (_e, config: any) => saveStudioConfig(config));
   ipcMain.handle('studio:detectDevices', async () => {
-    // Use cached devices if available , dshow hangs on repeated ffmpeg -list_devices calls
+    // Use cached devices if available — dshow hangs on repeated ffmpeg -list_devices calls
     let devices: { name: string; type: string }[] = [];
     try {
       devices = await detectDevices();

@@ -217,7 +217,15 @@ function CallCard({
       </div>
 
       <div style={{ fontSize: 12, color: "#aaa", marginBottom: 6, lineHeight: 1.5 }}>
-        {call.instructions.length > 120 ? call.instructions.slice(0, 120) + "…" : call.instructions}
+        {(() => {
+          // Defensive against missing field: pre-2026-05-13 call records did
+          // not always carry an instructions field, which crashed CallCard
+          // with "Cannot read properties of undefined (reading 'length')"
+          // and rendered the whole React tree as the red error overlay.
+          // Luke 2026-05-13: "also react error." Fail-soft to empty string.
+          const instr = String(call.instructions || '');
+          return instr.length > 120 ? instr.slice(0, 120) + '…' : instr;
+        })()}
       </div>
 
       {call.durationSeconds !== undefined && (
@@ -250,7 +258,7 @@ function CallCard({
         </div>
       )}
 
-      {/* Live transcript , always visible during active calls, toggle for ended */}
+      {/* Live transcript — always visible during active calls, toggle for ended */}
       {call.transcript && isActive && (
         <div style={{
           marginTop: 4,
@@ -353,7 +361,7 @@ export default function Calls({ active, pendingCall, autoListen }: {
   useEffect(() => {
     load();
     // Subscribe to real-time call status push events from main process.
-    // callStatusEmitter in calls.ts fires every time a record is saved ,
+    // callStatusEmitter in calls.ts fires every time a record is saved —
     // this replaces the 2s polling loop with instant updates.
     window.api.calls.onStatusPush((record: CallRecord) => {
       setCalls((prev) => {
@@ -384,7 +392,7 @@ export default function Calls({ active, pendingCall, autoListen }: {
     );
   }, [active]);
 
-  // Fallback polling every 30s (was 2s) , catches calls initiated externally
+  // Fallback polling every 30s (was 2s) — catches calls initiated externally
   // that bypass the push emitter (e.g. webhook-triggered records written directly).
   // Primary updates come from onStatusPush above.
   useEffect(() => {
@@ -417,7 +425,7 @@ export default function Calls({ active, pendingCall, autoListen }: {
           .then((conn) => { pcMap.current.set(call.id, conn); setCalls((prev) => [...prev]); })
           .catch(() => {});
       } else {
-        // Still queued , let the poll loop connect once it's ringing
+        // Still queued — let the poll loop connect once it's ringing
         if (!pendingListenRef.current.has(call.id)) {
           pendingListenRef.current.set(call.id, call.listenUrl);
         }
@@ -559,7 +567,7 @@ export default function Calls({ active, pendingCall, autoListen }: {
       setPhoneNumber("");
       setInstructions("");
 
-      // Queue listen connection , will activate once call reaches ringing/in-progress
+      // Queue listen connection — will activate once call reaches ringing/in-progress
       if (listenIn && res.listenUrl && res.callId) {
         pendingListenRef.current.set(res.callId, res.listenUrl);
       }
@@ -599,7 +607,7 @@ export default function Calls({ active, pendingCall, autoListen }: {
       <h1 style={style.title}>Phone Calls</h1>
       <p style={{ fontSize: 12, color: "#555", marginBottom: 20, lineHeight: 1.5 }}>
         Make outbound AI-powered calls on your behalf. The AI will conduct the conversation and complete your task.
-        Powered by <span style={{ color: "#888" }}>Vapi.ai</span> , add your API key in Settings.
+        Powered by <span style={{ color: "#888" }}>Vapi.ai</span> — add your API key in Settings.
       </p>
 
       <div style={style.card} ref={formRef}>
@@ -617,7 +625,7 @@ export default function Calls({ active, pendingCall, autoListen }: {
           <label style={style.label}>Persona <span style={{ color: "#444" }}>(optional)</span></label>
           {personas.length === 0 ? (
             <div style={{ fontSize: 12, color: "#444", marginBottom: 12 }}>
-              No personas yet , create one in the Personas page to pre-configure how the AI behaves.
+              No personas yet — create one in the Personas page to pre-configure how the AI behaves.
             </div>
           ) : (
             <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 6, marginBottom: 8 }}>

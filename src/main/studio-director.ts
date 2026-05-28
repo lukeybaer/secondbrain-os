@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { spawn } from 'child_process';
 import { getConfig } from './config';
+import { resolvePythonExe } from './util/python';
 import type {
   StudioRecording,
   StudioTranscript,
@@ -52,7 +53,7 @@ export async function transcribeRecording(recording: StudioRecording): Promise<S
 
   if (existing.length === 0) {
     throw new Error(
-      `No audio source found. Expected files: ${candidates.join(', ')} , none exist on disk.`,
+      `No audio source found. Expected files: ${candidates.join(', ')} — none exist on disk.`,
     );
   }
 
@@ -64,7 +65,7 @@ export async function transcribeRecording(recording: StudioRecording): Promise<S
       audioSource = f;
       break;
     }
-    console.log(`[studio-director] Skipping ${path.basename(f)} , no audio stream`);
+    console.log(`[studio-director] Skipping ${path.basename(f)} — no audio stream`);
   }
 
   if (!audioSource) {
@@ -101,9 +102,12 @@ async function runWhisperTranscription(audioPath: string): Promise<TranscriptWor
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(__dirname, '..', '..', 'scripts', 'transcribe.py');
 
-    const proc = spawn('python', [scriptPath, audioPath, '--output-format', 'json'], {
+    // 2026-05-06: resolvePythonExe avoids the Windows Microsoft Store shim
+    // that would otherwise return exit 9009 instead of running the script.
+    const proc = spawn(resolvePythonExe(), [scriptPath, audioPath, '--output-format', 'json'], {
       cwd: path.dirname(audioPath),
       env: { ...process.env },
+      windowsHide: true,
     });
 
     let stdout = '';
@@ -154,7 +158,7 @@ async function checkForAudioStream(filePath: string): Promise<boolean> {
       '-of',
       'csv=p=0',
       filePath,
-    ]);
+    ], { windowsHide: true });
     let stdout = '';
     proc.stdout?.on('data', (d: Buffer) => {
       stdout += d.toString();
@@ -195,7 +199,7 @@ async function runOpenAIWhisperTranscription(
       '1',
       '-y',
       tempWav,
-    ]);
+    ], { windowsHide: true });
     proc.on('close', (code) =>
       code === 0 ? resolve() : reject(new Error(`FFmpeg audio extract failed (code ${code})`)),
     );
@@ -528,7 +532,7 @@ function removeRetakes(transcript: StudioTranscript): CleanSegment[] {
       }
     }
 
-    // Skip past the retake cue phrase , find the next sentence start after it
+    // Skip past the retake cue phrase — find the next sentence start after it
     let nextStart = retakeTime;
     for (let i = 0; i < words.length; i++) {
       if (words[i].start >= retakeTime + 2.0) {

@@ -23,7 +23,7 @@ export function detectWorktree(): string | null {
 
 // ── Startup Checks ────────────────────────────────────────────────────────────
 // Validates known fix preconditions on every launch.
-// Any failure logs a PROMINENT warning , these are things that have already
+// Any failure logs a PROMINENT warning — these are things that have already
 // caused real bugs that took 6+ sessions to diagnose.
 // See KNOWN_FIXES.md for context on why each check exists.
 
@@ -47,24 +47,24 @@ export async function runStartupChecks(): Promise<void> {
   // ── Check 0: worktree detection ────────────────────────────────────────────
   // If the app is running from a git worktree instead of the main repo,
   // pages added to master (like Content Pipeline) will be missing.
-  // This is a structural problem , worktrees are snapshots; master changes
+  // This is a structural problem — worktrees are snapshots; master changes
   // don't propagate to them.
   const worktreeWarning = detectWorktree();
   if (worktreeWarning) {
     warn(
-      'RUNNING FROM WORKTREE , FEATURES WILL BE MISSING',
+      'RUNNING FROM WORKTREE — FEATURES WILL BE MISSING',
       `${worktreeWarning}\n\nFIX: Kill this process and run: cd C:\\Users\\USER\\secondbrain && npm run dev`,
     );
     // Stamp the title bar so it's immediately obvious
     try {
       const wins = BrowserWindow.getAllWindows();
       if (wins.length > 0) {
-        wins[0].setTitle('⚠ WORKTREE , WRONG REPO , SecondBrain');
+        wins[0].setTitle('⚠ WORKTREE — WRONG REPO — SecondBrain');
       }
       // Also schedule a re-stamp after renderer loads (title gets reset on ready-to-show)
       setTimeout(() => {
         BrowserWindow.getAllWindows().forEach((w) =>
-          w.setTitle('⚠ WORKTREE , WRONG REPO , SecondBrain'),
+          w.setTitle('⚠ WORKTREE — WRONG REPO — SecondBrain'),
         );
       }, 3000);
     } catch {
@@ -84,7 +84,7 @@ export async function runStartupChecks(): Promise<void> {
   const autoplaySwitchSet =
     cmdLine.includes('autoplay-policy') ||
     // electron-vite compiles the main process; the switch is appended programmatically
-    // so it won't appear in argv , we trust the code path runs. Mark as passing.
+    // so it won't appear in argv — we trust the code path runs. Mark as passing.
     true;
   if (!autoplaySwitchSet) {
     warn(
@@ -199,7 +199,7 @@ export async function runStartupChecks(): Promise<void> {
     warn('Graphiti health check failed', 'Could not import graphiti-client module');
   }
 
-  // 5c: Graphiti graph health , node/edge counts within expected bounds
+  // 5c: Graphiti graph health — node/edge counts within expected bounds
   try {
     const { searchNodes, getRecentEpisodes } = await import('./graphiti-client');
     const nodes = await searchNodes('the owner', { maxNodes: 1 });
@@ -215,7 +215,7 @@ export async function runStartupChecks(): Promise<void> {
       pass('Graphiti graph has data (nodes and episodes present)');
     }
   } catch {
-    // Graphiti unavailable , already warned in 5b
+    // Graphiti unavailable — already warned in 5b
   }
 
   // 5d: Hebbian memory index not perpetually empty
@@ -369,7 +369,7 @@ async function runTimeMachineHealthChecks(): Promise<void> {
         if (avgSize < 5) {
           warn(
             'Time Machine screenshots suspiciously small',
-            `Average size is ${avgSize} KB , screenshots may be corrupt or capturing a blank screen.`,
+            `Average size is ${avgSize} KB — screenshots may be corrupt or capturing a blank screen.`,
           );
         } else {
           pass(`Time Machine screenshot sizes healthy (avg ${avgSize} KB)`);
@@ -385,7 +385,7 @@ async function runTimeMachineHealthChecks(): Promise<void> {
 
 function checkBinaryAvailable(name: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const proc = spawn(name, ['-version'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const proc = spawn(name, ['-version'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     proc.on('exit', (code) => resolve(code === 0));
     proc.on('error', () => resolve(false));
     setTimeout(() => {
@@ -402,7 +402,7 @@ function checkS3FileExists(bucket: string, key: string): Promise<boolean> {
     const proc = spawn(
       'aws',
       ['s3api', 'head-object', '--bucket', bucket, '--key', key, '--region', 'us-east-1'],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
+      { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
     );
     proc.on('exit', (code) => resolve(code === 0));
     proc.on('error', () => resolve(false));

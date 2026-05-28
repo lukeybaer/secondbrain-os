@@ -1,9 +1,9 @@
 // memory-sync.ts
-// Unified memory synchronization , bridges Claude Code markdown files,
+// Unified memory synchronization — bridges Claude Code markdown files,
 // Graphiti knowledge graph, and the EC2 backend into one canonical system.
 //
 // Canonical store: git-tracked markdown files (Claude Code memory dir + repo memory/).
-// Graphiti: query/search layer on top , ingests markdown as episodes.
+// Graphiti: query/search layer on top — ingests markdown as episodes.
 // EC2: pulls from git to stay in sync.
 //
 // Flow:
@@ -55,7 +55,7 @@ function parseMemoryFile(filePath: string, relativePath: string): MemoryFile | n
     // Parse YAML frontmatter
     const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
     if (!fmMatch) {
-      // No frontmatter , treat as raw content (e.g., INDEX.md, MEMORY.md)
+      // No frontmatter — treat as raw content (e.g., INDEX.md, MEMORY.md)
       return {
         filePath,
         relativePath,
@@ -132,7 +132,7 @@ async function ingestMemoryFile(file: MemoryFile): Promise<boolean> {
 }
 
 /**
- * Full seed , ingest ALL markdown files into Graphiti.
+ * Full seed — ingest ALL markdown files into Graphiti.
  * Run once to populate an empty graph, then use incrementalSync for updates.
  */
 export async function fullGraphitiSeed(): Promise<{
@@ -161,13 +161,13 @@ export async function fullGraphitiSeed(): Promise<{
   }
 
   console.log(
-    `[memory-sync] Seed complete , total:${files.length} ingested:${ingested} failed:${failed}`,
+    `[memory-sync] Seed complete — total:${files.length} ingested:${ingested} failed:${failed}`,
   );
   return { total: files.length, ingested, failed };
 }
 
 /**
- * Incremental sync , only ingest files modified since lastSyncTime.
+ * Incremental sync — only ingest files modified since lastSyncTime.
  * Tracks sync state in a JSON file.
  */
 export async function incrementalGraphitiSync(): Promise<{
@@ -182,7 +182,7 @@ export async function incrementalGraphitiSync(): Promise<{
     const state = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
     lastSync = new Date(state.lastSync);
   } catch {
-    // No state file , first incremental run, treat as seed
+    // No state file — first incremental run, treat as seed
   }
 
   const files = discoverMemoryFiles(claudeMemoryDir());
@@ -197,13 +197,20 @@ export async function incrementalGraphitiSync(): Promise<{
     else failed++;
   }
 
-  // Update sync state
+  // Update sync state to the newest file timestamp we actually observed.
+  // Windows can report freshly written mtimes slightly ahead of wall-clock
+  // `new Date()` in the test runner, which otherwise re-ingests unchanged
+  // files on the next incremental pass.
+  const maxObservedMtime = files.reduce(
+    (max, file) => Math.max(max, file.modifiedAt.getTime()),
+    Date.now(),
+  );
   const dir = path.dirname(stateFile);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
     stateFile,
     JSON.stringify({
-      lastSync: new Date().toISOString(),
+      lastSync: new Date(maxObservedMtime).toISOString(),
       filesChecked: files.length,
       filesIngested: ingested,
     }),
@@ -211,7 +218,7 @@ export async function incrementalGraphitiSync(): Promise<{
 
   if (changed.length > 0) {
     console.log(
-      `[memory-sync] Incremental sync , checked:${files.length} changed:${changed.length} ingested:${ingested} failed:${failed}`,
+      `[memory-sync] Incremental sync — checked:${files.length} changed:${changed.length} ingested:${ingested} failed:${failed}`,
     );
   }
 

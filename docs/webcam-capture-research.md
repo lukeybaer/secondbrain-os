@@ -1,6 +1,6 @@
 # USB Webcam Video Capture in Node.js/Electron (Without OBS)
 
-## Technical Research Report , April 2026
+## Technical Research Report — April 2026
 
 ---
 
@@ -85,14 +85,14 @@ ffmpeg -f dshow -vcodec mjpeg -video_size 1920x1080 -framerate 30 ^
 
 Key input options:
 
-- `-video_size 1920x1080` , must match a mode the camera supports
-- `-framerate 30` , must match a mode the camera supports
-- `-vcodec mjpeg` , request compressed input from camera
-- `-rtbufsize 512M` , increase real-time buffer to prevent drops
+- `-video_size 1920x1080` — must match a mode the camera supports
+- `-framerate 30` — must match a mode the camera supports
+- `-vcodec mjpeg` — request compressed input from camera
+- `-rtbufsize 512M` — increase real-time buffer to prevent drops
 
 ### 1.5 Recording Multiple Cameras Simultaneously
 
-**Approach A , Separate FFmpeg processes (RECOMMENDED):**
+**Approach A — Separate FFmpeg processes (RECOMMENDED):**
 
 Spawn one FFmpeg process per camera. This is more reliable because:
 
@@ -101,7 +101,7 @@ Spawn one FFmpeg process per camera. This is more reliable because:
 - Simpler to start/stop cameras independently
 - No complex filter_complex graphs
 
-**Approach B , Single FFmpeg process with multiple inputs:**
+**Approach B — Single FFmpeg process with multiple inputs:**
 
 ```bash
 ffmpeg ^
@@ -111,7 +111,7 @@ ffmpeg ^
   -map 1:v -map 1:a -c:v libx264 -crf 18 -c:a aac -b:a 192k camera_b.mkv
 ```
 
-**Caveat from real-world testing:** When using multiple dshow inputs in a single FFmpeg process, cumulative timing drift occurs , the delay can be entire seconds, and it gets worse with more devices. The `-rtbufsize` flag helps but doesn't eliminate the issue. Separate processes avoid this.
+**Caveat from real-world testing:** When using multiple dshow inputs in a single FFmpeg process, cumulative timing drift occurs — the delay can be entire seconds, and it gets worse with more devices. The `-rtbufsize` flag helps but doesn't eliminate the issue. Separate processes avoid this.
 
 ---
 
@@ -180,7 +180,7 @@ function startRecording(
     // FFmpeg writes all progress/info to stderr
     // Parse for frame count, fps, bitrate, time, etc.
     if (line.includes('frame=')) {
-      // Progress update , extract stats
+      // Progress update — extract stats
     }
     if (line.includes('Error') || line.includes('error')) {
       console.error(`[${cameraName}] FFmpeg error: ${line}`);
@@ -218,7 +218,7 @@ function stopRecording(session: RecordingSession): Promise<string> {
       resolve(session.outputPath);
     });
 
-    // Send 'q' to stdin , this is the graceful shutdown command
+    // Send 'q' to stdin — this is the graceful shutdown command
     if (session.process.stdin) {
       session.process.stdin.write('q');
       session.process.stdin.end();
@@ -227,7 +227,7 @@ function stopRecording(session: RecordingSession): Promise<string> {
 }
 ```
 
-**Important:** Do NOT use `process.kill('SIGINT')` on Windows , it doesn't work the same as on Unix. The stdin `q` approach is cross-platform and reliable.
+**Important:** Do NOT use `process.kill('SIGINT')` on Windows — it doesn't work the same as on Unix. The stdin `q` approach is cross-platform and reliable.
 
 ### 2.3 Monitoring Recording Health
 
@@ -376,7 +376,7 @@ usb.unrefHotplugEvents();
 
 ### 3.3 Electron desktopCapturer (Screen Only)
 
-`desktopCapturer.getSources()` lists capturable screens and windows , it does NOT enumerate webcams. It's for screen recording only.
+`desktopCapturer.getSources()` lists capturable screens and windows — it does NOT enumerate webcams. It's for screen recording only.
 
 ### 3.4 WMI Queries (Windows-Specific)
 
@@ -425,7 +425,7 @@ Note: WMI names may not exactly match FFmpeg dshow names. FFmpeg device listing 
 
 - **CRF 0**: Lossless (huge files, unnecessary)
 - **CRF 15**: Overkill for talking heads, useful for fast motion
-- **CRF 18**: Visually lossless , recommended for studio recording
+- **CRF 18**: Visually lossless — recommended for studio recording
 - **CRF 21**: High quality, noticeably smaller files
 - **CRF 23**: Default, good for distribution
 - **CRF 28+**: Visible compression artifacts
@@ -437,7 +437,7 @@ For talking head content with a static background, CRF 18 gives excellent qualit
 **Why MKV (Matroska) for recording:**
 
 - If the application crashes, power fails, or disk fills up, MKV files remain playable up to the point of interruption. Only the last few seconds are lost.
-- MP4 writes its index (moov atom) only when recording stops. A crash destroys the entire file , all footage is unrecoverable.
+- MP4 writes its index (moov atom) only when recording stops. A crash destroys the entire file — all footage is unrecoverable.
 
 **Post-recording remux to MP4 (lossless, instant):**
 
@@ -468,7 +468,7 @@ When you spawn multiple FFmpeg processes, each one starts at a slightly differen
 
 ### 5.2 Strategy: Timestamp-Based Sync
 
-**Step 1 , Record with wall-clock timestamps:**
+**Step 1 — Record with wall-clock timestamps:**
 
 Record a high-precision start timestamp in your Node.js code when each process begins:
 
@@ -483,7 +483,7 @@ for (const camera of cameras) {
 }
 ```
 
-**Step 2 , Use `-copyts` to preserve timestamps:**
+**Step 2 — Use `-copyts` to preserve timestamps:**
 
 Add `-copyts` to FFmpeg args to preserve source timestamps in the output. Also add `-start_at_zero` so timestamps start from 0 rather than some arbitrary epoch:
 
@@ -491,7 +491,7 @@ Add `-copyts` to FFmpeg args to preserve source timestamps in the output. Also a
 ffmpeg -f dshow ... -i video="Camera" -copyts -start_at_zero -c:v libx264 ... output.mkv
 ```
 
-**Step 3 , Post-recording alignment:**
+**Step 3 — Post-recording alignment:**
 
 Calculate offsets from the recorded wall-clock start times and use `ffprobe` to read each file's actual start_time:
 
@@ -546,7 +546,7 @@ ffmpeg -f gdigrab -framerate 30 -i title="Visual Studio Code" ^
 - Cannot capture hardware-accelerated fullscreen content (games, some video players)
 - Higher CPU usage than ddagrab
 
-### 6.2 FFmpeg ddagrab (Modern, GPU-Native) , RECOMMENDED
+### 6.2 FFmpeg ddagrab (Modern, GPU-Native) — RECOMMENDED
 
 ddagrab uses the Windows Desktop Duplication API (DXGI) and returns D3D11 hardware frames directly on the GPU.
 
@@ -578,15 +578,15 @@ Note: `hwdownload` and `format=bgra` are required to bring frames back to CPU me
 
 **Key options:**
 
-- `output_idx` , which monitor (0 = primary)
-- `framerate` , max capture fps (default 30)
-- `draw_mouse` , show/hide cursor (default true)
-- `output_fmt` , `8bit` (BGRA) or `10bit` (x2bgr10)
-- `dup_frames` , duplicate frames when desktop hasn't changed (default true)
+- `output_idx` — which monitor (0 = primary)
+- `framerate` — max capture fps (default 30)
+- `draw_mouse` — show/hide cursor (default true)
+- `output_fmt` — `8bit` (BGRA) or `10bit` (x2bgr10)
+- `dup_frames` — duplicate frames when desktop hasn't changed (default true)
 
 **Pros:**
 
-- Captures directly from GPU , near zero CPU for capture
+- Captures directly from GPU — near zero CPU for capture
 - Can capture hardware-accelerated content (games, video players)
 - Combined with NVENC, entire pipeline stays on GPU
 - Supports 10-bit HDR capture
@@ -726,8 +726,8 @@ recorder.start(1000); // chunk every 1 second
 
 **Cons:**
 
-- Output is WebM only (VP8/VP9) , no H.264 output
-- WebM files have no Duration header (Chromium bug, marked WONTFIX) , some players won't show duration or allow seeking
+- Output is WebM only (VP8/VP9) — no H.264 output
+- WebM files have no Duration header (Chromium bug, marked WONTFIX) — some players won't show duration or allow seeking
 - Quality control is limited (bitrate only, no CRF equivalent)
 - High CPU usage for encoding (no GPU acceleration path)
 - MediaRecorder stops working when screen is locked (Chromium bug)
@@ -803,14 +803,14 @@ Use `ffmpeg-static` npm package or bundle a known-good FFmpeg build. For NVENC s
 ## Sources
 
 - [FFmpeg Devices Documentation](https://ffmpeg.org/ffmpeg-devices.html)
-- [Multitrack recording with FFmpeg (Windows) , CN_Blog](https://blog.claranguyen.me/post/2024/12/15/multitrack-recording-win/)
-- [ddagrab documentation , FFmpeg 7.1](https://ayosec.github.io/ffmpeg-filters-docs/7.1/Sources/Video/ddagrab.html)
-- [CRF Guide , slhck.info](https://slhck.info/video/2017/02/24/crf-guide.html)
-- [FFmpeg CRF Examples (2026) , Vibbit](https://vibbit.ai/blog/ffmpeg-crf-examples)
+- [Multitrack recording with FFmpeg (Windows) — CN_Blog](https://blog.claranguyen.me/post/2024/12/15/multitrack-recording-win/)
+- [ddagrab documentation — FFmpeg 7.1](https://ayosec.github.io/ffmpeg-filters-docs/7.1/Sources/Video/ddagrab.html)
+- [CRF Guide — slhck.info](https://slhck.info/video/2017/02/24/crf-guide.html)
+- [FFmpeg CRF Examples (2026) — Vibbit](https://vibbit.ai/blog/ffmpeg-crf-examples)
 - [Node USB library](https://node-usb.github.io/node-usb/)
 - [usb-detection npm package](https://www.npmjs.com/package/usb-detection)
 - [Electron desktopCapturer API](https://www.electronjs.org/docs/api/desktop-capturer)
 - [NVIDIA FFmpeg Hardware Acceleration](https://docs.nvidia.com/video-technologies/video-codec-sdk/11.1/ffmpeg-with-nvidia-gpu/index.html)
-- [MKV vs MP4 crash resilience , OneStream](https://onestream.live/blog/mkv-vs-mp4-for-pre-recorded-streaming/)
-- [FFmpeg with NVIDIA Hardware Acceleration , Erich Izdepski](https://eizdepski.medium.com/ffmpeg-with-nvidia-hardware-acceleration-118e12446b13)
+- [MKV vs MP4 crash resilience — OneStream](https://onestream.live/blog/mkv-vs-mp4-for-pre-recorded-streaming/)
+- [FFmpeg with NVIDIA Hardware Acceleration — Erich Izdepski](https://eizdepski.medium.com/ffmpeg-with-nvidia-hardware-acceleration-118e12446b13)
 - [node-webcam npm package](https://www.npmjs.com/package/node-webcam)

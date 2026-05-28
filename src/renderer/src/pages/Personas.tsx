@@ -284,7 +284,7 @@ export default function Personas({ active }: { active?: boolean }) {
         instructions: newInstructions.trim(),
       });
       if (!created || !created.id) {
-        setSaveError("Save failed , try restarting the app.");
+        setSaveError("Save failed — try restarting the app.");
         return;
       }
       setPersonas((prev) => [...prev, created]);

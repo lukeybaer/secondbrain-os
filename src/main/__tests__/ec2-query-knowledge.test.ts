@@ -2,7 +2,7 @@
  * Tests for the query_knowledge inline-answer fix.
  *
  * Before this fix, query_knowledge added to queryQueue and polled queryAnswers,
- * which was never populated , always timing out after 25s.
+ * which was never populated — always timing out after 25s.
  *
  * After the fix: query_knowledge calls askAmy() inline and returns the answer
  * directly within Vapi's timing window (<20s).
@@ -10,54 +10,13 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const { buildVapiFunctionTools } = require('../../../scripts/lib/vapi-tool-contract');
+
 // ── Simulate the key behaviors from ec2-server.js ───────────────────────────
 
 const VAPI_SERVER_URL = 'https://unay54a6jh.execute-api.us-east-1.amazonaws.com/prod/vapi/webhook';
 
-const VAPI_FUNCTION_TOOLS = [
-  { type: 'dtmf' },
-  {
-    type: 'function',
-    function: {
-      name: 'query_knowledge',
-      parameters: {
-        type: 'object',
-        properties: { question: { type: 'string' } },
-        required: ['question'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'run_claude_code',
-      parameters: {
-        type: 'object',
-        properties: {
-          task: { type: 'string' },
-          priority: { type: 'string', enum: ['normal', 'urgent'] },
-        },
-        required: ['task'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'flag_reputation_risk',
-      parameters: {
-        type: 'object',
-        properties: {
-          category: { type: 'string' },
-          description: { type: 'string' },
-          severity: { type: 'string' },
-          excerpt: { type: 'string' },
-        },
-        required: ['category', 'description', 'severity'],
-      },
-    },
-  },
-];
+const VAPI_FUNCTION_TOOLS = buildVapiFunctionTools();
 
 // Simulates the new inline query_knowledge handler
 async function handleQueryKnowledge(
@@ -97,7 +56,7 @@ function buildOutboundCallBody(
   };
 }
 
-describe('query_knowledge , inline answer fix', () => {
+describe('query_knowledge — inline answer fix', () => {
   it('returns askAmy answer directly without polling', async () => {
     const mockAskAmy = vi.fn().mockResolvedValue('Sandeep Paruchuri is a contact at Amazon.');
     const result = await handleQueryKnowledge('Who is Sandeep?', mockAskAmy);
@@ -144,6 +103,7 @@ describe('VAPI_FUNCTION_TOOLS', () => {
     const tool = VAPI_FUNCTION_TOOLS.find((t: any) => t.function?.name === 'run_claude_code');
     expect(tool).toBeDefined();
     expect((tool as any).function.parameters.required).toContain('task');
+    expect(Object.keys((tool as any).function.parameters.properties)).toContain('continue_session');
   });
 
   it('includes flag_reputation_risk', () => {
@@ -152,12 +112,20 @@ describe('VAPI_FUNCTION_TOOLS', () => {
     expect((tool as any).function.parameters.required).toContain('severity');
   });
 
-  it('has 4 tools total (dtmf + 3 function tools)', () => {
-    expect(VAPI_FUNCTION_TOOLS).toHaveLength(4);
+  it('includes web_search, read_otter_transcripts, check_calendar, and create_calendar_event', () => {
+    const names = VAPI_FUNCTION_TOOLS.map((t: any) => t.function?.name).filter(Boolean);
+    expect(names).toContain('web_search');
+    expect(names).toContain('read_otter_transcripts');
+    expect(names).toContain('check_calendar');
+    expect(names).toContain('create_calendar_event');
+  });
+
+  it('has the full phone tool contract plus dtmf', () => {
+    expect(VAPI_FUNCTION_TOOLS).toHaveLength(14);
   });
 });
 
-describe('initiateVapiOutbound , tool config fix', () => {
+describe('initiateVapiOutbound — tool config fix', () => {
   it('includes serverUrl in assistantOverrides', () => {
     const body = buildOutboundCallBody('+15551234567', 'Hi there', 'phone-id-123');
     expect(body.assistantOverrides.serverUrl).toBe(VAPI_SERVER_URL);
@@ -165,7 +133,7 @@ describe('initiateVapiOutbound , tool config fix', () => {
 
   it('includes VAPI_FUNCTION_TOOLS in assistantOverrides.model.tools', () => {
     const body = buildOutboundCallBody('+15551234567', 'Hi there', 'phone-id-123');
-    expect(body.assistantOverrides.model.tools).toHaveLength(4);
+    expect(body.assistantOverrides.model.tools).toHaveLength(14);
     expect(
       body.assistantOverrides.model.tools.some((t: any) => t.function?.name === 'query_knowledge'),
     ).toBe(true);

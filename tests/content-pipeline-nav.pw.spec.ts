@@ -6,7 +6,7 @@
  * - Video element is present and not in error state
  *
  * Strategy: page.setContent() with a self-contained JS sim of the ContentPipeline
- * state machine , no React/Electron required, just the core navigation logic.
+ * state machine — no React/Electron required, just the core navigation logic.
  */
 
 import { test, expect } from "@playwright/test";
@@ -72,7 +72,7 @@ const PIPELINE_HTML = `<!DOCTYPE html>
   // Mirror of ContentPipeline state machine
   const VIDEOS = [
     { id: "mit_30_agents",         title: "MIT Audited 30 AI Agents. Every Single One Failed.", channel: "Channel1" },
-    { id: "ai_agent_income",       title: "She Replaced Her VA , Income Doubled",               channel: "Channel1" },
+    { id: "ai_agent_income",       title: "She Replaced Her VA — Income Doubled",               channel: "Channel1" },
     { id: "nine_free_tools",       title: "9 Free AI Tools Your Competition Hasn't Found Yet",  channel: "Channel1" },
   ];
 
@@ -320,7 +320,7 @@ test("ContentPipeline: Reject with note advances to next video", async ({ page }
   expect(titleAfter).toContain("VA");
 });
 
-// 8. State resets on navigation , no bleed between videos
+// 8. State resets on navigation — no bleed between videos
 test("ContentPipeline: mute state resets when navigating to next video", async ({ page }) => {
   // Mute current video
   await page.click("#mute-btn");
@@ -349,7 +349,7 @@ test("ContentPipeline: reject panel closes on navigation", async ({ page }) => {
   await expect(page.locator("#reject-panel")).not.toBeVisible();
 });
 
-// 10. Video element: correct default audio state (error=4 is expected , about:blank src)
+// 10. Video element: correct default audio state (error=4 is expected — about:blank src)
 test("ContentPipeline: video element has correct audio state on initial render", async ({ page }) => {
   const state = await page.$eval("#video-el", (v) => {
     const el = v as HTMLVideoElement;
@@ -361,7 +361,7 @@ test("ContentPipeline: video element has correct audio state on initial render",
     };
   });
 
-  // about:blank will always produce MEDIA_ERR_SRC_NOT_SUPPORTED (4) , that's fine
+  // about:blank will always produce MEDIA_ERR_SRC_NOT_SUPPORTED (4) — that's fine
   // What matters is no unexpected error codes (1=ABORTED, 2=NETWORK, 3=DECODE)
   expect(state.errorCode).not.toBe(1);
   expect(state.errorCode).not.toBe(2);

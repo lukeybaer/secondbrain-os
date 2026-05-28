@@ -129,7 +129,7 @@ async function renderVideo(
     }
   }
   if (!audioFileHint) {
-    console.warn('[studio-render] No file has audio , rendering video-only');
+    console.warn('[studio-render] No file has audio — rendering video-only');
   }
 
   // Build FFmpeg filter_complex from EDL
@@ -179,7 +179,7 @@ async function probeHasAudio(filePath: string): Promise<boolean> {
       '-of',
       'csv=p=0',
       filePath,
-    ]);
+    ], { windowsHide: true });
     let stdout = '';
     proc.stdout?.on('data', (d: Buffer) => {
       stdout += d.toString();
@@ -371,6 +371,7 @@ function runFFmpeg(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn('ffmpeg', args, {
       env: { ...process.env },
+      windowsHide: true,
     });
 
     let stderr = '';

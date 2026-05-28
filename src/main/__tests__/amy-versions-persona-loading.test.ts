@@ -3,7 +3,7 @@
  *
  * Regression: every Vapi system prompt must include the canonical Amy
  * persona from memory/AMY.md. The "one Amy, not five" non-negotiable
- * need from MEMORY.md depends on this , if the Vapi voice persona
+ * need from MEMORY.md depends on this — if the Vapi voice persona
  * drifts from Tier 1 memory, Amy's identity splits across surfaces
  * and the #gap protected by plans/dazzling-rolling-moler.md recurs.
  *
@@ -47,6 +47,10 @@ vi.mock('../caller-id', () => ({
     identified: false,
   }),
   loadContactsStore: () => ({ keyword: 'testword', contacts: [] }),
+  buildOutboundCalleeContext: () => ({
+    mode: 'unknown',
+    systemPromptSection: '## Compartmentalization: outbound callee',
+  }),
 }));
 
 vi.mock('../personas', () => ({ listPersonas: () => [] }));

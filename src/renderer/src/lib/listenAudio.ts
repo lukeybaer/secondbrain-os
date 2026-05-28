@@ -1,14 +1,14 @@
 /**
- * listenAudio , connects to a Vapi monitor.listenUrl WebSocket and plays audio.
+ * listenAudio — connects to a Vapi monitor.listenUrl WebSocket and plays audio.
  *
  * Vapi streams raw PCM S16LE (signed 16-bit little-endian), mono.
- * VAPI_SAMPLE_RATE must match what Vapi actually sends , open DevTools (F12)
+ * VAPI_SAMPLE_RATE must match what Vapi actually sends — open DevTools (F12)
  * during a live call and look for the "[vapi-audio]" diagnostic log which
  * prints the measured bytes/second and the inferred Hz so you can set it
  * correctly without guessing.
  */
 
-export const VAPI_SAMPLE_RATE = 16000; // Hz , update based on [vapi-audio] log
+export const VAPI_SAMPLE_RATE = 16000; // Hz — update based on [vapi-audio] log
 const CONNECT_TIMEOUT_MS = 30_000;
 const BUFFER_LEAD_S = 0.1; // start this far ahead of now to avoid underruns
 const MAX_BUFFER_AHEAD_S = 0.4; // don't let the queue grow beyond this
@@ -65,7 +65,7 @@ export function startListening(
     gainNode.connect(ctx.destination);
     let nextTime = 0;
 
-    // Diagnostic counters , reset once we log
+    // Diagnostic counters — reset once we log
     let diagBytesReceived = 0;
     let diagFrames = 0;
     let diagStartMs = 0;
@@ -134,7 +134,7 @@ export function startListening(
             ` | INFERRED HZ (mono S16LE) = ${inferredHz}` +
             ` | playing at ${VAPI_SAMPLE_RATE}` +
             (inferredHz !== VAPI_SAMPLE_RATE ? ` ← MISMATCH` : ` ← ok`);
-          // Write to file automatically , no DevTools needed
+          // Write to file automatically — no DevTools needed
           (window as any).api?.diag?.writeAudio(line, firstFrameHex);
         }
       }
@@ -148,7 +148,7 @@ export function startListening(
       src.connect(gainNode);
 
       const now = ctx.currentTime;
-      if (nextTime < now) nextTime = now + 0.02; // fell behind , recover gracefully
+      if (nextTime < now) nextTime = now + 0.02; // fell behind — recover gracefully
       if (nextTime > now + MAX_BUFFER_AHEAD_S) nextTime = now + MAX_BUFFER_AHEAD_S; // cap queue
       src.start(nextTime);
       nextTime += audioBuf.duration;

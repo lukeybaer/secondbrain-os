@@ -153,11 +153,11 @@ export function saveStudioConfig(config: Partial<StudioConfig>): StudioConfig {
 
 // ─── Camera Discovery ───────────────────────────────────────────────────
 
-// Cache device list , ffmpeg -list_devices hangs on repeated calls because
+// Cache device list — ffmpeg -list_devices hangs on repeated calls because
 // dshow state gets corrupted. Cache for 60s, refreshable via Refresh button.
 let cachedDevices: DetectedDevice[] | null = null;
 let cachedDevicesAt = 0;
-const DEVICE_CACHE_TTL = 600_000; // 10 minutes , dshow hangs on repeated calls
+const DEVICE_CACHE_TTL = 600_000; // 10 minutes — dshow hangs on repeated calls
 
 export function clearDeviceCache(): void {
   cachedDevices = null;
@@ -172,7 +172,9 @@ export async function detectDevices(): Promise<DetectedDevice[]> {
     return cachedDevices;
   }
   return new Promise((resolve, reject) => {
-    const ffmpeg = spawn('ffmpeg', ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']);
+    const ffmpeg = spawn('ffmpeg', ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'], {
+      windowsHide: true,
+    });
 
     let stderr = '';
     let resolved = false;
@@ -200,14 +202,14 @@ export async function detectDevices(): Promise<DetectedDevice[]> {
     const timeout = setTimeout(() => {
       if (resolved) return;
       resolved = true;
-      console.warn('[studio] detectDevices timed out after 5s , using partial results');
+      console.warn('[studio] detectDevices timed out after 5s — using partial results');
       try {
         ffmpeg.kill();
       } catch {
         /* */
       }
       const devices = parseDevices();
-      // Only update cache if we got MORE devices than before , never downgrade
+      // Only update cache if we got MORE devices than before — never downgrade
       if (!cachedDevices || devices.length >= cachedDevices.length) {
         cachedDevices = devices;
         cachedDevicesAt = Date.now();
@@ -226,7 +228,7 @@ export async function detectDevices(): Promise<DetectedDevice[]> {
       resolved = true;
       clearTimeout(timeout);
       const devices = parseDevices();
-      // Only update cache if we got MORE devices than before , never downgrade
+      // Only update cache if we got MORE devices than before — never downgrade
       if (!cachedDevices || devices.length >= cachedDevices.length) {
         cachedDevices = devices;
         cachedDevicesAt = Date.now();
@@ -288,7 +290,7 @@ async function probeCameraByName(name: string): Promise<boolean> {
       '-f',
       'null',
       '-',
-    ]);
+    ], { windowsHide: true });
     let resolved = false;
     const finish = (ok: boolean) => {
       if (resolved) return;
@@ -300,7 +302,7 @@ async function probeCameraByName(name: string): Promise<boolean> {
       }
       resolve(ok);
     };
-    // If ffmpeg opens the device, stderr will contain "Input #0" , success
+    // If ffmpeg opens the device, stderr will contain "Input #0" — success
     probe.stderr?.on('data', (data: Buffer) => {
       if (data.toString().includes('Input #0')) finish(true);
     });
@@ -319,7 +321,7 @@ export async function detectAudioDevices(): Promise<DetectedDevice[]> {
 
 export async function checkNvenc(): Promise<boolean> {
   return new Promise((resolve) => {
-    const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-encoders']);
+    const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-encoders'], { windowsHide: true });
     let stdout = '';
     ffmpeg.stdout?.on('data', (data: Buffer) => {
       stdout += data.toString();
@@ -363,7 +365,7 @@ export function validateCamera(
     }
     args.push('-i', `video=${cameraName}`, '-t', '0.5', '-f', 'null', '-');
 
-    const proc = spawn('ffmpeg', args);
+    const proc = spawn('ffmpeg', args, { windowsHide: true });
     let resolved = false;
 
     const finish = (ok: boolean) => {
@@ -379,7 +381,7 @@ export function validateCamera(
 
     proc.on('exit', (code) => finish(code === 0));
     proc.on('error', () => finish(false));
-    // Hard timeout , don't let a camera probe hang forever
+    // Hard timeout — don't let a camera probe hang forever
     setTimeout(() => finish(false), 5000);
   });
 }
@@ -436,7 +438,7 @@ function buildCameraArgs(
 function buildScreenArgs(outputPath: string, _useNvenc: boolean, audioDevice?: string): string[] {
   const args: string[] = [];
 
-  // Always use gdigrab , ddagrab + h264_nvenc fails with "Error while opening encoder"
+  // Always use gdigrab — ddagrab + h264_nvenc fails with "Error while opening encoder"
   // because ddagrab outputs a pixel format NVENC can't accept directly.
   // gdigrab + libx264 ultrafast is fast enough and actually works.
   args.push('-f', 'gdigrab', '-framerate', '30', '-i', 'desktop');
@@ -464,7 +466,7 @@ function buildScreenArgs(outputPath: string, _useNvenc: boolean, audioDevice?: s
 }
 
 function spawnFFmpeg(args: string[], source: string, outputPath: string): FFmpegSession {
-  const proc = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  const proc = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 
   proc.stderr?.on('data', (data: Buffer) => {
     const line = data.toString();
@@ -512,7 +514,9 @@ function stopFFmpegSession(session: FFmpegSession): Promise<string> {
 async function remuxToMp4(mkvPath: string): Promise<string> {
   const mp4Path = mkvPath.replace(/\.mkv$/, '.mp4');
   return new Promise((resolve, reject) => {
-    const proc = spawn('ffmpeg', ['-i', mkvPath, '-c', 'copy', '-y', mp4Path]);
+    const proc = spawn('ffmpeg', ['-i', mkvPath, '-c', 'copy', '-y', mp4Path], {
+      windowsHide: true,
+    });
     proc.on('exit', (code) => {
       if (code === 0) resolve(mp4Path);
       else reject(new Error(`Remux failed for ${mkvPath}`));
@@ -554,7 +558,7 @@ export async function startRecording(opts?: StartRecordingOptions): Promise<{
     const recDir = recordingPath(id);
     ensureDir(recDir);
 
-    // Use pre-resolved cameras/audio from IPC handler , no detection here.
+    // Use pre-resolved cameras/audio from IPC handler — no detection here.
     let cameras = opts?.cameras ?? config.cameras.filter((c) => c.enabled);
     const defaultAudioDevice = opts?.audioDevice ?? (config as any).defaultAudioDevice;
 
@@ -569,7 +573,7 @@ export async function startRecording(opts?: StartRecordingOptions): Promise<{
       `[studio] startRecording: id=${id}, cameras=[${cameras.map((c) => c.name).join(', ')}], audio=${defaultAudioDevice ?? 'none'}`,
     );
 
-    // Audio goes to screen recording ONLY , never to cameras.
+    // Audio goes to screen recording ONLY — never to cameras.
     // dshow audio is exclusive on Windows: if a camera holds the mic,
     // the screen recording blocks until the camera dies, making
     // total time = camera_duration + screen_duration (serial, not parallel).
@@ -625,10 +629,10 @@ export async function startRecording(opts?: StartRecordingOptions): Promise<{
           const session = spawnFFmpeg(args, cam.position, outputFile);
           console.log(`[studio] ffmpeg spawned for "${cam.name}", pid=${session.process.pid}`);
 
-          // Brief alive check , if process dies within 1s, try next format
+          // Brief alive check — if process dies within 1s, try next format
           const alive = await new Promise<boolean>((resolve) => {
             const check = setTimeout(() => {
-              console.log(`[studio] "${cam.name}" alive after 1s , OK`);
+              console.log(`[studio] "${cam.name}" alive after 1s — OK`);
               resolve(true);
             }, 1000);
             session.process.on('exit', (code) => {
@@ -844,7 +848,7 @@ export async function deleteRecording(id: string): Promise<{ success: boolean; e
       return {
         success: false,
         error:
-          'Directory still exists , files may be locked by video players. Try collapsing the recording first.',
+          'Directory still exists — files may be locked by video players. Try collapsing the recording first.',
       };
     }
     return { success: true };

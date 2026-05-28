@@ -121,11 +121,11 @@ function getOrCreateKey(): Buffer {
   _cachedKey = crypto.randomBytes(KEY_BYTES);
   fs.writeFileSync(keyPath, _cachedKey.toString('base64'), 'utf-8');
 
-  // Restrict file permissions (Unix only , Windows ignores chmod)
+  // Restrict file permissions (Unix only — Windows ignores chmod)
   try {
     fs.chmodSync(keyPath, 0o600);
   } catch {
-    /* Windows , no-op */
+    /* Windows — no-op */
   }
 
   console.log(`[pii-vault] Generated new vault key at ${keyPath}`);
@@ -324,7 +324,7 @@ async function logAndAlert(
   };
   vault.pii_log.push(logEntry);
 
-  // Security alert , PII access audit always goes to Telegram immediately
+  // Security alert — PII access audit always goes to Telegram immediately
   const config = getConfig();
   if (config.telegramChatId) {
     const icon = shared ? '📤' : '🚫';
@@ -333,7 +333,7 @@ async function logAndAlert(
   }
 }
 
-/** Get all PII access logs (unencrypted metadata , values not included). */
+/** Get all PII access logs (unencrypted metadata — values not included). */
 export function getPiiAccessLog(): PiiAccessLog[] {
   return readVault().pii_log;
 }

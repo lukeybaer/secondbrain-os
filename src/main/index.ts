@@ -1,9 +1,9 @@
-import { app, BrowserWindow, shell, protocol, net, session } from 'electron';
+import { app, BrowserWindow, shell, protocol, session } from 'electron';
 import { join } from 'path';
 import { electronApp, optimizer, is } from '@electron-toolkit/utils';
 import { registerIpcHandlers } from './ipc-handlers';
 import { registerBriefingIpc } from './briefing-api';
-import { loadConfig } from './config';
+import { loadConfig, getConfig } from './config';
 import { startOtterPolling } from './otter-ingest';
 import { startCommandQueueWorker, setCommandStatusHandler } from './command-queue';
 import { startKnowledgeWorker } from './knowledge-worker';
@@ -19,6 +19,7 @@ import { runStartupChecks, detectWorktree } from './startup-checks';
 import { autoConnectIfSession } from './whatsapp-web';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Readable } from 'stream';
 import { execSync } from 'child_process';
 
 function getGitHash(): string {
@@ -26,6 +27,7 @@ function getGitHash(): string {
     return execSync('git rev-parse --short HEAD', {
       cwd: app.getAppPath(),
       encoding: 'utf8',
+      windowsHide: true,
     }).trim();
   } catch {
     return 'unknown';
@@ -80,7 +82,7 @@ function createWindow(): BrowserWindow {
     mainWindow.show();
     const wtWarning = detectWorktree();
     mainWindow.setTitle(
-      wtWarning ? `⚠ WORKTREE , WRONG REPO , SecondBrain` : `SecondBrain [${getGitHash()}]`,
+      wtWarning ? `⚠ WORKTREE — WRONG REPO — SecondBrain` : `SecondBrain [${getGitHash()}]`,
     );
     if (is.dev) {
       mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -201,11 +203,11 @@ protocol.registerSchemesAsPrivileged([
 app
   .whenReady()
   .then(async () => {
-    writeLog('info', `App starting , userData: ${app.getPath('userData')}`);
+    writeLog('info', `App starting — userData: ${app.getPath('userData')}`);
     electronApp.setAppUserModelId('com.secondbrain.app');
     loadConfig();
 
-    // Deny camera/mic access , SecondBrain has no UI that needs the camera or mic.
+    // Deny camera/mic access — SecondBrain has no UI that needs the camera or mic.
     // This prevents the app from competing with Google Meet and other video call tools.
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
       if (permission === 'media') {
@@ -215,21 +217,102 @@ app
       }
     });
 
-    // Handle media:// URLs by proxying through net.fetch with the file:// protocol.
+    // Handle media:// URLs with explicit Range support so HTML5 <video>
+    // playback works for files larger than the initial buffer.
+    //
+    // 2026-04-29 fix: previous implementation just did `net.fetch(file://...)`
+    // which returned the whole file but did not propagate Range headers and
+    // did not advertise Accept-Ranges: bytes. The video element buffered the
+    // first chunk (~3s of a 36s clip), then stalled when Chromium tried to
+    // fetch the next byte range and got a non-Range response back -- Luke
+    // saw playback halt at 0:02 of every video in the Content Pipeline
+    // dashboard.
+    //
+    // Real fix: parse the Range request, fs.createReadStream the requested
+    // byte slice, return 206 Partial Content with Content-Range and stream
+    // the slice as a Web ReadableStream. For non-Range requests, return 200
+    // with Accept-Ranges: bytes so the client knows it can seek.
+    //
     // URL format: media://local/C:/path/to/file.mp4
-    // pathname = /C:/path/to/file.mp4 → strip leading slash → file:///C:/path/to/file.mp4
+    // pathname = /C:/path/to/file.mp4 -> strip leading slash -> C:/path/to/file.mp4
     protocol.handle('media', (request) => {
       try {
         const url = new URL(request.url);
         const filePath = url.pathname.replace(/^\//, '');
-        return net.fetch(`file:///${filePath}`);
+
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(filePath);
+        } catch {
+          return new Response('File not found', { status: 404 });
+        }
+        const fileSize = stat.size;
+
+        const ext = path.extname(filePath).toLowerCase();
+        const contentType =
+          ext === '.mp4' ? 'video/mp4'
+          : ext === '.webm' ? 'video/webm'
+          : ext === '.mov' ? 'video/quicktime'
+          : ext === '.mp3' ? 'audio/mpeg'
+          : ext === '.wav' ? 'audio/wav'
+          : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+          : ext === '.png' ? 'image/png'
+          : 'application/octet-stream';
+
+        const rangeHeader = request.headers.get('range');
+        if (rangeHeader) {
+          // Range: bytes=START-END (END is optional)
+          const match = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
+          if (!match) {
+            return new Response('Invalid Range', {
+              status: 416,
+              headers: { 'Content-Range': `bytes */${fileSize}` },
+            });
+          }
+          const start = parseInt(match[1], 10);
+          const end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+          if (Number.isNaN(start) || Number.isNaN(end) || start > end || end >= fileSize) {
+            return new Response('Range Not Satisfiable', {
+              status: 416,
+              headers: { 'Content-Range': `bytes */${fileSize}` },
+            });
+          }
+          const chunkSize = end - start + 1;
+          const nodeStream = fs.createReadStream(filePath, { start, end });
+          // Convert Node Readable -> Web ReadableStream so it fits the Response API.
+          const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream<Uint8Array>;
+          return new Response(webStream, {
+            status: 206,
+            headers: {
+              'Content-Type': contentType,
+              'Content-Length': String(chunkSize),
+              'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+              'Accept-Ranges': 'bytes',
+              'Cache-Control': 'no-cache',
+            },
+          });
+        }
+
+        // No Range header: return the whole file but advertise Accept-Ranges
+        // so the client knows it can seek with subsequent Range requests.
+        const nodeStream = fs.createReadStream(filePath);
+        const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream<Uint8Array>;
+        return new Response(webStream, {
+          status: 200,
+          headers: {
+            'Content-Type': contentType,
+            'Content-Length': String(fileSize),
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'no-cache',
+          },
+        });
       } catch (e) {
         writeLog('media-protocol', e);
         return new Response('File not found', { status: 404 });
       }
     });
 
-    // Validate known fix preconditions , warns loudly if something regressed.
+    // Validate known fix preconditions — warns loudly if something regressed.
     // Must run AFTER protocol.handle("media") so isProtocolHandled returns true.
     runStartupChecks().catch((err) => console.error('[startup-checks] Error:', err));
 
@@ -280,7 +363,7 @@ app
             'ServerAliveInterval=60',
             'ec2-user@98.80.164.16',
           ],
-          { detached: true, stdio: 'ignore' },
+          { detached: true, stdio: 'ignore', windowsHide: true },
         );
         ssh.unref();
         console.log('[startup] SSH tunnel to Graphiti established (pid:', ssh.pid, ')');
@@ -299,7 +382,17 @@ app
     let _mainWindow: BrowserWindow | null = mainWindowRef;
     registerClaudeOverlayHandlers(() => _mainWindow);
 
-    // Start Otter transcript polling , every 5 minutes
+    // Point the Task Spine store at the real data dir before any poller or
+    // command worker can create spine records.
+    const spineDataDir = getConfig().dataDir;
+    try {
+      const { setTasksDir } = await import('./task-store');
+      setTasksDir(join(spineDataDir, 'tasks'));
+    } catch (err) {
+      writeLog('task-store-init', err);
+    }
+
+    // Start Otter transcript polling — every 5 minutes
     startOtterPolling(5 * 60 * 1000);
 
     // Start local HTTP server (Vapi webhooks, Claude Code command endpoint)
@@ -319,6 +412,26 @@ app
       }
     });
     startCommandQueueWorker();
+
+    // Start the Task Spine intake watcher: drains data/agent/dispatch-queue.jsonl
+    // (the actionable directives extracted from calls, emails, and Otter notes)
+    // into durable Tasks so every surface's work shows up in one list.
+    try {
+      const { startIntakeWatcher } = await import('./task-intake');
+      startIntakeWatcher(
+        join(spineDataDir, 'agent', 'dispatch-queue.jsonl'),
+        join(spineDataDir, 'tasks', 'intake-consumed.json'),
+      );
+      // The act worker auto-runs queued Tasks. It is disabled unless
+      // SECONDBRAIN_TASK_WORKER=off; on by default.
+      const { startTaskWorker } = await import('./task-worker');
+      startTaskWorker();
+      // Batched dispatch-completion Telegram: one message per bundle.
+      const { startTaskNotifier } = await import('./task-notify');
+      startTaskNotifier();
+    } catch (err) {
+      writeLog('task-intake-autostart', err);
+    }
 
     // Start knowledge query worker (answers mid-call knowledge queries from Vapi)
     startKnowledgeWorker();

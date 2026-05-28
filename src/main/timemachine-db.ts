@@ -1,7 +1,7 @@
 // timemachine-db.ts
 // SQLite tables + FTS5 full-text search for Time Machine.
 // Stores OCR text from screenshots and audio transcripts locally for fast search.
-// Binary files (screenshots, audio) live in S3 , only paths/keys stored here.
+// Binary files (screenshots, audio) live in S3 — only paths/keys stored here.
 
 import { getDb } from './database-sqlite';
 

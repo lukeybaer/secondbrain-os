@@ -193,7 +193,7 @@ export function buildHotMemoryBlock(dataDir: string): string {
   );
 
   return [
-    '## Frequently Accessed Memory (hot tier , load these first)',
+    '## Frequently Accessed Memory (hot tier — load these first)',
     ...lines,
     '',
   ].join('\n');

@@ -26,12 +26,12 @@ function getConvsDir(): string {
   return path.join(getConfig().dataDir, 'conversations');
 }
 
-function getThemesDir(): string {
-  return path.join(getConfig().dataDir, 'themes');
+function getSpecialContentDir(): string {
+  return path.join(getConfig().dataDir, 'special-content');
 }
 
 export function ensureDataDirs(): void {
-  const dirs = [getConfig().dataDir, getConvsDir(), getWhatsAppDir(), getSmsDir(), getThemesDir()];
+  const dirs = [getConfig().dataDir, getConvsDir(), getWhatsAppDir(), getSmsDir(), getSpecialContentDir()];
   for (const dir of dirs) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });

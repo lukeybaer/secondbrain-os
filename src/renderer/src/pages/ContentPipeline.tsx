@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { dateText, noteText } from './contentPipelineText';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,9 +20,9 @@ export interface PendingVideo {
   generated_date: string;
   video_path?: string;
   thumbnail_path?: string;
-  rejection_note?: string;
-  video_rejection_note?: string;
-  thumbnail_rejection_note?: string;
+  rejection_note?: unknown;
+  video_rejection_note?: unknown;
+  thumbnail_rejection_note?: unknown;
   video_needs_regen?: boolean;
   thumbnail_needs_regen?: boolean;
   transcript_file?: string;
@@ -29,9 +30,19 @@ export interface PendingVideo {
     words: { word: string; start: number; end: number; emphasis?: boolean }[];
     text: string;
   };
-  build_notes?: string;
-  previous_feedback?: string;
-  fix_summary?: string;
+  build_notes?: unknown;
+  previous_feedback?: unknown;
+  fix_summary?: unknown;
+  // 2026-05-06 Luke: render the full rejection history per video, not just
+  // the latest. Each round = {note, rejected_at, fix_summary?, fixed_at?}.
+  feedback_history?: {
+    note?: unknown;
+    rejected_at?: unknown;
+    rejectedAt?: unknown;
+    target?: unknown;
+    fix_summary?: unknown;
+    fixed_at?: unknown;
+  }[];
   youtube_url?: string;
   scheduled_upload_at?: string;
   upload_status?: 'scheduled' | 'uploading' | 'posted';
@@ -84,7 +95,7 @@ const DEMO_PENDING: PendingVideo[] = [
   },
   {
     id: 'ai_agent_income_formula',
-    title: 'She Replaced Her $1,400/Month VA , Income Doubled',
+    title: 'She Replaced Her $1,400/Month VA — Income Doubled',
     channel: 'Channel1',
     status: 'pending_approval',
     generated_date: '2026-03-14',
@@ -119,7 +130,7 @@ const DEMO_PENDING: PendingVideo[] = [
 // Next scheduled upload times: 9am, 1pm, 5pm CT
 function nextUploadTime(): Date {
   const now = new Date();
-  // Convert to CT offset (UTC-6 standard, UTC-5 daylight , approximate as UTC-6 for display)
+  // Convert to CT offset (UTC-6 standard, UTC-5 daylight — approximate as UTC-6 for display)
   const CT_OFFSET_MS = 6 * 60 * 60 * 1000;
   const nowCT = new Date(now.getTime() - CT_OFFSET_MS);
   const y = nowCT.getUTCFullYear();
@@ -148,7 +159,7 @@ function formatNextUpload(date: Date): string {
 
 // Use the registered media:// protocol to serve local files.
 // Using file:// directly in <video src> fails when the renderer is loaded from
-// http://localhost (dev mode) , Chromium's media pipeline blocks cross-protocol
+// http://localhost (dev mode) — Chromium's media pipeline blocks cross-protocol
 // loads even when webSecurity is disabled.  The media:// scheme is privileged
 // and streams files via net.fetch in the main process, bypassing this restriction.
 // URL format: media://local/C:/path/to/file.mp4
@@ -265,7 +276,7 @@ function ChannelBadge({ channel }: { channel: PendingVideo['channel'] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Video card (pending review) , Shorts layout (9:16 tall + thumbnail beside)
+// Video card (pending review) — Shorts layout (9:16 tall + thumbnail beside)
 // ---------------------------------------------------------------------------
 
 // Shorts are 9:16. Render video + thumbnail at matching height side-by-side.
@@ -318,7 +329,7 @@ const SHORTS_HEIGHT = 400;
 const SHORTS_WIDTH = Math.round((SHORTS_HEIGHT * 9) / 16); // 225px
 
 // ---------------------------------------------------------------------------
-// Custom video player , replaces broken native controls at 225px width.
+// Custom video player — replaces broken native controls at 225px width.
 // Chromium's native <video controls> collapse at narrow widths: the progress
 // bar becomes undraggable, seek buttons overlap, and forward sometimes
 // triggers backward. This component provides a working scrubber + skip.
@@ -424,7 +435,7 @@ function ShortsPlayer({
 
   return (
     <div style={{ width }}>
-      {/* Video element , no native controls */}
+      {/* Video element — no native controls */}
       <video
         ref={ref}
         preload="metadata"
@@ -440,7 +451,7 @@ function ShortsPlayer({
         src={src}
       />
 
-      {/* Scrubber bar , click or drag to seek */}
+      {/* Scrubber bar — click or drag to seek */}
       <div
         ref={scrubRef}
         onMouseDown={onScrubDown}
@@ -581,6 +592,22 @@ function VideoCard({
   const [busy, setBusy] = useState(false);
   const [muted, setMuted] = useState(false);
   const videoRef = React.useRef<HTMLVideoElement>(null);
+  // 2026-05-25 Luke flagged on Otter that the approval card recycled
+  // rejection feedback from a different video. Defensively filter the
+  // history: an entry without video_id is allowed (back-compat for
+  // pre-2026-05-25 entries), an entry whose video_id matches this video
+  // is allowed, an entry whose video_id is some OTHER video id is dropped.
+  // Cross-video entries are also dropped if cross_video_skipped is set
+  // by auto-regen-rejected-videos.js.
+  const rawFeedbackHistory = Array.isArray(video.feedback_history) ? video.feedback_history : [];
+  const feedbackHistory = rawFeedbackHistory.filter((round: { video_id?: string; cross_video_skipped?: boolean }) => {
+    if (round && round.cross_video_skipped) return false;
+    if (round && round.video_id && round.video_id !== video.id) return false;
+    return true;
+  });
+  const previousFeedback = noteText(video.previous_feedback, '');
+  const fixSummary = noteText(video.fix_summary, '');
+  const buildNotes = noteText(video.build_notes, '');
   const [videoDiag, setVideoDiag] = useState<{
     readyState: number;
     error: string | null;
@@ -598,7 +625,7 @@ function VideoCard({
     const el = videoRef.current;
     if (!el) return;
     el.volume = 1.0;
-    // Detect audio: audioTracks API (Chromium supports it) , null means unknown
+    // Detect audio: audioTracks API (Chromium supports it) — null means unknown
     const audioTrackCount = (el as any).audioTracks?.length ?? null;
     const hasAudio = audioTrackCount === null ? null : audioTrackCount > 0;
     const diag = {
@@ -669,9 +696,9 @@ function VideoCard({
         </div>
       </div>
 
-      {/* Media row , video (9:16) + thumbnail (9:16) side by side */}
+      {/* Media row — video (9:16) + thumbnail (9:16) side by side */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 12, alignItems: 'flex-start' }}>
-        {/* Video , Shorts 9:16 */}
+        {/* Video — Shorts 9:16 */}
         <div style={{ flexShrink: 0 }}>
           <div
             style={{
@@ -727,7 +754,7 @@ function VideoCard({
           )}
         </div>
 
-        {/* Thumbnail , same 9:16 dimensions */}
+        {/* Thumbnail — same 9:16 dimensions */}
         <div style={{ flexShrink: 0 }}>
           <div
             style={{
@@ -815,8 +842,13 @@ function VideoCard({
         </button>
       </div>
 
-      {/* Previous feedback + fix summary (for re-presented videos) */}
-      {video.previous_feedback && (
+      {/* 2026-05-06 Luke: full rejection history, not just the latest.
+          "When re-reviewing it I want to see what I said, and what you did
+          (summary of those)." Render every round (oldest -> newest) with
+          paired fix_summary when available. Falls back to the legacy
+          single-rejection panel when feedback_history is empty (so old
+          videos that haven't been re-indexed still render something). */}
+      {(feedbackHistory.length > 0 || previousFeedback) && (
         <div
           style={{
             marginTop: 12,
@@ -832,28 +864,67 @@ function VideoCard({
               color: '#facc15',
               textTransform: 'uppercase',
               letterSpacing: '0.06em',
-              marginBottom: 4,
+              marginBottom: 6,
             }}
           >
-            Previous Feedback
+            Rejection History
+            {feedbackHistory.length > 0 ? ` (${feedbackHistory.length})` : ''}
           </div>
-          <div style={{ fontSize: 12, color: '#fbbf24', marginBottom: 8 }}>
-            {video.previous_feedback}
-          </div>
-          {video.fix_summary && (
+          {feedbackHistory.length > 0 ? (
+            feedbackHistory.map((round, i) => {
+              const roundTarget = noteText(round.target, '');
+              const rejectedAt = dateText(round.rejected_at ?? round.rejectedAt);
+              const roundFixSummary = noteText(round.fix_summary, '');
+              const fixedAt = dateText(round.fixed_at);
+              return (
+                <div
+                  key={`${rejectedAt}_${i}`}
+                  style={{
+                    borderTop: i === 0 ? 'none' : '1px solid #332200',
+                    paddingTop: i === 0 ? 0 : 8,
+                    marginTop: i === 0 ? 0 : 8,
+                  }}
+                >
+                  <div style={{ fontSize: 10, color: '#facc15', marginBottom: 2 }}>
+                    Round {i + 1}
+                    {roundTarget ? ` · ${roundTarget}` : ''}
+                    {rejectedAt ? ` · ${rejectedAt}` : ''}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#fbbf24', marginBottom: 6, whiteSpace: 'pre-wrap' }}>
+                    {noteText(round.note)}
+                  </div>
+                  {roundFixSummary && (
+                    <>
+                      <div style={{ fontSize: 10, color: '#4ade80', marginBottom: 2 }}>
+                        What Changed{fixedAt ? ` · ${fixedAt}` : ''}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#86efac' }}>{roundFixSummary}</div>
+                    </>
+                  )}
+                </div>
+              );
+            })
+          ) : (
             <>
-              <div
-                style={{
-                  fontSize: 10,
-                  color: '#4ade80',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.06em',
-                  marginBottom: 4,
-                }}
-              >
-                What Changed
+              <div style={{ fontSize: 12, color: '#fbbf24', marginBottom: 8 }}>
+                {previousFeedback}
               </div>
-              <div style={{ fontSize: 12, color: '#86efac' }}>{video.fix_summary}</div>
+              {fixSummary && (
+                <>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: '#4ade80',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.06em',
+                      marginBottom: 4,
+                    }}
+                  >
+                    What Changed
+                  </div>
+                  <div style={{ fontSize: 12, color: '#86efac' }}>{fixSummary}</div>
+                </>
+              )}
             </>
           )}
         </div>
@@ -889,7 +960,7 @@ function VideoCard({
               (w: { word: string; start: number; end: number; emphasis?: boolean }, i: number) => (
                 <span
                   key={i}
-                  title={`${w.start.toFixed(2)}s , ${w.end.toFixed(2)}s`}
+                  title={`${w.start.toFixed(2)}s — ${w.end.toFixed(2)}s`}
                   style={{
                     color: w.emphasis ? '#00FF88' : '#ccc',
                     fontWeight: w.emphasis ? 700 : 400,
@@ -906,9 +977,9 @@ function VideoCard({
           </div>
         </div>
       )}
-      {video.build_notes && (
+      {buildNotes && (
         <div style={{ marginTop: 8, fontSize: 11, color: '#666', fontStyle: 'italic' }}>
-          {video.build_notes}
+          {buildNotes}
         </div>
       )}
     </div>
@@ -1018,7 +1089,7 @@ function UploadRow({
             )}
             {uploadStatus === 'uploading' && (
               <span style={{ fontSize: 11, color: '#60a5fa' }}>
-                Queued on EC2 , next upload slot
+                Queued on EC2 — next upload slot
               </span>
             )}
             {uploadStatus === 'posted' && video.youtube_url && (
@@ -1177,7 +1248,7 @@ function UploadRow({
 }
 
 // ---------------------------------------------------------------------------
-// Rejected row , awaiting regeneration (read-only)
+// Rejected row — awaiting regeneration (read-only)
 // ---------------------------------------------------------------------------
 
 function RejectedRow({
@@ -1188,9 +1259,12 @@ function RejectedRow({
   onRegenComplete?: () => void;
 }) {
   const notes: string[] = [];
-  if (video.video_rejection_note) notes.push(`Video: ${video.video_rejection_note}`);
-  if (video.thumbnail_rejection_note) notes.push(`Thumbnail: ${video.thumbnail_rejection_note}`);
-  if (notes.length === 0 && video.rejection_note) notes.push(video.rejection_note);
+  const videoNote = noteText(video.video_rejection_note, '');
+  const thumbnailNote = noteText(video.thumbnail_rejection_note, '');
+  const rejectionNote = noteText(video.rejection_note, '');
+  if (videoNote) notes.push(`Video: ${videoNote}`);
+  if (thumbnailNote) notes.push(`Thumbnail: ${thumbnailNote}`);
+  if (notes.length === 0 && rejectionNote) notes.push(rejectionNote);
 
   const [expanded, setExpanded] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -1215,12 +1289,12 @@ function RejectedRow({
       };
       if (!result.success) {
         setRegenState('error');
-        setRegenError(result.error || 'Unknown error');
+        setRegenError(noteText(result.error, 'Unknown error'));
       } else {
         const thisFailed = result.failed?.find((f) => f.id === video.id);
         if (thisFailed) {
           setRegenState('error');
-          setRegenError(thisFailed.error);
+          setRegenError(noteText(thisFailed.error, 'Unknown error'));
         } else {
           setRegenState('done');
           if (onRegenComplete) onRegenComplete();
@@ -1228,7 +1302,7 @@ function RejectedRow({
       }
     } catch (e: any) {
       setRegenState('error');
-      setRegenError(e.message);
+      setRegenError(noteText(e?.message ?? e, 'Unknown error'));
     }
   }
 
@@ -1329,7 +1403,7 @@ function RejectedRow({
 }
 
 // ---------------------------------------------------------------------------
-// Published video row , compact playable card with YouTube link
+// Published video row — compact playable card with YouTube link
 // ---------------------------------------------------------------------------
 
 function PublishedRow({ video }: { video: PublishedVideo }) {
@@ -1893,7 +1967,7 @@ function SocialPostsTab() {
         pending,
         'No posts pending review. Amy will queue drafts here for your approval.',
       )}
-      {renderSection('Approved , Ready to Publish', approved, 'No approved posts waiting.')}
+      {renderSection('Approved — Ready to Publish', approved, 'No approved posts waiting.')}
       {renderSection('Posted', posted, 'No posts published yet.')}
       {rejected.length > 0 && renderSection('Rejected', rejected, '')}
     </div>
@@ -1982,7 +2056,7 @@ function YouTubeVideosTab() {
     try {
       await ipcInvoke('empire:approveVideo', id);
     } catch {
-      /* IPC not wired yet , update local state only */
+      /* IPC not wired yet — update local state only */
     }
     setVideos((prev) => prev.map((v) => (v.id === id ? { ...v, status: 'approved' } : v)));
     // Auto-advance: keep activeIndex pointed at next pending video
@@ -1997,9 +2071,9 @@ function YouTubeVideosTab() {
     try {
       await ipcInvoke('empire:rejectVideo', id, target, note);
     } catch {
-      /* IPC not wired yet , update local state only */
+      /* IPC not wired yet — update local state only */
     }
-    // RSL: fire-and-forget , classify feedback, update rubric, append LEARNINGS.md
+    // RSL: fire-and-forget — classify feedback, update rubric, append LEARNINGS.md
     if (note && video) {
       ipcInvoke('empire:processRejectionLearning', {
         videoId: id,
@@ -2065,7 +2139,7 @@ function YouTubeVideosTab() {
       <div style={{ ...s.subtitle, marginBottom: 16 }}>
         {loading
           ? 'Loading...'
-          : `${pending.length} video${pending.length !== 1 ? 's' : ''} pending review${usingDemo ? ' , demo data' : ''}`}
+          : `${pending.length} video${pending.length !== 1 ? 's' : ''} pending review${usingDemo ? ' — demo data' : ''}`}
       </div>
 
       {/* Pending Review */}
@@ -2191,7 +2265,7 @@ function YouTubeVideosTab() {
       {/* Rejected */}
       {rejected.length > 0 && (
         <div style={{ marginTop: 32 }}>
-          <div style={s.sectionTitle}>Rejected , Awaiting Regeneration ({rejected.length})</div>
+          <div style={s.sectionTitle}>Rejected — Awaiting Regeneration ({rejected.length})</div>
           {rejected.map((v) => (
             <RejectedRow key={v.id} video={v} />
           ))}

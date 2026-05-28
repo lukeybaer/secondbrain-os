@@ -8,7 +8,7 @@
 //   - process_locks      (idempotency guard for scheduled jobs)
 //
 // Uses better-sqlite3 (synchronous, zero-promise overhead).
-// Marked external in electron.vite.config.ts , never bundled by Vite.
+// Marked external in electron.vite.config.ts — never bundled by Vite.
 
 import Database from 'better-sqlite3';
 import * as path from 'path';
@@ -108,7 +108,7 @@ function runMigrations(db: Database.Database): void {
         -- Index for reputation events by call
         CREATE INDEX IF NOT EXISTS idx_reputation_call ON reputation_events(call_id, flagged_at);
 
-        -- Expired lock cleanup view helper (not a real view , just documenting intent)
+        -- Expired lock cleanup view helper (not a real view — just documenting intent)
         CREATE INDEX IF NOT EXISTS idx_locks_expires ON process_locks(expires_at);
       `,
     },
@@ -332,7 +332,7 @@ export function seedDefaultWhitelistDb(): void {
       phone_number: '+15555555555',
       name: 'Owner (test)',
       tier: 0,
-      notes: "Owner's number , update via Settings or whitelist UI",
+      notes: "Owner's number — update via Settings or whitelist UI",
       added_at: now,
     },
   ];
@@ -418,7 +418,7 @@ export function acquireLock(lockKey: string, jobName: string, timeoutMinutes = 3
     ).run(lockKey, now.toISOString(), expiresAt, jobName);
     return true;
   } catch {
-    return false; // race condition , another process grabbed it
+    return false; // race condition — another process grabbed it
   }
 }
 

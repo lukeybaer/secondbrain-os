@@ -1,5 +1,5 @@
 /**
- * Tests for ingest-hooks.ts , centralized post-ingest hooks.
+ * Tests for ingest-hooks.ts — centralized post-ingest hooks.
  * Verifies that every data source correctly builds events and fires hooks.
  */
 
@@ -20,13 +20,13 @@ vi.mock('../config', () => ({
   loadConfig: () => ({}),
 }));
 
-// Mock Graphiti , track calls
+// Mock Graphiti — track calls
 const mockAddEpisode = vi.fn().mockResolvedValue(true);
 vi.mock('../graphiti-client', () => ({
   addEpisode: (...args: unknown[]) => mockAddEpisode(...args),
 }));
 
-// Mock memory-index , track calls
+// Mock memory-index — track calls
 const mockAppendWorkingMemory = vi.fn();
 vi.mock('../memory-index', () => ({
   appendWorkingMemory: (...args: unknown[]) => mockAppendWorkingMemory(...args),
@@ -124,7 +124,7 @@ describe('event builders', () => {
   });
 
   it('briefingEvent builds daily', () => {
-    const e = briefingEvent('daily', 'Good morning...');
+    const e = briefingEvent('daily', 'Good morning the owner...');
     expect(e.name).toBe('Morning Briefing');
     expect(e.source).toBe('briefing-daily');
   });
@@ -151,9 +151,9 @@ describe('event builders', () => {
       messageId: 'm-1',
       threadId: 't-1',
       from: 'amy@example.com',
-      to: 'owner@example.com',
+      to: 'luke@example.com',
       subject: 'graphiti smoke test',
-      body: '<p>Hello <b>Owner</b></p><script>alert(1)</script>',
+      body: '<p>Hello <b>Luke</b></p><script>alert(1)</script>',
       bodyIsHtml: true,
       direction: 'inbound',
       timestamp: '2026-04-30T12:00:00Z',
@@ -163,7 +163,7 @@ describe('event builders', () => {
     expect(e.name).toContain('graphiti smoke test');
     expect(e.body).toContain('From: amy@example.com');
     expect(e.body).toContain('Subject: graphiti smoke test');
-    expect(e.body).toContain('Hello Owner');
+    expect(e.body).toContain('Hello Luke');
     expect(e.body).not.toContain('<b>');
     expect(e.body).not.toContain('alert(1)');
   });
@@ -171,7 +171,7 @@ describe('event builders', () => {
   it('gmailEvent outbound flips direction tag', () => {
     const e = gmailEvent({
       messageId: 'm-2',
-      from: 'owner@example.com',
+      from: 'luke@example.com',
       subject: 'reply',
       body: 'plain body',
       direction: 'outbound',
@@ -307,7 +307,7 @@ describe('onDataIngested', () => {
     });
 
     await new Promise((r) => setTimeout(r, 100));
-    // No assertion needed , test passes if it doesn't throw
+    // No assertion needed — test passes if it doesn't throw
   });
 
   it('uses phone as fallback when contactName is missing', () => {

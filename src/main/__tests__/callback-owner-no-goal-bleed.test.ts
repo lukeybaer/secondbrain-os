@@ -1,22 +1,22 @@
 /**
  * callback-owner-no-goal-bleed.test.ts
  *
- * Regression: when the owner calls his own Vapi number, the callback
+ * Regression: when the owner (Luke) calls his own Vapi number, the callback
  * assistant config must NOT inherit the goal/instructions/history from the
- * most recent outbound call. the owner is calling his EA, not being targeted by
- * a campaign , pulling in a dentist or sales script as "your goal for this
- * call" pollutes the prompt and EA ends up confused, treating the owner as if
+ * most recent outbound call. Luke is calling his EA, not being targeted by
+ * a campaign — pulling in a dentist or sales script as "your goal for this
+ * call" pollutes the prompt and Amy ends up confused, treating Luke as if
  * he's a dental office that needs to schedule a cleaning.
  *
- * Root incident: 2026-04-15 , the owner called the EA from his number, EA opened
+ * Root incident: 2026-04-15 — Luke called Amy from his number, Amy opened
  * with the generic "Hi there, how can I help you?" and was running on a
- * stale Vapi prompt that had inherited the Anytown dentist instructions
+ * stale Vapi prompt that had inherited the McKinney dentist instructions
  * from the last outbound. She failed to recognize him, failed to recall
  * recent sessions, and made up that she had queued a Claude Code task that
  * she had not. Full latest call:
  * %APPDATA%\secondbrain\data\calls\019d8ed6-066c-7dde-ad38-7d32e0500965.json
  *
- * Fix in src/main/calls.ts buildCallbackAssistantConfig , short-circuit for
+ * Fix in src/main/calls.ts buildCallbackAssistantConfig — short-circuit for
  * owner callers so identitySection / historyText / goalInstruction are
  * undefined and firstMessage greets by name instead of "Hi there".
  */
@@ -35,14 +35,14 @@ vi.mock('electron', () => {
   };
 });
 
-// Fictitious phone numbers only , PII scan blocks real digits in tracked
+// Fictitious phone numbers only — PII scan blocks real digits in tracked
 // source (see .github/workflows/sync-to-public.yml). Both values here are
 // arbitrary because identifyCaller and loadContactsStore are mocked against
 // the same constant below.
 const OWNER_PHONE = '+15550100000';
 const STRANGER_PHONE = '+15551234567';
 const DENTIST_GOAL =
-  '## GOAL\nFind a dentist near Anytown willing to do a cleaning WITHOUT requiring new X-rays first.';
+  '## GOAL\nFind a dentist near McKinney TX willing to do a cleaning WITHOUT requiring new X-rays first.';
 
 vi.mock('../config', () => ({
   getConfig: () => ({
@@ -50,7 +50,7 @@ vi.mock('../config', () => ({
     callbackAssistantId: 'test',
     vapiPhoneNumberId: 'test',
     ec2BaseUrl: 'http://127.0.0.1:9999',
-    ownerName: 'Owner',
+    ownerName: 'Luke',
     amyVersion: 3,
   }),
 }));
@@ -119,7 +119,7 @@ vi.mock('../calls', async (orig) => {
   };
 });
 
-describe('buildCallbackAssistantConfig , owner callers do not inherit outbound goals', () => {
+describe('buildCallbackAssistantConfig — owner callers do not inherit outbound goals', () => {
   beforeEach(() => {
     vi.resetModules();
   });
@@ -131,11 +131,11 @@ describe('buildCallbackAssistantConfig , owner callers do not inherit outbound g
     const fs = require('fs');
     const callsPath = path.resolve(__dirname, '..', 'calls.ts');
     const src = fs.readFileSync(callsPath, 'utf-8');
-    expect(src).toMatch(/Hey \$\{ownerName\}, what's going on\?/);
+    expect(src).toMatch(/Hey \$\{ownerFirstName\}, what's going on\?/);
     // The legacy generic openings still exist for non-owner branches but
     // the owner branch is short-circuited above them.
     const firstMessageIdx = src.indexOf('const firstMessage = callerIsOwner');
-    const heyThanksIdx = src.indexOf("'Hey, thanks for calling back!'");
+    const heyThanksIdx = src.indexOf("this is ${ownerFirstName}'s assistant. Thanks for calling back!");
     expect(firstMessageIdx).toBeGreaterThan(-1);
     expect(heyThanksIdx).toBeGreaterThan(firstMessageIdx);
   });
@@ -163,7 +163,7 @@ describe('buildCallbackAssistantConfig , owner callers do not inherit outbound g
     expect(src).toMatch(/!callerIsOwner && personaInstructions/);
 
     // firstMessage greets owner by name when ownerName set
-    expect(src).toMatch(/Hey \$\{ownerName\}/);
+    expect(src).toMatch(/Hey \$\{ownerFirstName\}/);
   });
 
   it('non-owner callbacks still inherit outbound goal and history (existing behavior)', () => {
@@ -174,7 +174,7 @@ describe('buildCallbackAssistantConfig , owner callers do not inherit outbound g
     const callsPath = path.resolve(__dirname, '..', 'calls.ts');
     const src = fs.readFileSync(callsPath, 'utf-8');
     expect(src).toMatch(/Continue working toward the original goal/);
-    expect(src).toMatch(/Hey, thanks for calling back!/);
+    expect(src).toMatch(/this is \$\{ownerFirstName\}'s assistant\. Thanks for calling back!/);
   });
 
   it('inbound sync re-pushes the assistant on every new inbound call, not just on completion', () => {

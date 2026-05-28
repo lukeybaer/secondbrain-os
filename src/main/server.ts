@@ -1,4 +1,4 @@
-// server.ts , Always-on HTTP server exposing backend functionality over REST.
+// server.ts — Always-on HTTP server exposing backend functionality over REST.
 // Uses Node's built-in http module (no Express dependency).
 // Listens on port 3002 (local Electron process; EC2 uses 3001).
 
@@ -34,7 +34,7 @@ import { app } from 'electron';
 
 const PORT = 3002;
 
-// In-memory resolver callbacks , the approval records live in SQLite,
+// In-memory resolver callbacks — the approval records live in SQLite,
 // only the Promise resolvers stay in memory (they can't be serialized).
 const resolveCallbacks = new Map<string, (result: { approved: boolean; data?: string }) => void>();
 
@@ -142,9 +142,9 @@ route('GET', '/health', async (_req, res, _body) => {
  * Receives real-time events from Vapi.
  *
  * Supported message types:
- *   function-call  , EA is requesting the owner's approval for an action
- *   status-update  , tracks call lifecycle; on "ended" ingests transcript
- *   transcript     , incremental transcript (logged, not acted on here)
+ *   function-call  — EA is requesting the owner's approval for an action
+ *   status-update  — tracks call lifecycle; on "ended" ingests transcript
+ *   transcript     — incremental transcript (logged, not acted on here)
  */
 route('POST', '/vapi/webhook', async (req, res, body, rawBody) => {
   const cfg = getConfig();
@@ -207,7 +207,7 @@ route('POST', '/vapi/webhook', async (req, res, body, rawBody) => {
       return;
     }
 
-    // Bridge-in , caller wants to speak directly to the owner
+    // Bridge-in — caller wants to speak directly to the owner
     if (fnName === 'bridge_in_owner') {
       const params = (fnCall?.parameters ?? {}) as Record<string, unknown>;
       const callerName = (params.caller_name as string) || 'someone';
@@ -225,7 +225,7 @@ route('POST', '/vapi/webhook', async (req, res, body, rawBody) => {
         `[server] bridge_in_owner: ${callerName} re: ${topic} → ${ownerPhone || 'NOT SET'}`,
       );
 
-      // Telegram is daily-briefing-only , bridge-in logged to console
+      // Telegram is daily-briefing-only — bridge-in logged to console
       console.log(
         `[server] Bridge-in: ${callerName} re: ${topic} (caller: ${callerPhone || 'unknown'})`,
       );
@@ -260,7 +260,7 @@ route('POST', '/vapi/webhook', async (req, res, body, rawBody) => {
                 : [],
             },
             voice: { provider: '11labs', voiceId: 'paula' },
-            firstMessage: `Hey , you have ${callerName} holding about "${topic}". Want me to connect you?`,
+            firstMessage: `Hey — you have ${callerName} holding about "${topic}". Want me to connect you?`,
             endCallPhrases: ['no', 'no thanks', 'not now', 'goodbye'],
           },
           metadata: { bridge_caller: callerName, live_call_id: liveCallId || 'unknown' },
@@ -280,12 +280,12 @@ route('POST', '/vapi/webhook', async (req, res, body, rawBody) => {
       }
 
       jsonResponse(res, 200, {
-        result: `Calling the owner now , ${callerName}, please hold while I connect you.`,
+        result: `Calling the owner now — ${callerName}, please hold while I connect you.`,
       });
       return;
     }
 
-    // Reputation risk , flag any transcript content that could embarrass the owner
+    // Reputation risk — flag any transcript content that could embarrass the owner
     if (fnName === 'flag_reputation_risk') {
       const params = (fnCall?.parameters ?? {}) as Record<string, unknown>;
       const eventId = `rep_${Date.now()}`;
@@ -299,7 +299,7 @@ route('POST', '/vapi/webhook', async (req, res, body, rawBody) => {
         transcript_excerpt: params.excerpt as string | undefined,
       });
 
-      // Security alert , reputation risk always goes to Telegram immediately
+      // Security alert — reputation risk always goes to Telegram immediately
       const config = getConfig();
       if (config.telegramChatId) {
         sendMessage(
@@ -359,8 +359,8 @@ route('POST', '/vapi/webhook', async (req, res, body, rawBody) => {
  * Telegram webhook URL to https://<host>:3001/telegram/webhook.
  *
  * Behaviour:
- *   - "YES [approvalId]" or "NO [approvalId]" , resolves a pending approval
- *   - Anything else , forwarded to the registered onMessage callback (OwnerBot)
+ *   - "YES [approvalId]" or "NO [approvalId]" — resolves a pending approval
+ *   - Anything else — forwarded to the registered onMessage callback (OwnerBot)
  */
 
 interface TelegramWebhookUpdate {
@@ -399,6 +399,18 @@ route('POST', '/telegram/webhook', async (req, res, body) => {
   const chatId = String(msg.chat.id);
   const text = msg.text.trim();
   const upper = text.toUpperCase();
+  try {
+    const { recordDispatchInput } = require('../../scripts/lib/spine-ingress');
+    recordDispatchInput({
+      origin: 'telegram',
+      sourceType: 'telegram-message',
+      sourceRef: String(msg.message_id || update.update_id),
+      title: 'Telegram dispatch',
+      text,
+    });
+  } catch (err) {
+    console.error('[server] telegram spine write failed:', err);
+  }
 
   // Try to resolve a pending approval: "YES [id]" or "NO [id]"
   const yesNoMatch = upper.match(/^(YES|NO)\s*([A-Za-z0-9_-]*)$/);
@@ -496,7 +508,7 @@ route('POST', '/twilio/webhook', async (req, res, _body, rawBody) => {
 
 // ── Briefing mobile routes ───────────────────────────────────────────────────
 // Exposes the latest briefings as a mobile-friendly HTML page + JSON API.
-// the owner opens http://<pc-lan-ip>:3002/briefing on his phone (same wifi) or via a
+// Luke opens http://<pc-lan-ip>:3002/briefing on his phone (same wifi) or via a
 // Cloudflare tunnel to see the daily briefing without opening the Electron app.
 // Right-click / long-press "Dispatch" button sends a #Amy email back to himself
 // which the Gmail scan processes on next pass.
@@ -759,8 +771,8 @@ route('POST', '/briefing/dispatch', async (_req, res, body) => {
   );
   const proc = cp.spawn(
     python,
-    [script, '--to', 'owner@example.com', '--subject', subject, '--body', bodyLines.join('\n')],
-    { stdio: ['ignore', 'pipe', 'pipe'] },
+    [script, '--to', getConfig().ownerEmail, '--subject', subject, '--body', bodyLines.join('\n')],
+    { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
   );
   let stderr = '';
   proc.stderr.on('data', (d) => (stderr += d.toString()));

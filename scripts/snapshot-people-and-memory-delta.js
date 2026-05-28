@@ -1,0 +1,233 @@
+#!/usr/bin/env node
+// snapshot-people-and-memory-delta.js
+//
+// Produces two JSON snapshots that the EC2 dashboard reads as a fallback
+// when git is not available on EC2:
+//   data/agent/people-files-snapshot.json
+//   data/agent/memory-delta-snapshot.json
+//
+// Run locally (where git lives), then scp the JSONs along with the briefing
+// markdown. The dashboard helpers in ec2-server.js
+// (buildPeopleFilesChangeCard, buildMemoryDeltaCard) prefer live git but
+// fall back to these JSON files when git fails.
+//
+// Luke 2026-04-28 dispatch: top-level cards for biggest/smallest people
+// file change + MEMORY.md change. EC2 has no .git so we ship the
+// pre-computed snapshot.
+
+const fs = require('fs');
+const path = require('path');
+const { execFileSync } = require('child_process');
+
+// REPO honors SECONDBRAIN_ROOT (the repo-wide convention used by
+// health-self-heal.js) so regression tests can point it at a temp git repo.
+const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
+const OUT_PEOPLE = path.join(REPO, 'data', 'agent', 'people-files-snapshot.json');
+const OUT_MEMORY = path.join(REPO, 'data', 'agent', 'memory-delta-snapshot.json');
+
+function execGit(args) {
+  try {
+    return execFileSync('git', args, { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch { return ''; }
+}
+
+function ensureDir(p) { fs.mkdirSync(path.dirname(p), { recursive: true }); }
+
+// Luke 2026-04-29 dispatch (third pass): aggregator/index files like
+// _gmail-daily-intel.md and _upcoming-dates.md are not people. Filter them
+// out at snapshot-write time AND read-time so the People Files card is
+// always per-contact.
+function isAggregatorFile(file) {
+  if (!file) return false;
+  const basename = path.basename(file, '.md');
+  if (basename.startsWith('_')) return true;
+  if (basename.toUpperCase() === 'INDEX') return true;
+  return false;
+}
+
+function snapshotPeople(hours = 24) {
+  const since = `${hours} hours ago`;
+  const numstat = execGit(['log', `--since=${since}`, '--numstat', '--format=__COMMIT__%H %s', '--', 'memory/contacts/']);
+  if (!numstat) return null;
+  const perFile = {};
+  let lastSubject = '';
+  for (const line of numstat.split('\n')) {
+    if (line.startsWith('__COMMIT__')) {
+      lastSubject = line.replace('__COMMIT__', '').slice(41).trim();
+      continue;
+    }
+    const m = line.match(/^(\d+)\s+(\d+)\s+(memory\/contacts\/[^\s]+)/);
+    if (!m) continue;
+    const file = m[3];
+    if (isAggregatorFile(file)) continue;
+    if (!perFile[file]) perFile[file] = { added: 0, deleted: 0, lastSubject };
+    perFile[file].added += parseInt(m[1], 10);
+    perFile[file].deleted += parseInt(m[2], 10);
+    perFile[file].lastSubject = lastSubject;
+  }
+  // Pull a few added lines per file from the actual diff so the dashboard
+  // can surface "what was new" instead of just commit subjects. Luke
+  // 2026-04-29 third pass: "what detail was new that you learned."
+  function addedSampleFor(file) {
+    const diff = execGit(['log', `--since=${since}`, '-p', '--no-color', '--', file]);
+    if (!diff) return '';
+    const lines = diff.split('\n');
+    const historyEntries = [];
+    const bulletEntries = [];
+    const proseEntries = [];
+    for (const ln of lines) {
+      if (ln.startsWith('+++')) continue;
+      if (!ln.startsWith('+')) continue;
+      const text = ln.slice(1).trim();
+      if (!text) continue;
+      if (/^(last_update|updated|effective|category|warmth|description):/i.test(text)) continue;
+      if (/^---$/.test(text)) continue;
+      if (/^##\s/.test(text)) continue;
+      if (/^-\s+\d{4}-\d{2}-\d{2}/.test(text)) {
+        historyEntries.push(text.replace(/^-\s+/, ''));
+        continue;
+      }
+      if (/^[-*]\s+\S/.test(text)) {
+        bulletEntries.push(text.replace(/^[-*]\s+/, ''));
+        continue;
+      }
+      if (text.length > 30 && /[a-z]/.test(text)) proseEntries.push(text);
+    }
+    // Luke 2026-04-29 dispatch: 280-char cap was cutting off mid-word
+    // mid-sentence. Extend to 600 chars so multi-source same-day scans
+    // (Gmail + Otter on the same contact) finish their sentences. The
+    // dashboard tile still shows ~240-char preview; the drilldown reads
+    // the full string.
+    const joined = [...historyEntries, ...bulletEntries, ...proseEntries].slice(0, 3).join(' • ');
+    if (joined.length <= 600) return joined;
+    // Truncate at word boundary near 600 to avoid mid-word cut.
+    const cut = joined.slice(0, 600);
+    const lastSpace = cut.lastIndexOf(' ');
+    return (lastSpace > 500 ? cut.slice(0, lastSpace) : cut) + ' [...]';
+  }
+  const entries = Object.entries(perFile).map(([file, s]) => ({
+    file,
+    name: path.basename(file, '.md').replace(/-/g, ' '),
+    delta: s.added + s.deleted,
+    added: s.added,
+    deleted: s.deleted,
+    lastSubject: s.lastSubject,
+    addedSample: addedSampleFor(file),
+  })).sort((a, b) => b.delta - a.delta);
+  if (entries.length === 0) return null;
+  return {
+    biggest: entries[0],
+    smallest: entries[entries.length - 1],
+    biggestTwo: entries.slice(0, 2),
+    smallestTwo: entries.slice(-2).sort((a, b) => a.delta - b.delta),
+    allEntries: entries, // Luke 2026-04-29 second pass: drilldown needs all
+    totalFiles: entries.length,
+    totalLines: entries.reduce((s, e) => s + e.delta, 0),
+    hours,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+// Counts every commit on the repo over the window. The MEMORY.md-scoped
+// `git log` only returns commits that touched memory/MEMORY.md, so on a day
+// with heavy dev work but no index edit it reported "0 commits" even though
+// the repo was busy. Luke 2026-05-18: "I don't believe nothing changed."
+// The card now reports the real repo-wide commit count alongside the
+// MEMORY.md-specific line delta.
+function repoCommitCount(hours) {
+  const out = execGit(['log', `--since=${hours} hours ago`, '--pretty=format:%H']);
+  if (!out) return 0;
+  return out.split('\n').filter((l) => /^[0-9a-f]{7,}$/.test(l.trim())).length;
+}
+
+function snapshotMemory(hours = 24) {
+  const since = `${hours} hours ago`;
+  const numstat = execGit(['log', `--since=${since}`, '--numstat', '--format=__COMMIT__%H|%s', '--', 'memory/MEMORY.md']);
+  const repoCommits = repoCommitCount(hours);
+  let added = 0;
+  let deleted = 0;
+  const subjects = [];
+  for (const line of (numstat || '').split('\n')) {
+    if (line.startsWith('__COMMIT__')) {
+      const subj = line.split('|').slice(1).join('|').trim();
+      if (subj) subjects.push(subj);
+      continue;
+    }
+    const m = line.match(/^(\d+)\s+(\d+)\s+memory\/MEMORY\.md/);
+    if (m) { added += parseInt(m[1], 10); deleted += parseInt(m[2], 10); }
+  }
+  // Return null only when the repo was genuinely idle. If commits exist but
+  // none touched MEMORY.md, still emit a card so the dashboard reflects real
+  // repo activity instead of a misleading "0 commits".
+  if (added === 0 && deleted === 0 && subjects.length === 0 && repoCommits === 0) return null;
+  // Luke 2026-04-29: pull the actual added lines so the dashboard can
+  // render real diff content instead of the commit subject. Mirrors the
+  // logic in ec2-server.js buildMemoryDeltaCard so snapshot fallback
+  // matches live-git path.
+  const addedLines = [];
+  const deletedLines = [];
+  try {
+    const diff = execGit(['log', `--since=${since}`, '-p', '--no-color', '--', 'memory/MEMORY.md']);
+    if (diff) {
+      for (const ln of diff.split('\n')) {
+        if (ln.startsWith('+++') || ln.startsWith('---')) continue;
+        const isAdd = ln.startsWith('+');
+        const isDelete = ln.startsWith('-');
+        if (!isAdd && !isDelete) continue;
+        const text = ln.slice(1).trim();
+        if (!text) continue;
+        if (/^---$/.test(text)) continue;
+        if (/^##\s/.test(text)) continue;
+        if (isAdd && addedLines.length < 5) addedLines.push(text);
+        if (isDelete && deletedLines.length < 5) deletedLines.push(text);
+        if (addedLines.length >= 5 && deletedLines.length >= 5) break;
+      }
+    }
+  } catch { /* ignore */ }
+  let currentLines = 0;
+  try {
+    const memPath = path.join(REPO, 'memory', 'MEMORY.md');
+    if (fs.existsSync(memPath)) currentLines = fs.readFileSync(memPath, 'utf8').split('\n').length;
+  } catch { /* ignore */ }
+  return {
+    added,
+    deleted,
+    delta: added + deleted,
+    // `commits` drives the card's "N commits" count. Use the count of
+    // commits that actually touched MEMORY.md when there are any; otherwise
+    // fall back to the repo-wide count so the card never claims "0 commits"
+    // on a day with real dev activity.
+    commits: subjects.length > 0 ? subjects.length : repoCommits,
+    memoryCommits: subjects.length,
+    repoCommits,
+    subjects: subjects.slice(0, 3),
+    addedLines,
+    deletedLines,
+    currentLines,
+    hours,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function main() {
+  const people = snapshotPeople(24);
+  const memory = snapshotMemory(24);
+  if (people) {
+    ensureDir(OUT_PEOPLE);
+    fs.writeFileSync(OUT_PEOPLE, JSON.stringify(people, null, 2));
+    console.log(`wrote ${OUT_PEOPLE}: biggest=${people.biggest.name} (${people.biggest.delta} lines), totalFiles=${people.totalFiles}`);
+  } else {
+    console.log('no people-file changes in window -- nothing to write');
+  }
+  if (memory) {
+    ensureDir(OUT_MEMORY);
+    fs.writeFileSync(OUT_MEMORY, JSON.stringify(memory, null, 2));
+    console.log(`wrote ${OUT_MEMORY}: +${memory.added}/-${memory.deleted}, ${memory.commits} commits`);
+  } else {
+    console.log('no MEMORY.md changes in window -- nothing to write');
+  }
+}
+
+if (require.main === module) main();
+
+module.exports = { snapshotPeople, snapshotMemory };

@@ -62,5 +62,19 @@ interface Window {
       updateTask: (projectId: string, taskId: string, updates: Partial<Omit<import("./pages/Projects").Task, "id" | "createdAt">>) => Promise<import("./pages/Projects").Task>;
       deleteTask: (projectId: string, taskId: string) => Promise<boolean>;
     };
+    tasks: {
+      list: (filter?: object) => Promise<import("./pages/Tasks").TaskRecord[]>;
+      get: (id: string) => Promise<import("./pages/Tasks").TaskRecord | null>;
+      run: (input: {
+        kind?: string;
+        origin?: string;
+        prompt: string;
+        title?: string;
+      }) => Promise<import("./pages/Tasks").TaskRecord>;
+      cancel: (id: string) => Promise<import("./pages/Tasks").TaskRecord>;
+      approve: (id: string, approved?: boolean) => Promise<import("./pages/Tasks").TaskRecord>;
+      onPush: (cb: (task: import("./pages/Tasks").TaskRecord) => void) => void;
+      offPush: () => void;
+    };
   };
 }

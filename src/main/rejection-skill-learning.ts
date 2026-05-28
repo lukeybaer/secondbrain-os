@@ -1,5 +1,5 @@
 // rejection-skill-learning.ts
-// RSL , Rejection-Skill-Learning hook.
+// RSL — Rejection-Skill-Learning hook.
 // Called every time a video is rejected with feedback. Uses Claude Haiku to classify
 // the rejection against video-quality-rubric.json, updates weights/miss counts,
 // appends an enriched entry to skills/content/LEARNINGS.md, and keeps automation_priority current.
@@ -107,7 +107,7 @@ async function classifyRejection(
 
 A video was rejected during human review. Your job is to:
 1. Map the rejection reason to the existing rubric criteria (one or more matches)
-2. Identify if this is a "miss" , i.e., the QC system SHOULD have caught this automatically but apparently didn't (detection_accuracy problem)
+2. Identify if this is a "miss" — i.e., the QC system SHOULD have caught this automatically but apparently didn't (detection_accuracy problem)
 3. Identify any NEW quality issues that don't fit any existing criterion
 
 VIDEO TITLE: ${videoTitle}
@@ -140,7 +140,7 @@ Respond with ONLY valid JSON in this exact shape:
 Rules:
 - matched_criteria can be empty if nothing fits
 - new_criteria should only contain genuinely NEW issues not covered by existing criteria
-- was_miss = true only when the issue is objective and detectable by automated analysis (e.g., missing file, silent gap, black frame) , NOT for subjective taste issues`;
+- was_miss = true only when the issue is objective and detectable by automated analysis (e.g., missing file, silent gap, black frame) — NOT for subjective taste issues`;
 
   const anthropic = new Anthropic({ apiKey });
   const msg = await anthropic.messages.create({
@@ -251,7 +251,7 @@ function appendToLearnings(
   const affectedCriteria =
     result.matched_criteria.length > 0
       ? result.matched_criteria.map((m) => `\`${m.criterion_id}\``).join(', ')
-      : '_none matched , may have added new criterion_';
+      : '_none matched — may have added new criterion_';
 
   const missNote =
     result.matched_criteria.filter((m) => m.was_miss).length > 0
@@ -287,7 +287,7 @@ export async function processRejectionLearning(input: RejectionLearningInput): P
   const config = getConfig();
   const apiKey = config.anthropicApiKey;
   if (!apiKey) {
-    console.warn('[rsl] No Anthropic API key , skipping RSL classification');
+    console.warn('[rsl] No Anthropic API key — skipping RSL classification');
     return;
   }
 
@@ -327,7 +327,7 @@ export async function processRejectionLearning(input: RejectionLearningInput): P
   }
 
   console.log(
-    `[rsl] Processed rejection for "${videoTitle}" , ` +
+    `[rsl] Processed rejection for "${videoTitle}" — ` +
       `matched:${result.matched_criteria.length} new:${result.new_criteria.length} ` +
       `misses:${result.matched_criteria.filter((m) => m.was_miss).length}`,
   );
@@ -335,7 +335,7 @@ export async function processRejectionLearning(input: RejectionLearningInput): P
 
 // ── Nightly priority refresh ──────────────────────────────────────────────────
 // Called by scheduler at 3:00 AM. Re-reads the rubric and ensures automation_priority
-// reflects current miss counts , handles any drift from manual edits to the rubric.
+// reflects current miss counts — handles any drift from manual edits to the rubric.
 
 export function refreshAutomationPriority(): {
   priority: string[];

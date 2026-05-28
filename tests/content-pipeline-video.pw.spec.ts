@@ -1,7 +1,7 @@
 /**
  * Diagnostic + regression tests for ContentPipeline video element audio.
  *
- * These tests run in a real Chromium browser (page.setContent , no server needed)
+ * These tests run in a real Chromium browser (page.setContent — no server needed)
  * to prove the exact browser-level behaviors that were causing the muted bug, and
  * to confirm our fix holds.
  *
@@ -61,7 +61,7 @@ test("baseline: plain <video controls> is not muted by default", async ({ page }
 //    This test DOCUMENTS the bug so we know what we are protecting against.
 // ---------------------------------------------------------------------------
 
-test("setAttribute(muted, false) DOES mute the video , documents the React attr bug", async ({ page }) => {
+test("setAttribute(muted, false) DOES mute the video — documents the React attr bug", async ({ page }) => {
   await page.setContent(`<html><body>
     <video id="v" controls src="about:blank"></video>
     <script>
@@ -80,7 +80,7 @@ test("setAttribute(muted, false) DOES mute the video , documents the React attr 
   // so this should be true (muted).
   console.log(`setAttribute("muted","false") → video.muted = ${state.muted} (should be true)`);
   // NOTE: In Chromium, setAttribute after parsing may not change the IDL property.
-  // The important thing is the attribute is there , this documents the risk.
+  // The important thing is the attribute is there — this documents the risk.
 });
 
 // ---------------------------------------------------------------------------

@@ -3,16 +3,16 @@
 //
 // Architecture (Khoj's TextToEntries base + Hebb 1949 reinforcement):
 //
-//   Tier 1 , Working Memory (MEMORY.md, always in system prompt, ≤50 lines)
+//   Tier 1 — Working Memory (MEMORY.md, always in system prompt, ≤50 lines)
 //     Pointers only. Zero loading cost.
 //
-//   Tier 2 , Indexed Memory (memory/*.md + index.json)
+//   Tier 2 — Indexed Memory (memory/*.md + index.json)
 //     One file per topic. Loaded on demand. Scored by weight.
-//     weight range: 0.0 - 1.0
+//     weight range: 0.0 – 1.0
 //     decay: weight -= decay_rate per day (reset on access)
 //     promotion: mentions ≥ 3 → weight = 0.8
 //
-//   Tier 3 , Archive (memory/archive/YYYY-MM-DD.md)
+//   Tier 3 — Archive (memory/archive/YYYY-MM-DD.md)
 //     Daily append-only. Loaded only on explicit recall.
 //     Entries with weight < 0.05 are pruned here weekly.
 //
@@ -25,7 +25,7 @@ import { app } from 'electron';
 // Graphiti cascade: every Tier 2 write also fires addEpisode() so the
 // knowledge graph stays in sync with the filesystem. Imported lazily to
 // avoid circular deps and because Graphiti may be unavailable (SSH tunnel
-// down) , failures are silent by design.
+// down) — failures are silent by design.
 // Reference: AMY_DEEP_RESEARCH.md section 1.
 let _graphitiAddEpisode:
   | ((ep: {
@@ -49,7 +49,7 @@ export interface MemoryEntry {
   id: string; // MD5 hash of normalized content
   topic: string; // short label, e.g. "dentist-project"
   file: string; // relative path under memory/ (e.g. "Employer-metis.md")
-  weight: number; // 0.0 - 1.0 Hebbian weight
+  weight: number; // 0.0 – 1.0 Hebbian weight
   mentions: number; // total access count
   last_accessed: string; // ISO date
   decay_rate: number; // how fast it fades (0.02 = slow, 0.10 = fast)
@@ -150,7 +150,7 @@ export function writeWorkingMemory(content: string): void {
   const dir = memoryRoot();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  // Enforce ≤50 lines , trim oldest entries if needed
+  // Enforce ≤50 lines — trim oldest entries if needed
   const lines = content.split('\n');
   const trimmed =
     lines.length > WORKING_MEMORY_MAX_LINES
@@ -169,7 +169,7 @@ export function appendWorkingMemory(line: string): void {
 // ── Tier 2: Indexed Memory ────────────────────────────────────────────────────
 
 /**
- * Add or update a memory entry. MD5 dedup , if content is identical, just
+ * Add or update a memory entry. MD5 dedup — if content is identical, just
  * bumps the mention count and resets the decay clock.
  */
 export function upsertMemory(
@@ -220,7 +220,7 @@ export function upsertMemory(
   index.hashes.push(hash);
   saveIndex(index);
 
-  // Graphiti cascade , fire and forget, failures silent
+  // Graphiti cascade — fire and forget, failures silent
   if (_graphitiAddEpisode) {
     _graphitiAddEpisode({
       name: `tier2:${topic}`,
@@ -229,7 +229,7 @@ export function upsertMemory(
       sourceDescription: `Tier 2 memory: ${topic}`,
       referenceTime: entry.valid_at,
     }).catch(() => {
-      /* silent , graphiti may be unavailable */
+      /* silent — graphiti may be unavailable */
     });
   }
 
@@ -331,7 +331,7 @@ export function runNightlyDecay(): { decayed: number; archived: number; pruned: 
     if (daysSinceAccess > 0) {
       const oldWeight = entry.weight;
       // Multiplicative decay: weight *= (1 - decay_rate) per day
-      // Much gentler than subtractive , a new entry (0.2, rate 0.10)
+      // Much gentler than subtractive — a new entry (0.2, rate 0.10)
       // lasts ~15 days vs. 2 days with the old formula.
       entry.weight = Math.max(0, entry.weight * Math.pow(1 - entry.decay_rate, daysSinceAccess));
       if (entry.weight !== oldWeight) decayed++;
@@ -343,7 +343,7 @@ export function runNightlyDecay(): { decayed: number; archived: number; pruned: 
       if (fs.existsSync(filePath)) {
         const content = fs.readFileSync(filePath, 'utf-8');
         appendToArchive(
-          `## ${entry.topic} (archived , weight: ${entry.weight.toFixed(3)})\n${content}`,
+          `## ${entry.topic} (archived — weight: ${entry.weight.toFixed(3)})\n${content}`,
         );
         fs.unlinkSync(filePath);
         archived++;

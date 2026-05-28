@@ -1,5 +1,5 @@
 /**
- * Tests for ingest-queue.ts , file-based work queue for batched ingest.
+ * Tests for ingest-queue.ts — file-based work queue for batched ingest.
  *
  * Covers: enqueue, listPending, claim, markDone, markFailed, escalate, drain
  * happy path, drain escape hatch, drain retry/auto-fail, queueCounts.

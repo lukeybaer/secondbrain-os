@@ -74,13 +74,13 @@ function saveManifest(m: BackupManifest): void {
   fs.writeFileSync(MANIFEST_PATH, JSON.stringify(m, null, 2));
 }
 
-// Paths we NEVER back up , transient, large, rebuildable browser cache that
+// Paths we NEVER back up — transient, large, rebuildable browser cache that
 // Chromium (whatsapp-web.js, puppeteer) keeps locked while the app is running.
 // Backing these up is both pointless (regenerated on next launch) and fatal
 // (EBUSY on sqldb0 killed nightly backups Apr 8-11 2026 until excluded).
 //
-// Also excludes data/studio/recordings/ , large media files (5 GB+) that are
-// the original raw assets, not derived state. Excluded per a 2026-04-16
+// Also excludes data/studio/recordings/ — large media files (5 GB+) that are
+// the original raw assets, not derived state. Excluded per Luke's 2026-04-16
 // directive: not backed up locally, not uploaded to S3. Daily storage was
 // growing ~10 GB/day from the recordings dir alone.
 const COPY_EXCLUDE_PATTERNS: RegExp[] = [
@@ -189,7 +189,7 @@ function s3Upload(localPath: string, s3Key: string): void {
       lastErr = e;
       if (attempt < MAX_ATTEMPTS) {
         const waitSec = attempt * 30; // 30s, 60s
-        console.warn(`    S3 upload attempt ${attempt} failed , retrying in ${waitSec}s: ${(e as Error).message?.slice(0, 120)}`);
+        console.warn(`    S3 upload attempt ${attempt} failed — retrying in ${waitSec}s: ${(e as Error).message?.slice(0, 120)}`);
         execSync(`ping -n ${waitSec + 1} 127.0.0.1 > nul`, { stdio: 'ignore' });
       }
     }
@@ -203,7 +203,7 @@ function s3Delete(s3Key: string): void {
       stdio: 'pipe',
     });
   } catch {
-    /* best-effort , file may already be gone */
+    /* best-effort — file may already be gone */
   }
 }
 
@@ -233,7 +233,7 @@ function compressSnapshot(snapshotDir: string, archivePath: string): void {
   // .NET ZipFile.CreateFromDirectory is 10-50x faster than Compress-Archive
   execSync(
     `powershell.exe -NoProfile -Command "Add-Type -Assembly System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory('${src}', '${dest}')"`,
-    { stdio: 'pipe', timeout: 1200000 }, // 20min , large snapshots (5GB+) need more time
+    { stdio: 'pipe', timeout: 1200000 }, // 20min — large snapshots (5GB+) need more time
   );
 }
 
@@ -386,7 +386,7 @@ async function pruneSnapshots(): Promise<string[]> {
 
   // Prune is skip-on-lock: if Windows Search Indexer / Defender / the live
   // Electron app has a handle on a file inside an old snapshot dir, one stuck
-  // directory used to kill the whole run. Now we log and defer , next run will
+  // directory used to kill the whole run. Now we log and defer — next run will
   // try again. The manifest entry is kept for stuck snapshots so we re-attempt.
   for (const s of toDelete) {
     const dir = path.join(BACKUPS_ROOT, s.id);
@@ -397,7 +397,7 @@ async function pruneSnapshots(): Promise<string[]> {
       } catch (err: any) {
         const code = err && err.code;
         if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') {
-          console.warn(`  skip-prune-locked: ${s.id} (${code}) , will retry next run`);
+          console.warn(`  skip-prune-locked: ${s.id} (${code}) — will retry next run`);
           rmSucceeded = false;
         } else {
           throw err;
@@ -474,7 +474,7 @@ async function main(): Promise<void> {
     const sorted = [...manifest.snapshots].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     const orphans = sorted.filter((s) => !s3Files.has(`${s.id}.zip`));
     if (orphans.length === 0) {
-      console.log('S3 parity OK , no orphaned snapshots.');
+      console.log('S3 parity OK — no orphaned snapshots.');
       return;
     }
     console.log(`Found ${orphans.length} local snapshot(s) missing from S3. Syncing top 2...`);

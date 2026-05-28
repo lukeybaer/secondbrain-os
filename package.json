@@ -67,6 +67,7 @@
     "livekit-client": "^2.18.0",
     "obs-websocket-js": "^5.0.8",
     "openai": "^4.26.0",
+    "playwright": "^1.58.2",
     "qrcode": "^1.5.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
