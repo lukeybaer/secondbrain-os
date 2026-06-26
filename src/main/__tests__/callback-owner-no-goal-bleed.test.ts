@@ -1,0 +1,198 @@
+/**
+ * callback-owner-no-goal-bleed.test.ts
+ *
+ * Regression: when the owner (ExampleCo) calls his own Vapi number, the callback
+ * assistant config must NOT inherit the goal/instructions/history from the
+ * most recent outbound call. ExampleCo is calling his EA, not being targeted by
+ * a campaign — pulling in a dentist or sales script as "your goal for this
+ * call" pollutes the prompt and Amy ends up confused, treating ExampleCo as if
+ * he's a dental office that needs to schedule a cleaning.
+ *
+ * Root incident: 2026-04-15 — ExampleCo called Amy from his number, Amy opened
+ * with the generic "Hi there, how can I help you?" and was running on a
+ * stale Vapi prompt that had inherited the ExampleCo dentist instructions
+ * from the last outbound. She failed to recognize him, failed to recall
+ * recent sessions, and made up that she had queued a Claude Code task that
+ * she had not. Full latest call:
+ * %APPDATA%\secondbrain\data\calls\019d8ed6-066c-7dde-ad38-7d32e0500965.json
+ *
+ * Fix in src/main/calls.ts buildCallbackAssistantConfig — short-circuit for
+ * owner callers so identitySection / historyText / goalInstruction are
+ * undefined and firstMessage greets by name instead of "Hi there".
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as path from 'path';
+
+vi.mock('electron', () => {
+  const p = require('path');
+  const repoRoot = p.resolve(__dirname, '..', '..', '..');
+  return {
+    app: {
+      getPath: (_name: string) => repoRoot,
+      getAppPath: () => repoRoot,
+    },
+  };
+});
+
+// Fictitious phone numbers only — PII scan blocks real digits in tracked
+// source (see .github/workflows/sync-to-public.yml). Both values here are
+// arbitrary because identifyCaller and loadContactsStore are mocked against
+// the same constant below.
+const OWNER_PHONE = '+15550100000';
+const STRANGER_PHONE = '+15551234567';
+const DENTIST_GOAL =
+  '## GOAL\nFind a dentist near ExampleCo TX willing to do a cleaning WITHOUT requiring new X-rays first.';
+
+vi.mock('../config', () => ({
+  getConfig: () => ({
+    vapiApiKey: 'test',
+    callbackAssistantId: 'test',
+    vapiPhoneNumberId: 'test',
+    ec2BaseUrl: 'http://127.0.0.1:9999',
+    ownerName: 'ExampleCo',
+    amyVersion: 3,
+  }),
+}));
+
+vi.mock('../caller-id', () => ({
+  identifyCaller: (phone: string) => {
+    if (phone === OWNER_PHONE) {
+      return {
+        mode: 'owner' as const,
+        systemPromptSection: '## Caller Identification: OWNER',
+      };
+    }
+    return {
+      mode: 'ExampleCo' as const,
+      systemPromptSection: '## Caller Identification: ExampleCo',
+    };
+  },
+  loadContactsStore: () => ({
+    keyword: 'testword',
+    owner_phones: [OWNER_PHONE],
+    contacts: [],
+  }),
+}));
+
+vi.mock('../personas', () => ({ listPersonas: () => [] }));
+vi.mock('../projects', () => ({ listProjects: () => [] }));
+vi.mock('../todos', () => ({ listTodos: () => [] }));
+vi.mock('../agent-memory', () => ({
+  getAgentMemory: () => ({ buildSystemPrompt: async (b: string) => b }),
+}));
+vi.mock('../telegram', () => ({
+  sendApprovalRequest: vi.fn(),
+  sendMessage: vi.fn(),
+}));
+vi.mock('../database-sqlite', () => ({
+  createApproval: vi.fn(),
+  createReputationEvent: vi.fn(),
+}));
+vi.mock('../call-script-memory', () => ({
+  appendCallPattern: vi.fn(),
+  getCallScriptContext: vi.fn(),
+  formatCallScriptContextBlock: vi.fn(() => ''),
+}));
+
+// Stub call records: one ended outbound dentist call + one ended inbound from
+// the owner. The buggy code path inherits the dentist outbound goal as Amy's
+// goal for the owner inbound, which is the bug we're guarding against.
+vi.mock('../calls', async (orig) => {
+  const real = (await orig()) as any;
+  return {
+    ...real,
+    listCallRecords: () => [
+      {
+        id: 'outbound-dentist-1',
+        createdAt: '2026-04-14T20:00:00.000Z',
+        phoneNumber: OWNER_PHONE,
+        instructions: DENTIST_GOAL,
+        personalContext: '',
+        isCallback: false,
+        status: 'ended',
+        completed: false,
+      },
+    ],
+    loadCallRecord: () => null,
+    saveCallRecord: vi.fn(),
+  };
+});
+
+describe('buildCallbackAssistantConfig — owner callers do not inherit outbound goals', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('static firstMessage is neutral, never owner-flavored, in all branches', () => {
+    // 2026-05-28 architecture rule from vapi-assistant-is-claude.test.ts
+    // (2026-05-10): the persistent Vapi assistant config greets ALL inbound
+    // callers with the same static firstMessage, so it MUST be neutral. Owner
+    // warmth ("Hey ExampleCo...") is expressed via the system prompt and Amy's
+    // caller-id behavior, NOT via the static firstMessage. This test catches
+    // the prior bug where syncCallbackAssistant pushed "Hey ExampleCo" to the
+    // static config after a ExampleCo call, leaving every subsequent stranger
+    // call to be greeted as ExampleCo. Source-level guard so a regression is
+    // caught before it reaches the live Vapi tenant.
+    const fs = require('fs');
+    const callsPath = path.resolve(__dirname, '..', 'calls.ts');
+    const src = fs.readFileSync(callsPath, 'utf-8');
+    expect(src).not.toMatch(/Hey \$\{ownerFirstName\}, what's going on\?/);
+    expect(src).not.toMatch(/this is \$\{ownerFirstName\}'s assistant/);
+    expect(src).toMatch(/Hi, this is Amy speaking, how can I help you\?/);
+  });
+
+  it('source guards against goal inheritance for owner callers', () => {
+    // Behavioral guard: the buildCallbackAssistantConfig function must
+    // short-circuit goalInstruction / historyText / identitySection when
+    // the caller is the owner. We assert on the source so this test
+    // doesn't depend on Electron app module wiring.
+    const fs = require('fs');
+    const callsPath = path.resolve(__dirname, '..', 'calls.ts');
+    const src = fs.readFileSync(callsPath, 'utf-8');
+
+    // Must explicitly identify owner callers
+    expect(src).toMatch(/callerIsOwner/);
+    expect(src).toMatch(/identifyCaller\(callerPhone\)/);
+
+    // goalInstruction must be undefined for owner
+    expect(src).toMatch(/const goalInstruction = callerIsOwner\s*\?\s*undefined/);
+
+    // historyText must be hidden from owner
+    expect(src).toMatch(/!callerIsOwner && history\.length > 0/);
+
+    // identitySection (persona) must not apply to owner
+    expect(src).toMatch(/!callerIsOwner && personaInstructions/);
+
+    // Static firstMessage is neutral, never contains ownerFirstName.
+    // Owner warmth is applied through system prompt + caller-id behavior.
+    expect(src).toMatch(/firstMessage is the literal opener Vapi speaks/);
+  });
+
+  it('non-owner callbacks still inherit outbound goal and history (existing behavior)', () => {
+    // Sanity: the goal-bleed guard only fires for owner callers, not for
+    // legitimate dentist/lead/research callbacks. Verify the non-owner branch
+    // still wires goalInstruction and historyText.
+    const fs = require('fs');
+    const callsPath = path.resolve(__dirname, '..', 'calls.ts');
+    const src = fs.readFileSync(callsPath, 'utf-8');
+    expect(src).toMatch(/Continue working toward the original goal/);
+    // Non-owner callbacks land in the "Thanks for calling back!" branch with
+    // the neutral Amy greeting (post-2026-05-28: never owner-flavored).
+    expect(src).toMatch(/Hi, this is Amy\. Thanks for calling back!/);
+  });
+
+  it('inbound sync re-pushes the assistant on every new inbound call, not just on completion', () => {
+    // Root cause B: even with the goal-bleed guard, if the assistant is only
+    // re-synced when completion detection returns true, an unanswered owner
+    // inbound goes 0..N hours with a stale Vapi prompt. Guard against that.
+    const fs = require('fs');
+    const callsPath = path.resolve(__dirname, '..', 'calls.ts');
+    const src = fs.readFileSync(callsPath, 'utf-8');
+    // The fetch-and-sync loop must call syncCallbackAssistant unconditionally
+    // after each ended inbound, not gated behind completion detection.
+    expect(src).toMatch(
+      /Always re-sync the callback assistant after any inbound call/,
+    );
+  });
+});

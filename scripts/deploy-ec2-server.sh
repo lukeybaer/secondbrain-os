@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# deploy-ec2-server.sh
+#
+# The SINGLE source-of-truth deploy for the EC2 backend. The repo's ec2-server.js
+# is canonical; this pushes it to EC2 /opt/secondbrain/server.js AND ec2-server.js
+# (PM2 runs server.js; the twin must match), then syntax-checks, restarts, and
+# verifies /health + post-deploy parity.
+#
+# 2026-06-09: created after the repo and EC2 drifted. Two causes: (1) the local
+# prettier formatter reflowed ec2-server.js on every edit (now .prettierignore'd),
+# (2) people hot-patched EC2 directly instead of deploying the repo. This script
+# is the cure for (2): never hand-patch EC2 again, always deploy from the repo.
+#
+# Usage: bash scripts/deploy-ec2-server.sh
+set -euo pipefail
+
+KEY="${SB_KEY:-$HOME/.ssh/sb-key.pem}"
+[ -f "$KEY" ] || KEY="$HOME/.ssh/secondbrain-backend-key.pem"
+HOST="ec2-user@ExampleCo"
+ROOT="$(git rev-parse --show-toplevel)"
+SRC="$ROOT/ec2-server.js"
+LF="$ROOT/data/agent/_ec2-deploy.lf.js"
+LIVE_DEPS=(
+  "scripts/lib/voice-cloud-runtime.js"
+  "scripts/callback-watchdog.js"
+  "scripts/vapi-end-of-call.js"
+  "scripts/lib/dispatch-delivery.js"
+  "scripts/lib/vapi-live-assistant.js"
+  "scripts/lib/vapi-tool-contract.js"
+  "scripts/lib/vapi-voice-output.js"
+  "scripts/lib/voice-recent-context.js"
+  "scripts/lib/voice-tool-policy.js"
+  "scripts/lib/spine-ingress.js"
+)
+
+echo "[deploy] syntax-checking repo ec2-server.js"
+node -c "$SRC"
+
+# Normalize CRLF -> LF so the deployed file is clean on Linux.
+tr -d '\r' < "$SRC" > "$LF"
+
+echo "[deploy] backing up live server.js + ec2-server.js"
+ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  'ts=$(date +%s); cp /opt/secondbrain/server.js /opt/secondbrain/server.js.bak-$ts; cp /opt/secondbrain/ec2-server.js /opt/secondbrain/ec2-server.js.bak-$ts; echo "  backed up @ $ts"'
+
+echo "[deploy] pushing repo ec2-server.js -> EC2 server.js + ec2-server.js"
+scp -i "$KEY" -o StrictHostKeyChecking=no "$LF" "$HOST:/opt/secondbrain/server.js"
+scp -i "$KEY" -o StrictHostKeyChecking=no "$LF" "$HOST:/opt/secondbrain/ec2-server.js"
+
+echo "[deploy] pushing live backend dependencies"
+for dep in "${LIVE_DEPS[@]}"; do
+  if [ -f "$ROOT/$dep" ]; then
+    dep_dir="$(dirname "$dep")"
+    ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "mkdir -p /opt/secondbrain/$dep_dir"
+    scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/$dep" "$HOST:/opt/secondbrain/$dep"
+  fi
+done
+
+echo "[deploy] syntax-check + restart + health on EC2"
+ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" '
+  node -c /opt/secondbrain/server.js || { echo "[deploy] SYNTAX FAIL on EC2, rolling back"; cp "$(ls -t /opt/secondbrain/server.js.bak-* | head -1)" /opt/secondbrain/server.js; exit 1; }
+  node -c /opt/secondbrain/scripts/callback-watchdog.js || { echo "[deploy] CALLBACK WATCHDOG SYNTAX FAIL on EC2"; exit 1; }
+  pm2 restart secondbrain-backend --update-env >/dev/null
+  if pm2 describe callback-watchdog >/dev/null 2>&1; then
+    pm2 restart callback-watchdog --update-env >/dev/null
+  else
+    pm2 start /opt/secondbrain/scripts/callback-watchdog.js --name callback-watchdog --cwd /opt/secondbrain --update-env >/dev/null
+  fi
+  pm2 save >/dev/null
+  code=000
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 3
+    code=$(curl -s -o /dev/null -w "%{http_code}" -m 8 http://127.0.0.1:3001/health 2>/dev/null || echo 000)
+    [ "$code" = "200" ] && break
+  done
+  echo "  /health HTTP $code (after $((i*3))s)"
+  [ "$code" = "200" ] || { echo "[deploy] HEALTH FAIL, rolling back"; cp "$(ls -t /opt/secondbrain/server.js.bak-* | head -1)" /opt/secondbrain/server.js; pm2 restart secondbrain-backend --update-env >/dev/null; exit 1; }
+'
+
+echo "[deploy] verifying post-deploy parity (whitespace-insensitive)"
+ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" 'tr -d "\r" < /opt/secondbrain/server.js' > "$ROOT/data/agent/_ec2-live-after.js"
+DIFF=$(diff -w "$LF" "$ROOT/data/agent/_ec2-live-after.js" | grep -cE '^[<>]' || true)
+rm -f "$LF" "$ROOT/data/agent/_ec2-live-after.js"
+if [ "$DIFF" -eq 0 ]; then
+  echo "[deploy] OK: repo and live EC2 server.js are now identical."
+else
+  echo "[deploy] WARNING: $DIFF lines still differ after deploy. Investigate."
+  exit 1
+fi

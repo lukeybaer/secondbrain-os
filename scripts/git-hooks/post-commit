@@ -1,0 +1,29 @@
+#!/bin/bash
+# post-commit (tracked; installed by scripts/install-git-hooks.sh)
+#
+# When a commit touches dev-plans/, ingest the plans into Graphiti so Amy can
+# retrieve them by name on a call. query_knowledge (the voice "Search Knowledge"
+# tool) reads Graphiti on EC2, so a newly written plan is otherwise invisible on
+# a call until the next backfill. See scripts/ingest-dev-plans-to-graphiti.mjs.
+#
+# Never blocks the commit: a 1s reachability probe skips fast when the Graphiti
+# tunnel is down, and the ingest is backgrounded. The ingest is idempotent
+# (stable episode names), so a missed run is caught by any later dev-plans
+# commit or a manual `node scripts/ingest-dev-plans-to-graphiti.mjs`.
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$REPO_ROOT" || exit 0
+
+# Only act when this commit actually changed something under dev-plans/.
+git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null | grep -q '^dev-plans/' || exit 0
+
+# Fast bail if Graphiti isn't reachable, so the commit never hangs.
+GRAPHITI_URL="${GRAPHITI_URL:-http://127.0.0.1:8000}"
+curl -s -m 1 -o /dev/null "$GRAPHITI_URL/health" 2>/dev/null || exit 0
+
+LOG="$REPO_ROOT/data/agent/dev-plans-ingest.log"
+mkdir -p "$(dirname "$LOG")" 2>/dev/null
+# Detach so the commit returns immediately.
+( node scripts/ingest-dev-plans-to-graphiti.mjs >>"$LOG" 2>&1 & ) >/dev/null 2>&1
+
+exit 0

@@ -1,0 +1,357 @@
+'use strict';
+
+const { loadOperatorIdentity } = require('./operator-identity');
+
+// Operator-specific tokens (employer name, spouse first name) are PII and load
+// from memory/ at runtime, never hardcoded in source. The public shell resolves
+// neutral placeholders; the private tree resolves the real employer name so the
+// card id/matcher/condition reproduce the live dashboard exactly.
+const OPERATOR = loadOperatorIdentity();
+const EMPLOYER = OPERATOR.owner.employer;
+const EMPLOYER_UPPER = EMPLOYER.toUpperCase();
+const EMPLOYER_SLUG = EMPLOYER.toLowerCase()
+  .replace(/[^a-z0-9]+/g, '_')
+  .replace(/^_+|_+$/g, '');
+const SPOUSE_FIRST = OPERATOR.spouse.firstName;
+
+/**
+ * briefing-card-manifest.js
+ *
+ * Canonical manifest of every card the RENDERED briefing dashboard
+ * (http://<host>:3001/briefing) is expected to surface. This is the source of
+ * truth for the live render-level QC (scripts/verify-dashboard-cards-live.js).
+ *
+ * WHY THIS EXISTS (the gap it closes):
+ *   The briefing markdown could carry a section while the rendered dashboard
+ *   silently dropped the corresponding tile (FULL-LIFE DATA BACKUP, the EMPLOYER
+ *   GROUP NEWS card, VOICE/OTTER earlier). A markdown-only QC (cloud-morning-briefing.js
+ *   FULL_BRIEFING_CONTRACT, validate-briefing-quality.js) passed through all of
+ *   them because it never asserts what ExampleCo actually SEES. The existing live
+ *   checker (verify-briefing-cards-live.js) only flags defects on cards that ARE
+ *   present (red status, blocker banner, short news count); it never asserts a
+ *   card EXISTS, so a fully-dropped card is invisible to it. This manifest +
+ *   verifier add the missing CARD COMPLETENESS assertion against the render.
+ *
+ * HOW THE SET WAS DERIVED:
+ *   - From the render code: ec2-server.js parseBriefingMarkdown + the per-card
+ *     parseSectionData/render branches + sectionBucket(), and the render-time
+ *     merges (FULL-LIFE DATA BACKUP -> SYSTEM HEALTH at ~ec2-server.js:11785;
+ *     CONTENT PIPELINE -> VIDEO APPROVAL QUEUE at ~ec2-server.js:12103).
+ *   - From a real authenticated fetch of the live dashboard (the rendered
+ *     `data-section="..."` tiles).
+ *
+ * CARD SHAPE:
+ *   {
+ *     id:        stable short id (snake-ish, lowercase)
+ *     match:     RegExp tested against the rendered, HTML-decoded data-section
+ *                title (titles often carry a "(N)" or "($X total)" suffix, so
+ *                these are prefix/loose matchers, never exact-equality).
+ *     always:    true  => MUST render as its own tile, every run. A miss is a
+ *                         HARD failure.
+ *                false => CONDITIONAL. Either it renders, or one of `mergedInto`
+ *                         is present (the render intentionally absorbed it).
+ *     mergedInto: [ids] the cards whose presence satisfies this conditional one
+ *                 (because the render merges this card into them). Only used when
+ *                 always === false.
+ *     condition: human-readable note on when/why it is conditional.
+ *     valueSanity: optional [{ when, forbidMetric, reason }] rules: if `when`
+ *                 (RegExp on body text) matches, the tile metric must NOT match
+ *                 `forbidMetric`. Catches sentinel-vs-body contradictions
+ *                 (e.g. metric "$0"/"unavailable" while the body shows a real
+ *                 dollar figure).
+ *   }
+ *
+ * The ALWAYS set below is intentionally conservative: a card is `always` only
+ * when the render is expected to produce a standalone tile on every healthy run.
+ * Cards that the render legitimately merges (FULL-LIFE, CONTENT PIPELINE) are
+ * CONDITIONAL with an explicit mergedInto target, so the verifier does not
+ * false-positive on ExampleCo's intended consolidations -- but it DOES fail when the
+ * card neither renders nor lands in its merge target (which is exactly the
+ * FULL-LIFE defect on 2026-06-20).
+ */
+
+// A dollar figure like "$608.46" or "$1,234" appearing in a body.
+const DOLLAR_IN_BODY = /\$\s?\d[\d,]*(?:\.\d{2})?/;
+
+const CARDS = [
+  // ---- Top-of-dashboard execution + commitments (always) ----
+  {
+    id: 'action_items',
+    match: /^ACTION ITEMS\b/i,
+    always: true,
+    condition: 'Always: merged Action Items + Open Commitments tile.',
+  },
+  {
+    id: 'blockers',
+    match: /^BLOCKERS\b/i,
+    always: true,
+    condition: 'Always: briefing quality-gate blockers tile (may be 0/green).',
+  },
+  {
+    id: 'token_usage',
+    match: /^TOKEN USAGE\b|^LLM SUBSCRIPTION\b/i,
+    always: true,
+    condition: 'Always: LLM subscription/token usage tile.',
+  },
+  {
+    id: 'meetings',
+    match: /^MEETINGS\b/i,
+    always: true,
+    condition: 'Always: today + next 7 days schedule tile.',
+  },
+  {
+    id: 'tesla_cybercab',
+    match: /^TESLA CYBER ?CAB RESERVATION WATCH\b/i,
+    always: true,
+    condition:
+      'Always: Tesla Cyber Cab reservation watch (ExampleCo phone-call requirement 2026-06-01).',
+  },
+  {
+    id: 'snack_dude_invoice',
+    match: /^SNACK DUDE INVOICE ACTIVITY\b/i,
+    always: true,
+    condition: 'Always: Snack Dude invoice activity tile.',
+  },
+  {
+    id: 'feature_backlog',
+    match: /^FEATURE BACKLOG\b/i,
+    always: true,
+    condition: 'Always: feature backlog tile.',
+  },
+
+  // ---- Pipeline health bucket ----
+  // CONTENT PIPELINE is CONDITIONAL: ec2-server.js (~12103) removes the
+  // contentPipeline tile when a VIDEO APPROVAL QUEUE tile renders, because the
+  // video queue is the actionable surface of the same pipeline. So the pipeline
+  // is "represented" by EITHER tile -- but at least one must be present.
+  {
+    id: 'content_pipeline',
+    match: /^CONTENT PIPELINE\b/i,
+    always: false,
+    mergedInto: ['video_approval_queue'],
+    condition:
+      'Conditional: renders as its own tile OR is absorbed by VIDEO APPROVAL QUEUE when a video queue exists (ec2-server.js ~12103). One of the two must render.',
+  },
+  {
+    id: 'video_approval_queue',
+    match: /^VIDEO APPROVAL QUEUE\b/i,
+    always: false,
+    mergedInto: ['content_pipeline'],
+    condition:
+      'Conditional: renders when the pending-video manifest has surface-able items; otherwise CONTENT PIPELINE renders instead. One of the two must render.',
+  },
+  {
+    id: 'viral_tech_clips',
+    match: /^VIRAL TECH CLIP PROPOSALS\b/i,
+    always: true,
+    condition: 'Always: viral tech clip proposals tile (pipeline-health bucket).',
+  },
+  {
+    id: 'shorts_proposals',
+    match: /^TODAY'S 10 SHORTS PROPOSALS\b/i,
+    always: true,
+    condition: "Always: today's 10 shorts proposals tile.",
+  },
+
+  // ---- Faith + AWS + system ----
+  {
+    id: 'kingdom_equipping',
+    match: /^KINGDOM EQUIPPING IDEAS\b/i,
+    always: true,
+    condition: 'Always: kingdom equipping ideas tile (3 ideas).',
+  },
+  {
+    id: 'communication_coaching',
+    match: /^COMMUNICATION COACHING\b/i,
+    always: true,
+    condition:
+      'Always: communication coaching tile. It must be grounded in ExampleCo quotes and vetted sources, or render as a defect.',
+  },
+  {
+    id: 'aws_costs',
+    match: /^AWS COSTS\b/i,
+    always: true,
+    condition: 'Always: AWS costs tile.',
+    valueSanity: [
+      {
+        when: DOLLAR_IN_BODY,
+        forbidMetric: /^(\$0|\$0\.00|unavailable|n\/a)$/i,
+        reason:
+          'AWS metric shows $0/unavailable while the body ExampleCos a verified dollar figure (the historical AWS-$0 defect)',
+      },
+    ],
+  },
+  {
+    id: 'system_health',
+    match: /^SYSTEM HEALTH\b/i,
+    always: true,
+    condition:
+      'Always: system health tile. FULL-LIFE DATA BACKUP "Life:" chips are merged INTO this tile (ec2-server.js ~11785).',
+  },
+
+  // FULL-LIFE DATA BACKUP is CONDITIONAL: the render merges it into SYSTEM
+  // HEALTH as "Life:" chips (ExampleCo ask 2026-05-24). So it is "represented" by
+  // EITHER a standalone tile OR Life: chips inside SYSTEM HEALTH. The verifier
+  // treats a present-and-nonempty merge target as satisfying it, BUT a
+  // degraded/empty backup body (the 2026-06-20 defect) produces neither a tile
+  // nor Life: chips -- the verifier flags that via requiresMergeEvidence.
+  {
+    id: 'full_life_backup',
+    match: /^FULL[- ]LIFE DATA BACKUP\b/i,
+    always: false,
+    mergedInto: ['system_health'],
+    requiresMergeEvidence: /Life:\s*[A-Za-z]/,
+    condition:
+      'Conditional: renders as its own tile OR appears as "Life:" chips inside SYSTEM HEALTH (ec2-server.js ~11785). The merge target must show real Life: chip evidence, never silently vanish.',
+  },
+
+  // ---- Reputation + projects + uncommitted ----
+  {
+    id: 'reputation_risk',
+    match: /^REPUTATION RISK SCAN\b/i,
+    always: true,
+    condition: 'Always: reputation risk scan tile.',
+  },
+  {
+    id: 'amy_projects',
+    match: /^AMY PROJECTS ASSIGNED\b/i,
+    always: true,
+    condition: 'Always: Amy projects assigned (last 24h) tile.',
+  },
+  {
+    id: 'uncommitted_parked',
+    match: /^UNCOMMITTED & PARKED WORK\b/i,
+    always: true,
+    condition: 'Always: uncommitted & parked work tile (branch cleanliness must never vanish).',
+  },
+
+  // ---- News bucket (each a standalone tile, every run) ----
+  // `newsTarget` is the SINGLE source of truth for each news card's requested
+  // item count (the design doc requires one target source, never hardcoded copies
+  // in the verifier). The render-QC's builder-vs-render count check reads this so a
+  // card that renders fewer than its target (the "(10) title but 9 rendered" /
+  // "10 dropped as unreadable" class) is a hard defect. The EMPLOYER GROUP NEWS
+  // card is mention-or-zero, NOT a fixed-count card: it passes at its real
+  // mention count OR a scanned-zero placeholder, so it ExampleCos `mentionOrZero`
+  // instead of newsTarget.
+  {
+    id: 'ai_tech_news',
+    match: /^AI & TECH NEWS\b/i,
+    always: true,
+    newsTarget: 10,
+    condition: 'Always: AI & tech news tile.',
+  },
+  {
+    id: 'us_news',
+    match: /^US NEWS\b/i,
+    always: true,
+    newsTarget: 10,
+    condition: 'Always: US news tile.',
+  },
+  {
+    id: 'world_news',
+    match: /^WORLD NEWS\b/i,
+    always: true,
+    newsTarget: 10,
+    condition: 'Always: world news tile.',
+  },
+  {
+    id: 'us_immigration_news',
+    match: /^US IMMIGRATION NEWS\b/i,
+    always: true,
+    newsTarget: 5,
+    condition: `Always: US immigration news tile (${SPOUSE_FIRST} EB-1A relevance).`,
+  },
+  {
+    id: 'mortgage_industry_news',
+    match: /^MORTGAGE INDUSTRY NEWS\b/i,
+    always: true,
+    newsTarget: 10,
+    condition: `Always: mortgage industry news tile (ExampleCo day-job at ${EMPLOYER}).`,
+  },
+  {
+    id: 'covid_news',
+    match: /^COVID-19 TREATMENTS & NEWS\b/i,
+    always: true,
+    newsTarget: 5,
+    condition: 'Always: COVID-19 treatments & news tile (5-item card).',
+  },
+  {
+    id: 'mortgage_rate_indexes',
+    match: /^MORTGAGE RATE INDEXES\b/i,
+    always: true,
+    condition: 'Always: mortgage rate indexes tile.',
+  },
+  // The EMPLOYER GROUP NEWS card is ALWAYS expected and must render EVEN AT 0
+  // ITEMS. ExampleCo works at his employer; a dropped employer card is a high-severity
+  // miss. The cloud builder dropping it entirely (2026-06-20) is the defect this
+  // manifest is built to catch. A "0 matches, noise-free" placeholder body is a
+  // valid, present card -- vanishing is not. The employer name is operator PII,
+  // so the id / matcher / copy are built from the runtime config, never hardcoded.
+  {
+    id: `${EMPLOYER_SLUG}_group_news`,
+    match: new RegExp(
+      '^' + EMPLOYER_UPPER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' GROUP NEWS\\b',
+      'i',
+    ),
+    always: true,
+    mentionOrZero: true,
+    condition: `Always: ${EMPLOYER} Group news tile. MUST render even with 0 items (renders a scanned-zero placeholder). ExampleCo works at ${EMPLOYER}; this card must never silently disappear.`,
+  },
+
+  // ---- Relationship + memory monitoring ----
+  {
+    id: 'linkedin',
+    match: /^LINKEDIN\b/i,
+    always: true,
+    condition: 'Always: LinkedIn top strategic reach-outs tile.',
+  },
+  {
+    id: 'voice_confirmation',
+    match: /^VOICE CONFIRMATION ?\/ ?SPEAKER LEARNING\b/i,
+    always: true,
+    condition: 'Always: voice confirmation / speaker learning tile.',
+  },
+  {
+    id: 'otter_speaker_pareto',
+    match: /^OTTER SPEAKER PARETO\b/i,
+    always: true,
+    condition:
+      'Always: Otter speaker pareto / people tagged tile; renders the one-card call-history surface with Past 24 Hours, Day Before, and lifetime voice stats.',
+  },
+  {
+    id: 'memory_md_changes',
+    match: /^MEMORY\.MD CHANGES\b/i,
+    always: true,
+    condition: 'Always: MEMORY.md changes (24h) tile.',
+  },
+  {
+    id: 'people_files_changes',
+    match: /^PEOPLE FILES CHANGES\b/i,
+    always: true,
+    condition: 'Always: people files changes (24h) tile.',
+  },
+];
+
+const ALWAYS_IDS = CARDS.filter((c) => c.always).map((c) => c.id);
+const CONDITIONAL_IDS = CARDS.filter((c) => !c.always).map((c) => c.id);
+
+function getCardById(id) {
+  return CARDS.find((c) => c.id === id) || null;
+}
+
+// The single target source for news-card item counts. A consumer (the render-QC
+// builder-vs-render check) reads this instead of hardcoding 10/5 in its own file,
+// so there is exactly one place the requested counts live.
+function getNewsTarget(card) {
+  if (!card) return null;
+  return Number.isFinite(card.newsTarget) ? card.newsTarget : null;
+}
+
+module.exports = {
+  CARDS,
+  ALWAYS_IDS,
+  CONDITIONAL_IDS,
+  getCardById,
+  getNewsTarget,
+};

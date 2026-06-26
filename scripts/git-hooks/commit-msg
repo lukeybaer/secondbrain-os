@@ -1,0 +1,63 @@
+#!/bin/bash
+# commit-msg guard: reject subject/body contradictions on completion claims
+#
+# Background: commit c5ddba0 (2026-04-10) had subject
+#   "feat(amy): Phase 1-10 foundation overhaul — end-to-end memory + tests + ..."
+# but its body said "Phases 5, 7, 9, 11 deferred." Anyone skimming git log
+# saw the triumphant subject and missed the deferral. Months later a future
+# reader assumed the overhaul was done and acted on that assumption.
+#
+# This hook catches that exact failure mode. If the subject line claims
+# completion (words "overhaul", "foundation", or a phase range like
+# "Phase 1-10") AND the body contains the word "deferred" or "TODO" or
+# "pending" or "not yet", reject the commit.
+#
+# The author can either:
+#   1. Rewrite the subject to be honest ("partial overhaul", "Phase 1-4", etc.)
+#   2. Remove the deferral mention if the deferral is not real
+#   3. Truly finish the work before committing
+#
+# Install: this script lives in scripts/git-hooks/ (tracked) and is
+# installed at .git/hooks/commit-msg by scripts/install-git-hooks.sh
+# or manually via: cp scripts/git-hooks/commit-msg .git/hooks/commit-msg
+#
+# Source of truth: this tracked file. The .git/hooks/ copy is a deployment
+# artifact.
+
+set -e
+
+COMMIT_MSG_FILE="$1"
+if [[ -z "$COMMIT_MSG_FILE" || ! -f "$COMMIT_MSG_FILE" ]]; then
+  exit 0
+fi
+
+SUBJECT=$(head -n 1 "$COMMIT_MSG_FILE")
+BODY=$(tail -n +2 "$COMMIT_MSG_FILE")
+
+# Only fire on commits that CLAIM completion of a scoped piece of work
+if echo "$SUBJECT" | grep -qiE '(overhaul|foundation|Phase [0-9]+-[0-9]+|complete\b|finish\b|done\b)'; then
+  if echo "$BODY" | grep -qiE '(\bdeferred\b|\bTODO\b|\bnot yet\b|\bstill pending\b)'; then
+    {
+      echo ""
+      echo "ERROR: commit-msg guard rejected this commit."
+      echo ""
+      echo "Subject claims completion:"
+      echo "  $SUBJECT"
+      echo ""
+      echo "Body excerpt (lines with deferral/TODO/pending language):"
+      echo "$BODY" | grep -iE '(deferred|TODO|not yet|still pending)' | head -5 | sed 's/^/  /'
+      echo ""
+      echo "This is the failure mode from commit c5ddba0 (2026-04-10) which"
+      echo "claimed 'Phase 1-10 foundation overhaul' while the body said"
+      echo "'Phases 5, 7, 9, 11 deferred'. Rewrite the subject to match the"
+      echo "body, or truly finish the work before committing."
+      echo ""
+      echo "Reference: plans/dazzling-rolling-moler.md, commit 7 of the #gap"
+      echo "prevention hierarchy."
+      echo ""
+    } >&2
+    exit 1
+  fi
+fi
+
+exit 0

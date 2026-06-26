@@ -1,0 +1,403 @@
+'use strict';
+//
+// git-hygiene.js -- the single contract every git-cleanliness consumer reads.
+//
+// Implements the three-state model from
+// dev-plans/git-hygiene-clean-branches-2026-06-13.html:
+//   LANDED   = commits are in origin/master. The branch/worktree is leftover and
+//              safe to reap. (git-observable slice of "done".)
+//   PARKED   = intentional WIP, registered in the PARKED registry with a reason
+//              and an expiry. Protected from all cleanup.
+//   STRAY    = uncommitted/unmerged with no PARKED record. A defect. Needs a
+//              decision (land / park / drop). The only thing cleanup acts on.
+//   PROTECTED = codex/rescue* snapshots. Immutable evidence, never touched.
+//
+// Pure classification + a small atomic one-file-per-artifact registry + the
+// cleanup guard. NOTHING here mutates branches or worktrees -- the janitor and
+// the reap hook are the only writers, and they call assertSafeToClean() first.
+//
+// Registry lives under .claude/state/parked/ (gitignored runtime state, one JSON
+// file per parked artifact so concurrent sessions never stomp a shared list).
+
+const { execFileSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+// codex/rescue-* snapshots are immutable evidence (feedback_rescue_snapshots_are_immutable.md).
+const PROTECTED_PATTERNS = [/^codex\/rescue/i, /rescue-snapshot/i];
+
+function isProtectedRef(ref) {
+  return PROTECTED_PATTERNS.some((re) => re.test(ref));
+}
+
+function git(args, cwd) {
+  return execFileSync('git', args, {
+    cwd: cwd || process.cwd(),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    maxBuffer: 64 * 1024 * 1024,
+  }).trim();
+}
+
+function gitSafe(args, cwd, fallback = '') {
+  try {
+    return git(args, cwd);
+  } catch {
+    return fallback;
+  }
+}
+
+function getRepoRoot(cwd) {
+  return git(['rev-parse', '--show-toplevel'], cwd);
+}
+
+// ---------------------------------------------------------------------------
+// PARKED registry: one atomic JSON file per artifact under .claude/state/parked/
+// ---------------------------------------------------------------------------
+
+function parkedDir(repoRoot) {
+  return path.join(repoRoot, '.claude', 'state', 'parked');
+}
+
+function slugifyRef(ref) {
+  return String(ref)
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120);
+}
+
+// A parked record. `ref` is the durable handle: a branch name, a stash COMMIT
+// SHA (never stash@{n} -- those indices shift), or the literal "working-tree".
+function readParked(repoRoot) {
+  const dir = parkedDir(repoRoot);
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const f of files) {
+    try {
+      const rec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      rec._file = path.join(dir, f);
+      out.push(rec);
+    } catch {
+      // skip malformed record, do not let one bad file blind the whole registry
+    }
+  }
+  return out;
+}
+
+function isParkedRef(records, ref) {
+  if (!ref) return false;
+  return records.some((r) => r.ref === ref);
+}
+
+// Atomic write: temp file in the same dir, then rename. One writer per file id,
+// so 5-15 concurrent sessions never collide.
+function parkArtifact(repoRoot, record) {
+  const dir = parkedDir(repoRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  const id = record.id || slugifyRef(record.ref || `park-${record.artifact || 'item'}`);
+  const full = {
+    id,
+    artifact: record.artifact || 'branch', // branch | stash | working-tree
+    ref: record.ref,
+    project: record.project || '',
+    reason: record.reason || '',
+    ownerSession: record.ownerSession || '',
+    created: record.created, // ISO date string, supplied by caller (no clock in lib)
+    reviewBy: record.reviewBy || '', // expiry; empty = no expiry
+  };
+  if (!full.ref) throw new Error('parkArtifact requires a ref');
+  if (!full.reason) throw new Error('parkArtifact requires a reason (exec summary of why parked)');
+  const dest = path.join(dir, `${id}.json`);
+  const tmp = path.join(dir, `.${id}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, JSON.stringify(full, null, 2));
+  fs.renameSync(tmp, dest);
+  return { ...full, _file: dest };
+}
+
+function removeParked(repoRoot, id) {
+  const dest = path.join(parkedDir(repoRoot), `${id}.json`);
+  try {
+    fs.unlinkSync(dest);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Expired = reviewBy date is in the past. Caller passes `today` (YYYY-MM-DD) so
+// the lib stays clock-free and tests are deterministic.
+function isExpired(record, today) {
+  return !!(record.reviewBy && today && record.reviewBy < today);
+}
+
+// ---------------------------------------------------------------------------
+// Live-worktree lease. The spine-session-task.mjs hook already writes one
+// spine-session-<id>.json per interactive session with status running/done and
+// execution.cwd. A worktree with a live session must NEVER be reaped. We reuse
+// that signal instead of inventing a second heartbeat system.
+//   live = a spine-session task with status 'running' AND (if nowMs supplied)
+//   an updatedAt within maxAgeHours -- a stale 'running' is a crashed session,
+//   not a live one, so its worktree becomes reapable.
+// nowMs is injected so the lib stays clock-free; omitting it is the safe default
+// (every 'running' task counts as live).
+// ---------------------------------------------------------------------------
+
+function defaultTasksDir() {
+  if (process.env.SECONDBRAIN_TASKS_DIR) return process.env.SECONDBRAIN_TASKS_DIR;
+  const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  return path.join(appData, 'secondbrain', 'data', 'tasks');
+}
+
+function readLiveWorktrees(opts = {}) {
+  const dir = opts.tasksDir || defaultTasksDir();
+  const nowMs = opts.nowMs;
+  const maxAgeMs = (opts.maxAgeHours || 6) * 3600 * 1000;
+  let files;
+  try {
+    files = fs
+      .readdirSync(dir)
+      .filter((f) => f.startsWith('spine-session-') && f.endsWith('.json'));
+  } catch {
+    return new Set();
+  }
+  const live = new Set();
+  for (const f of files) {
+    try {
+      const t = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      if (t.status !== 'running') continue;
+      if (nowMs && t.updatedAt) {
+        const age = nowMs - Date.parse(t.updatedAt);
+        if (Number.isFinite(age) && age > maxAgeMs) continue; // stale -> crashed, not live
+      }
+      const cwd = t.execution && t.execution.cwd;
+      if (cwd) live.add(path.resolve(cwd));
+    } catch {
+      // ignore malformed task file
+    }
+  }
+  return live;
+}
+
+// ---------------------------------------------------------------------------
+// The cleanup guard. The reap hook, the janitor, and any "clean up uncommitted
+// stuff" command MUST call this before touching any ref. It refuses protected
+// and parked refs. Mechanically enforced so a future "just force it all in"
+// cannot blow past it.
+// ---------------------------------------------------------------------------
+
+function assertSafeToClean(repoRoot, ref, parkedRecords) {
+  if (isProtectedRef(ref)) {
+    throw new Error(`refuse: ${ref} is a protected rescue snapshot (immutable evidence)`);
+  }
+  const recs = parkedRecords || readParked(repoRoot);
+  if (isParkedRef(recs, ref)) {
+    throw new Error(`refuse: ${ref} is registered PARKED (intentional WIP, not cleanup fodder)`);
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Pure categorizer -- unit-testable without git.
+// ---------------------------------------------------------------------------
+
+function categorizeBranch({ name, merged, isCurrent, parked }) {
+  if (isProtectedRef(name)) return 'protected';
+  if (parked) return 'parked';
+  if (isCurrent) return 'active'; // the checked-out branch, never reap/triage it
+  if (merged) return 'landed'; // commits already in origin/master -> safe to reap
+  return 'stray'; // ExampleCos unique commits, needs a decision
+}
+
+// ---------------------------------------------------------------------------
+// classifyGitState -- the full snapshot. ~6 git calls, all read-only.
+// ---------------------------------------------------------------------------
+
+function classifyGitState(opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  const today = opts.today || '';
+  const repoRoot = getRepoRoot(cwd);
+  const parked = readParked(repoRoot);
+  const parkedRefs = new Set(parked.map((r) => r.ref));
+
+  const currentBranch = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot, 'HEAD');
+
+  // master vs origin/master (the clean/synced check)
+  let masterAhead = 0;
+  let masterBehind = 0;
+  const lr = gitSafe(
+    ['rev-list', '--left-right', '--count', 'origin/master...master'],
+    repoRoot,
+    '',
+  );
+  if (lr) {
+    const m = lr.split(/\s+/).map((n) => parseInt(n, 10));
+    masterBehind = m[0] || 0;
+    masterAhead = m[1] || 0;
+  }
+
+  // uncommitted edits in the main working tree
+  const statusRaw = gitSafe(['status', '--porcelain'], repoRoot, '');
+  const uncommittedEdits = statusRaw
+    ? statusRaw
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => ({
+          // porcelain v1: cols 0-1 are the status, the path is everything from
+          // col 2 onward (slice(2).trim() is robust to the 1 or 2 space gap and
+          // to renamed "orig -> new" entries).
+          status: line.slice(0, 2).trim(),
+          file: line.slice(2).trim(),
+        }))
+    : [];
+
+  // merged set (commits already in origin/master)
+  const mergedRaw = gitSafe(
+    ['branch', '--merged', 'origin/master', '--format=%(refname:short)'],
+    repoRoot,
+    '',
+  );
+  const mergedSet = new Set(
+    mergedRaw
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+
+  // worktree map: branch -> worktree path
+  const wtRaw = gitSafe(['worktree', 'list', '--porcelain'], repoRoot, '');
+  const worktrees = [];
+  const branchToWorktree = new Map();
+  {
+    let cur = {};
+    for (const line of wtRaw.split('\n')) {
+      if (line.startsWith('worktree ')) cur = { path: line.slice('worktree '.length) };
+      else if (line.startsWith('branch ')) {
+        const short = line.slice('branch '.length).replace('refs/heads/', '');
+        cur.branch = short;
+        branchToWorktree.set(short, cur.path);
+      } else if (line === '') {
+        if (cur.path) worktrees.push(cur);
+        cur = {};
+      }
+    }
+    if (cur.path) worktrees.push(cur);
+  }
+
+  // all local branches
+  const branchRaw = gitSafe(
+    [
+      'for-each-ref',
+      '--format=%(refname:short)\t%(objectname:short)\t%(committerdate:short)\t%(contents:subject)',
+      'refs/heads',
+    ],
+    repoRoot,
+    '',
+  );
+  const branches = [];
+  for (const line of branchRaw.split('\n').filter(Boolean)) {
+    const [name, tip, date, ...rest] = line.split('\t');
+    const subject = rest.join('\t');
+    const parkedHit = parkedRefs.has(name);
+    const merged = mergedSet.has(name);
+    const isCurrent = name === currentBranch;
+    branches.push({
+      name,
+      tip,
+      date,
+      subject,
+      merged,
+      isCurrent,
+      parked: parkedHit,
+      worktree: branchToWorktree.get(name) || null,
+      category: categorizeBranch({ name, merged, isCurrent, parked: parkedHit }),
+    });
+  }
+
+  // stashes (identify by SHA, not stash@{n})
+  const stashRaw = gitSafe(['stash', 'list', '--format=%H\t%gd\t%gs'], repoRoot, '');
+  const stashes = stashRaw
+    ? stashRaw
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [sha, slot, ...rest] = line.split('\t');
+          return {
+            sha,
+            slot, // stash@{n} -- display only, do not act on it
+            message: rest.join('\t'),
+            parked: parkedRefs.has(sha),
+          };
+        })
+    : [];
+
+  // buckets for the card
+  const protectedBranches = branches.filter((b) => b.category === 'protected');
+  const parkedBranches = branches.filter((b) => b.category === 'parked');
+  const landedBranches = branches.filter((b) => b.category === 'landed');
+  const strayBranches = branches.filter((b) => b.category === 'stray');
+
+  const parkedStashes = stashes.filter((s) => s.parked);
+  const strayStashes = stashes.filter((s) => !s.parked);
+
+  return {
+    repoRoot,
+    currentBranch,
+    today,
+    master: { ahead: masterAhead, behind: masterBehind, clean: uncommittedEdits.length === 0 },
+    counts: {
+      branches: branches.length,
+      worktrees: worktrees.length,
+      stashes: stashes.length,
+      parkedRecords: parked.length,
+      landedReapable: landedBranches.length,
+      stray: strayBranches.length,
+      protected: protectedBranches.length,
+      uncommittedEdits: uncommittedEdits.length,
+    },
+    parkedRecords: parked.map((r) => ({ ...r, expired: isExpired(r, today) })),
+    buckets: {
+      // PARKED: intentional, registered, protected
+      parked: {
+        records: parked.map((r) => ({ ...r, expired: isExpired(r, today) })),
+        branches: parkedBranches,
+        stashes: parkedStashes,
+      },
+      // STRAY needing a decision: unique commits / loose edits, NOT hand-triaged
+      needsDecision: {
+        branches: strayBranches,
+        stashes: strayStashes,
+        uncommittedEdits,
+      },
+      // LANDED leftovers: already in master, safe to reap
+      safeToClear: { branches: landedBranches },
+      // PROTECTED: rescue snapshots, untouchable
+      protected: { branches: protectedBranches },
+    },
+    worktrees,
+    branches,
+    stashes,
+  };
+}
+
+module.exports = {
+  isProtectedRef,
+  getRepoRoot,
+  parkedDir,
+  slugifyRef,
+  readParked,
+  isParkedRef,
+  parkArtifact,
+  removeParked,
+  isExpired,
+  assertSafeToClean,
+  categorizeBranch,
+  classifyGitState,
+  readLiveWorktrees,
+  PROTECTED_PATTERNS,
+};

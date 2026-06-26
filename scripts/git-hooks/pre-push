@@ -1,0 +1,23 @@
+#!/bin/bash
+# Mechanical branch-cleanliness floor for Claude, Codex, and subagents.
+# Blocks pushes from the shared main checkout, then enforces the public-memory
+# remote rule. Source of truth: scripts/git-hooks/pre-push.
+
+node scripts/git-hooks/shared-tree-policy.js pre-push || exit $?
+
+# Block memory/ from being pushed to the public (secondbrain-os) remote.
+remote="$1"
+url="$2"
+
+if echo "$url" | grep -q "secondbrain-os"; then
+  if git diff --name-only "$(git merge-base HEAD origin/master)" HEAD 2>/dev/null | grep -q "^memory/"; then
+    echo ""
+    echo "ERROR: memory/ files detected in push to PUBLIC remote (secondbrain-os)."
+    echo "Memory must only go to the private remote (origin)."
+    echo "Strip memory commits before pushing to public, or push only to origin."
+    echo ""
+    exit 1
+  fi
+fi
+
+exit 0
