@@ -57,24 +57,29 @@ loadDotEnvIfPresent();
 //   1. isCliFailureOutput scrub (below) kills any raw upstream error (HTTP 4xx,
 //      not_found_error model leaks, auth/rate-limit strings) regardless of kind.
 //   2. This kind allowlist enforces the Telegram channel policy
-//      (memory/feedback_telegram_policy.md): Telegram is reactive replies,
-//      PII/security/reputation risk, video-ready, and voice follow-up only.
-//      Briefing links, auth reminders, service status, health summaries,
-//      scan-complete, briefing summaries, and activity logs are suppressed and
-//      logged internally only.
+//      (memory/feedback_telegram_policy.md): Telegram is reactive replies
+//      only when explicitly marked reactive, plus PII/security/reputation risk,
+//      video-ready, and voice follow-up. Approval prompts, briefing links, auth
+//      reminders, service status, health summaries, scan-complete, briefing
+//      summaries, and activity logs are suppressed and logged internally only.
 // Every Telegram sender in scripts/ must route through notifyWithFallback so
 // both guards apply. A regression test greps for direct api.telegram.org calls.
+const REACTIVE_KINDS = new Set([
+  'reply', // reactive answer to a ExampleCo-initiated Telegram message
+]);
+
 const ALLOWED_KINDS = new Set([
-  'reply', // reactive answer to a ExampleCo-initiated message / dispatch
-  'approval', // awaiting ExampleCo's YES/NO decision (action-required)
   'security', // PII / security / reputation alert (push, not pull)
   'pii',
+  'reputation-risk',
   'video-ready', // upload confirmed complete, link available
   'voice-followup', // post-call Amy follow-up, one message
 ]);
 
-function telegramKindAllowed(kind) {
-  return ALLOWED_KINDS.has(String(kind || ''));
+function telegramKindAllowed(kind, { reactive = false } = {}) {
+  const k = String(kind || '');
+  if (reactive === true && REACTIVE_KINDS.has(k)) return true;
+  return ALLOWED_KINDS.has(k);
 }
 
 function appendJsonl(filePath, obj) {
@@ -138,6 +143,7 @@ async function notifyWithFallback({
   chatId: chatIdOverride,
   dedup = true,
   dedupKey,
+  reactive = false,
 } = {}) {
   if (!text || typeof text !== 'string') {
     throw new Error('notifyWithFallback: text is required');
@@ -159,7 +165,7 @@ async function notifyWithFallback({
   // Guard 2 (policy): only the approved kinds may proactively send. Health
   // summaries, scan-complete, briefing summaries, and activity logs are
   // suppressed and logged internally, never pushed to ExampleCo's pocket.
-  if (!telegramKindAllowed(kind)) {
+  if (!telegramKindAllowed(kind, { reactive })) {
     console.log(
       '[notify] suppressed by telegram policy (kind not allowed):',
       kind,

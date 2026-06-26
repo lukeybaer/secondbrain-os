@@ -15,7 +15,7 @@
 //
 // Deliberately NOT privileged:
 //  - bridge_in_owner / bridge_in_ExampleCo: exists FOR non-owner callers to reach ExampleCo.
-//  - request_approval: side effects gated by ExampleCo's explicit Telegram approval.
+//  - request_approval: side effects are held for non-Telegram approval surfaces.
 //  - flag_reputation_risk: must fire during sketchy calls from strangers.
 
 const PRIVILEGED_TOOLS = [

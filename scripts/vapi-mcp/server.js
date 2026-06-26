@@ -5,7 +5,7 @@
 // running as claude-via-proxy on a voice call:
 //
 //   bridge_in_owner        - transfer caller to the owner's phone
-//   request_approval       - ask the owner for permission via Telegram
+//   request_approval       - hold consequential work for owner approval
 //   flag_reputation_risk   - log a reputation risk for the owner
 //   send_message           - send a Telegram message on the owner's behalf
 //
@@ -41,7 +41,7 @@ const TOOLS = [
   },
   {
     name: 'request_approval',
-    description: 'Request the owner explicit approval before doing something consequential: sharing PII, transferring a call, committing to an action. Owner is asked via Telegram. ALWAYS use before sharing address, phone, email, financial details.',
+    description: 'Request explicit owner approval before doing something consequential: sharing PII, transferring a call, committing to an action. Approval is held in the owner approval surface, not pushed to Telegram. ALWAYS use before sharing address, phone, email, financial details.',
     inputSchema: {
       type: 'object',
       properties: {

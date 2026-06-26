@@ -4,16 +4,16 @@
 // tools, sitting AFTER scripts/lib/voice-tool-policy.js in executeVapiTool.
 //
 //   policy  (voice-tool-policy):  may this caller TIER use this tool at all?
-//   gate    (this module):        execute NOW, or detour to Telegram approval?
+//   gate    (this module):        execute NOW, or hold for approval elsewhere?
 //
 // Rules:
 //  - Non-privileged tools always execute (the gate is a no-op).
 //  - A voiceprint-VERIFIED speaker (an enrolled household member matched by audio, cached for
 //    the call) executes privileged tools immediately: no friction.
 //  - Everyone else, including owner-by-phone-number and keyword-upgraded
-//    callers, detours to a Telegram YES/NO approval. A voiceprint
-//    false-reject therefore degrades to the approval challenge, never a
-//    dead end and never silent execution.
+//    callers, needs approval outside the call. Telegram is not a proactive
+//    approval channel; false-rejects therefore deny the privileged action
+//    rather than silently executing or buzzing ExampleCo.
 //  - Speaker IDENTIFICATION (context signal, e.g. "sounds like PRIVATE_NAME") is
 //    deliberately IGNORED here: identification is never the sole authorizer.
 //    Only the verification cache (written exclusively on an above-threshold
@@ -41,7 +41,7 @@ function decidePrivilegedVoiceExecution({
   speakerIdentifiedName = null, // eslint-disable-line no-unused-vars
 } = {}) {
   if (!privileged) return { action: 'execute', reason: 'not-privileged' };
-  if (preApproved) return { action: 'execute', reason: 'owner-approved-via-telegram' };
+  if (preApproved) return { action: 'execute', reason: 'owner-approved-via-approval-surface' };
   if (voiceprintVerifiedName) {
     return { action: 'execute', reason: 'voiceprint-verified:' + voiceprintVerifiedName };
   }
@@ -69,8 +69,8 @@ function checkKeywordAttempt(
   return { locked: false, scope: null };
 }
 
-// Telegram approval line for a privileged voice action. Kept here so the
-// format is unit-testable and consistent.
+// Audit/dashboard approval line for a privileged voice action. Kept here so
+// the format is unit-testable and consistent without creating a Telegram ping.
 function formatPrivilegedApprovalMessage({ callerPhone, toolName, summary, approvalId }) {
   return (
     'Caller ' +
@@ -78,11 +78,9 @@ function formatPrivilegedApprovalMessage({ callerPhone, toolName, summary, appro
     ' asks: ' +
     toolName +
     (summary ? ' (' + summary + ')' : '') +
-    '\n\nReply YES ' +
+    '\n\nApproval id ' +
     approvalId +
-    ' to run it, NO ' +
-    approvalId +
-    ' to refuse. Expires in 10 minutes.'
+    '. Held for dashboard review; no proactive Telegram approval prompt was sent.'
   );
 }
 

@@ -12,11 +12,11 @@
  *  { ts, source, date, section, itemRef, comment, status: 'queued' }
  *
  * Routing (classified by Claude):
- *  - bug        → add to feature-backlog.json as urgent, emit Telegram alert
+ *  - bug        → add to feature-backlog.json as urgent, log a notification receipt
  *  - feature    → add to feature-backlog.json normally
  *  - preference → save to memory/feedback_*.md
- *  - question   → reply via Telegram with the answer
- *  - clarify    → reply asking for more context (ambiguous)
+ *  - question   → write the answer to the dispatch log/dashboard surface
+ *  - clarify    → write the clarification ask to the dispatch log/dashboard surface
  *
  * Idempotency: each processed entry gets a unique id (ts + hash(comment)). The
  * processed set lives in data/agent/dispatch-processed.json. Re-running is
@@ -57,17 +57,16 @@ function ensureDir(p) {
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 // 2026-06-09: routed through the central notify chokepoint so the universal
-// upstream-error scrub (HTTP 4xx / not_found_error model leaks) applies and a
-// Telegram outage falls back instead of dropping. Urgent dispatch pings are
-// action-required, so kind='reply' stays in the allowlist; the scrub still
-// guarantees a raw 404 can never ride this path to ExampleCo.
+// upstream-error scrub (HTTP 4xx / not_found_error model leaks) applies. Urgent
+// dispatch pings are not Telegram-reactive, so kind='spine-result' is logged and
+// suppressed by policy unless a future caller explicitly proves Telegram origin.
 function sendTelegramAlert(message) {
   try {
     const { notifyWithFallback } = require('./lib/notify-with-fallback');
     notifyWithFallback({
       text: String(message),
       source: 'process-dispatches',
-      kind: 'reply',
+      kind: 'spine-result',
       priority: 'urgent',
     });
   } catch (e) {
@@ -325,7 +324,7 @@ function classifyHeuristic(entry) {
           : category === 'preference'
             ? `Save as a memory rule for future sessions`
             : category === 'question'
-              ? `Reply via Telegram with the answer`
+              ? `Write the answer to the dispatch log/dashboard surface`
               : `Ask ExampleCo for clarification — too ambiguous to route`,
     summary,
     classified_by: 'heuristic',

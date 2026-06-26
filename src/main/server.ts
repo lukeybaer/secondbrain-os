@@ -33,8 +33,8 @@ const resolveCallbacks = new Map<string, (result: { approved: boolean; data?: st
 // ── Approval helpers ──────────────────────────────────────────────────────────
 
 /**
- * Creates an approval record in SQLite, sends Telegram notification, and
- * returns a Promise that resolves when the owner replies YES/NO (or times out).
+ * Waits on an existing approval record. Owner Telegram prompts are suppressed
+ * by notify-policy; approval decisions live in dashboard/local state.
  */
 function waitForApproval(
   approvalId: string,

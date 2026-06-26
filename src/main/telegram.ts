@@ -206,10 +206,12 @@ export async function sendPhoto(chatId: string, photoPath: string, caption: stri
 }
 
 /**
- * Persists the approval to SQLite, registers the resolve callback in memory,
- * and sends the YES/NO prompt via Telegram.
+ * Persists the approval to SQLite and registers the resolve callback in memory.
+ * The owner Telegram prompt is suppressed by notify-policy unless the policy
+ * explicitly changes.
  */
 export async function sendApprovalRequest(chatId: string, approval: PendingApproval): Promise<void> {
+  void chatId;
   // Persist to SQLite (upsert — caller may have already inserted)
   try {
     createApproval({
@@ -229,11 +231,7 @@ export async function sendApprovalRequest(chatId: string, approval: PendingAppro
     resolveCallbacks.set(approval.id, approval.resolve);
   }
 
-  const text =
-    `⚠️ ${approval.request_type}: ${approval.description}\n\n` +
-    `Reply YES to approve, NO to decline.\n` +
-    `Approval ID: ${approval.id}`;
-  await sendMessage(chatId, text, 'approval');
+  console.log(`[telegram] approval request suppressed by policy: ${approval.id}`);
 }
 
 /**

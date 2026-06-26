@@ -121,8 +121,8 @@ function todosOpen() {
     if (!open.length) return 'no open todos';
     return open.slice(0, 5).map((t) => {
       const title = t.title || t.content || t.text || '(untitled)';
-      const pri = t.priority || '';
-      return `- [${pri}] ${title}`;
+      const PRIVATE_NAME = t.PRIVATE_NAMEority || '';
+      return `- [${PRIVATE_NAME}] ${title}`;
     }).join('\n');
   }, '(todos unavailable)');
 }

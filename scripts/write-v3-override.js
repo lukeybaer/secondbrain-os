@@ -95,7 +95,7 @@ const SKILL_CATALOG = [
   },
   {
     name: 'Request Approval',
-    description: 'Request owner approval for sharing PII or consequential actions via Telegram',
+    description: 'Request owner approval for sharing PII or consequential actions without proactive Telegram pings',
     triggerPhrases: [],
     toolName: 'request_approval',
     requiresBackend: true,

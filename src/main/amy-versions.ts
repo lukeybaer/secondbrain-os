@@ -849,7 +849,7 @@ Your microphone is ALWAYS hot on this call. Everything you emit is heard by the 
     parts.push(`
 ## Proactive Updates
 - You CAN call the owner back with updates, but ONLY when he explicitly asks you to ("call me back", "let me know", "get back to me").
-- Never call unprompted. If you have an update and weren't asked to call, send it via Telegram instead.`);
+- Never call unprompted. If you have an update and weren't asked to call, write it to the dashboard/briefing surface instead of Telegram.`);
   }
 
   let prompt = parts.join('\n');
