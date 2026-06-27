@@ -40,6 +40,7 @@ LIVE_DEPS=(
   "scripts/lib/devops-health.js"
   "scripts/lib/shared-tree-write-guard.js"
   "scripts/lib/shared-tree-guard.js"
+  "scripts/lib/integration-session.js"
   "scripts/lib/mutation-surface-matrix.js"
 )
 
