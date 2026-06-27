@@ -3447,6 +3447,30 @@ function formatDiskSize(kb) {
   return `${Math.round(n / 1024)} MB`;
 }
 
+const DEVOPS_SNAPSHOT_MAX_AGE_HOURS = 6;
+
+function readDevOpsSnapshot(dataDir, now = Date.now()) {
+  const snapshot = readJson(path.join(dataDir, 'agent', 'devops-health-latest.json'), null);
+  if (!snapshot || !snapshot.result) return null;
+  const generated = snapshot.generated_at || snapshot.generatedAt;
+  const generatedMs = generated ? new Date(generated).getTime() : NaN;
+  if (!Number.isFinite(generatedMs)) {
+    return { status: 'red', detail: 'shared checkout snapshot has no timestamp' };
+  }
+  const ageHours = Math.max(0, (now - generatedMs) / 3600000);
+  if (ageHours > DEVOPS_SNAPSHOT_MAX_AGE_HOURS) {
+    return {
+      status: 'red',
+      detail: `shared checkout snapshot is stale: last captured ${relativeAgo(generated, now)}`,
+    };
+  }
+  const status = snapshot.result.status === 'green' ? 'green' : 'red';
+  return {
+    status,
+    detail: `${snapshot.result.detail}; shared checkout snapshot captured ${relativeAgo(generated, now)}`,
+  };
+}
+
 function readLatestJsonlRow(file) {
   try {
     const lines = fs
@@ -4650,7 +4674,18 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
       `Dev Ops: ${devops.detail}.`,
     );
   } catch (e) {
-    push(BAD, `Dev Ops: probe failed: ${String((e && e.message) || e).slice(0, 120)}.`);
+    const snapshot = readDevOpsSnapshot(dataDir);
+    if (snapshot) {
+      push(
+        snapshot.status === 'green' ? OK : BAD,
+        `Dev Ops: ${snapshot.detail}.`,
+      );
+    } else {
+      push(
+        BAD,
+        `Dev Ops: shared checkout snapshot missing, and cloud host is not a git checkout (${String((e && e.message) || e).slice(0, 100)}).`,
+      );
+    }
   }
 
   return rows;

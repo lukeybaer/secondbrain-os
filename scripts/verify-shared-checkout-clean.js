@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
 const { probeDevOpsHealth } = require('./lib/devops-health.js');
 
@@ -13,6 +14,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--main-root') out.mainRoot = argv[++i] || out.mainRoot;
     else if (a === '--json') out.json = true;
+    else if (a === '--write-snapshot') out.snapshotPath = argv[++i] || out.snapshotPath;
     else if (a === '--help' || a === '-h') out.help = true;
   }
   return out;
@@ -21,7 +23,7 @@ function parseArgs(argv) {
 function usage() {
   return [
     'Usage:',
-    '  node scripts/verify-shared-checkout-clean.js [--main-root C:/Users/ExampleCod/secondbrain] [--json]',
+    '  node scripts/verify-shared-checkout-clean.js [--main-root C:/Users/ExampleCod/secondbrain] [--json] [--write-snapshot data/agent/devops-health-latest.json]',
   ].join('\n');
 }
 
@@ -32,7 +34,19 @@ function main(argv = process.argv.slice(2), deps = {}) {
     return 0;
   }
   const probe = deps.probeDevOpsHealth || probeDevOpsHealth;
+  const writeFileSync = deps.writeFileSync || fs.writeFileSync;
+  const mkdirSync = deps.mkdirSync || fs.mkdirSync;
+  const nowIso = deps.nowIso || (() => new Date().toISOString());
   const result = probe({ mainRoot: args.mainRoot });
+  if (args.snapshotPath) {
+    const snapshotPath = path.resolve(args.snapshotPath);
+    mkdirSync(path.dirname(snapshotPath), { recursive: true });
+    writeFileSync(
+      snapshotPath,
+      JSON.stringify({ generated_at: nowIso(), mainRoot: args.mainRoot, result }, null, 2) + '\n',
+      'utf8',
+    );
+  }
   if (args.json) {
     console.log(JSON.stringify(result, null, 2));
   } else {
