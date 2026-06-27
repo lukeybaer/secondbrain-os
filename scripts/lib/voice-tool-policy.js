@@ -17,6 +17,9 @@
 //  - bridge_in_owner / bridge_in_ExampleCo: exists FOR non-owner callers to reach ExampleCo.
 //  - request_approval: side effects are held for non-Telegram approval surfaces.
 //  - flag_reputation_risk: must fire during sketchy calls from strangers.
+//
+// Owner-only read tools are not privileged because they should not trigger the
+// voiceprint approval queue for ExampleCo, but ExampleCo callers still cannot run them.
 
 const PRIVILEGED_TOOLS = [
   'run_claude_code',
@@ -29,6 +32,8 @@ const PRIVILEGED_TOOLS = [
   'callback_commitment',
 ];
 
+const OWNER_ONLY_READ_TOOLS = ['read_briefing_news'];
+
 const REFUSAL =
   'I can only do that for ExampleCo. I can take a message or have him get back to you, ' +
   'but I am not able to run that action on this call.';
@@ -37,8 +42,12 @@ const REFUSAL =
 // Returns { allowed, privileged, refusal } where refusal is the polite
 // string to return as the tool result when allowed is false.
 function isToolAllowedForCaller(toolName, callerTier) {
-  const privileged = PRIVILEGED_TOOLS.includes(String(toolName || ''));
+  const name = String(toolName || '');
+  const privileged = PRIVILEGED_TOOLS.includes(name);
   if (!privileged) {
+    if (OWNER_ONLY_READ_TOOLS.includes(name) && callerTier !== 'owner') {
+      return { allowed: false, privileged: false, refusal: REFUSAL };
+    }
     return { allowed: true, privileged: false, refusal: null };
   }
   if (callerTier === 'owner') {
@@ -47,4 +56,4 @@ function isToolAllowedForCaller(toolName, callerTier) {
   return { allowed: false, privileged: true, refusal: REFUSAL };
 }
 
-module.exports = { isToolAllowedForCaller, PRIVILEGED_TOOLS, REFUSAL };
+module.exports = { isToolAllowedForCaller, PRIVILEGED_TOOLS, OWNER_ONLY_READ_TOOLS, REFUSAL };

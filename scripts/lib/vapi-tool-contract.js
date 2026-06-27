@@ -16,6 +16,7 @@ const VAPI_FUNCTION_TOOL_NAMES = [
   'check_spine',
   'manage_task',
   'send_message',
+  'read_briefing_news',
   'read_otter_transcripts',
   'check_calendar',
   'create_calendar_event',
@@ -360,6 +361,29 @@ function buildVapiFunctionTools() {
         },
       },
       ['channel', 'message'],
+    ),
+    functionTool(
+      'read_briefing_news',
+      "Read the latest morning briefing news cards aloud for ExampleCo. Use when ExampleCo says 'read the news'. While in news-reader mode, if ExampleCo says 'skip' or 'next', call action=next_article immediately. If he says 'skip section' or 'next section', call action=next_section immediately. Do not acknowledge the command; the tool result is the next thing to say.",
+      {
+        action: {
+          type: 'string',
+          enum: ['start', 'next_article', 'next_section', 'current', 'stop'],
+          description:
+            'start begins the latest briefing news. next_article advances on skip/next. next_section advances on skip section/next section. current repeats the current article. stop exits news-reader mode.',
+        },
+        date: {
+          type: 'string',
+          description:
+            'Optional briefing date as YYYY-MM-DD. Omit for the latest briefing. Use today only if ExampleCo explicitly asks for today.',
+        },
+        reload: {
+          type: 'boolean',
+          description: 'True to reload the briefing file and restart the cursor.',
+        },
+      },
+      [],
+      { messages: toolMessages('', '', { silentStart: true }) },
     ),
     functionTool(
       'read_otter_transcripts',

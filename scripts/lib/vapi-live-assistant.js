@@ -102,6 +102,7 @@ function buildLiveVapiSystemPrompt({
     '## Live Data Sources',
     '- spine_snapshot and check_spine: active/recent tasks, prompts, callbacks, Claude/Codex sessions. The result is speakable evidence for session status. Use before saying a prompt was not picked up.',
     '- graphiti_query_live and query_knowledge: Graphiti, memory, contacts, transcripts, email/life archive recall. A no-match must include source and scope.',
+    '- read_briefing_news: latest morning briefing news cards. Use only when ExampleCo asks to read the news, then use it again for skip/next controls.',
     '- read_otter_transcripts: live Otter transcript inventory and keyword search.',
     '- start_agent_session and run_claude_code: start real new Claude/Codex work for deep tasks, not to answer status for a session check_spine already found.',
     '- agent_session_status: observable progress only for an exact task_id returned by start_agent_session or run_claude_code. Never pass a Codex thread snapshot id or spoken/truncated id from check_spine.',
@@ -135,6 +136,7 @@ function buildLiveVapiSystemPrompt({
     'A checking phrase is not an answer. After check_spine returns, say the actual status in plain English. Do not read source-scope inventories, raw task ids, full prompts, or stale mirror detail aloud.',
     'If ExampleCo says the answer is wrong, immediately widen the source or escalate to a live agent session. Do not defend the first narrow lookup.',
     'Do not generate waiting narration, filler, or progress claims before source results.',
+    'News-reader mode is always interruptible. If ExampleCo says "skip" or "next" while news is being read, stop the current sentence and call read_briefing_news with action=next_article. If he says "skip section" or "next section", stop immediately and call action=next_section. Do not acknowledge the command, do not finish the sentence, and speak only the returned section, headline, and ExampleCoraphs.',
     'Never say hold-music phrases, delay apologies, or generic waiting lines. No seconds-counting, no holding language, no moment language, no patience requests.',
     'Never say "let me know", "if you need anything else", "if you need more details", "want to start something new", "start something new", or "investigate further" in live status output. Those phrases fail the owner-call regression.',
     'Do not say raw object placeholders, raw JSON, tool ids, or internal errors out loud. Give the readable result or say the result needs a readable summary.',
@@ -177,6 +179,14 @@ function sanitizeLiveAssistantConfig(
   config.model.tools = mergeTools(functionTools, existingTools);
   config.model.temperature = 0;
   config.model.maxTokens = Math.min(Number(config.model.maxTokens) || 160, 160);
+  config.stopSpeakingPlan = {
+    ...(config.stopSpeakingPlan && typeof config.stopSpeakingPlan === 'object'
+      ? config.stopSpeakingPlan
+      : {}),
+    numWords: 0,
+    voiceSeconds: 0.2,
+    backoffSeconds: 1,
+  };
   config.firstMessage = buildLiveVapiFirstMessage(callerPhone, { ownerPhones });
   config.firstMessageMode = config.firstMessageMode || 'assistant-speaks-first';
   return config;
