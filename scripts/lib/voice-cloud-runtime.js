@@ -501,9 +501,26 @@ function spineSnapshot(params = {}, opts = {}) {
     .map((x) => x.task);
   const commandItems = commands
     .filter((c) => c && c.type === 'claude')
-    .slice()
-    .sort((a, b) => Date.parse(b.updatedAt || b.createdAt || '') - Date.parse(a.updatedAt || a.createdAt || ''))
-    .slice(0, Math.max(0, limit - tasks.length));
+    .map((cmd) => ({
+      cmd,
+      record: {
+        ...cmd,
+        id: cmd.id,
+        _kind: 'command',
+        kind: 'command',
+        origin: 'command',
+        title: cmd.title || cmd.prompt || cmd.id,
+        prompt: cmd.prompt || cmd.title || cmd.id,
+        updatedAt: cmd.lastProgressAt || cmd.updatedAt || cmd.createdAt,
+        status: cmd.status || 'queued',
+      },
+    }))
+    .map((x) => ({ ...x, score: taskScore(x.record, query) }))
+    .filter((x) => !query || x.score >= minScore)
+    .filter((x) => !devSessionQuery || isFreshForLiveSessionQuery(x.record, nowMs))
+    .sort((a, b) => Date.parse(b.record.updatedAt || b.record.createdAt || '') - Date.parse(a.record.updatedAt || a.record.createdAt || ''))
+    .slice(0, Math.max(0, limit - tasks.length))
+    .map((x) => x.cmd);
   if (!tasks.length && !commandItems.length) {
     const scope = query ? ` for ${speechSafe(query)}` : '';
     return {
