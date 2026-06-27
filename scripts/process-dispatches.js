@@ -874,6 +874,7 @@ const HEALTH_URL = (process.env.COMMAND_API_BASE || 'http://localhost:3001') + '
 const NEW_LIVE_FILES = new Set([
   'scripts/callback-watchdog.js',
   'scripts/lib/voice-cloud-runtime.js',
+  'scripts/lib/live-dev-state.js',
   'scripts/lib/vapi-tool-contract.js',
   'scripts/lib/voice-tool-policy.js',
   'scripts/lib/spine-ingress.js',

@@ -22,6 +22,7 @@ SRC="$ROOT/ec2-server.js"
 LF="$ROOT/data/agent/_ec2-deploy.lf.js"
 LIVE_DEPS=(
   "scripts/lib/voice-cloud-runtime.js"
+  "scripts/lib/live-dev-state.js"
   "scripts/callback-watchdog.js"
   "scripts/vapi-end-of-call.js"
   "scripts/lib/dispatch-delivery.js"
