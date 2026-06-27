@@ -102,16 +102,23 @@ function summarize(items) {
   return counts;
 }
 
+function optionValue(argv, name) {
+  const idx = argv.indexOf(name);
+  if (idx < 0) return null;
+  const value = argv[idx + 1];
+  return value && !String(value).startsWith('--') ? value : null;
+}
+
 function main(argv = process.argv.slice(2)) {
   const sharedRoot =
-    argv[argv.indexOf('--shared-root') + 1] ||
+    optionValue(argv, '--shared-root') ||
     process.env.SECONDBRAIN_SHARED_ROOT ||
     path.join(os.homedir(), 'secondbrain');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const outDir =
-    argv[argv.indexOf('--out-dir') + 1] ||
+    optionValue(argv, '--out-dir') ||
     path.join(os.homedir(), 'sb-sessions', `shared-checkout-quarantine-${stamp}`);
-  const ref = argv[argv.indexOf('--ref') + 1] || 'origin/master';
+  const ref = optionValue(argv, '--ref') || 'origin/master';
 
   fs.mkdirSync(outDir, { recursive: true });
   const rescueFilesDir = path.join(outDir, 'files');
@@ -157,5 +164,6 @@ module.exports = {
   parsePorcelainZ,
   classifyEntry,
   summarize,
+  optionValue,
   main,
 };
