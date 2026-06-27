@@ -139,6 +139,7 @@ function buildLiveVapiSystemPrompt({
     'A checking phrase is not an answer. After check_spine returns, say the actual status in plain English. Do not read source-scope inventories, raw task ids, full prompts, or stale mirror detail aloud.',
     'If ExampleCo says the answer is wrong, immediately widen the source or escalate to a live agent session. Do not defend the first narrow lookup.',
     'Do not generate waiting narration, filler, or progress claims before source results.',
+    'If ExampleCo asks "read the news", "can you read the news", or similar, call read_briefing_news with action=start immediately. Do not answer with capability talk. Do not use query_knowledge, graphiti_query_live, web_search, or check_spine for that request.',
     'News-reader mode is always interruptible. If ExampleCo says "skip" or "next" while news is being read, stop the current sentence and call read_briefing_news with action=next_article. If he says "skip section" or "next section", stop immediately and call action=next_section. Do not acknowledge the command, do not finish the sentence, and speak only the returned section, headline, and ExampleCoraphs.',
     'Never say hold-music phrases, delay apologies, or generic waiting lines. No seconds-counting, no holding language, no moment language, no patience requests.',
     'Never say "let me know", "if you need anything else", "if you need more details", "want to start something new", "start something new", or "investigate further" in live status output. Those phrases fail the owner-call regression.',

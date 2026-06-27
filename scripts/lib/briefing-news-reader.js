@@ -21,6 +21,8 @@ const SECTION_ORDER = [
   /^MORTGAGE INDUSTRY NEWS\b/i,
   /^[A-Z0-9 .'&-]+GROUP NEWS\b/i,
 ];
+const NEWS_READER_INTENT_RE =
+  /\b(?:read|play|start|give|tell)\s+(?:me\s+)?(?:the\s+)?(?:latest\s+|morning\s+|briefing\s+)?(?:news|headlines)\b|\bnews[-\s]?reader\b|\bread\s+the\s+news\b|\bdirect\s+(?:capability|ability)\s+to\s+read\s+(?:the\s+)?(?:latest\s+)?news\b/i;
 
 const readerSessions = new Map();
 
@@ -267,6 +269,10 @@ function normalizeAction(params = {}) {
   return 'start';
 }
 
+function isBriefingNewsReaderIntentText(value) {
+  return NEWS_READER_INTENT_RE.test(String(value || ''));
+}
+
 function cleanupSessions(nowMs = Date.now()) {
   for (const [key, session] of readerSessions.entries()) {
     if (!session || nowMs - session.updatedAtMs > SESSION_TTL_MS) readerSessions.delete(key);
@@ -372,4 +378,5 @@ module.exports = {
   resetBriefingNewsReaderSessions,
   briefingFileCandidates,
   dataDirCandidates,
+  isBriefingNewsReaderIntentText,
 };
