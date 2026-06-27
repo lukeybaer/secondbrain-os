@@ -42,6 +42,9 @@ const CALLBACK_DUE_STATUSES = new Set([
 const DEFAULT_CALLBACK_LEASE_MS = 5 * 60 * 1000;
 const DEFAULT_CALLBACK_RETRY_MS = 2 * 60 * 1000;
 const DEFAULT_CALLBACK_MAX_ATTEMPTS = 3;
+const LIVE_SESSION_QUERY_FRESH_MS = 24 * 60 * 60 * 1000;
+const DEV_SESSION_TERMS = new Set(['dev', 'development', 'codex', 'claude', 'session', 'thread', 'drilldown', 'probe']);
+const ARCHIVE_TERMS = new Set(['gmail', 'email', 'mail', 'otter', 'transcript', 'linkedin', 'whatsapp']);
 
 function defaultDataDir(opts = {}) {
   if (opts.dataDir) return opts.dataDir;
@@ -420,21 +423,40 @@ function agentSessionStatus(taskId, opts = {}) {
   };
 }
 
+function queryTerms(query) {
+  return String(query || '').toLowerCase().trim().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+}
+
+function isDevSessionQuery(terms) {
+  return (terms || []).some((term) => DEV_SESSION_TERMS.has(term));
+}
+
+function isArchiveQuery(terms) {
+  return (terms || []).some((term) => ARCHIVE_TERMS.has(term));
+}
+
+function isLowSignalIngestTask(task) {
+  return (
+    String(task && task.kind || '').toLowerCase() === 'ingest' ||
+    ['gmail', 'otter', 'linkedin', 'whatsapp'].includes(String(task && task.origin || '').toLowerCase())
+  );
+}
+
+function isFreshForLiveSessionQuery(task, nowMs) {
+  const ts = Date.parse(task && (task.updatedAt || task.lastProgressAt || task.createdAt) || '') || 0;
+  return ts > 0 && nowMs - ts <= LIVE_SESSION_QUERY_FRESH_MS;
+}
+
 function taskScore(task, query) {
   const q = String(query || '').toLowerCase().trim();
   if (!q) return 1;
-  const terms = q.split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+  const terms = queryTerms(q);
   const text = [task.id, task.kind, task.origin, task.title, task.prompt, task.status, task.resultSummary]
     .join(' ')
     .toLowerCase();
   const tokens = new Set(text.match(/[a-z0-9]+/g) || []);
   if (!terms.length) return text.includes(q) ? 1 : 0;
-  const devSessionTerms = new Set(['dev', 'development', 'codex', 'claude', 'session', 'thread', 'drilldown', 'probe']);
-  const archiveTerms = new Set(['gmail', 'email', 'mail', 'otter', 'transcript', 'linkedin', 'whatsapp']);
-  const lowSignalIngest =
-    String(task.kind || '').toLowerCase() === 'ingest' ||
-    ['gmail', 'otter', 'linkedin', 'whatsapp'].includes(String(task.origin || '').toLowerCase());
-  if (lowSignalIngest && terms.some((t) => devSessionTerms.has(t)) && !terms.some((t) => archiveTerms.has(t))) {
+  if (isLowSignalIngestTask(task) && isDevSessionQuery(terms) && !isArchiveQuery(terms)) {
     return 0;
   }
   const aliases = {
@@ -459,10 +481,15 @@ function taskScore(task, query) {
 function spineSnapshot(params = {}, opts = {}) {
   const limit = Math.max(1, Math.min(20, Number(params.limit || 8)));
   const query = String(params.query || '').trim();
+  const terms = queryTerms(query);
+  const devSessionQuery = isDevSessionQuery(terms) && !isArchiveQuery(terms);
+  const minScore = devSessionQuery && terms.length > 1 ? 0.67 : 0.34;
+  const nowMs = currentMs(opts);
   const commands = Array.isArray(params.commands) ? params.commands : [];
   const tasks = listSpineTasks({ tasksDir: resolveTasksDir(opts) })
     .map((task) => ({ task, score: taskScore(task, query) }))
-    .filter((x) => !query || x.score >= 0.34)
+    .filter((x) => !query || x.score >= minScore)
+    .filter((x) => !devSessionQuery || isFreshForLiveSessionQuery(x.task, nowMs))
     .sort((a, b) => {
       const aActive = ACTIVE_STATUSES.has(String(a.task.status || '').toLowerCase()) ? 1 : 0;
       const bActive = ACTIVE_STATUSES.has(String(b.task.status || '').toLowerCase()) ? 1 : 0;
@@ -508,7 +535,7 @@ function spineSnapshot(params = {}, opts = {}) {
     records: [...tasks, ...commandRecords],
     progressByTaskId,
     commandByTaskId,
-    nowMs: currentMs(opts),
+    nowMs,
   });
   const probeLevel = normalizeProbeLevel(params.probe_level ?? params.detail_level ?? params.probeLevel ?? params.mode, 0);
   return {
@@ -521,7 +548,7 @@ function spineSnapshot(params = {}, opts = {}) {
     summary: formatLiveStateAnswer(stateItems, {
       query,
       probeLevel,
-      nowMs: currentMs(opts),
+      nowMs,
     }),
   };
 }
