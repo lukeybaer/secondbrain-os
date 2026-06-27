@@ -25,6 +25,8 @@ LIVE_DEPS=(
   "scripts/callback-watchdog.js"
   "scripts/vapi-end-of-call.js"
   "scripts/lib/dispatch-delivery.js"
+  "scripts/lib/briefing-markdown-sections.js"
+  "scripts/lib/briefing-news-reader.js"
   "scripts/lib/vapi-live-assistant.js"
   "scripts/lib/vapi-tool-contract.js"
   "scripts/lib/vapi-voice-output.js"
