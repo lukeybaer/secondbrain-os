@@ -424,11 +424,36 @@ function taskScore(task, query) {
   const q = String(query || '').toLowerCase().trim();
   if (!q) return 1;
   const terms = q.split(/[^a-z0-9]+/).filter((t) => t.length > 2);
-  const text = [task.id, task.title, task.prompt, task.status, task.resultSummary]
+  const text = [task.id, task.kind, task.origin, task.title, task.prompt, task.status, task.resultSummary]
     .join(' ')
     .toLowerCase();
+  const tokens = new Set(text.match(/[a-z0-9]+/g) || []);
   if (!terms.length) return text.includes(q) ? 1 : 0;
-  return terms.filter((t) => text.includes(t)).length / terms.length;
+  const devSessionTerms = new Set(['dev', 'development', 'codex', 'claude', 'session', 'thread', 'drilldown', 'probe']);
+  const archiveTerms = new Set(['gmail', 'email', 'mail', 'otter', 'transcript', 'linkedin', 'whatsapp']);
+  const lowSignalIngest =
+    String(task.kind || '').toLowerCase() === 'ingest' ||
+    ['gmail', 'otter', 'linkedin', 'whatsapp'].includes(String(task.origin || '').toLowerCase());
+  if (lowSignalIngest && terms.some((t) => devSessionTerms.has(t)) && !terms.some((t) => archiveTerms.has(t))) {
+    return 0;
+  }
+  const aliases = {
+    dev: ['dev', 'develop', 'developed', 'developing', 'development', 'developer'],
+    status: ['status', 'state', 'progress'],
+    session: ['session', 'thread', 'task', 'work'],
+    drilldown: ['drilldown', 'drill', 'probe'],
+  };
+  const matches = (term) => {
+    if (tokens.has(term)) return true;
+    if ((aliases[term] || []).some((alias) => tokens.has(alias))) return true;
+    if (term.length >= 5) {
+      for (const token of tokens) {
+        if (token.startsWith(term)) return true;
+      }
+    }
+    return false;
+  };
+  return terms.filter(matches).length / terms.length;
 }
 
 function spineSnapshot(params = {}, opts = {}) {
