@@ -4,6 +4,11 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const {
+  fetchArticleText,
+  isGoogleNewsArticleUrl,
+  resolveGoogleNewsUrl,
+} = require('./lib/news-summarize.js');
 
 const DEFAULT_DATA_DIR =
   process.env.SECONDBRAIN_DATA_DIR ||
@@ -25,9 +30,21 @@ const COVID_FEEDS = [
       '&hl=en-US&gl=US&ceid=US:en',
   ],
   [
+    'Google News COVID Antivirals',
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('"COVID-19" Paxlovid OR remdesivir OR molnupiravir when:7d') +
+      '&hl=en-US&gl=US&ceid=US:en',
+  ],
+  [
     'Google News Long COVID',
     'https://news.google.com/rss/search?q=' +
       encodeURIComponent('"long COVID" OR PASC OR "post-COVID" OR "post-acute COVID" when:3d') +
+      '&hl=en-US&gl=US&ceid=US:en',
+  ],
+  [
+    'The Sick Times Long COVID',
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:thesicktimes.org "long COVID" when:7d') +
       '&hl=en-US&gl=US&ceid=US:en',
   ],
   [
@@ -82,12 +99,49 @@ function todayIso() {
 
 function clean(value, max = 180) {
   return String(value || '')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#039;|&#39;|&apos;|&#x27;/gi, "'")
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#039;|&#39;|&apos;|&#x27;/gi, "'")
+    .replace(/<[^>]+>/g, ' ')
     .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, max)
     .replace(/\s+[.,;:!?]*$/g, '')
     .trim();
+}
+
+function cleanUrl(value) {
+  return clean(value, 2048);
+}
+
+const COVID_EXPLICIT_RE =
+  /\b(?:covid(?:-19)?|coronavirus|sars[-\s]?cov[-\s]?2|long covid|pasc|paxlovid|remdesivir|molnupiravir)\b/i;
+const COVID_HEALTH_NEWS_RE =
+  /\b(?:vaccine|vaccination|booster|immuniz|paxlovid|remdesivir|molnupiravir|antiviral|treatment|therapy|clinical trial|trial|study|research|cdc|fda|hospitalization|hospitalisation|long covid|pasc|sars[-\s]?cov[-\s]?2|variant|infection|public health|symptom|pregnancy|infant|dose|high-risk)\b/i;
+const COVID_NON_HEALTH_CONTEXT_RE =
+  /\b(?:spending|state audit|audit of|irs penalties|tax penalties|insanity defense|kill(?:ed|s)?|stab(?:bed|s|bing)?|murder|crime and courts|patent fight|stock titan|investor|treasury says|governor'?s covid spending)\b/i;
+const COVID_PAGE_CHROME_RE =
+  /\b(?:Today on Medscape|Homepage(?:\s+As\b)?|Cardiology Diabetes & Endocrinology|Family Medicine Hematology|Homepage Workers|Health Conditions All Breast Cancer|Featured Health News All Medicare|U\.S\. & World U\.S\. strikes Iran|Guest Opinion Parents were asked|Transforming Health through research|Kaiser Permanente Division of Research|News PRIVATE_NAME Johnson|FEMA official|Cartoon Devil|Subscribe|Sign up|Advertisement|reader experiencing an access issue|contact support@|contentlicensing@|whatismyip\.com|post[-\s]?covid decline in the labor share|labor share|vector-borne|malaria|investorideas|AI stocks|crypto|mining stocks|biotech stocks|Ebola deaths top|regional readiness)\b/i;
+
+function isCovidArticleLike(item) {
+  const lead = clean(`${item && item.title} ${item && item.desc} ${item && item.summary}`, 1000);
+  const text = clean(`${lead} ${item && item.sourceText}`, 2000);
+  return Boolean(
+    lead &&
+      COVID_EXPLICIT_RE.test(lead) &&
+      COVID_HEALTH_NEWS_RE.test(lead) &&
+      !COVID_NON_HEALTH_CONTEXT_RE.test(lead) &&
+      !COVID_PAGE_CHROME_RE.test(text),
+  );
 }
 
 function dedupeArticles(rows) {
@@ -102,17 +156,36 @@ function dedupeArticles(rows) {
   return out;
 }
 
-async function attachSourceText(item, fetchArticleBody) {
+async function fetchCovidArticleBody(article, { fetchArticleBody, fetchText, resolveUrl } = {}) {
+  if (!article.url) return '';
+  const bodyFetch = typeof fetchArticleBody === 'function' ? fetchArticleBody : async () => '';
+  const textFetch = typeof fetchText === 'function' ? fetchText : fetchArticleText;
+  const resolver = typeof resolveUrl === 'function' ? resolveUrl : resolveGoogleNewsUrl;
+  if (isGoogleNewsArticleUrl(article.url)) {
+    try {
+      const resolved = await resolver(article.url);
+      if (resolved && /^https?:\/\//i.test(resolved)) {
+        return textFetch(resolved, {});
+      }
+    } catch {
+      // Fall through to the legacy body fetch below.
+    }
+  }
+  return bodyFetch(article.url, article.sourceUrl || article.url);
+}
+
+async function attachSourceText(item, deps = {}) {
   const article = {
     title: clean(item.title, 160),
     source: clean(item.source, 80),
-    url: clean(item.link || item.url, 240),
+    url: cleanUrl(item.link || item.url),
+    sourceUrl: cleanUrl(item.sourceUrl || ''),
     summary: clean(item.desc || 'Fresh COVID headline from the 72-hour source window.', 220),
     pubDate: item.pubDate || item.isoDate || '',
   };
-  if (!article.url || typeof fetchArticleBody !== 'function') return article;
+  if (!article.url) return article;
   try {
-    const body = clean(await fetchArticleBody(article.url, item.sourceUrl || item.link), 5000);
+    const body = clean(await fetchCovidArticleBody(article, deps), 5000);
     if (body.length >= 500) article.sourceText = body;
   } catch {
     // Body fetch is best effort; the renderer will only use source text that
@@ -121,15 +194,18 @@ async function attachSourceText(item, fetchArticleBody) {
   return article;
 }
 
-async function generateCovidNews({ dataDir = DEFAULT_DATA_DIR, date = todayIso() } = {}) {
+async function generateCovidNews({ dataDir = DEFAULT_DATA_DIR, date = todayIso(), deps = {} } = {}) {
   const manual = require('./manual-briefing-v3.js');
-  const keywordRe =
-    /COVID|coronavirus|SARS-CoV-2|long COVID|post-COVID|PASC|Paxlovid|remdesivir|antiviral|vaccine|variant|hospitali[sz]ation|wastewater/i;
+  const fetchFeed = deps.fetchFeed || manual.fetchFeed;
+  const fetchArticleBody = deps.fetchArticleBody || manual.fetchArticleBody;
+  const fetchText = deps.fetchText || fetchArticleText;
+  const resolveUrl = deps.resolveUrl || resolveGoogleNewsUrl;
+  const keywordRe = COVID_EXPLICIT_RE;
   const treatmentRe = /Paxlovid|remdesivir|antiviral|treatment|therapy|clinical trial|vaccine/i;
   const fetched = [];
   for (const [source, url] of COVID_FEEDS) {
     try {
-      const rows = await manual.fetchFeed(url, source, 40);
+      const rows = await fetchFeed(url, source, 40);
       fetched.push(...rows);
     } catch {
       // A single feed can fail without losing the whole card.
@@ -143,10 +219,12 @@ async function generateCovidNews({ dataDir = DEFAULT_DATA_DIR, date = todayIso()
       const bt = treatmentRe.test(`${b.title || ''} ${b.desc || ''}`) ? 0 : 1;
       return at - bt;
     })
-    .slice(0, 15);
+    .slice(0, 60);
   const hydrated = [];
   for (const item of freshPool) {
-    hydrated.push(await attachSourceText(item, manual.fetchArticleBody));
+    const article = await attachSourceText(item, { fetchArticleBody, fetchText, resolveUrl });
+    if (isCovidArticleLike(article)) hydrated.push(article);
+    if (hydrated.length >= 15) break;
   }
   const fresh = hydrated
     .sort((a, b) => {

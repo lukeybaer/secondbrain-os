@@ -400,11 +400,11 @@ function firstSentence(text, max = 240) {
 }
 
 const PROMO_RE =
-  /\b(unsubscribe|view in browser|privacy notice|terms & conditions|limited time|shop now|shop|sale|free gift|gift alert|gifts for|personalized gift|deal|deals|cash bonus|cashback|pay less|bonus points|earn up to|offer disappears|rental car|car's value|credit score|webinar|newsletter|digest|promotion|sponsor|trial ended|market your business|coupon|off\b|address book|did you know|commercial auto|small business insurance|transaction history|receipt for payment|receipt|is hiring|job alert|product director|delivery update|shipped:|your order|ordered:|order update|prime day|review it on amazon|meet your expectations|survey|share your thoughts|rate your transaction|public comment hearing)\b/i;
+  /\b(unsubscribe|view in browser|privacy notice|terms & conditions|limited time|shop now|shop|sale|free gift|gift alert|gifts for|personalized gift|personalized guidance|fee-waived personalized guidance|deal|deals|cash bonus|cashback|pay less|bonus points|earn up to|offer disappears|rental car|car's value|credit score|webinar|newsletter|digest|promotion|sponsor|trial ended|market your business|coupon|off\b|address book|did you know|commercial auto|small business insurance|transaction history|receipt for payment|payment receipt|receipt|is hiring|job alert|product director|delivery update|shipped:|your order|ordered:|order update|prime day|review it on amazon|meet your expectations|survey|share your thoughts|rate your transaction|public comment hearing|wrist health exercises|wwe night of champions|we'?ll let you in on a secret)\b/i;
 const HARD_PROMO_SUBJECT_RE =
-  /\b(receipt for payment|weekend rundown|retired yet|bonus points|coupon|personalized gift|gifts? for|cashback|pay less|deals?|credit score|car's value|is hiring|job alert|product director|delivery update|shipped:|your order|ordered:|order update|prime day|mark your calendar|review it on amazon|meet your expectations|rate your transaction|share your thoughts|welcome to|public comment hearing|your expertise is requested|bill is available online|copa mundial|fifa|father'?s day reservations|rare spirits sale|age of high performance|mlb\.tv|connect your email to your brand|off\b)\b/i;
+  /\b(receipt for payment|payment receipt|payment (?:has been )?received|new e-?statement is now available|statement is now available|e-?transfer.*successfully deposited|weekend rundown|retired yet|bonus points|coupon|personalized gift|personalized guidance|fee-waived personalized guidance|gifts? for|cashback|pay less|deals?|credit score|car's value|is hiring|job alert|product director|delivery update|shipped:|your order|ordered:|order update|prime day|mark your calendar|review it on amazon|meet your expectations|rate your transaction|share your thoughts|welcome to|public comment hearing|your expertise is requested|bill is available online|copa mundial|fifa|father'?s day reservations|rare spirits sale|age of high performance|mlb\.tv|connect your email to your brand|wrist health exercises|wwe night of champions|we'?ll let you in on a secret|off\b)\b/i;
 const BULK_SENDER_RE =
-  /\b(no-?reply|donotreply|marketing|newsletter|notifications?|updates?|support@primallifeorganics|constantcontact|meetup|substack|medium|quora|noreply|bytesize)\b/i;
+  /\b(no-?reply|donotreply|marketing|newsletter|notifications?|updates?|customer service|e-?stmt|estmt|account services?|support@primallifeorganics|constantcontact|meetup|substack|medium|quora|noreply|bytesize|espn|peacock|ally invest|gmb praxis|red headed hostess|td canada trust|atmosenergy|atmos energy)\b/i;
 const HUMAN_ASK_RE =
   /\b(please|can you|could you|would you|let me know|please reply|please respond|confirm|approve|approval|review|sign|send me|send over|follow up|following up|checking in|schedule|scheduling|calendar|introduction|intro)\b/i;
 const SYSTEM_ACTION_RE =
@@ -449,7 +449,7 @@ function isCalendarOrMeetingArtifact(msg) {
 // asks ExampleCo to do something, or it is genuinely urgent (payment failed / past
 // due / deadline -- priorityFor === 1).
 const NOTIFICATION_FYI_RE =
-  /\b(receipt|e-?statement|statement is (now )?available|monthly statement|account statement|your (recent )?stay|your booking|booking confirmation|reservation (confirmed|confirmation)|your order|ordered:|order (confirmation|update|shipped)|has shipped|shipped:|tickets? to\b|get .{0,30}tickets|opportunities are (now )?live|is now live|are (now )?live|price drop|back in stock|welcome to|verify your (email|account)|confirm your (email|subscription)|new (login|sign-?in)|security alert|thanks for your (order|purchase|payment|booking)|payment (received|confirmation)|your bill is (now )?available|bill is (now )?available online|online bill|bill is (now )?ready|bill is ready to be viewed|view your (online )?bill|weekend rundown|this week.?s|newsletter|digest|prime day|mark your calendar|review it on amazon|meet your expectations|rate your transaction|share your thoughts|public comment hearing|your expertise is requested)\b/i;
+  /\b(receipt|payment receipt|e-?statement|statement is (now )?available|monthly statement|account statement|your (recent )?stay|your booking|booking confirmation|reservation (confirmed|confirmation)|your order|ordered:|order (confirmation|update|shipped)|has shipped|shipped:|tickets? to\b|get .{0,30}tickets|opportunities are (now )?live|is now live|are (now )?live|price drop|back in stock|welcome to|verify your (email|account)|confirm your (email|subscription)|new (login|sign-?in)|security alert|thanks for your (order|purchase|payment|booking)|payment (?:has been )?received|payment confirmation|e-?transfer.*successfully deposited|your bill is (now )?available|bill is (now )?available online|online bill|bill is (now )?ready|bill is ready to be viewed|view your (online )?bill|weekend rundown|this week.?s|newsletter|digest|prime day|mark your calendar|review it on amazon|meet your expectations|rate your transaction|share your thoughts|public comment hearing|your expertise is requested|fee-waived personalized guidance|personalized guidance|wrist health exercises|we'?ll let you in on a secret|wwe night of champions|is it making a difference)\b/i;
 
 // Dev/test/sandbox system notifications are NEVER a ExampleCo action item, even when
 // they mention "issues"/"delivery"/"failed" (which trip the system-action
@@ -603,6 +603,14 @@ function activeUnansweredEmails(existing) {
     .filter((item) => {
       const source = String(item?.source || '');
       if (!/gmail|imap|archive|inbox/i.test(source)) return true;
+      const msgLike = {
+        subject: item?.subject || item?.title || item?.summary || '',
+        body: [item?.summary, item?.preview, item?.detail].filter(Boolean).join('\n'),
+        from: item?.person || '',
+        date: item?.sentAt || item?.date || '',
+        message_id: item?.sourceMessageId || item?.message_id || '',
+      };
+      if (!isLikelyActionable(msgLike)) return false;
       const age = Number.isFinite(Number(item?.daysOld))
         ? Number(item.daysOld)
         : daysOld(item?.sentAt || item?.date);

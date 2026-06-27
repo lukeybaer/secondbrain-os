@@ -298,25 +298,67 @@ function snapshotMemory(hours = 24) {
   };
 }
 
+function emptyPeopleSnapshot(hours = 24) {
+  return {
+    hours,
+    totalFiles: 0,
+    totalLines: 0,
+    biggest: null,
+    smallest: null,
+    biggestTwo: [],
+    smallestTwo: [],
+    allEntries: [],
+    detail: 'No fresh people-file changes with concrete 24-hour details.',
+    empty: true,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function emptyMemorySnapshot(hours = 24) {
+  let currentLines = 0;
+  try {
+    const memPath = path.join(REPO, 'memory', 'MEMORY.md');
+    if (fs.existsSync(memPath)) currentLines = fs.readFileSync(memPath, 'utf8').split('\n').length;
+  } catch { /* ignore */ }
+  return {
+    added: 0,
+    deleted: 0,
+    delta: 0,
+    commits: 0,
+    memoryCommits: 0,
+    repoCommits: 0,
+    subjects: [],
+    addedLines: [],
+    deletedLines: [],
+    currentLines,
+    hours,
+    source: 'snapshot-empty-success',
+    empty: true,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 function main() {
   const people = snapshotPeople(24);
   const memory = snapshotMemory(24);
+  ensureDir(OUT_PEOPLE);
   if (people) {
-    ensureDir(OUT_PEOPLE);
     fs.writeFileSync(OUT_PEOPLE, JSON.stringify(people, null, 2));
     console.log(`wrote ${OUT_PEOPLE}: biggest=${people.biggest.name} (${people.biggest.delta} lines), totalFiles=${people.totalFiles}`);
   } else {
-    console.log('no people-file changes in window -- nothing to write');
+    fs.writeFileSync(OUT_PEOPLE, JSON.stringify(emptyPeopleSnapshot(24), null, 2));
+    console.log(`wrote ${OUT_PEOPLE}: no people-file changes in window`);
   }
+  ensureDir(OUT_MEMORY);
   if (memory) {
-    ensureDir(OUT_MEMORY);
     fs.writeFileSync(OUT_MEMORY, JSON.stringify(memory, null, 2));
     console.log(`wrote ${OUT_MEMORY}: +${memory.added}/-${memory.deleted}, ${memory.commits} commits`);
   } else {
-    console.log('no MEMORY.md changes in window -- nothing to write');
+    fs.writeFileSync(OUT_MEMORY, JSON.stringify(emptyMemorySnapshot(24), null, 2));
+    console.log(`wrote ${OUT_MEMORY}: no MEMORY.md changes in window`);
   }
 }
 
 if (require.main === module) main();
 
-module.exports = { snapshotPeople, snapshotMemory };
+module.exports = { snapshotPeople, snapshotMemory, emptyPeopleSnapshot, emptyMemorySnapshot };

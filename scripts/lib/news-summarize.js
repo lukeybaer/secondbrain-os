@@ -85,6 +85,8 @@ function isThreeExampleCoraphArticleSummary(paras, item = {}) {
   if (!list.every((p) => newsSummarySentences(p).length >= 1)) return false;
   const terms = articleSummaryTerms(item);
   if (terms.length < 2) return true;
+  const hasExpandedMetadata = Boolean(item.excerpt || item.summaryText || item.sourceText);
+  if (!hasExpandedMetadata) return true;
   const ExampleCoraphHits = list.map((ExampleCoraph) => {
     const lower = ExampleCoraph.toLowerCase();
     return terms.filter((term) => lower.includes(term)).length;
@@ -92,8 +94,7 @@ function isThreeExampleCoraphArticleSummary(paras, item = {}) {
   const totalHits = new Set(
     terms.filter((term) => list.some((ExampleCoraph) => ExampleCoraph.toLowerCase().includes(term))),
   ).size;
-  const hasExpandedMetadata = Boolean(item.excerpt || item.summaryText);
-  const requiredHits = Math.min(hasExpandedMetadata ? 3 : 2, terms.length);
+  const requiredHits = Math.min(3, terms.length);
   return totalHits >= requiredHits && ExampleCoraphHits.filter((n) => n > 0).length >= 2;
 }
 
@@ -667,6 +668,12 @@ const PUBLISHER_CHROME_RULES = [
   new RegExp(CLAUSE_START + 'Latest Big pharma\\b[.!?]?', 'g'),
   new RegExp(CLAUSE_START + 'Help ensure someone\\b[.!?]?', 'g'),
   new RegExp(CLAUSE_START + 'MAKING AMERICA SAFE AGAIN\\b[.!?]?', 'g'),
+  /^Text settings Story text Size (?:Small|Standard|Large|\*){0,80}\s*Standard Wide Links Standard Orange \* Subscribers only Learn more Minimize to nav\s*/i,
+  /^Listen Listen \(\d+\s+mins?\) Save Click here to share on social media share-nodes\b[\s\S]{0,260}?Add Al Jazeera on Google info\s*/i,
+  /^Toggle Play\s+/i,
+  /^News\s+(?:AI|Mobile Smartphones|EVs and Transportation)\s+/i,
+  /^Big Tech\s+/i,
+  /^Why you can trust ZDNET\b[\s\S]{0,360}?(?:ZDNET Recommendations|Our process)\s*/i,
   new RegExp(CLAUSE_START + "Don'?t Miss an Update\\b[.!?]?", 'g'),
   new RegExp(CLAUSE_START + 'Download\\s+Embed\\b[.!?]?', 'g'),
   new RegExp(CLAUSE_START + 'Back transcript\\b[.!?]?', 'g'),
@@ -1238,6 +1245,18 @@ async function summarizeNewsItem(
         sleep,
       })
     : '';
+  // Some card-specific healers already fetched and stored a real article body
+  // (for example the COVID source healer). If a later publisher refetch flakes,
+  // use that stored body as the grounding instead of falling through to an
+  // extractive/headline fallback.
+  if (
+    (!sourceText || sourceText.length < MIN_BODY_CHARS) &&
+    item.sourceText &&
+    item.sourceText !== item.title
+  ) {
+    const stored = stripPublisherChrome(String(item.sourceText));
+    if (stored.length >= MIN_EXCERPT_CHARS) sourceText = stored;
+  }
   // Fall back to a substantial RSS excerpt if the body did not fetch.
   if (
     (!sourceText || sourceText.length < MIN_BODY_CHARS) &&

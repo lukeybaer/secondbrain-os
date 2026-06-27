@@ -73,7 +73,7 @@ const SPOUSE_FIRST = OPERATOR.spouse.firstName;
 // A dollar figure like "$608.46" or "$1,234" appearing in a body.
 const DOLLAR_IN_BODY = /\$\s?\d[\d,]*(?:\.\d{2})?/;
 
-const CARDS = [
+const CARD_DEFINITIONS = [
   // ---- Top-of-dashboard execution + commitments (always) ----
   {
     id: 'action_items',
@@ -332,6 +332,47 @@ const CARDS = [
     condition: 'Always: people files changes (24h) tile.',
   },
 ];
+
+const CARD_PRIORITY_IDS = [
+  'blockers',
+  'system_health',
+  'action_items',
+  'token_usage',
+  'meetings',
+  'kingdom_equipping',
+  'communication_coaching',
+  'otter_speaker_pareto',
+  'people_files_changes',
+  'tesla_cybercab',
+  'snack_dude_invoice',
+  'feature_backlog',
+  'content_pipeline',
+  'video_approval_queue',
+  'viral_tech_clips',
+  'shorts_proposals',
+  'aws_costs',
+  'full_life_backup',
+  'reputation_risk',
+  'amy_projects',
+  'uncommitted_parked',
+  'mortgage_rate_indexes',
+  'linkedin',
+  'voice_confirmation',
+  'memory_md_changes',
+  'ai_tech_news',
+  'us_news',
+  'world_news',
+  'us_immigration_news',
+  'mortgage_industry_news',
+  'covid_news',
+  `${EMPLOYER_SLUG}_group_news`,
+];
+const CARD_PRIORITY = new Map(CARD_PRIORITY_IDS.map((id, idx) => [id, idx]));
+const CARDS = [...CARD_DEFINITIONS].sort((a, b) => {
+  const ai = CARD_PRIORITY.has(a.id) ? CARD_PRIORITY.get(a.id) : 500;
+  const bi = CARD_PRIORITY.has(b.id) ? CARD_PRIORITY.get(b.id) : 500;
+  return ai - bi || CARD_DEFINITIONS.indexOf(a) - CARD_DEFINITIONS.indexOf(b);
+});
 
 const ALWAYS_IDS = CARDS.filter((c) => c.always).map((c) => c.id);
 const CONDITIONAL_IDS = CARDS.filter((c) => !c.always).map((c) => c.id);

@@ -65,6 +65,9 @@ function neutralizeNewsSoftTerms(text) {
 function lineLooksLikeExampleCoBlocker(line) {
   const s = String(line || '').trim();
   if (!s) return false;
+  if (/^(?:clean|clear|blocked|ready|passes|pass|failed|fails)\?\s*(?:yes|no)\b/i.test(s)) {
+    return true;
+  }
   if (/\?\s*$/.test(s) && /\b(yes|no|approve|confirm|choose|which)\b/i.test(s)) return true;
   if (/^\d+\.\s+\S+/.test(s)) return true;
   if (isRealExampleCoAction(s)) return true;

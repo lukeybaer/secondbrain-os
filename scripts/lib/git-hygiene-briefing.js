@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 
 function asArray(value) {
@@ -22,6 +23,51 @@ function clean(value, max = 140) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, max);
+}
+
+function readJsonFile(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) {
+    const msg = clean((e && e.message) || e, 180) || 'ExampleCo error';
+    throw new Error(`git hygiene snapshot unavailable at ${file}: ${msg}`);
+  }
+}
+
+function unwrapSnapshotPayload(payload) {
+  if (payload && payload.snapshot && payload.snapshot.buckets) return payload.snapshot;
+  return payload;
+}
+
+function assertFreshSnapshot(payload, snapshotMaxAgeMs, nowMs) {
+  if (!snapshotMaxAgeMs) return;
+  const generatedAt =
+    (payload && (payload.generatedAt || payload.generated_at || payload.createdAt)) ||
+    (payload && payload.snapshot && (payload.snapshot.generatedAt || payload.snapshot.generated_at));
+  if (!generatedAt) throw new Error('git hygiene snapshot missing generatedAt');
+  const generatedMs = Date.parse(generatedAt);
+  if (!Number.isFinite(generatedMs)) {
+    throw new Error(`git hygiene snapshot has invalid generatedAt: ${generatedAt}`);
+  }
+  const ageMs = nowMs - generatedMs;
+  if (!Number.isFinite(ageMs) || ageMs > snapshotMaxAgeMs) {
+    const hours = Math.round(ageMs / 360000) / 10;
+    throw new Error(`git hygiene snapshot is stale (${hours}h old)`);
+  }
+}
+
+function readGitHygieneSnapshot(snapshotPath, opts = {}) {
+  const payload = readJsonFile(snapshotPath);
+  assertFreshSnapshot(
+    payload,
+    opts.snapshotMaxAgeMs == null ? 30 * 60 * 60 * 1000 : opts.snapshotMaxAgeMs,
+    opts.nowMs || Date.now(),
+  );
+  const snapshot = unwrapSnapshotPayload(payload);
+  if (!snapshot || !snapshot.buckets) {
+    throw new Error(`git hygiene snapshot malformed at ${snapshotPath}`);
+  }
+  return snapshot;
 }
 
 function branchLabel(branch) {
@@ -189,21 +235,34 @@ function formatUncommittedParkedWorkSection({
   state = null,
   classifier = null,
   maxRows = 8,
+  snapshotPath = null,
+  snapshotMaxAgeMs = 30 * 60 * 60 * 1000,
+  nowMs = Date.now(),
 } = {}) {
   try {
     const snapshot =
       state ||
+      (snapshotPath
+        ? readGitHygieneSnapshot(snapshotPath, { snapshotMaxAgeMs, nowMs })
+        : null) ||
       (classifier
         ? classifier({ cwd, today })
         : require('./git-hygiene.js').classifyGitState({ cwd, today }));
     return renderGitHygieneSnapshot(snapshot, { maxRows });
   } catch (e) {
     const msg = clean((e && e.message) || e, 160) || 'ExampleCo error';
-    // The cloud render host is a file-copy deploy with a stub .git, so the
-    // classifier's `git rev-parse --show-toplevel` fails BY DESIGN and there is
-    // no working tree to inspect. That is expected, not an alarm: branch hygiene
-    // is a dev-checkout concept. Present it cleanly and answer-first (it is
-    // tracked where the working tree lives), never a permanent red blocker.
+    const snapshotIssue = /git hygiene snapshot/i.test(msg);
+    if (snapshotIssue) {
+      return [
+        `hard blocker: cannot read git hygiene snapshot -- ${msg}.`,
+        'Repair: publish a fresh dev-checkout git-hygiene snapshot from an isolated working tree before claiming branch cleanliness.',
+        'Decision: this card stays visible and non-green so shared-checkout dirt cannot disappear from the briefing.',
+      ].join('\n');
+    }
+    // A host that cannot inspect a working tree cannot honestly claim branch
+    // cleanliness. The old cloud copy rendered this as clean, which hid dirty
+    // shared-checkout state from the briefing. Treat missing git evidence as a
+    // blocker until a dev-checkout hygiene snapshot is published and read.
     // CATEGORY = any "no working git tree on this host" signal, not one literal
     // error string.
     const noWorkingTree =
@@ -212,8 +271,9 @@ function formatUncommittedParkedWorkSection({
       );
     if (noWorkingTree) {
       return [
-        'No parked work is readable from this cloud host: it has no working git tree, so branch hygiene is tracked on the development checkout where the repo lives.',
-        'Note: uncommitted and parked work is surfaced when the briefing runs on the dev machine.',
+        `hard blocker: cannot read git hygiene state on this host -- ${msg}.`,
+        'Repair: publish a dev-checkout git-hygiene snapshot or run the classifier from an isolated working tree before claiming branch cleanliness.',
+        'Decision: this card stays visible and non-green so shared-checkout dirt cannot disappear from the briefing.',
       ].join('\n');
     }
     // A genuine classifier failure on a host that DOES have a working tree is a
@@ -230,5 +290,6 @@ function formatUncommittedParkedWorkSection({
 
 module.exports = {
   formatUncommittedParkedWorkSection,
+  readGitHygieneSnapshot,
   renderGitHygieneSnapshot,
 };

@@ -332,6 +332,7 @@ function denylistHits(text) {
 // Required within the first ~40 chars of that clause.
 const VERDICT_TOKEN =
   /(?:\bYES\b|\bNO\b|\bNOT YET\b|\bUNVERIFIED\b|\bNOT CONNECTED\b|\d|\$|%|✓|✔|⚠|\bNone\b|\bNo\s|\b0\s|\b(?:OK|green|healthy|clean|all clear|up|done|stale|red|block(?:ed|er)|nominal|fail(?:ed|ing)?|pass(?:ed|ing)?)\b)/i;
+const AVAILABILITY_VERDICT = /\b(?:unavailable|unreachable)\b/i;
 const ANSWER_FIRST_WINDOW = 40;
 
 // 3. SOURCE+DATE -- if a face asserts a number/dollar/percent, the card must
@@ -437,18 +438,29 @@ function newsFaceRows(tile) {
 }
 
 const NEWS_PUBLISHER_CHROME =
-  /\b(?:Image source|Image caption|Courtesy photo|Business reporter|BBC Verify|Published \d+|Updated \d+|Latest Big pharma|Help ensure someone|MAKING AMERICA SAFE AGAIN|Share Twitter|Read more Overview)\b/i;
+  /(?:\bImage source\b|\bImage caption\b|\bCourtesy photo\b|\bBusiness reporter\b|\bBBC Verify\b|\bPublished \d+\b|\bUpdated \d+\b|\bLatest Big pharma\b|\bHelp ensure someone\b|\bMAKING AMERICA SAFE AGAIN\b|\bShare Twitter\b|\bRead more Overview\b|\bCBS News Sunday Morning\b|\bbroadcast on (?:the )?CBS\b|\bstreams on (?:the )?CBS\b|\bwatch CBS News\b|\bAP Photo\b|\bGetty Images\b|\bHeard on\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*\b|\[?deltaMinutes?\]?|\bmore coverage\b|\bhide caption\b|\btoggle caption\b|\bDownload it here\b|\bJane Pauley hosts\b|\bSunday Morning["']?s familiar faces\b|\bEssential American Songbook\b|\bLISTEN\s*&\s*FOLLOW\b|\bAudio will be available\b|\bCoast Guard is smashing records\b|\bKnow Before You Go\b|\bOffice Closings?\b|\bEven areas above 1,000 metres\b|\bAdd NBC News to Google\b|\bHat-Trick\b|\bBaln de Oro\b|\bEN VIVO\b|\bBy Andrew Greif\b|\bTrailblazer in Legal Technology\b|\bEnhance your law practice\b|\bLeave your feedback\b|\bShare Copy URL\b|\bTankers and cargo vessels\b|\bGulf of Oman\b|\bStrait of Hormuz\b|\bRequest a Consultation\b|\bStart RFP Process\b|\bA Global Law Firm\b|\bJOIN AILA TODAY\b|\bAI agents are becoming more sophisticated\b|\bThe move was highly unusual\b|\bfaking his own death\b)/i;
 const NEWS_JUMBLE_TOKENS = [
   /visualizing the quakes/i,
   /what'?s a doublet/i,
   /latin america'?s deadliest/i,
   /world reacts/i,
   /drive through/i,
+  /article centers? on/i,
+  /article focuses? on/i,
+  /^(?:The|This)\s+(?:article|story|report|author|reporter|piece|column|op-?ed|analysis)\b/i,
+  /\b(?:line|quote)\s+was\b/i,
   /image source/i,
   /image caption/i,
   /read more/i,
   /overview/i,
 ];
+const NEWS_LOWERCASE_FRAGMENT_TITLE_RE = /^(?:[a-z]|f people\b|ut with\b|nd\b|he\b|she\b|they\b|it\b)/;
+const NEWS_BROADCAST_PROMO_TITLE_RE =
+  /\b(?:CBS News Sunday Morning|broadcast on (?:the )?CBS|streams on (?:the )?CBS|watch CBS News)\b/i;
+const NEWS_ARTICLE_META_PROSE_RE =
+  /\b(?:the|this|housingwires?)\s+(?:article|story|report|author|reporter|piece|column|op-?ed|analysis)\s+(?:centers?|centres?|focus(?:es|ed)?|reports?|says|said|argues?|notes?|points?)\b/i;
+const COVID_NEWS_TOPIC_RE =
+  /\b(?:covid(?:-19)?|sars[-\s]?cov[-\s]?2|coronavirus|long covid|paxlovid|remdesivir|molnupiravir|booster|variant|vaccine|vaccination|antiviral)\b/i;
 
 function normalizedNewsText(text) {
   return String(text || '')
@@ -461,6 +473,16 @@ function normalizedNewsText(text) {
 
 function newsTitleLooksJumbled(title) {
   const s = String(title || '');
+  if (NEWS_PUBLISHER_CHROME.test(s)) return true;
+  const trimmed = s.trim();
+  if (NEWS_LOWERCASE_FRAGMENT_TITLE_RE.test(trimmed)) return true;
+  if (/^(?:The|This)\s+(?:article|story|report|author|reporter|piece|column|op-?ed|analysis)\b/i.test(trimmed)) return true;
+  if (/^(?:You|We|I|They|It)\s+\w+/i.test(trimmed) && trimmed.length > 75) return true;
+  if (NEWS_ARTICLE_META_PROSE_RE.test(trimmed)) return true;
+  if (/\b(?:line|quote)\s+was\b/i.test(trimmed)) return true;
+  if (NEWS_BROADCAST_PROMO_TITLE_RE.test(trimmed)) return true;
+  const weird = (trimmed.match(/[^A-Za-z0-9\s.,'"():;$%&/-]/g) || []).length;
+  if (trimmed.length > 40 && weird / trimmed.length > 0.08) return true;
   const hits = NEWS_JUMBLE_TOKENS.filter((rx) => rx.test(s)).length;
   if (hits >= 2) return true;
   // A long headline-like field with no sentence punctuation and many title-case
@@ -494,7 +516,21 @@ function newsRowQualityDefects(card, tile) {
       `NEWS-TITLE-JUMBLE: ${card.id} (${tile.name}) ${jumbled.length} headline(s) look like scraped navigation/title fragments instead of crisp executive titles`,
     );
   }
-  return defects;
+  const metaProse = rows.filter((row) => NEWS_ARTICLE_META_PROSE_RE.test(`${row.title} ${row.why}`));
+  if (metaProse.length) {
+    defects.push(
+      `NEWS-ARTICLE-META: ${card.id} (${tile.name}) ${metaProse.length} row(s) summarize the article as an article instead of giving the executive substance`,
+    );
+  }
+  if (card.id === 'covid_news') {
+    const offTopic = rows.filter((row) => !COVID_NEWS_TOPIC_RE.test(`${row.title} ${row.why}`));
+    if (offTopic.length) {
+      defects.push(
+        `COVID-TOPIC: ${card.id} (${tile.name}) ${offTopic.length} row(s) are not visibly about COVID treatment/news`,
+      );
+    }
+  }
+  return [...new Set(defects)];
 }
 
 // Strip a leading duplicate of the metric chip off the face so ANSWER-FIRST
@@ -561,10 +597,11 @@ function execCrispnessDefects(card, tile, runDate) {
   // an EMPTY-shell concern, caught by the body-floor check, not here.
   const metric = String(tile.metric || '').trim();
   const opening = faceOpening(tile);
-  const metricIsVerdict = metric !== '' && VERDICT_TOKEN.test(metric);
+  const metricIsVerdict =
+    metric !== '' && (VERDICT_TOKEN.test(metric) || AVAILABILITY_VERDICT.test(metric));
   if (!metricIsVerdict && opening) {
     const head = opening.slice(0, ANSWER_FIRST_WINDOW);
-    if (!VERDICT_TOKEN.test(head)) {
+    if (!VERDICT_TOKEN.test(head) && !AVAILABILITY_VERDICT.test(head)) {
       defects.push(
         `EXEC-CRISPNESS: ${card.id} (${tile.name}) face is not answer-first (no verdict in the metric or the first ${ANSWER_FIRST_WINDOW} chars of copy): "${head}"`,
       );
@@ -869,6 +906,11 @@ function peopleFilesDetailDefects(card, tile) {
       `PEOPLE-FILE-DETAIL: ${card.id} (${tile.name}) renders blank or placeholder "What was new" detail; 24h people changes need a concrete title/detail`,
     );
   }
+  if (/\b(?:Why:\s*)?Contact file changed\b|\bcontact file changed by \+\d+\/-\d+ lines\b/i.test(text)) {
+    defects.push(
+      `PEOPLE-FILE-DETAIL: ${card.id} (${tile.name}) renders generic "contact file changed" copy instead of the concrete 24h people-file detail`,
+    );
+  }
   const articleBlocks = String(tile.inner || '').match(/<article\b[\s\S]*?<\/article>/gi) || [];
   const blankArticles = articleBlocks.filter((block) => {
     const plain = strip(block);
@@ -961,7 +1003,29 @@ function communicationCoachingDefects(card, tile) {
       `COMM-COACHING-SOURCE: ${card.id} (${tile.name}) lacks a visible ExampleCo quote and vetted source citation`,
     );
   }
+  const longQuote = [...String(tile.body || '').matchAll(/Evidence quote:\s*["“][^"”]{181,}["”]/gi)];
+  if (longQuote.length) {
+    defects.push(
+      `COMM-COACHING-VISUAL: ${card.id} (${tile.name}) renders oversized evidence quotes on the card face; quote snippets must be short enough to scan`,
+    );
+  }
+  if (String(tile.face || '').length > 900 && /Evidence quote:/i.test(tile.face || '')) {
+    defects.push(
+      `COMM-COACHING-VISUAL: ${card.id} (${tile.name}) packs too much quote/source text onto the visible card face; coaching needs compact rows with detail on click`,
+    );
+  }
   return defects;
+}
+
+function ownerlessRepairLanguageDefects(card, tile) {
+  if (!tile) return [];
+  const text = `${tile.body || ''} ${tile.inner || ''}`;
+  if (!/(?:\bSee the card\b|\bNo ExampleCo action\b|\bNothing for you to do\b|\bNothing\.|\bno action needed\b|\brequired unless\b)/i.test(text)) {
+    return [];
+  }
+  return [
+    `OWNERLESS-REPAIR-COPY: ${card.id} (${tile.name}) uses passive no-action/see-card language; blockers and non-green health rows must name the failed evidence and repair path`,
+  ];
 }
 
 function actionItemsAgeDefects(card, tile) {
@@ -1010,6 +1074,14 @@ function actionItemsEvidenceDefects(card, tile) {
 
 function meetingsHorizonDefects(card, tile) {
   if (!tile || card.id !== 'meetings') return [];
+  const metric = String(tile.metric || '').trim();
+  const metricCount = /^\d+$/.test(metric) ? parseInt(metric, 10) : null;
+  const text = `${tile.face || ''} ${tile.body || ''}`;
+  if (metricCount && /\bmeeting today\b/i.test(text) && /\b0\s+meetings;\s+next\s+7\s+days\b/i.test(text)) {
+    return [
+      `MEETINGS-TODAY-CONTRADICTION: ${card.id} (${tile.name}) says ${metricCount} meeting(s) today while the calendar proof says 0 meetings today`,
+    ];
+  }
   if (!/next\s+7\s+days/i.test(tile.name || tile.body || '')) return [];
   const body = String(tile.body || '');
   if (!/next\s+7\s+days/i.test(body)) {
@@ -1050,9 +1122,42 @@ function otterCallHistoryContentDefects(card, tile) {
       `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) renders boilerplate relevance-label prose instead of a source-grounded executive summary of the call`,
     );
   }
+  if (
+    /\bThis call focused on\b[\s\S]{0,220}\bsourced transcript segment/i.test(text) ||
+    /\bno reliable decision or ExampleCo-owned next action was extracted\b/i.test(text)
+  ) {
+    defects.push(
+      `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) renders generic fallback prose instead of what happened, decisions made, and ExampleCo next actions`,
+    );
+  }
   if (/\b(?:clearest source-backed read is|Touches [^.;]{0,120}; Contains|family wealth\s*\/\s*mission|relationship capital)\b/i.test(text)) {
     defects.push(
       `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) renders boilerplate relevance labels instead of what happened, decisions made, and ExampleCo next actions`,
+    );
+  }
+  if (
+    /\bDecisions\/actions:\s*(?:Yes|Yeah|Okay|Ok|Again|Always|A feedback|I think|Like|You know|For\b)/i.test(text) ||
+    /\b[A-Z][A-Za-z0-9 '&/-]{4,80}:\s*(?:Yes|Yeah|Okay|Ok|Again|Always|A feedback|I think|Like|You know|For\b)/.test(
+      text,
+    )
+  ) {
+    defects.push(
+      `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) renders transcript quotes instead of an executive summary of what happened, decisions, and ExampleCo next actions`,
+    );
+  }
+  if (/\bcall covered again\b|\bI just want\b|\breally good start\b/i.test(text)) {
+    defects.push(
+      `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) still reads like transcript fragments instead of an executive summary`,
+    );
+  }
+  if (/\b\d+\.\s+\d\w?\b/i.test(text)) {
+    defects.push(
+      `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) splits a numeric value while trimming the call summary`,
+    );
+  }
+  if (/\b(?:Briefing summary|Detail:)\b/i.test(text) || /\b(?:and|or|with|to|for|from|between|around|whether)\.\s*(?:-|Day Before|Lifetime stats|$)/i.test(text)) {
+    defects.push(
+      `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) renders labeled or clipped prose instead of complete executive-summary sentences`,
     );
   }
   if (/call-history-detail-table/i.test(tile.inner || '') && !/Executive summary/i.test(tile.inner || '')) {
@@ -1060,8 +1165,87 @@ function otterCallHistoryContentDefects(card, tile) {
       `OTTER-CALL-HEADERS: ${card.id} (${tile.name}) call-history drilldown is missing column headers including Executive summary`,
     );
   }
+  defects.push(...otterFutureTimestampDefects(card, tile));
+  defects.push(...otterSpeakerMismatchDefects(card, tile));
   defects.push(...otterRollingWindowDefects(card, tile));
   return defects;
+}
+
+function otterFutureTimestampDefects(card, tile) {
+  if (!tile || card.id !== 'otter_speaker_pareto') return [];
+  const text = strip(`${tile.face || ''} ${tile.inner || ''}`);
+  const updateMinutes = parseUpdatedMinutes(tile.inner || '');
+  if (updateMinutes === null) return [];
+  const todayMatch = text.match(
+    /Past 24 Hours\s+(\d{4}-\d{2}-\d{2})([\s\S]*?)(?:Day Before\s+\d{4}-\d{2}-\d{2}|Lifetime stats|$)/i,
+  );
+  if (!todayMatch) return [];
+  const times = [...todayMatch[2].matchAll(/\b(\d{1,2}):(\d{2})\s*([AP]M)\b/gi)]
+    .map((m) => ({
+      label: m[0],
+      minutes: timeToMinutes(m[1], m[2], m[3]),
+      hasExplicitPriorDate: /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s*$/i.test(
+        todayMatch[2].slice(Math.max(0, m.index - 14), m.index),
+      ),
+    }))
+    .filter((m) => m.minutes >= 0);
+  const future = times.filter((m) => !m.hasExplicitPriorDate && m.minutes > updateMinutes + 5);
+  if (!future.length) return [];
+  return [
+    `OTTER-FUTURE-TIME: ${card.id} (${tile.name}) shows past-call timestamp(s) after the card update time (${future
+      .slice(0, 4)
+      .map((m) => m.label)
+      .join(', ')}); Otter call times must be Central Time and not future relative to the rendered card`,
+  ];
+}
+
+function callHistoryRows(tile) {
+  const html = String(tile.inner || '');
+  const rows = [];
+  const re = /<li\b[^>]*\bclass="[^"]*\bcall-history-row\b[^"]*"[^>]*>([\s\S]*?)<\/li>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const block = m[1];
+    const title = strip((block.match(/class="call-title"[^>]*>([\s\S]*?)<\/span>/i) || [])[1] || '');
+    const speakers = strip((block.match(/class="call-speakers"[^>]*>([\s\S]*?)<\/div>/i) || [])[1] || '');
+    const summary = strip((block.match(/class="call-summary"[^>]*>([\s\S]*?)<\/div>/i) || [])[1] || '');
+    rows.push({ title, speakers, summary });
+  }
+  return rows;
+}
+
+function otterSpeakerMismatchDefects(card, tile) {
+  if (!tile || card.id !== 'otter_speaker_pareto') return [];
+  const rows = callHistoryRows(tile);
+  if (!rows.length) return [];
+  const ExampleCoMissing = rows.filter((row) => /\bExampleCo\b/i.test(row.summary) && !/\bExampleCo\b/i.test(row.speakers));
+  const expectedPeople = [
+    ['Ed', /\bEd(?:\s+Evans)?\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME(?:\s+Bluth)?\b/i],
+    ['Zach', /\bZach(?:ary)?\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
+    ['PRIVATE_NAME', /\bExampleCo\s+Walker\b/i],
+  ];
+  const knownMissing = [];
+  for (const row of rows) {
+    for (const [display, rx] of expectedPeople) {
+      if (!rx.test(row.summary)) continue;
+      if (rx.test(row.speakers)) continue;
+      knownMissing.push(`${row.title || 'call'}:${display}`);
+    }
+  }
+  const defects = [];
+  if (ExampleCoMissing.length) {
+    defects.push(
+      `OTTER-SPEAKER-MISMATCH: ${card.id} (${tile.name}) ${ExampleCoMissing.length} call(s) mention ExampleCo in the executive summary but do not list ExampleCo as a detected speaker`,
+    );
+  }
+  if (knownMissing.length) {
+    defects.push(
+      `OTTER-SPEAKER-MISMATCH: ${card.id} (${tile.name}) call summaries mention known people that are absent from the speaker roster: ${knownMissing.slice(0, 6).join(', ')}`,
+    );
+  }
+  return [...new Set(defects)];
 }
 
 function otterRollingWindowDefects(card, tile) {
@@ -1114,20 +1298,166 @@ function videoManifestDriftDefects(card, tile) {
   ];
 }
 
+function systemHealthDetailDefects(card, tile) {
+  if (!tile || card.id !== 'system_health') return [];
+  const text = `${tile.body || ''} ${tile.inner || ''}`;
+  const defects = [];
+  const otterRequired = [
+    ['transcript', /\btranscripts?\b/i],
+    ['full audio', /\bfull audio\b|\baudio downloaded\b|\bdownloaded audio\b/i],
+    ['enriched transcript', /\benriched transcripts?\b|\benrichment\b/i],
+    ['probe clips', /\bprobe clips?\b|\bspeaker tracks probed\b|\brepresentative .*clips?\b/i],
+    ['call summaries', /\bcall summaries?\b|\bsummary happened\b|\bexec summaries?\b/i],
+    ['identity', /\bidentity\b|\bvoiceprints?\b|\bspeaker rosters?\b/i],
+    ['lock freshness', /\block\b|\bstale lock\b|\bfreshness window\b/i],
+  ];
+  const missing = otterRequired.filter(([, rx]) => !rx.test(text)).map(([label]) => label);
+  if (/Otter speaker enrichment/i.test(text) && missing.length) {
+    defects.push(
+      `OTTER-HEALTH-SUBMETRICS: ${card.id} (${tile.name}) Otter health is missing required submetric proof: ${missing.join(', ')}`,
+    );
+  }
+  if (/Graphiti/i.test(text)) {
+    if (/Direct Graphiti proof JSON\s+Field\s+Value/i.test(text) || !/\bDescription\b/i.test(text) || !/\bMetric\b/i.test(text)) {
+      defects.push(
+        `GRAPHITI-HEALTH-TEST-LIST: ${card.id} (${tile.name}) Graphiti health renders field/value JSON instead of named tests with descriptions and metric confirmations`,
+      );
+    }
+  }
+  return defects;
+}
+
+function tokenUsageFreshnessDefects(card, tile, runDate) {
+  if (!tile || card.id !== 'token_usage') return [];
+  const text = `${tile.face || ''} ${tile.body || ''}`;
+  const defects = [];
+  const resetDates = [...text.matchAll(/\bresets?\s+(\d{4}-\d{2}-\d{2})/gi)].map((m) => m[1]);
+  const refDate = String(runDate || new Date().toISOString().slice(0, 10));
+  const staleClaudeReset = resetDates.find((iso) => iso < refDate);
+  if (staleClaudeReset && /Claude/i.test(text)) {
+    defects.push(
+      `TOKEN-USAGE-STALE-RESET: ${card.id} (${tile.name}) presents Claude usage as current while its reset date is already past (${staleClaudeReset})`,
+    );
+  }
+  if (/\bClaude\b[\s\S]{0,120}\b(?:\d{1,2})%/i.test(text) && !/\b(?:stale|unreachable|not current|max(?:ed)?|usage limit|100%)\b/i.test(text)) {
+    defects.push(
+      `TOKEN-USAGE-HONESTY: ${card.id} (${tile.name}) shows a sub-100 Claude percent without stale/unreachable/maxed-state disclosure`,
+    );
+  }
+  return defects;
+}
+
+function kingdomCurriculumDefects(card, tile) {
+  if (!tile || card.id !== 'kingdom_equipping') return [];
+  const text = `${tile.face || ''} ${tile.body || ''} ${tile.inner || ''}`;
+  const defects = [];
+  if (/\bPeople move when they feel specifically seen\b/i.test(text)) {
+    defects.push(
+      `KINGDOM-REPEAT: ${card.id} (${tile.name}) repeats a previously rejected idea phrase instead of advancing a durable curriculum`,
+    );
+  }
+  if (/\bpublic research refresh target\b|\bno matching fresh public item returned\b/i.test(text)) {
+    defects.push(
+      `KINGDOM-RESEARCH: ${card.id} (${tile.name}) renders research-target boilerplate instead of an actual current researched signal`,
+    );
+  }
+  const urls = [
+    ...new Set(
+      [...text.matchAll(/https?:\/\/[^\s)]+/gi)].map((m) => String(m[0]).replace(/[.,;]+$/g, '')),
+    ),
+  ];
+  if (urls.length > 0 && urls.length < 3) {
+    defects.push(
+      `KINGDOM-RESEARCH: ${card.id} (${tile.name}) reuses research sources across ideas (${urls.length} distinct URL(s)); each idea needs its own current signal`,
+    );
+  }
+  const mismatches = [
+    {
+      idea: /\b(?:house|home|hospitality|estate|kitchen|garden)\b/i,
+      sourceBad: /\b(?:ai agents?|agentic|artificial intelligence|machine learning|llm|model)\b/i,
+      sourceGood: /\b(?:house|home|hospitality|estate|kitchen|garden|architecture|design)\b/i,
+      label: 'household/hospitality idea paired with AI source',
+    },
+    {
+      idea: /\b(?:sabbath|rest|mission from becoming an idol)\b/i,
+      sourceBad: /\b(?:medication|drug|agentic|artificial intelligence|ai)\b/i,
+      sourceGood: /\b(?:sabbath|rest|sleep|burnout|rhythm|fatigue|recovery|spiritual)\b/i,
+      label: 'Sabbath/rest idea paired with unrelated source',
+    },
+  ];
+  const sourceRows = String(text)
+    .split(/\b\d+\.\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  for (const row of sourceRows) {
+    const source = (row.match(/\bSource:\s*([^]+?)(?=\s+\d+\.|$)/i) || [])[1] || row;
+    for (const rule of mismatches) {
+      if (rule.idea.test(row) && rule.sourceBad.test(source) && !rule.sourceGood.test(source)) {
+        defects.push(`KINGDOM-SOURCE-MISMATCH: ${card.id} (${tile.name}) ${rule.label}`);
+      }
+    }
+  }
+  return [...new Set(defects)];
+}
+
+function contentPipelineDefects(card, tile) {
+  if (!tile || card.id !== 'content_pipeline') return [];
+  const text = `${tile.face || ''} ${tile.body || ''}`;
+  if (/\?\s*published/i.test(text)) {
+    return [
+      `CONTENT-PIPELINE-ExampleCo: ${card.id} (${tile.name}) renders ExampleCo published count; pipeline counts must be real numbers or explicitly blocked`,
+    ];
+  }
+  return [];
+}
+
+function voiceConfirmationDefects(card, tile) {
+  if (!tile || card.id !== 'voice_confirmation') return [];
+  const text = `${tile.face || ''} ${tile.body || ''} ${tile.inner || ''}`;
+  const defects = [];
+  if (/\bPast-7-day Otter archive health:\s*RED\b/i.test(text)) {
+    defects.push(
+      `VOICE-HEALTH-HIDDEN-RED: ${card.id} (${tile.name}) renders green while the detail says past-7-day Otter archive health is RED`,
+    );
+  }
+  if (/\b0\s+proposed names\b/i.test(text) && /\bpeople-file suggestion:/i.test(text)) {
+    defects.push(
+      `VOICE-PROPOSED-NAMES: ${card.id} (${tile.name}) says 0 proposed names while unresolved voice rows contain people-file suggestions`,
+    );
+  }
+  if (/\bKnown speakers by voiceprint\b[\s\S]{0,3000}\b(?:reference clips|\(\d+\s+refs?\b)/i.test(text)) {
+    defects.push(
+      `VOICE-KNOWN-SPEAKERS-CALLS: ${card.id} (${tile.name}) known voices are organized by reference clips; they must show and sort by number of calls with each person`,
+    );
+  }
+  if (/\b0\s+known-speaker matches internal\b/i.test(text) && /\bKnown speakers by voiceprint\b/i.test(text)) {
+    defects.push(
+      `VOICE-KNOWN-MATCHES: ${card.id} (${tile.name}) reports 0 known-speaker matches while known voices are banked, so identity matching is not proving itself`,
+    );
+  }
+  return defects;
+}
+
 function cardSpecificDefects(card, tile, runDate) {
   return [
+    ...systemHealthDetailDefects(card, tile),
+    ...tokenUsageFreshnessDefects(card, tile, runDate),
     ...peopleFilesFreshnessDefects(card, tile, runDate),
     ...peopleFilesDetailDefects(card, tile),
     ...otterSpeakerParetoAudioDefects(card, tile),
     ...awsCostsDetailDefects(card, tile),
     ...kingdomResearchDefects(card, tile),
+    ...kingdomCurriculumDefects(card, tile),
     ...communicationCoachingDefects(card, tile),
+    ...ownerlessRepairLanguageDefects(card, tile),
     ...actionItemsAgeDefects(card, tile),
     ...actionItemsEvidenceDefects(card, tile),
     ...meetingsHorizonDefects(card, tile),
     ...amyProjectsDefects(card, tile),
     ...otterCallHistoryContentDefects(card, tile),
     ...videoManifestDriftDefects(card, tile),
+    ...contentPipelineDefects(card, tile),
+    ...voiceConfirmationDefects(card, tile),
   ];
 }
 
@@ -1262,7 +1592,9 @@ const BLOCKERS_CLEAR =
 // "named" when the Blockers body contains at least one of its distinctive
 // tokens -- e.g. "OTTER" / "SPEAKER" / "PARETO" for the otter card. Deriving the
 // tokens from the card NAME (not a hardcoded list) keeps this keyed to the
-// category, not one incident.
+// category, not one incident. Multi-token names need at least two hits; one-word
+// generic names like "Action" and "Mortgage" are too broad unless the row names
+// the normalized card id.
 const NAME_FILLER = new Set([
   'NEWS',
   'DATA',
@@ -1283,6 +1615,15 @@ const NAME_FILLER = new Set([
   'PEOPLE',
 ]);
 
+const GENERIC_SINGLE_BLOCKER_TOKENS = new Set([
+  'ACTION',
+  'CONTENT',
+  'MORTGAGE',
+  'NEWS',
+  'PEOPLE',
+  'VOICE',
+]);
+
 function tokensFromText(text) {
   return (String(text || '').toUpperCase().match(/[A-Z0-9]{4,}/g) || []).filter(
     (t) => !NAME_FILLER.has(t),
@@ -1301,6 +1642,33 @@ function cardNameTokenParts(name) {
   return { lead, subtitle };
 }
 
+function normalizedPhrase(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/\((?:[^)]*)\)\s*$/g, ' ')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function cardNamePhrases(name, part) {
+  const withoutSuffix = String(name || '').replace(/\((?:[^)]*)\)\s*$/g, ' ');
+  const [leadAndMaybeSlash, ...tailParts] = withoutSuffix.split(/[-|]/);
+  const slashParts = String(leadAndMaybeSlash || '').split('/');
+  if (part === 'lead') return [slashParts.shift() || ''].map(normalizedPhrase).filter(Boolean);
+  slashParts.shift();
+  return [...slashParts, ...tailParts].map(normalizedPhrase).filter(Boolean);
+}
+
+function phraseNamedInBlockers(phrase, blockersBody) {
+  const normalized = normalizedPhrase(blockersBody);
+  if (!phrase || phrase.split(/\s+/).length < 2) return false;
+  return new RegExp(`(?:^|\\s)${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`).test(
+    normalized,
+  );
+}
+
 function nameTokens(name) {
   const tokens = [...cardNameTokenParts(name).lead];
   // Fall back to the longest single token if filtering left us nothing (so a
@@ -1315,20 +1683,35 @@ function nameTokens(name) {
   return tokens;
 }
 
-function tokenListNamedInBlockers(tokens, blockersBody) {
-  const body = String(blockersBody || '');
-  return tokens.some((t) => new RegExp(`\\b${t}\\b`, 'i').test(body));
+function normalizedCardIdMentioned(cardId, blockersBody) {
+  const id = String(cardId || '').toLowerCase();
+  if (!id) return false;
+  const body = String(blockersBody || '').toLowerCase();
+  const compact = body.replace(/[^a-z0-9]+/g, '_');
+  return new RegExp(`(?:^|_)${id}(?:_|$)`).test(compact);
 }
 
-function isNamedInBlockersPart(tile, blockersBody, part) {
+function tokenListNamedInBlockers(tokens, blockersBody) {
+  const body = String(blockersBody || '');
+  const hits = tokens.filter((t) => new RegExp(`\\b${t}\\b`, 'i').test(body));
+  if (tokens.length >= 2) return hits.length >= 2;
+  if (!hits.length) return false;
+  return !GENERIC_SINGLE_BLOCKER_TOKENS.has(hits[0]);
+}
+
+function isNamedInBlockersPart(tile, blockersBody, part, cardId = '') {
+  if (normalizedCardIdMentioned(cardId, blockersBody)) return true;
+  if (cardNamePhrases(tile.name, part).some((phrase) => phraseNamedInBlockers(phrase, blockersBody))) {
+    return true;
+  }
   const tokens = part === 'subtitle' ? cardNameTokenParts(tile.name).subtitle : nameTokens(tile.name);
   return tokenListNamedInBlockers(tokens, blockersBody);
 }
 
-function isNamedInBlockers(tile, blockersBody) {
+function isNamedInBlockers(tile, blockersBody, cardId = '') {
   return (
-    isNamedInBlockersPart(tile, blockersBody, 'lead') ||
-    isNamedInBlockersPart(tile, blockersBody, 'subtitle')
+    isNamedInBlockersPart(tile, blockersBody, 'lead', cardId) ||
+    isNamedInBlockersPart(tile, blockersBody, 'subtitle', cardId)
   );
 }
 
@@ -1359,7 +1742,7 @@ function blockersNamedCardDefects(tiles, defectsByCard) {
         if (!tile) continue;
         const existing = defectsByCard.get(card.id) || [];
         if (existing.length) continue;
-        if (!isNamedInBlockersPart(tile, row.text, part)) continue;
+        if (!isNamedInBlockersPart(tile, row.text, part, card.id)) continue;
         if (seen.has(card.id)) continue;
         seen.add(card.id);
         out.push({
@@ -1404,7 +1787,8 @@ function blockersUnderReportDefects(tiles) {
     const isBlocked = t.status === 'red' || HARD_BLOCKER_MARKER.test(t.body || '');
     if (!isBlocked) continue;
     // Blocked card is fine as long as the Blockers card actually names it.
-    if (!blockersLooksEmpty && isNamedInBlockers(t, body)) continue;
+    const card = cardIdForTile(t);
+    if (!blockersLooksEmpty && isNamedInBlockers(t, body, card)) continue;
     const reason = blockersLooksEmpty
       ? 'the Blockers card renders empty/"Clear: no owner decision"'
       : 'the Blockers card does not name it';

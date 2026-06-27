@@ -159,6 +159,10 @@ function isSelfDirectedField(text) {
   return SELF_DIRECTED_RE.test(String(text || ''));
 }
 
+function isRepairEvidenceNeed(text) {
+  return /^Repair evidence(?: missing)?:/i.test(String(text || '').trim());
+}
+
 // Classify the honesty rung from a normalized heal record for an EXHAUSTED-but-red
 // subsystem. healRecord: { target, detail, healed, action, note, blocker }.
 function classifyHonestyRung(healRecord) {
@@ -201,16 +205,19 @@ function buildBlockedCardOutput(healRecord) {
       break;
     case 'L2':
       status = `Broken for a known reason self-heal could not fix: ${reason}`;
-      whatINeed = 'No ExampleCo action needed';
+      whatINeed =
+        'Repair evidence: named source failure, changed tactic, and new live QC result are required before this card can clear.';
       break;
     case 'L3':
       status = `Broken in ${r.target || 'this subsystem'}; the cause is not yet identified.`;
-      whatINeed = 'No ExampleCo action needed';
+      whatINeed =
+        'Repair evidence: failing component is known but cause is missing; capture the next changed tactic and new live QC result.';
       break;
     case 'L4':
     default:
       status = `Broken and self-heal failed; what part broke is not yet known and no logs were captured. Known: ${whatBroke}.`;
-      whatINeed = 'No ExampleCo action needed';
+      whatINeed =
+        'Repair evidence missing: capture the failing card, attempted repair, and next live QC result before clearing.';
       break;
   }
   return { target: r.target || null, rung, whatBroke, whatITried, status, whatINeed };
@@ -218,7 +225,7 @@ function buildBlockedCardOutput(healRecord) {
 
 // A guaranteed-minimal honest block that passes cardOutputQc BY CONSTRUCTION,
 // regardless of input. Every field is a fixed, self-talk-free, owner-action-free
-// honest admission, and the need is the literal "No ExampleCo action needed". This is the
+// honest admission, and the need names the missing repair evidence. This is the
 // last-resort fallback so the honest hard-block can never itself fail QC (PR3b Q5):
 // when the evidence-sourced block is malformed, an honest "we know it is red but the
 // captured artifact was unusable" block is still strictly better than emitting a card
@@ -237,7 +244,8 @@ function guaranteedHonestBlock(cardId) {
     whatITried:
       'Self-heal ran but the captured heal artifact was unusable, so no specific repair detail is available.',
     status: 'Broken and self-heal failed; the exact cause was not captured.',
-    whatINeed: 'No ExampleCo action needed',
+    whatINeed:
+      'Repair evidence missing: capture the failing card, attempted repair, and next live QC result before clearing.',
   };
 }
 
@@ -256,7 +264,7 @@ function safeBuildBlockedCardOutput(healRecord) {
 
 // Output-QC for a blocked card. Asserts HONESTY (not self-narration, not self-directed,
 // four fields present) and the two-shape need (an owner/ExampleCo action OR the literal
-// "No ExampleCo action needed"). A failure is a heal trigger (loop again), not a scrub.
+// a repair-evidence line). A failure is a heal trigger (loop again), not a scrub.
 // Returns { ok, failures: [...], rung }.
 function cardOutputQc(cardOutput) {
   const c = cardOutput || {};
@@ -286,12 +294,13 @@ function cardOutputQc(cardOutput) {
     if (isSelfDirectedField(t)) failures.push(`self-directed ${name}`);
   }
   const needIsOwnerAction = c.rung === 'L1' && isOwnerAction(c.whatINeed);
-  if (!needIsOwnerAction && String(c.whatINeed || '').trim() !== 'No ExampleCo action needed') {
+  const needIsRepairEvidence = !needIsOwnerAction && isRepairEvidenceNeed(c.whatINeed);
+  if (!needIsOwnerAction && !needIsRepairEvidence) {
     failures.push(
-      'whatINeed must be an owner/ExampleCo action (L1) or the literal "No ExampleCo action needed"',
+      'whatINeed must be an owner/ExampleCo action (L1) or a Repair evidence line',
     );
   }
-  if (!needIsOwnerAction && isSelfDirectedField(c.whatINeed)) {
+  if (!needIsOwnerAction && !needIsRepairEvidence && isSelfDirectedField(c.whatINeed)) {
     failures.push('self-directed whatINeed (not an owner action)');
   }
   if (!LADDER_RUNGS.includes(c.rung)) failures.push(`invalid rung ${c.rung}`);
