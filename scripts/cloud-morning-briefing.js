@@ -28,6 +28,7 @@ const {
   generateKingdomEquippingIdeas,
 } = require('./kingdom-equipping-ideas.js');
 const { formatUncommittedParkedWorkSection } = require('./lib/git-hygiene-briefing.js');
+const { probeDevOpsHealth } = require('./lib/devops-health.js');
 const { computeSpeakerFreshness } = require('./lib/speaker-freshness.js');
 const { CARDS: BRIEFING_MANIFEST_CARDS } = require('./lib/briefing-card-manifest.js');
 const {
@@ -4640,6 +4641,16 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
       ExampleCo,
       'Tests: run on the desktop and in CI, not evaluated on the cloud build (informational, not a failure).',
     );
+  }
+
+  try {
+    const devops = probeDevOpsHealth({ mainRoot: REPO_ROOT });
+    push(
+      devops.status === 'green' ? OK : BAD,
+      `Dev Ops: ${devops.detail}.`,
+    );
+  } catch (e) {
+    push(BAD, `Dev Ops: probe failed: ${String((e && e.message) || e).slice(0, 120)}.`);
   }
 
   return rows;

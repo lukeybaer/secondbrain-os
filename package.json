@@ -18,6 +18,7 @@
     "verify:briefing-cards": "node scripts/verify-dashboard-cards-live.js",
     "verify:dashboard-cards": "node scripts/verify-dashboard-cards-live.js",
     "verify:briefing-qc-drift": "node scripts/verify-briefing-qc-drift.js",
+    "verify:devops": "node scripts/verify-shared-checkout-clean.js",
     "verify:otter-transcript-pipeline-drift": "node scripts/verify-otter-transcript-pipeline-drift.js",
     "verify:devops-release-drift": "vitest run scripts/__tests__/devops-release-core.test.js tests/pii-screen.spec.ts",
     "verify:voice-processing-coverage": "node scripts/otter-processing-coverage-probe.js",

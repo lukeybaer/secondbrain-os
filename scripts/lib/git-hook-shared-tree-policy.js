@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { validateIntegrationSession } = require('./integration-session.js');
 
 function normalizePath(p) {
   if (typeof p !== 'string' || p.length === 0) return '';
@@ -25,8 +26,9 @@ function isSharedMainCheckout(repoRoot, commonGitDir) {
 }
 
 function shouldBlockSharedMainHook({ hookName, repoRoot, commonGitDir, env = {} } = {}) {
-  if (env.SB_INTEGRATION_SESSION === '1') {
-    return { blocked: false, reason: 'integration session escape hatch' };
+  const integration = validateIntegrationSession({ env, mainRoot: commonGitDirToMainRoot(commonGitDir, repoRoot) });
+  if (integration.valid) {
+    return { blocked: false, reason: integration.reason };
   }
   if (!['pre-commit', 'pre-push'].includes(hookName)) {
     return { blocked: false, reason: 'hook not guarded' };

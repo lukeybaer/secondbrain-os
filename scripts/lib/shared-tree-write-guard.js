@@ -13,18 +13,14 @@
  * is exactly how the prior fix (isolated cwd only) was defeated.
  *
  * Class we block (category, not literal trigger):
- *   - a write whose target resolves inside the shared main checkout AND is
- *     SOURCE: under a code dir (src/, scripts/, scheduled-tasks/, electron/) OR
- *     has a code extension (.ts/.tsx/.js/.jsx/.mjs/.cjs/.py/.go/.rs).
+ *   - any write whose target resolves inside the shared main checkout.
  *
  * Class we ALLOW:
  *   - any path inside an isolated worktree (sb-sessions/, .claude/worktrees/,
  *     sb-isolation, sb-hygiene);
- *   - non-code files anywhere in the shared tree -- this is what keeps the
- *     accept-and-sweep curated state working (memory/*.md, data/*.json,
- *     content-review/*.json are not source, so they fall through to allowed);
  *   - anything outside the shared main checkout;
- *   - the single integration session (SB_INTEGRATION_SESSION=1).
+ *   - the single audited integration lease (SB_INTEGRATION_SESSION=1 plus a
+ *     valid lock file created by scripts/integration-session.js).
  *
  * '.' and '..' segments are collapsed before any check, so a relative or
  * absolute path cannot traverse out of a worktree into shared source and still
@@ -42,11 +38,7 @@ const ISOLATED_WORKTREE_MARKERS = [
   'sb-isolation',
   'sb-hygiene',
 ];
-
-// Code directories: writes here are engineering work and must be isolated.
-const SOURCE_DIR_PREFIXES = ['src/', 'scripts/', 'scheduled-tasks/', 'electron/'];
-
-const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.go', '.rs'];
+const { validateIntegrationSession } = require('./integration-session.js');
 
 // Collapse '.' and '..' segments so a path can never launder its real target
 // past the isolated-path / under-main-root checks. Without this, a relative or
@@ -104,10 +96,11 @@ function isUnderMainRoot(candidate, mainRoot) {
 function evaluateSharedTreeWrite({ filePath, cwd, mainRoot, env } = {}) {
   env = env || {};
 
-  if (env.SB_INTEGRATION_SESSION === '1') {
+  const integration = validateIntegrationSession({ env, mainRoot });
+  if (integration.valid) {
     return {
       blocked: false,
-      reason: 'integration session escape hatch (SB_INTEGRATION_SESSION=1)',
+      reason: integration.reason,
     };
   }
 
@@ -130,28 +123,13 @@ function evaluateSharedTreeWrite({ filePath, cwd, mainRoot, env } = {}) {
   }
 
   const rel = target.slice(root.length + 1);
-  const lower = rel.toLowerCase();
-
-  // Source = under a code dir OR carrying a code extension, anywhere in the
-  // shared tree. Curated state (memory/*.md, data/*.json) is NOT source and
-  // falls through to allowed; but a code file (.py/.js) dropped under memory/
-  // or data/ IS source and is blocked, so the curated-state paths cannot be
-  // used to smuggle code into the shared checkout. Lowercased so a Windows
-  // "Src/" or "Scripts/" cannot evade the dir-prefix check.
-  const inSourceDir = SOURCE_DIR_PREFIXES.some((p) => lower.startsWith(p));
-  const hasSourceExt = SOURCE_EXTENSIONS.some((e) => lower.endsWith(e));
-
-  if (inSourceDir || hasSourceExt) {
-    return {
-      blocked: true,
-      reason:
-        `tracked source write in the shared main checkout (${rel}). ` +
-        'Isolate in a worktree (scripts/new-session.sh) and land via scripts/land.js, ' +
-        'or set SB_INTEGRATION_SESSION=1 for the single integration session.',
-    };
-  }
-
-  return { blocked: false, reason: 'non-source path in the shared checkout' };
+  return {
+    blocked: true,
+    reason:
+      `shared checkout write blocked (${rel || '.'}). ` +
+      'Use an isolated worktree and land through the gate, or run under ' +
+      'scripts/integration-session.js for the single audited integration path.',
+  };
 }
 
 module.exports = {

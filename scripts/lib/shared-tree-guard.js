@@ -23,6 +23,7 @@
 'use strict';
 
 const path = require('node:path');
+const { validateIntegrationSession } = require('./integration-session.js');
 
 // Markers that positively identify an isolated worktree path. If a path matches
 // any of these it is NOT the shared main checkout, regardless of mainRoot.
@@ -185,11 +186,14 @@ function classifyDestructive(command, opts = {}) {
 function evaluateSharedTreeOp({ command, cwd, mainRoot, env } = {}) {
   const e = env || {};
 
-  // Escape hatch: the single sanctioned integration session may do anything.
-  if (e.SB_INTEGRATION_SESSION === '1') {
+  // Escape hatch: the single sanctioned integration session may do anything,
+  // but only when the env var is backed by a live lock file. The env var alone
+  // is not authority.
+  const integration = validateIntegrationSession({ env: e, mainRoot });
+  if (integration.valid) {
     return {
       blocked: false,
-      reason: 'escape hatch used: SB_INTEGRATION_SESSION=1 (integration session, not blocked)',
+      reason: integration.reason,
     };
   }
 
@@ -214,7 +218,7 @@ function evaluateSharedTreeOp({ command, cwd, mainRoot, env } = {}) {
     reason:
       'BLOCKED in shared main checkout: ' +
       destructiveReason +
-      '. Run this inside an isolated worktree, or set SB_INTEGRATION_SESSION=1 for the sanctioned integration session.',
+      '. Run this inside an isolated worktree, or use scripts/integration-session.js for the sanctioned integration session.',
   };
 }
 
