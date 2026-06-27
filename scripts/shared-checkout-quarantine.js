@@ -7,6 +7,13 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
+const DEFAULT_RUNTIME_DIRS = new Set([
+  '.codex-work',
+  'content-review/pending',
+  'data/viral-clip-builds',
+  'dev-plans/.rounds-scratch',
+]);
+
 function runGit(root, args, opts = {}) {
   return execFileSync('git', ['-C', root, ...args], {
     encoding: opts.encoding === undefined ? 'utf8' : opts.encoding,
@@ -55,6 +62,29 @@ function safeCopy(src, dest) {
   }
 }
 
+function normalizeRel(p) {
+  return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function shouldSkipRuntimeDir(rel, runtimeDirs = DEFAULT_RUNTIME_DIRS) {
+  const n = normalizeRel(rel);
+  return runtimeDirs.has(n);
+}
+
+function writeDirectoryStub(abs, dest) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  let entries = [];
+  try {
+    entries = fs.readdirSync(abs, { withFileTypes: true }).slice(0, 200).map((d) => ({
+      name: d.name,
+      kind: d.isDirectory() ? 'directory' : 'file',
+    }));
+  } catch (e) {
+    entries = [{ error: String(e.message || e).slice(0, 200) }];
+  }
+  fs.writeFileSync(dest, JSON.stringify({ path: abs, copied: false, entries }, null, 2) + '\n');
+}
+
 function classifyEntry(root, entry, rescueFilesDir, ref = 'origin/master') {
   const abs = path.join(root, entry.path);
   const exists = fs.existsSync(abs);
@@ -76,6 +106,12 @@ function classifyEntry(root, entry, rescueFilesDir, ref = 'origin/master') {
   item.size = st.size;
   item.mtime = st.mtime.toISOString();
   if (st.isDirectory()) {
+    if (entry.status.startsWith('??') && shouldSkipRuntimeDir(entry.path)) {
+      item.category = 'runtime_untracked_directory';
+      item.action = 'not_copied_ignored_after_sync';
+      writeDirectoryStub(abs, path.join(rescueFilesDir, `${entry.path}.directory-stub.json`));
+      return item;
+    }
     item.category = entry.status.startsWith('??') ? 'unique_untracked_directory' : 'dirty_directory';
     item.action = 'preserve_to_rescue_then_review';
     safeCopy(abs, path.join(rescueFilesDir, entry.path));
@@ -165,5 +201,6 @@ module.exports = {
   classifyEntry,
   summarize,
   optionValue,
+  shouldSkipRuntimeDir,
   main,
 };
