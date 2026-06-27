@@ -7,6 +7,11 @@ const crypto = require('crypto');
 const { createSpineTask, listSpineTasks } = require('./spine-ingress');
 const { searchFacts } = require('./graphiti-mcp');
 const { speechSafe } = require('./speech-safe');
+const {
+  buildLiveStateItems,
+  formatLiveStateAnswer,
+  normalizeProbeLevel,
+} = require('./live-dev-state');
 
 const ACTIVE_STATUSES = new Set([
   'queued',
@@ -388,20 +393,30 @@ function agentSessionStatus(taskId, opts = {}) {
     ? opts.commands.find((c) => c && (c.id === task.execution?.commandId || c.spineTaskId === task.id))
     : null;
   const status = command?.status || task.status || task.execution?.status || 'ExampleCo';
-  const lastText =
-    (command && command.progressNote) ||
-    (last && [last.note, last.blocker ? `Blocker: ${last.blocker}` : '', last.nextAction ? `Next: ${last.nextAction}` : '']
-      .filter(Boolean)
-      .join(' ')) ||
-    task.resultSummary ||
-    'No progress event yet.';
+  if (command && command.status && task.status !== command.status) task.status = command.status;
+  if (last && last.status && task.status !== last.status) task.status = last.status;
+  const nowMs = currentMs(opts);
+  const stateItems = buildLiveStateItems({
+    records: [task],
+    progressByTaskId: { [task.id]: progress },
+    commandByTaskId: command ? { [task.id]: command } : {},
+    nowMs,
+  });
+  const probeLevel = normalizeProbeLevel(opts.probeLevel ?? opts.detailLevel ?? opts.mode, 0);
   const cb = task.callback && task.callback.required ? ' Callback is attached.' : '';
+  const summary = formatLiveStateAnswer(stateItems, {
+    query: task.title || task.id,
+    probeLevel,
+    nowMs,
+  });
   return {
     ok: true,
     task,
     progress,
     command,
-    summary: `${speechSafe(task.title || task.id)} is ${String(status).replace(/_/g, ' ')}. ${speechSafe(lastText).slice(0, 500)}${cb}`,
+    stateItems,
+    status,
+    summary: `${summary}${cb}`,
   };
 }
 
@@ -448,24 +463,41 @@ function spineSnapshot(params = {}, opts = {}) {
       summary: `I do not see an active cloud-spine match${scope}. That is only the active spine scope, not the whole archive.`,
     };
   }
-  const lines = [];
+  const commandRecords = commandItems.map((cmd) => ({
+    ...cmd,
+    id: cmd.id,
+    _kind: 'command',
+    title: cmd.title || cmd.prompt || cmd.id,
+    prompt: cmd.prompt || cmd.title || cmd.id,
+    updatedAt: cmd.lastProgressAt || cmd.updatedAt || cmd.createdAt,
+    status: cmd.status || 'queued',
+  }));
+  const progressByTaskId = {};
+  const commandByTaskId = {};
   for (const task of tasks) {
-    const title = speechSafe(task.title || task.prompt || task.id).slice(0, 100);
-    const status = String(task.status || 'ExampleCo').replace(/_/g, ' ');
-    const cb = task.callback && task.callback.required && !task.callback.deliveredAt ? ', callback attached' : '';
-    lines.push(`${title}: ${status}${cb}`);
+    progressByTaskId[task.id] = readProgress(task.id, opts);
+    const command = commandItems.find((cmd) => cmd && (cmd.id === task.execution?.commandId || cmd.spineTaskId === task.id));
+    if (command) commandByTaskId[task.id] = command;
   }
-  for (const cmd of commandItems) {
-    const title = speechSafe(cmd.prompt || cmd.id).slice(0, 100);
-    lines.push(`${title}: ${String(cmd.status || 'queued').replace(/_/g, ' ')}`);
-  }
+  const stateItems = buildLiveStateItems({
+    records: [...tasks, ...commandRecords],
+    progressByTaskId,
+    commandByTaskId,
+    nowMs: currentMs(opts),
+  });
+  const probeLevel = normalizeProbeLevel(params.probe_level ?? params.detail_level ?? params.probeLevel ?? params.mode, 0);
   return {
     ok: true,
     source: 'cloud-spine',
     scope: query ? `query:${query}` : 'active-and-recent',
     tasks,
     commands: commandItems,
-    summary: lines.join('. ') + '.',
+    stateItems,
+    summary: formatLiveStateAnswer(stateItems, {
+      query,
+      probeLevel,
+      nowMs: currentMs(opts),
+    }),
   };
 }
 

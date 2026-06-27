@@ -104,7 +104,7 @@ function buildVapiFunctionTools() {
     ),
     functionTool(
       'spine_snapshot',
-      "Read Amy's cloud task spine for active, recent, callback-required, and agent-session work. Use when ExampleCo asks what is active, what happened to a prompt, whether something was picked up, or how a session is going. Treat the result as speakable status evidence, not as tool ids for other calls.",
+      "Read Amy's cloud task spine for active, recent, callback-required, and agent-session work. Use when ExampleCo asks what is active, what happened to a prompt, whether something was picked up, or how a session is going. Treat the result as speakable live state with source packets, not as tool ids for other calls.",
       {
         query: {
           type: 'string',
@@ -113,6 +113,11 @@ function buildVapiFunctionTools() {
         limit: {
           type: 'integer',
           description: 'Maximum number of items to summarize. Defaults to 8.',
+        },
+        probe_level: {
+          type: 'integer',
+          enum: [0, 1, 2, 3, 4],
+          description: '0 situation, 1 details, 2 evidence, 3 artifacts, 4 exact visible excerpt.',
         },
       },
     ),
@@ -169,6 +174,11 @@ function buildVapiFunctionTools() {
         session_id: {
           type: 'string',
           description: 'Alias for task_id only when it is the exact task_id from start_agent_session or run_claude_code.',
+        },
+        probe_level: {
+          type: 'integer',
+          enum: [0, 1, 2, 3, 4],
+          description: '0 situation, 1 details, 2 evidence, 3 artifacts, 4 exact visible excerpt.',
         },
       },
       [],
@@ -268,7 +278,7 @@ function buildVapiFunctionTools() {
     ),
     functionTool(
       'check_spine',
-      "Check the status of dev tasks, Codex/Claude sessions, and durable spine items ExampleCo dispatched. Use it whenever he asks 'how is that going', 'what is queued', 'is it done yet', 'what was that session', or while he waits on the line. Pass query/detail when he asks about a specific session, then answer directly from this result instead of dispatching a new coding task or calling agent_session_status with returned labels.",
+      "Check the status of dev tasks, Codex/Claude sessions, and durable spine items ExampleCo dispatched. Use it whenever he asks 'how is that going', 'what is queued', 'is it done yet', 'what was that session', or while he waits on the line. Pass query and probe_level when he asks about a specific session, then answer directly from this source-backed result instead of dispatching a new coding task or calling agent_session_status with returned labels.",
       {
         query: {
           type: 'string',
@@ -277,6 +287,12 @@ function buildVapiFunctionTools() {
         detail: {
           type: 'boolean',
           description: 'True when ExampleCo asks what happened in a specific session, prompt, outcome, or history.',
+        },
+        probe_level: {
+          type: 'integer',
+          enum: [0, 1, 2, 3, 4],
+          description:
+            '0 situation, 1 details, 2 evidence/how do you know, 3 artifacts/files/tests/logs, 4 exact visible excerpt. Increase by one when ExampleCo says go deeper.',
         },
       },
       [],

@@ -10,6 +10,11 @@
 //  - voice_if_live   : speak into the call if it is still active, else telegram
 //  - voice_callback  : place an outbound call (only on explicit "call me back")
 const { speechSafe } = require('./speech-safe');
+const {
+  buildLiveStateItems,
+  formatLiveStateAnswer,
+  normalizeProbeLevel,
+} = require('./live-dev-state');
 
 const DEFAULT_NO_PROGRESS_MS = 5 * 60 * 1000;
 const DEFAULT_CEILING_MS = 60 * 60 * 1000;
@@ -439,7 +444,17 @@ function scoreSpineRecord(record, query) {
   return hits / terms.length;
 }
 
-function summarizeSpineDetailForVoice({ commands = [], tasks = [], query = '', nowMs = Date.now(), maxItems = 3 } = {}) {
+function summarizeSpineDetailForVoice({
+  commands = [],
+  tasks = [],
+  query = '',
+  nowMs = Date.now(),
+  maxItems = 3,
+  probeLevel = 0,
+  detailLevel = undefined,
+  progressByTaskId = {},
+  commandByTaskId = {},
+} = {}) {
   const genericQuery = isGenericSpineQuery(query);
   const broadStatusQuery = !genericQuery && isBroadStatusQuery(query);
   const scoringQuery = genericQuery ? '' : query;
@@ -531,20 +546,49 @@ function summarizeSpineDetailForVoice({ commands = [], tasks = [], query = '', n
       : `I found no active spine items in ${SPINE_DETAIL_SCOPE_VOICE}.`;
   }
 
+  const normalizedProbeLevel = normalizeProbeLevel(
+    detailLevel !== undefined ? detailLevel : probeLevel,
+    0,
+  );
+  const liveItems = buildLiveStateItems({
+    records: all,
+    progressByTaskId,
+    commandByTaskId,
+    nowMs,
+  });
+
+  if (normalizedProbeLevel > 0) {
+    return formatLiveStateAnswer(liveItems, {
+      query: query && !genericQuery ? query : '',
+      probeLevel: normalizedProbeLevel,
+      nowMs,
+    });
+  }
+
   const lines = [
     query && !genericQuery
       ? `I found ${all.length} matching spine item${all.length === 1 ? '' : 's'} for ${speechSafe(query)}.`
       : `I found ${all.length} active or recent spine item${all.length === 1 ? '' : 's'}.`,
   ];
   for (const r of all) {
+    const liveItem = liveItems.find((item) => item.id && r.id && item.id === r.id) || null;
     const title = voiceTaskTitle(r);
     const status = statusForVoice(r);
     const age = agePhrase(r.updatedAt || r.completedAt || r.createdAt, nowMs);
     const sourceFreshness = staleMirrorVoicePhrase(r, nowMs);
-    const latestNote = voiceLatestNote(r);
+    const latestNote = liveItem && liveItem.lastProgress ? liveItem.lastProgress : voiceLatestNote(r);
+    const blocker = liveItem && liveItem.currentBlocker ? ` Blocker: ${liveItem.currentBlocker}.` : '';
+    const next = liveItem && liveItem.nextAction ? ` Next: ${liveItem.nextAction}.` : '';
+    const onlyTitleStatus =
+      liveItem && liveItem.confidence === 'title-status-only'
+        ? ' I only have title/status for this item, not deeper progress yet.'
+        : '';
     lines.push(
       `${title || 'That item'} is ${status}${age ? ', updated ' + age + ' ago' : ''} from a ${voiceSourceLabel(r)}.` +
         `${latestNote ? ' Latest note: ' + latestNote + '.' : ''}` +
+        blocker +
+        next +
+        onlyTitleStatus +
         sourceFreshness,
     );
   }
