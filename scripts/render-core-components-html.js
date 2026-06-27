@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Render the ten core-component one-pagers (dev-plans/core/<name>.md) into a single
+// Render the core-component one-pagers (dev-plans/core/<name>.md) into a single
 // dark-theme HTML page (dev-plans/core/core-components.html) for reading in the browser.
 // Minimal, dependency-free markdown rendering (headings, lists, bold, inline code,
 // [[wikilinks]]). One-off view generator; safe to re-run.
@@ -18,6 +18,7 @@ const ORDER = [
   'llm-fallback-ladder',
   'voice-call-stack',
   'session-isolation',
+  'devops-release',
   'video-generation',
 ];
 
@@ -101,7 +102,7 @@ const navHtml = toc
 
 const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Amy Core Components (10)</title>
+<title>Amy Core Components (${ORDER.length})</title>
 <style>
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
@@ -132,7 +133,7 @@ strong { color: #fff; }
 <body><div class="wrap">
 <nav><h2>Core Components</h2>${navHtml}</nav>
 <main>
-<p class="lead"><b>Amy core components</b> &mdash; the foundational few, each with its one-page methodology (what it is, the single load-bearing source the code reads, how to extend it, verified current state, LESSONS, key files). Locked at <b>ten</b> 2026-06-15 (Codex-confirmed). Rendered from <code>dev-plans/core/*.md</code>.</p>
+<p class="lead"><b>Amy core components</b> &mdash; the foundational few, each with its one-page methodology (what it is, the single load-bearing source the code reads, how to extend it, verified current state, LESSONS, key files). Rendered from the ordered core registry in <code>scripts/render-core-components-html.js</code>.</p>
 ${cards.join('\n')}
 </main>
 </div></body></html>`;

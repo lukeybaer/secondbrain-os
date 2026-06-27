@@ -29,6 +29,28 @@ const path = require('path');
 // live briefing data, so they can't be the flaky "unrelated red" that freezes
 // everyone -- yet they still catch structural regressions (dead probes, etc).
 const CORE_GUARDS = ['scripts/__tests__/no-dead-probes.test.js', 'scripts/__tests__/core.test.js'];
+const DEVOPS_RELEASE_TEST = 'scripts/__tests__/devops-release-core.test.js';
+const PII_SCREEN_TEST = 'tests/pii-screen.spec.ts';
+
+const DEVOPS_RELEASE_FILES = new Set([
+  '.github/workflows/sync-to-public.yml',
+  'dev-plans/core/devops-release.md',
+  'dev-plans/core/devops-release.LESSONS.md',
+  'memory/feedback_pii_screen_failure_is_mine_to_scrub.md',
+  'scripts/render-core-components-html.js',
+]);
+
+const PUBLIC_SYNC_GATE_FILES = new Set([
+  '.github/workflows/sync-to-public.yml',
+  'data/agent/pii-allowlist.json',
+  'data/agent/pii-denylist.json',
+  'scripts/build-pii-denylist.js',
+  'scripts/pii-llm-gate.js',
+  'scripts/pii-ner-scan.py',
+  'scripts/pii-screen.js',
+  'scripts/simulate-public-sync.js',
+  'tests/pii-screen.spec.ts',
+]);
 
 // Map a changed SOURCE file to the test file that exercises it.
 // Returns null when the changed file is itself a test, a non-source file
@@ -61,6 +83,16 @@ function siblingTestFor(file) {
   return null;
 }
 
+function isDevopsReleaseFile(file) {
+  const f = String(file || '').replace(/\\/g, '/');
+  return DEVOPS_RELEASE_FILES.has(f) || PUBLIC_SYNC_GATE_FILES.has(f);
+}
+
+function isPublicSyncGateFile(file) {
+  const f = String(file || '').replace(/\\/g, '/');
+  return PUBLIC_SYNC_GATE_FILES.has(f);
+}
+
 // affectedTestScope(changedFiles) -> de-duplicated array of test paths/globs.
 // ALWAYS includes the core guards. NEVER returns '**/*'.
 function affectedTestScope(changedFiles) {
@@ -71,6 +103,12 @@ function affectedTestScope(changedFiles) {
     const sibling = siblingTestFor(file);
     if (sibling) {
       scope.add(sibling);
+    }
+    if (isDevopsReleaseFile(file)) {
+      scope.add(DEVOPS_RELEASE_TEST);
+    }
+    if (isPublicSyncGateFile(file)) {
+      scope.add(PII_SCREEN_TEST);
     }
   }
 
@@ -198,5 +236,9 @@ module.exports = {
   releaseLandLock,
   // exported for reuse/testing
   CORE_GUARDS,
+  DEVOPS_RELEASE_TEST,
+  PII_SCREEN_TEST,
   siblingTestFor,
+  isDevopsReleaseFile,
+  isPublicSyncGateFile,
 };
