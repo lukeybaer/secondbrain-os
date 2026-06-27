@@ -11,7 +11,6 @@ const VAPI_FUNCTION_TOOL_NAMES = [
   'request_approval',
   'flag_reputation_risk',
   'bridge_in_owner',
-  'check_project_status',
   'check_todos',
   'check_spine',
   'manage_task',
@@ -25,6 +24,7 @@ const VAPI_FUNCTION_TOOL_NAMES = [
 
 const TOOL_RESULT_ONLY_HINT =
   'Answer with only the tool result. Do not add greetings, offers, callbacks, follow-up questions, or closing chatter. For status lookups, stop after the source-grounded status sentence.';
+const PROBE_LEVEL_ENUM = ['0', '1', '2', '3', '4'];
 
 function toolMessages(message, delayedMessage = '', options = {}) {
   const messages = [];
@@ -115,8 +115,8 @@ function buildVapiFunctionTools() {
           description: 'Maximum number of items to summarize. Defaults to 8.',
         },
         probe_level: {
-          type: 'integer',
-          enum: [0, 1, 2, 3, 4],
+          type: 'string',
+          enum: PROBE_LEVEL_ENUM,
           description: '0 situation, 1 details, 2 evidence, 3 artifacts, 4 exact visible excerpt.',
         },
       },
@@ -176,8 +176,8 @@ function buildVapiFunctionTools() {
           description: 'Alias for task_id only when it is the exact task_id from start_agent_session or run_claude_code.',
         },
         probe_level: {
-          type: 'integer',
-          enum: [0, 1, 2, 3, 4],
+          type: 'string',
+          enum: PROBE_LEVEL_ENUM,
           description: '0 situation, 1 details, 2 evidence, 3 artifacts, 4 exact visible excerpt.',
         },
       },
@@ -267,16 +267,6 @@ function buildVapiFunctionTools() {
       ['caller_name', 'topic'],
     ),
     functionTool(
-      'check_project_status',
-      'Query active projects and their task statuses. Use when ExampleCo asks about project progress, task counts, or what needs attention.',
-      {
-        project_name: {
-          type: 'string',
-          description: 'Optional filter to a specific project by name.',
-        },
-      },
-    ),
-    functionTool(
       'check_spine',
       "Check the status of dev tasks, Codex/Claude sessions, and durable spine items ExampleCo dispatched. Use it whenever he asks 'how is that going', 'what is queued', 'is it done yet', 'what was that session', or while he waits on the line. Pass query and probe_level when he asks about a specific session, then answer directly from this source-backed result instead of dispatching a new coding task or calling agent_session_status with returned labels.",
       {
@@ -289,8 +279,8 @@ function buildVapiFunctionTools() {
           description: 'True when ExampleCo asks what happened in a specific session, prompt, outcome, or history.',
         },
         probe_level: {
-          type: 'integer',
-          enum: [0, 1, 2, 3, 4],
+          type: 'string',
+          enum: PROBE_LEVEL_ENUM,
           description:
             '0 situation, 1 details, 2 evidence/how do you know, 3 artifacts/files/tests/logs, 4 exact visible excerpt. Increase by one when ExampleCo says go deeper.',
         },

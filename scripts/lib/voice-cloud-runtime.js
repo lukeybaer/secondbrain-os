@@ -12,6 +12,13 @@ const {
   formatLiveStateAnswer,
   normalizeProbeLevel,
 } = require('./live-dev-state');
+const {
+  displaySpineQueryForVoice,
+  isArchiveQueryTerms,
+  isProjectStatusQueryTerms,
+  normalizeSpineQueryForVoice,
+  spineQueryTerms,
+} = require('./voice-spine-query');
 
 const ACTIVE_STATUSES = new Set([
   'queued',
@@ -44,7 +51,6 @@ const DEFAULT_CALLBACK_RETRY_MS = 2 * 60 * 1000;
 const DEFAULT_CALLBACK_MAX_ATTEMPTS = 3;
 const LIVE_SESSION_QUERY_FRESH_MS = 24 * 60 * 60 * 1000;
 const DEV_SESSION_TERMS = new Set(['dev', 'development', 'codex', 'claude', 'session', 'thread', 'drilldown', 'probe']);
-const ARCHIVE_TERMS = new Set(['gmail', 'email', 'mail', 'otter', 'transcript', 'linkedin', 'whatsapp']);
 
 function defaultDataDir(opts = {}) {
   if (opts.dataDir) return opts.dataDir;
@@ -424,7 +430,7 @@ function agentSessionStatus(taskId, opts = {}) {
 }
 
 function queryTerms(query) {
-  return String(query || '').toLowerCase().trim().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+  return spineQueryTerms(query).filter((t) => t.length > 2);
 }
 
 function isDevSessionQuery(terms) {
@@ -432,13 +438,19 @@ function isDevSessionQuery(terms) {
 }
 
 function isArchiveQuery(terms) {
-  return (terms || []).some((term) => ARCHIVE_TERMS.has(term));
+  return isArchiveQueryTerms(terms || []);
 }
 
 function isLowSignalIngestTask(task) {
+  const origin = String(task && task.origin || '').toLowerCase();
+  const kind = String(task && task.kind || '').toLowerCase();
+  const title = String(task && task.title || '').toLowerCase();
+  const sourceType = String(task && task.source && task.source.type || '').toLowerCase();
   return (
-    String(task && task.kind || '').toLowerCase() === 'ingest' ||
-    ['gmail', 'otter', 'linkedin', 'whatsapp'].includes(String(task && task.origin || '').toLowerCase())
+    kind === 'ingest' ||
+    ['gmail', 'otter', 'linkedin', 'whatsapp', 'vapi'].includes(origin) ||
+    ['vapi-call', 'voice-call', 'call-transcript'].includes(sourceType) ||
+    /^amy call:/i.test(title)
   );
 }
 
@@ -448,7 +460,7 @@ function isFreshForLiveSessionQuery(task, nowMs) {
 }
 
 function taskScore(task, query) {
-  const q = String(query || '').toLowerCase().trim();
+  const q = normalizeSpineQueryForVoice(query);
   if (!q) return 1;
   const terms = queryTerms(q);
   const text = [task.id, task.kind, task.origin, task.title, task.prompt, task.status, task.resultSummary]
@@ -456,7 +468,9 @@ function taskScore(task, query) {
     .toLowerCase();
   const tokens = new Set(text.match(/[a-z0-9]+/g) || []);
   if (!terms.length) return text.includes(q) ? 1 : 0;
-  if (isLowSignalIngestTask(task) && isDevSessionQuery(terms) && !isArchiveQuery(terms)) {
+  const liveWorkQuery =
+    (isDevSessionQuery(terms) || isProjectStatusQueryTerms(terms)) && !isArchiveQuery(terms);
+  if (isLowSignalIngestTask(task) && liveWorkQuery) {
     return 0;
   }
   const aliases = {
@@ -481,15 +495,21 @@ function taskScore(task, query) {
 function spineSnapshot(params = {}, opts = {}) {
   const limit = Math.max(1, Math.min(20, Number(params.limit || 8)));
   const query = String(params.query || '').trim();
-  const terms = queryTerms(query);
-  const devSessionQuery = isDevSessionQuery(terms) && !isArchiveQuery(terms);
-  const minScore = devSessionQuery && terms.length > 1 ? 0.67 : 0.34;
+  const searchQuery = normalizeSpineQueryForVoice(query);
+  const displayQuery = displaySpineQueryForVoice(query);
+  const terms = queryTerms(searchQuery);
+  const archiveQuery = isArchiveQuery(terms);
+  const devSessionQuery = isDevSessionQuery(terms) && !archiveQuery;
+  const projectStatusQuery = isProjectStatusQueryTerms(terms) && !archiveQuery;
+  const liveWorkQuery = devSessionQuery || projectStatusQuery;
+  const minScore = liveWorkQuery && terms.length > 1 ? 0.5 : 0.34;
   const nowMs = currentMs(opts);
   const commands = Array.isArray(params.commands) ? params.commands : [];
   const tasks = listSpineTasks({ tasksDir: resolveTasksDir(opts) })
-    .map((task) => ({ task, score: taskScore(task, query) }))
+    .map((task) => ({ task, score: taskScore(task, searchQuery) }))
     .filter((x) => !query || x.score >= minScore)
-    .filter((x) => !devSessionQuery || isFreshForLiveSessionQuery(x.task, nowMs))
+    .filter((x) => !liveWorkQuery || !isLowSignalIngestTask(x.task))
+    .filter((x) => !liveWorkQuery || isFreshForLiveSessionQuery(x.task, nowMs))
     .sort((a, b) => {
       const aActive = ACTIVE_STATUSES.has(String(a.task.status || '').toLowerCase()) ? 1 : 0;
       const bActive = ACTIVE_STATUSES.has(String(b.task.status || '').toLowerCase()) ? 1 : 0;
@@ -515,14 +535,14 @@ function spineSnapshot(params = {}, opts = {}) {
         status: cmd.status || 'queued',
       },
     }))
-    .map((x) => ({ ...x, score: taskScore(x.record, query) }))
+    .map((x) => ({ ...x, score: taskScore(x.record, searchQuery) }))
     .filter((x) => !query || x.score >= minScore)
-    .filter((x) => !devSessionQuery || isFreshForLiveSessionQuery(x.record, nowMs))
+    .filter((x) => !liveWorkQuery || isFreshForLiveSessionQuery(x.record, nowMs))
     .sort((a, b) => Date.parse(b.record.updatedAt || b.record.createdAt || '') - Date.parse(a.record.updatedAt || a.record.createdAt || ''))
     .slice(0, Math.max(0, limit - tasks.length))
     .map((x) => x.cmd);
   if (!tasks.length && !commandItems.length) {
-    const scope = query ? ` for ${speechSafe(query)}` : '';
+    const scope = displayQuery ? ` for ${speechSafe(displayQuery)}` : '';
     return {
       ok: true,
       source: 'cloud-spine',
@@ -558,12 +578,12 @@ function spineSnapshot(params = {}, opts = {}) {
   return {
     ok: true,
     source: 'cloud-spine',
-    scope: query ? `query:${query}` : 'active-and-recent',
+    scope: displayQuery ? `query:${displayQuery}` : 'active-and-recent',
     tasks,
     commands: commandItems,
     stateItems,
     summary: formatLiveStateAnswer(stateItems, {
-      query,
+      query: displayQuery,
       probeLevel,
       nowMs,
     }),

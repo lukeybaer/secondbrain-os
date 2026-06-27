@@ -162,30 +162,45 @@ function sanitizeLiveAssistantConfig(
   cachedConfig,
   { callerPhone = '', ownerPhones = [], memory = '', contactsSummary = '', recentOwnerContext = '', functionTools = [], now } = {},
 ) {
-  const config = JSON.parse(JSON.stringify(cachedConfig || {}));
-  if (!config.model || typeof config.model !== 'object') {
-    config.model = { provider: 'openai', model: 'gpt-4o' };
-  }
-  const existingTools = Array.isArray(config.model.tools) ? config.model.tools : [];
-  config.model.messages = [
-    {
-      role: 'system',
-      content: buildLiveVapiSystemPrompt({
-        callerPhone,
-        ownerPhones,
-        memory,
-        contactsSummary,
-        recentOwnerContext,
-        now,
-      }),
+  const cached = JSON.parse(JSON.stringify(cachedConfig || {}));
+  const sourceModel = cached.model && typeof cached.model === 'object' ? cached.model : {};
+  const existingTools = Array.isArray(sourceModel.tools) ? sourceModel.tools : [];
+  const config = {
+    model: {
+      provider: sourceModel.provider || 'openai',
+      model: sourceModel.model || 'gpt-4o',
+      messages: [
+        {
+          role: 'system',
+          content: buildLiveVapiSystemPrompt({
+            callerPhone,
+            ownerPhones,
+            memory,
+            contactsSummary,
+            recentOwnerContext,
+            now,
+          }),
+        },
+      ],
+      tools: mergeTools(functionTools, existingTools),
+      temperature: 0,
+      maxTokens: Math.min(Number(sourceModel.maxTokens) || 160, 160),
     },
-  ];
-  config.model.tools = mergeTools(functionTools, existingTools);
-  config.model.temperature = 0;
-  config.model.maxTokens = Math.min(Number(config.model.maxTokens) || 160, 160);
+  };
+  for (const key of [
+    'voice',
+    'server',
+    'silenceTimeoutSeconds',
+    'maxDurationSeconds',
+    'backgroundSound',
+    'endCallPhrases',
+    'firstMessageInterruptionsEnabled',
+  ]) {
+    if (cached[key] !== undefined) config[key] = cached[key];
+  }
   config.stopSpeakingPlan = {
-    ...(config.stopSpeakingPlan && typeof config.stopSpeakingPlan === 'object'
-      ? config.stopSpeakingPlan
+    ...(cached.stopSpeakingPlan && typeof cached.stopSpeakingPlan === 'object'
+      ? cached.stopSpeakingPlan
       : {}),
     numWords: 0,
     voiceSeconds: 0.2,

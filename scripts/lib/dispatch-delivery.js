@@ -15,10 +15,17 @@ const {
   formatLiveStateAnswer,
   normalizeProbeLevel,
 } = require('./live-dev-state');
+const {
+  displaySpineQueryForVoice,
+  isProjectStatusQueryTerms,
+  normalizeSpineQueryForVoice,
+  spineQueryTerms,
+} = require('./voice-spine-query');
 
 const DEFAULT_NO_PROGRESS_MS = 5 * 60 * 1000;
 const DEFAULT_CEILING_MS = 60 * 60 * 1000;
 const LIVE_STATUS_FRESH_MS = 2 * 60 * 60 * 1000;
+const PROJECT_TERMINAL_PROOF_MS = 24 * 60 * 60 * 1000;
 
 // Default wait policy by origin. Voice commands default to background+notify; the
 // result is spoken if the caller is still on the line, otherwise Telegram.
@@ -222,7 +229,7 @@ const TERMINAL_DETAIL_STATUSES = new Set([
 ]);
 
 function searchTerms(value) {
-  return normalizeSearchText(value).split(/\s+/).filter(Boolean);
+  return spineQueryTerms(value);
 }
 
 function isGenericSpineQuery(query) {
@@ -247,6 +254,10 @@ function isBroadStatusQuery(query) {
   );
 }
 
+function isProjectLiveStatusQuery(query) {
+  return isProjectStatusQueryTerms(searchTerms(query));
+}
+
 function detailStatus(record) {
   return String(record && record.status || '').replace(/[_-]+/g, ' ').toLowerCase().trim();
 }
@@ -269,6 +280,16 @@ function isFreshLiveStatusRecord(record, nowMs) {
 function isFreshTerminalStatusRecord(record, nowMs) {
   const ts = recordUpdatedMs(record);
   return isTerminalDetailRecord(record) && ts > 0 && nowMs - ts <= LIVE_STATUS_FRESH_MS;
+}
+
+function isRecentProjectTerminalProof(record, nowMs) {
+  const ts = recordUpdatedMs(record);
+  return (
+    isTerminalDetailRecord(record) &&
+    ts > 0 &&
+    nowMs - ts <= PROJECT_TERMINAL_PROOF_MS &&
+    hasSubstantiveTaskSpineResult(record)
+  );
 }
 
 function isTerminalDetailRecord(record) {
@@ -306,8 +327,15 @@ function recordSourceText(record) {
 }
 
 function isLowSignalIngest(record) {
-  const text = normalizeSearchText([record && record.kind, record && record.origin, record && record.title, record && record._sourcePath].join(' '));
-  return /\bingest\b/.test(text) || /\bgmail\b/.test(text);
+  const source = record && record.source && typeof record.source === 'object' ? record.source : {};
+  const text = normalizeSearchText([
+    record && record.kind,
+    record && record.origin,
+    record && record.title,
+    record && record._sourcePath,
+    source.type,
+  ].join(' '));
+  return /\bingest\b/.test(text) || /\bgmail\b/.test(text) || /\bvapi call\b|\bvoice call\b|\bcall transcript\b/.test(text);
 }
 
 function isAgentSessionRecord(record) {
@@ -330,6 +358,22 @@ function voiceSourceLabel(record) {
   if (label === 'command queue') return 'live command';
   if (label === 'task spine') return 'spine task';
   return 'spine record';
+}
+
+function hasSubstantiveTaskSpineResult(record) {
+  if (recordSourceLabel(record) !== 'task spine') return false;
+  const text = normalizeSearchText(
+    [
+      record && record.resultSummary,
+      latestHistoryNote(record),
+      record && record.detail,
+      record && record.progressNote,
+      record && record.latestStatus,
+    ]
+      .filter(Boolean)
+      .join(' '),
+  );
+  return text.length > 20 && !/^codex amy preload/.test(text);
 }
 
 function voiceTaskTitle(record, max = 86) {
@@ -427,12 +471,12 @@ function uniqueSpineRecords(records) {
 
 function isExactTitleMatch(record, query) {
   const title = normalizeSearchText(taskTitle(record));
-  const q = normalizeSearchText(query);
+  const q = normalizeSpineQueryForVoice(query);
   return Boolean(q && title && title.includes(q));
 }
 
 function scoreSpineRecord(record, query) {
-  const q = normalizeSearchText(query);
+  const q = normalizeSpineQueryForVoice(query);
   if (!q) return 1;
   const terms = q.split(/\s+/).filter((x) => x.length > 2);
   const text = normalizeSearchText(recordSourceText(record));
@@ -456,8 +500,9 @@ function summarizeSpineDetailForVoice({
   commandByTaskId = {},
 } = {}) {
   const genericQuery = isGenericSpineQuery(query);
-  const broadStatusQuery = !genericQuery && isBroadStatusQuery(query);
-  const scoringQuery = genericQuery ? '' : query;
+  const broadStatusQuery = !genericQuery && (isBroadStatusQuery(query) || isProjectLiveStatusQuery(query));
+  const scoringQuery = genericQuery ? '' : normalizeSpineQueryForVoice(query);
+  const displayQuery = genericQuery ? '' : displaySpineQueryForVoice(query);
   const commandRecords = (commands || [])
     .filter((c) => c && c.type === 'claude')
     .map((c) => ({
@@ -499,17 +544,29 @@ function summarizeSpineDetailForVoice({
       .sort((a, b) => compareSpineCandidates(a, b, nowMs))
       .slice(0, maxItems)
       .map((x) => x.record);
-    if (current.length) candidates = current.map((record) => ({ record, score: 1, priority: recordPriority(record) }));
+    const freshTerminal = candidates
+      .filter((x) => isFreshTerminalStatusRecord(x.record, nowMs) && !isLowSignalIngest(x.record))
+      .sort((a, b) => compareSpineCandidates(a, b, nowMs))
+      .slice(0, maxItems)
+      .map((x) => x.record);
+    const projectPhraseQuery = isProjectLiveStatusQuery(query) && searchTerms(query).length > 1;
+    const terminalProof = projectPhraseQuery
+      ? broadCandidates
+          .filter((x) => !isLowSignalIngest(x.record) && isRecentProjectTerminalProof(x.record, nowMs))
+          .sort((a, b) => compareSpineCandidates(a, b, nowMs))
+          .slice(0, maxItems)
+          .map((x) => x.record)
+      : [];
+    if (terminalProof.length)
+      candidates = terminalProof.map((record) => ({ record, score: 1, priority: recordPriority(record) }));
+    else if (current.length)
+      candidates = current.map((record) => ({ record, score: 1, priority: recordPriority(record) }));
     else {
-      const freshTerminal = candidates
-        .filter((x) => isFreshTerminalStatusRecord(x.record, nowMs) && !isLowSignalIngest(x.record))
-        .sort((a, b) => compareSpineCandidates(a, b, nowMs))
-        .slice(0, maxItems)
-        .map((x) => x.record);
       if (freshTerminal.length)
         candidates = freshTerminal.map((record) => ({ record, score: 1, priority: recordPriority(record) }));
       else if (candidates.length) {
         const older = candidates
+          .filter((x) => !isLowSignalIngest(x.record))
           .sort((a, b) => compareSpineCandidates(a, b, nowMs))
           .map((x) => x.record);
         const olderUnique = uniqueSpineRecords(older).slice(0, 1);
@@ -527,8 +584,8 @@ function summarizeSpineDetailForVoice({
           : 'I found older matching records only.';
         return (
           (staleMirror
-            ? `I don't have fresh Codex mirror proof of a live ${speechSafe(query)} session. `
-            : `I don't see a live ${speechSafe(query)} session. `) +
+            ? `I don't have fresh Codex mirror proof of a live ${speechSafe(displayQuery || query)} session. `
+            : `I don't see a live ${speechSafe(displayQuery || query)} session. `) +
           olderClause
         );
       }
@@ -541,8 +598,8 @@ function summarizeSpineDetailForVoice({
     .map((x) => x.record);
 
   if (!all.length) {
-    return query
-      ? `I found no matching spine item for ${speechSafe(query)}. I only checked ${SPINE_DETAIL_SCOPE_VOICE}, so that is a scoped no-match, not whole-life proof.`
+    return displayQuery
+      ? `I found no matching spine item for ${speechSafe(displayQuery)}. I only checked ${SPINE_DETAIL_SCOPE_VOICE}, so that is a scoped no-match, not whole-life proof.`
       : `I found no active spine items in ${SPINE_DETAIL_SCOPE_VOICE}.`;
   }
 
@@ -559,15 +616,15 @@ function summarizeSpineDetailForVoice({
 
   if (normalizedProbeLevel > 0) {
     return formatLiveStateAnswer(liveItems, {
-      query: query && !genericQuery ? query : '',
+      query: displayQuery,
       probeLevel: normalizedProbeLevel,
       nowMs,
     });
   }
 
   const lines = [
-    query && !genericQuery
-      ? `I found ${all.length} matching spine item${all.length === 1 ? '' : 's'} for ${speechSafe(query)}.`
+    displayQuery
+      ? `I found ${all.length} matching spine item${all.length === 1 ? '' : 's'} for ${speechSafe(displayQuery)}.`
       : `I found ${all.length} active or recent spine item${all.length === 1 ? '' : 's'}.`,
   ];
   for (const r of all) {

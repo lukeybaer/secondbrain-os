@@ -130,7 +130,7 @@ describe('VAPI_FUNCTION_TOOLS', () => {
     expect(props.query.description).toMatch(/session|task/i);
     expect(props.detail.description).toMatch(/specific session/i);
     expect((tool as any).function.description).toMatch(/instead of dispatching a new coding task/i);
-    expect((tool as any).function.description).toMatch(/answer directly from this result/i);
+    expect((tool as any).function.description).toMatch(/answer directly from this source-backed result/i);
   });
 
   it('does not let agent launch/status tools steal read-only spine status lookups', () => {
@@ -138,21 +138,23 @@ describe('VAPI_FUNCTION_TOOLS', () => {
     const statusTool = VAPI_FUNCTION_TOOLS.find((t: any) => t.function?.name === 'agent_session_status');
     const statusProps = (statusTool as any).function.parameters.properties;
 
-    expect((startAgent as any).function.description).toMatch(/Do not use this for a read-only status lookup/i);
+    expect((startAgent as any).function.description).toMatch(/or a read-only status lookup/i);
     expect((statusTool as any).function.description).toMatch(/exact task_id/i);
     expect((statusTool as any).function.description).toMatch(/not with a Codex thread snapshot id/i);
     expect(statusProps.task_id.description).toMatch(/Do not pass Codex thread snapshot ids/i);
   });
 
-  it('puts Vapi request-start messages on slow live lookup tools', () => {
+  it('keeps check_spine silent while the server speaks the source result', () => {
     const checkSpine = VAPI_FUNCTION_TOOLS.find((t: any) => t.function?.name === 'check_spine');
     const queryKnowledge = VAPI_FUNCTION_TOOLS.find((t: any) => t.function?.name === 'query_knowledge');
     const startAgent = VAPI_FUNCTION_TOOLS.find((t: any) => t.function?.name === 'start_agent_session');
     expect((checkSpine as any).messages).toEqual([
-      { type: 'request-start', content: "I'm checking the live spine." },
+      { type: 'request-start', content: '' },
+      { type: 'request-response-delayed', content: '' },
+      { type: 'request-complete', role: 'assistant', content: '' },
     ]);
     expect((queryKnowledge as any).messages?.[0]?.type).toBe('request-start');
-    expect((startAgent as any).messages?.[0]?.type).toBe('request-start');
+    expect((startAgent as any).messages?.[0]?.type).toBe('request-complete');
   });
 
   it('has the full phone tool contract plus dtmf', () => {

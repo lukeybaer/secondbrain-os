@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { normalizeSpineQueryForVoice } = require('./voice-spine-query');
 
 const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const GENERIC_WORDS = new Set([
@@ -33,6 +34,7 @@ const GENERIC_WORDS = new Set([
   'session',
   'sessions',
   'status',
+  'stuff',
   'task',
   'tasks',
   'that',
@@ -52,7 +54,7 @@ function defaultRecentOwnerContextPath() {
 }
 
 function normalizeText(value) {
-  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return normalizeSpineQueryForVoice(value);
 }
 
 function userTranscriptLines(transcript) {
@@ -84,6 +86,8 @@ function extractTopicHintsFromTranscript(transcript, summary = '') {
   const sources = [...userTranscriptLines(transcript), String(summary || '')].filter(Boolean);
   const patterns = [
     /\bhow(?:'s| is)\s+(?:the\s+)?(.+?)\s+(?:session|task)\b/i,
+    /\bhow(?:'s| is)\s+(?:the\s+)?(?:stuff|work)?\s*(?:been\s+)?(?:going|looking|coming)\s+(?:for|on|with)\s+(?:the\s+)?(.+?)(?:[?.!,]|$)/i,
+    /\bwhat'?s\s+going\s+on\s+(?:for|with|on)\s+(?:the\s+)?(.+?)(?:[?.!,]|$)/i,
     /\b(?:status|progress)\s+(?:of|on|for)\s+(?:the\s+)?(.+?)\s+(?:session|task)\b/i,
     /\b(?:check|checking)\s+(?:on|into|for)?\s*(?:the\s+)?(.+?)\s+(?:session|task)\b/i,
     /\b(?:session|task)\s+(?:for|about|called|named)\s+(.+?)(?:[?.!,]|$)/i,

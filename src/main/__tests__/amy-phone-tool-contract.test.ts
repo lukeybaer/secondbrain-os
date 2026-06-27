@@ -93,8 +93,15 @@ describe('Amy phone-call tool contract', () => {
     expect(src).toContain('Do NOT dispatch run_claude_code for read-only session lookup');
     expect(src).toContain('VAPI_WEBHOOK_SECRET');
     expect(src).toContain('VAPI_INBOUND_PHONE_NUMBER_ID');
+    expect(src).toContain('VAPI_PHONE_NUMBER_ID');
+    expect(src).toContain('config.vapiInboundPhoneNumberId');
+    expect(src).toContain('config.vapiPhoneNumberId');
+    expect(src).toContain('const vapiPhoneNumberIds = [');
+    expect(src).toContain('patchPhoneNumberServers(vapiPhoneNumberIds, payload.server)');
+    expect(src).toContain('assistantId: config.callbackAssistantId');
     expect(src).toContain("'x-vapi-secret'");
     expect(src).toContain('/phone-number/');
+    expect(src).not.toContain('const vapiInboundPhoneNumberId =');
     expect(src).not.toContain('tools: existingTools');
   });
 
