@@ -53,8 +53,10 @@ echo "[deploy] pushing live backend dependencies"
 for dep in "${LIVE_DEPS[@]}"; do
   if [ -f "$ROOT/$dep" ]; then
     dep_dir="$(dirname "$dep")"
-    ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "mkdir -p /opt/secondbrain/$dep_dir"
-    scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/$dep" "$HOST:/opt/secondbrain/$dep"
+    tmp="/tmp/secondbrain-deploy-${dep//[^A-Za-z0-9._-]/_}"
+    scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/$dep" "$HOST:$tmp"
+    ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+      "sudo mkdir -p /opt/secondbrain/$dep_dir && sudo cp $tmp /opt/secondbrain/$dep && sudo chown ec2-user:ec2-user /opt/secondbrain/$dep && rm -f $tmp"
   fi
 done
 
