@@ -11,10 +11,16 @@
 
 $ErrorActionPreference = 'Stop'
 $taskName = 'ClaudeMaxProxyWatchdog'
-$ps1      = (Join-Path $env:USERPROFILE 'secondbrain\scripts\claude-proxy-watchdog.ps1')
+$root     = (Join-Path $env:USERPROFILE 'secondbrain')
+$ps1      = (Join-Path $root 'scripts\claude-proxy-watchdog.ps1')
+$launcher = (Join-Path $root 'scripts\silent-node-launcher.vbs')
 
 if (-not (Test-Path $ps1)) {
     Write-Error "Watchdog script missing: $ps1"
+    exit 1
+}
+if (-not (Test-Path $launcher)) {
+    Write-Error "Silent launcher missing: $launcher"
     exit 1
 }
 
@@ -25,7 +31,7 @@ if ($existing) {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
 }
 
-$action = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ps1`""
+$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "`"$launcher`" `"$ps1`"" -WorkingDirectory $root
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 0) -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited

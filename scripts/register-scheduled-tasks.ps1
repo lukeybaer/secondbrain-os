@@ -145,7 +145,7 @@ Bat-Minute-Task 'SecondBrain-LinkedInOutboundSend' "$root\scripts\linkedin-outbo
 
 # Raw-first life archive: keep Gmail/Otter/Vapi/LinkedIn/WhatsApp/session files
 # indexed for immediate local search, then push newly captured raw files to S3.
-Bat-Minute-Task 'SecondBrain-LifeArchiveGmailBackfill' "$root\scripts\life-archive-gmail-backfill.bat" 15
+Bat-Minute-Task 'SecondBrain-LifeArchiveGmailBackfill' "$root\scripts\life-archive-gmail-backfill-fast.ps1" 15
 Bat-Minute-Task 'SecondBrain-LifeArchiveIndex' "$root\scripts\life-archive-index.bat" 5
 Bat-Minute-Task 'SecondBrain-LifeArchiveHealth' "$root\scripts\life-archive-health.bat" 60
 Bat-Minute-Task 'SecondBrain-LifeArchiveS3Sync' "$root\scripts\life-archive-sync-s3.bat" 60

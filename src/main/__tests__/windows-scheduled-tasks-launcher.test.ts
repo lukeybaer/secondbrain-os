@@ -23,6 +23,11 @@
 //      not node.exe. The 4 broken tasks all wrap .bat scripts; the
 //      original launcher only knew how to invoke node.exe.
 //
+//   3. The .vbs MUST handle .ps1 extensions through powershell.exe while still
+//      being launched by wscript window style 0. Direct scheduled PowerShell
+//      with -WindowStyle Hidden still produced a foreground blue host on
+//      2026-06-27.
+//
 // We test the launcher script by static analysis (parsing the .vbs source)
 // rather than executing wscript. CI runs on Linux where wscript does not
 // exist, and the asserts here are about the script contract, not the
@@ -58,6 +63,12 @@ describe('silent-node-launcher.vbs (Windows scheduled-task launcher contract)', 
     expect(src).toMatch(/\.bat/);
     expect(src).toMatch(/\.cmd/);
     expect(src).toMatch(/cmd\.exe\s+\/c/i);
+  });
+
+  it('dispatches .ps1 through PowerShell from inside the hidden launcher', () => {
+    expect(src).toMatch(/\.ps1/);
+    expect(src).toMatch(/powershellExe/);
+    expect(src).toMatch(/-NoProfile -NonInteractive -ExecutionPolicy Bypass -File/);
   });
 
   it('runs hidden (window style 0) so node never flashes a console at ExampleCo', () => {

@@ -5,8 +5,9 @@
  *
  * Every recurring SecondBrain Windows scheduled task MUST run through
  * wscript.exe + silent-node-launcher.vbs (window style 0 = hidden). A task
- * whose Execute is a .bat / cmd.exe / node.exe / python.exe directly pops a
- * console window to the foreground on every firing and steals ExampleCo's screen.
+ * whose Execute is a .bat / cmd.exe / node.exe / python.exe / powershell.exe
+ * directly can pop a console window to the foreground on every firing and steal
+ * ExampleCo's screen.
  *
  * The static test (scripts/__tests__/scheduled-tasks-silent-launcher.test.js)
  * guards the registration SOURCE. It passes when register-scheduled-tasks.ps1
@@ -39,17 +40,16 @@ const LAUNCHER_NAME = 'silent-node-launcher.vbs';
  *
  *  - 'visible-exec'      : node/cmd/bat/python directly -> pops a console; the
  *                          node launcher can re-point it (script in Exec or Args).
- *  - 'visible-powershell': powershell/pwsh WITHOUT a hidden-window flag -> pops a
- *                          window; NOT node-launcher-repairable (needs
- *                          -WindowStyle Hidden), surfaced as a blocker.
+ *  - 'visible-powershell': powershell/pwsh directly -> can still create a
+ *                          visible console in an interactive desktop session;
+ *                          re-point .ps1 scripts through the launcher.
  *  - 'no-launcher'       : wscript.exe but the launcher is not in the arguments.
  *  - 'bare-launcher'     : launcher present but no script after it -> silent no-op.
  *
- * Silent-safe forms (return null): wscript/cscript + launcher + script, OR
- * powershell/pwsh carrying a -WindowStyle Hidden (the claude-proxy watchdog
- * shape). Handles quoted AND unquoted launcher paths, so it does not share the
- * false-positive bug in the old `\.vbs"\s+\S` audit regex (which assumed the
- * launcher path was always quoted).
+ * Silent-safe form (return null): wscript/cscript + launcher + script. Handles
+ * quoted AND unquoted launcher paths, so it does not share the false-positive
+ * bug in the old `\.vbs"\s+\S` audit regex (which assumed the launcher path was
+ * always quoted).
  */
 function classifyTask(exec, args) {
   const e = String(exec || '')
@@ -57,12 +57,13 @@ function classifyTask(exec, args) {
     .toLowerCase();
   const a = String(args || '');
 
-  // PowerShell tasks are silent only when launched with a hidden-window flag.
+  // PowerShell's own hidden flag was not enough in ExampleCo's interactive desktop:
+  // a blue PowerShell host still appeared. All PowerShell must be launched via
+  // wscript + silent-node-launcher.vbs, which now dispatches .ps1 files.
   if (e === 'powershell.exe' || e === 'pwsh.exe' || /[\\/](powershell|pwsh)(\.exe)?$/.test(e)) {
-    if (/-w(indowstyle)?\s+(hidden|1)\b/i.test(a)) return null;
     return {
       problem: 'visible-powershell',
-      detail: `Execute is "${exec}" without -WindowStyle Hidden -- pops a PowerShell window`,
+      detail: `Execute is "${exec}" directly -- PowerShell must route through wscript + silent launcher`,
     };
   }
 
@@ -178,9 +179,9 @@ function deriveLaunch(exec, args) {
   const strip = (s) => String(s || '').replace(/^["']|["']$/g, '');
   const all = [strip(exec), ...tokenizeArgs(args)];
   // Only the script types silent-node-launcher.vbs can dispatch: .bat/.cmd via
-  // cmd.exe, .js/.mjs via node.exe. NOT .ps1 or .py -- the launcher would feed
-  // those to node and break the task, so leave them for a blocker instead.
-  const scriptRe = /\.(bat|cmd|js|mjs)$/i;
+  // cmd.exe, .js/.mjs via node.exe, and .ps1 via powershell.exe hidden behind
+  // wscript. NOT .py -- the launcher would feed it to node and break the task.
+  const scriptRe = /\.(bat|cmd|js|mjs|ps1)$/i;
   const idx = all.findIndex((t) => scriptRe.test(t));
   if (idx === -1) return null;
   return { script: all[idx], rest: all.slice(idx + 1) };
@@ -230,7 +231,8 @@ function healScheduledTaskPopups() {
       if (repairTask(d.name, d.exec, d.args)) repaired.push(d.name);
       else blockers.push(`${d.name}: could not derive script to re-point`);
     } else if (d.problem === 'visible-powershell') {
-      blockers.push(`${d.name}: ${d.detail} -- add "-WindowStyle Hidden" to its action`);
+      if (repairTask(d.name, d.exec, d.args)) repaired.push(d.name);
+      else blockers.push(`${d.name}: ${d.detail}; could not derive .ps1 script to re-point`);
     } else {
       blockers.push(`${d.name}: ${d.detail} (re-register through silent-node-launcher.vbs)`);
     }
