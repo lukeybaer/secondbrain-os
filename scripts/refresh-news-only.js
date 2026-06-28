@@ -24,6 +24,7 @@ const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
 const { spawnSync, spawn } = require('child_process');
+const { isThreeExampleCoraphArticleSummary } = require('./lib/news-summarize.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const BRIEFING_DIR = path.join(REPO_ROOT, 'data', 'briefings');
@@ -517,6 +518,21 @@ function verifiedThreeNewsExampleCoraphs(a, body) {
   const ExampleCoraphs = groupVerifiedExampleCoraphs(filtered);
   if (!ExampleCoraphs) return null;
   return ExampleCoraphs;
+}
+
+// Final compliance gate for a section row. A candidate is only allowed to COUNT
+// toward the section target (and stay in the rendered set) when its summary is a
+// real 3-ExampleCoraph article brief. A thin, headline-only, or publisher-chrome
+// summary that slipped past the upstream paths (e.g. the verified-ExampleCoraph last
+// resort) must be treated as a skip so the next queue/discovery candidate fills
+// the slot instead of leaving a non-compliant row. ExampleCo 2026-06-28.
+function isUsableSectionSummary(summary, item = {}) {
+  if (!summary || typeof summary !== 'string') return false;
+  const paras = summary
+    .split(/\n\s*\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return isThreeExampleCoraphArticleSummary(paras, item);
 }
 
 function claudeSummarize(prompt) {
@@ -1231,7 +1247,8 @@ const DISCOVERY = {
   },
 };
 
-async function gatherSection(feeds, target = 10, extraCandidates = [], discover = null) {
+async function gatherSection(feeds, target = 10, extraCandidates = [], discover = null, opts = {}) {
+  const summarize = typeof opts.summarize === 'function' ? opts.summarize : summarizeArticle;
   const all = [...extraCandidates];
   for (const [url, name] of feeds) {
     const items = await fetchFeed(url, name);
@@ -1254,11 +1271,15 @@ async function gatherSection(feeds, target = 10, extraCandidates = [], discover 
     for (let i = 0; i < fresh.length; i += BATCH) {
       if (okCount() >= target) break;
       const batch = fresh.slice(i, i + BATCH);
-      const results = await Promise.all(batch.map((c) => summarizeArticle(c)));
+      const results = await Promise.all(batch.map((c) => summarize(c)));
       for (let j = 0; j < batch.length; j += 1) {
         if (okCount() >= target) break;
         const cand = batch[j];
-        const s = results[j];
+        // A summary only COUNTS toward the target (and stays in the rendered
+        // set) when it is a real 3-ExampleCoraph article brief. A non-compliant
+        // summary (thin/headline/publisher chrome) is dropped here so the next
+        // queue/discovery candidate fills the slot instead of leaving a bad row.
+        const s = isUsableSectionSummary(results[j], cand) ? results[j] : null;
         seenLinks.add(cand.link);
         articles.push(cand);
         summaries.push(s);
@@ -1484,4 +1505,6 @@ module.exports = {
   selectNewsSections,
   parseBedrockOut,
   BEDROCK_MODEL_ID,
+  gatherSection,
+  isUsableSectionSummary,
 };

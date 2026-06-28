@@ -2185,6 +2185,7 @@ module.exports = {
   newsStubDefects,
   execCrispnessDefects,
   statusDefects,
+  videoManifestDriftDefects,
   advisoryNotes,
   blockersUnderReportDefects,
   isNamedInBlockers,

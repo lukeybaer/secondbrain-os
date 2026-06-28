@@ -1351,13 +1351,29 @@ function inspectBusinessPulse(raw, date) {
   }, null);
   const briefingDay = parseIsoDay(date) || new Date();
   const lagDays = latest ? daysBetween(latest.date, briefingDay) : null;
+  // Health is based on whether the SOURCE was queried recently (the cache scan
+  // timestamp), NOT on the age of the newest invoice. A slow sales week with no
+  // new invoices in the last 24h is a CLEAN ZERO, not a red/blocked card. Only a
+  // scan that never ran or has not run inside its daily window is a real
+  // blocker (ExampleCo 2026-06-28).
+  const scanStamp =
+    raw && !Array.isArray(raw) ? raw.scannedAt || raw.generatedAt || raw.generated_at : null;
+  const scanDay = parseIsoDay(scanStamp);
+  const scanAgeDays = scanDay ? daysBetween(scanDay, briefingDay) : null;
+  // The Snack Dude cache is refreshed daily; allow a small slack window before a
+  // missing/old scan stamp counts as unreachable.
+  const SCAN_FRESH_WINDOW_DAYS = 2;
+  const scanUnreachable = !Number.isFinite(scanAgeDays) || scanAgeDays > SCAN_FRESH_WINDOW_DAYS;
+  const sourceMissing = raw == null;
   return {
     lines,
     rowCount: rows.length,
     latestDate: latest && latest.date,
     lagDays,
-    sourceMissing: rows.length === 0,
-    stale: Number.isFinite(lagDays) && lagDays > 2,
+    scannedAt: scanStamp || null,
+    scanAgeDays,
+    sourceMissing,
+    stale: scanUnreachable,
   };
 }
 
@@ -7474,4 +7490,5 @@ module.exports = {
   parseRssItemsLite,
   buildEc2SubsystemHealthRows,
   runningOnEc2,
+  inspectBusinessPulse,
 };
