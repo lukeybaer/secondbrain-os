@@ -389,6 +389,7 @@ function buildVapiFunctionTools() {
         },
       },
       [],
+      { messages: toolMessages('', '', { silentStart: true, silentComplete: true }) },
     ),
     functionTool(
       'read_otter_transcripts',
