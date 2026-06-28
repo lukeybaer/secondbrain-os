@@ -57,8 +57,13 @@ function newsShortDefect(cardName, cardText = '') {
   }
 
   const target = manifest.getNewsTarget(card);
-  if (target === null || actual === null) return null;
-  if (actual < target) return `SHORT: ${base} delivered ${actual}/${target} articles`;
+  // The clean minimum may sit below the aspirational target (covid: target 5,
+  // minimum 1). A card at >= minimum is clean; only below-minimum is SHORT. For
+  // every other news card minimum === target, so the exact-count check is the
+  // same as before (ExampleCo 2026-06-28).
+  const minimum = manifest.getNewsMinimum(card);
+  if (minimum === null || actual === null) return null;
+  if (actual < minimum) return `SHORT: ${base} delivered ${actual}/${target} articles`;
   return null;
 }
 

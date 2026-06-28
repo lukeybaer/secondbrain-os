@@ -1666,6 +1666,16 @@ function fixedNewsHealTarget(cardKey) {
   return FIXED_TARGET_NEWS_HEAL_KEYS.has(cardKey) ? 10 : 0;
 }
 
+// The CLEAN minimum item count for a news card. COVID is aspirational at 5 but a
+// section with >= 1 source-backed article is CLEAN (ExampleCo 2026-06-28): 1..4 is not
+// a shortfall, only 0 is. Every other card's minimum equals its target, so their
+// exact-count contract is unchanged. Mirrors the manifest getNewsMinimum the
+// render QC reads, kept local so the cloud builder stays self-contained.
+function fixedNewsCleanMinimum(cardKey, card) {
+  if (cardKey === 'covid') return 1;
+  return contentHealCardTarget(cardKey, card);
+}
+
 function contentHealCardTarget(cardKey, card) {
   const explicit = Number(card && card.target) || 0;
   const floor = fixedNewsHealTarget(cardKey);
@@ -2107,6 +2117,7 @@ function healedNewsItems(dataDir, date, cardKey) {
     })
     .map(({ it }) => it);
   const renderReadyCount = items.filter(newsItemCanRenderAsNewsRow).length;
+  const minimum = fixedNewsCleanMinimum(cardKey, card);
   const wallText =
     cleanExecutiveFragment(card && card.wall, { max: 180 }) ||
     `content-heal shortfall: ${renderReadyCount}/${target} current ${cardKey} items available; stale fallback suppressed`;
@@ -2114,7 +2125,11 @@ function healedNewsItems(dataDir, date, cardKey) {
     items,
     count: Number(card && card.count) || items.length,
     target,
-    wall: renderReadyCount >= target ? '' : wallText,
+    minimum,
+    // A card at >= its clean minimum is not a shortfall (covid minimum 1 keeps a
+    // 1..4-article card clean while still shooting for target). Non-covid cards
+    // have minimum === target, so the wall fires exactly as before.
+    wall: renderReadyCount >= minimum ? '' : wallText,
     sourceDate: raw && raw.date,
   };
 }
@@ -2529,7 +2544,16 @@ function buildRenderableNewsSummaryParas(summary, item = {}) {
   if (renderParas.length < 3 || !renderParas.slice(0, 3).every((p) => p.length >= 75)) {
     return null;
   }
-  return renderParas.slice(0, 3);
+  const finalParas = renderParas.slice(0, 3);
+  // Re-validate the RENDERED ExampleCoraphs against the EXACT live-render QC standard
+  // (isThreeExampleCoraphArticleSummary), not just the >= 75-char floor. The renderer
+  // chrome-strip can shorten a ExampleCoraph that passed pre-clean below the QC floor;
+  // counting that as a full row ships a thin "in-between" row the live QC then
+  // flags NEWS-PROSE. Failing here drops the candidate to the headline-only note
+  // so the next queue candidate fills the slot -- builder acceptance now equals
+  // QC acceptance (ExampleCo 2026-06-28).
+  if (!isThreeExampleCoraphArticleSummary(finalParas, item)) return null;
+  return finalParas;
 }
 
 const NEWS_TITLE_COHERENCE_STOPWORDS = new Set(
@@ -2827,12 +2851,17 @@ function formatHealedNewsSection(dataDir, date, cardKey, label) {
     lines.push(`Coverage: ${renderedCount}/${healed.target} source-backed items ready.`);
   }
   if (healed.sourceDate) lines.push(`Source snapshot: ${healed.sourceDate}.`);
+  // A card at >= its clean minimum is not a shortfall: covid minimum is 1, so a
+  // 1..4-article covid card is clean while still shooting for 5; every other
+  // card has minimum === target so its shortfall fires exactly as before (ExampleCo
+  // 2026-06-28).
+  const minimum = Number.isFinite(healed.minimum) ? healed.minimum : healed.target;
   const summaryProofShortfall =
-    cardKey === 'covid' && renderCandidates.length >= healed.target && renderedCount < healed.target;
+    cardKey === 'covid' && renderCandidates.length >= healed.target && renderedCount < minimum;
   const wall = summaryProofShortfall
     ? `article-summary shortfall: ${renderedCount}/${healed.target} current ${cardKey} items met the live news summary standard`
     : cleanNewsWallText(healed.wall) ||
-      (renderedCount < healed.target
+      (renderedCount < minimum
         ? `article-summary shortfall: ${renderedCount}/${healed.target} current ${cardKey} items met the live news summary standard`
         : '');
   if (wall) lines.push(`Shortfall: ${wall}.`);
@@ -2864,7 +2893,7 @@ function formatHealedNewsSection(dataDir, date, cardKey, label) {
     state: {
       id: NEWS_CARD_STATE_IDS[cardKey] || `${cardKey}-news`,
       count: renderedCount,
-      ok: renderedCount >= healed.target && !healed.wall,
+      ok: renderedCount >= minimum && !healed.wall,
       source: shown.length ? 'content-heal' : 'missing',
     },
   };
@@ -7466,6 +7495,7 @@ module.exports = {
   newsSummaryRescueLimit,
   buildFullNewsSummaryParas,
   isThreeExampleCoraphArticleSummary,
+  buildRenderableNewsSummaryParas,
   isSelfHealRefreshMode,
   selfHealRefreshTargets,
   contentHealCardsForRefreshTargets,

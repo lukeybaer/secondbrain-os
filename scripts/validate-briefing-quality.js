@@ -1007,9 +1007,17 @@ const newsExpectations = new Map([
   ['MORTGAGE INDUSTRY NEWS', 10],
   // COVID was absent here (2026-06-03 ExampleCo: "why no COVID news, why's it a
   // blocker"), so a collapsed COVID card sailed past clean. content-heal now
-  // owns healing it to 5; the section must carry 5 articles or a named wall.
+  // owns healing it toward 5; the section is CLEAN at 1+ articles (ExampleCo
+  // 2026-06-28) -- 5 is aspirational, only 0 is a shortfall. The relaxed minimum
+  // lives in newsMinimums below; every other card keeps its exact count here.
   ['COVID-19 TREATMENTS & NEWS', 5],
 ]);
+
+// The CLEAN minimum article count per news card. A card whose label is present
+// here is checked as "at least minimum" instead of "exactly target": covid is
+// clean at 1+ while still shooting for 5. Cards absent from this map keep the
+// strict exact-count contract from newsExpectations.
+const newsMinimums = new Map([['COVID-19 TREATMENTS & NEWS', 1]]);
 
 // Map a briefing news-section label to the content-heal card key so the
 // section check can read the wall/tier evidence and relax the prose gate for a
@@ -1069,7 +1077,15 @@ function checkNewsSection(label, body, card, expectedCount) {
   // is a defect (something dropped to a degraded shape with no provenance).
   const cardHasEvidence = !!(card && Array.isArray(card.items) && card.items.length);
   const cardOwnsRescue = cardHasWall || cardHasEvidence;
-  if (expectedCount != null && articles.length !== expectedCount && !cardHasWall) {
+  // A card with a relaxed minimum (covid: 1) is clean at >= minimum even when it
+  // is under target; every other card must hit its exact target. Either way a
+  // named content-heal wall suppresses the count failure (ExampleCo 2026-06-28).
+  const minimumCount = newsMinimums.has(label) ? newsMinimums.get(label) : expectedCount;
+  const countShort =
+    minimumCount !== expectedCount
+      ? articles.length < minimumCount
+      : articles.length !== expectedCount;
+  if (expectedCount != null && countShort && !cardHasWall) {
     failures.push(`${label} has ${articles.length}/${expectedCount} articles`);
   }
   for (const article of articles) {

@@ -274,7 +274,13 @@ const CARD_DEFINITIONS = [
     match: /^COVID-19 TREATMENTS & NEWS\b/i,
     always: true,
     newsTarget: 5,
-    condition: 'Always: COVID-19 treatments & news tile (5-item card).',
+    // COVID is aspirational at 5 but a section with >= 1 source-backed article
+    // is CLEAN (ExampleCo 2026-06-28): 1..4 is not a shortfall, only 0 is. The render
+    // QC + markdown gate read getNewsMinimum for the shortfall check while still
+    // shooting for newsTarget. Other news cards leave newsMinimum unset, so it
+    // falls back to their target (exact-count contract preserved).
+    newsMinimum: 1,
+    condition: 'Always: COVID-19 treatments & news tile (target 5, clean at 1+).',
   },
   {
     id: 'mortgage_rate_indexes',
@@ -389,10 +395,21 @@ function getNewsTarget(card) {
   return Number.isFinite(card.newsTarget) ? card.newsTarget : null;
 }
 
+// The CLEAN minimum item count: a card rendering at least this many source-backed
+// items is not a shortfall. Defaults to the aspirational target (so every other
+// news card keeps its exact-count contract); covid overrides it to 1 because a
+// 1..4-article COVID section is clean while 5 stays the goal (ExampleCo 2026-06-28).
+function getNewsMinimum(card) {
+  if (!card) return null;
+  if (Number.isFinite(card.newsMinimum)) return card.newsMinimum;
+  return getNewsTarget(card);
+}
+
 module.exports = {
   CARDS,
   ALWAYS_IDS,
   CONDITIONAL_IDS,
   getCardById,
   getNewsTarget,
+  getNewsMinimum,
 };

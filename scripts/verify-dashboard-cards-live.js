@@ -722,11 +722,17 @@ function newsCountDefects(card, tile, builderCounts = {}) {
   }
 
   const target = manifest.getNewsTarget(card);
+  // The CLEAN minimum may be below the aspirational target (covid: target 5,
+  // minimum 1). A card at >= minimum is not a shortfall even when it is under
+  // target (ExampleCo 2026-06-28). For every other news card minimum === target, so
+  // the exact-count contract is unchanged.
+  const minimum = manifest.getNewsMinimum(card);
 
-  // (a) TARGET: a news card must render its manifest target count.
-  if (target !== null && rendered !== null && rendered < target) {
+  // (a) MINIMUM: a news card must render at least its manifest clean minimum.
+  if (minimum !== null && rendered !== null && rendered < minimum) {
+    const benchmarkWord = minimum === target ? 'target' : 'minimum';
     defects.push(
-      `BUILDER-COUNT: ${card.id} (${tile.name}) rendered ${rendered} item(s), below its target of ${target}`,
+      `BUILDER-COUNT: ${card.id} (${tile.name}) rendered ${rendered} item(s), below its ${benchmarkWord} of ${minimum}`,
     );
   }
 
