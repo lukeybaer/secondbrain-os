@@ -28,6 +28,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const https = require('node:https');
 const { isCliFailureOutput, buildClaudeCliEnv } = require('./cli-output-guard.js');
+const { withTransientRetry, isTransientError } = require('./transient-error.js');
 const { withCodexAmyPrelude } = require('./codex-amy-prelude.js');
 
 const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..', '..');
@@ -102,7 +103,14 @@ function runCodexRung(question, opts) {
     // returned as the answer. Temp file per call, removed in finally.
     const os = require('node:os');
     const outFile = path.join(os.tmpdir(), `ask-ai-codex-${process.pid}-${Date.now()}.txt`);
-    const args = ['exec', '--skip-git-repo-check', '-s', 'read-only', '--output-last-message', outFile];
+    const args = [
+      'exec',
+      '--skip-git-repo-check',
+      '-s',
+      'read-only',
+      '--output-last-message',
+      outFile,
+    ];
     if (opts.codexImagePath) args.push('-i', opts.codexImagePath);
     try {
       const res = spawnSync('codex', args, {
@@ -279,6 +287,11 @@ function builtinRungs(opts) {
 //   opts.onAttempt   callback per attempt {rung, outcome, latencyMs}
 //   opts.budget      inject {spentUsd, capUsd, warnUsd, warn(msg)} (tests)
 //   opts.silent      return null instead of throwing BrainUnreachable
+//   opts.rungRetries extra same-rung retries on a TRANSIENT throw before
+//                    descending (default 1). A blip on the Claude rung must not
+//                    bounce Amy to a paid floor; a non-transient failure (auth,
+//                    null, sentinel) still descends immediately.
+//   opts.sleep       injectable backoff delay (tests pass a noop)
 async function askAI(question, opts = {}) {
   const rungs = opts.rungs || builtinRungs(opts);
   const attempts = [];
@@ -299,8 +312,30 @@ async function askAI(question, opts = {}) {
         });
       }
     }
+    const rungRetries = Number.isInteger(opts.rungRetries) ? opts.rungRetries : 1;
     try {
-      const out = await r.fn(question);
+      const out = await withTransientRetry(() => r.fn(question), {
+        retries: rungRetries,
+        sleep: opts.sleep,
+        isTransient: isTransientError,
+        // Record each absorbed blip so the attempt log shows the rung held
+        // through a transient failure instead of silently descending.
+        onRetry: ({ attempt, error, delayMs }) => {
+          const retryAttempt = {
+            rung: r.name,
+            outcome: 'transient-retry:' + String(error && error.message).slice(0, 48),
+            latencyMs: delayMs,
+          };
+          attempts.push(retryAttempt);
+          if (typeof opts.onAttempt === 'function') opts.onAttempt(retryAttempt);
+          appendJsonl(ATTEMPT_LOG, {
+            ts: new Date().toISOString(),
+            surface: opts.surface || 'ExampleCo',
+            retry: attempt,
+            ...retryAttempt,
+          });
+        },
+      });
       if (typeof out === 'string' && out.trim()) {
         if (isCliFailureOutput(out)) {
           outcome = 'sentinel-failure';
