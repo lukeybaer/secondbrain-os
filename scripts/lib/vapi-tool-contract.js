@@ -389,7 +389,13 @@ function buildVapiFunctionTools() {
         },
       },
       [],
-      { messages: toolMessages('', '', { silentStart: true, silentComplete: true }) },
+      {
+        messages: [
+          { type: 'request-start', content: '' },
+          { type: 'request-response-delayed', content: '' },
+          { type: 'request-complete', role: 'assistant', content: '' },
+        ],
+      },
     ),
     functionTool(
       'read_otter_transcripts',

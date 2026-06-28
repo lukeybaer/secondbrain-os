@@ -33,6 +33,22 @@ function formatCentralDate(now = new Date()) {
   }
 }
 
+const VAPI_LIVE_SERVER_MESSAGES = [
+  'conversation-update',
+  'function-call',
+  'hang',
+  'model-output',
+  'speech-update',
+  'status-update',
+  'transfer-update',
+  'transcript',
+  'tool-calls',
+  'user-interrupted',
+  'voice-input',
+  'assistant.started',
+  'assistant.speechStarted',
+];
+
 function buildVerifyAccessKeywordTool() {
   return {
     type: 'function',
@@ -207,6 +223,7 @@ function sanitizeLiveAssistantConfig(
     voiceSeconds: 0.1,
     backoffSeconds: 0.2,
   };
+  config.serverMessages = VAPI_LIVE_SERVER_MESSAGES;
   config.firstMessage = buildLiveVapiFirstMessage(callerPhone, { ownerPhones });
   config.firstMessageMode = config.firstMessageMode || 'assistant-speaks-first';
   return config;
@@ -216,6 +233,7 @@ module.exports = {
   buildLiveVapiFirstMessage,
   buildLiveVapiSystemPrompt,
   sanitizeLiveAssistantConfig,
+  VAPI_LIVE_SERVER_MESSAGES,
   normalizePhone,
   isOwnerPhone,
 };
