@@ -501,7 +501,7 @@ function uniqueSpineRecords(records) {
 }
 
 function isExactTitleMatch(record, query) {
-  const title = normalizeSearchText(taskTitle(record));
+  const title = normalizeSpineQueryForVoice(taskTitle(record));
   const q = normalizeSpineQueryForVoice(query);
   return Boolean(q && title && title.includes(q));
 }
@@ -510,7 +510,7 @@ function scoreSpineRecord(record, query) {
   const q = normalizeSpineQueryForVoice(query);
   if (!q) return 1;
   const terms = q.split(/\s+/).filter((x) => x.length > 2);
-  const text = normalizeSearchText(recordSourceText(record));
+  const text = normalizeSpineQueryForVoice(recordSourceText(record));
   if (!terms.length) return text.includes(q) ? 1 : 0;
   let hits = 0;
   for (const term of terms) {
