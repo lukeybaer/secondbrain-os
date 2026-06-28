@@ -4920,7 +4920,8 @@ function buildOtterSpeakerEnrichmentHealth({
       ],
       blockerTitle: LABEL,
       blockerEvidence: 'no otter coverage reports under life-archive/voiceprints.',
-      blockerNeed: 'restore the otter coverage reports so processing can be verified.',
+      blockerNeed:
+        'Repair: Amy must restore the otter coverage reports, rerun the voiceprint resolver and coverage reports, verify voice-lock freshness, then refresh the Otter speaker Pareto and System Health.',
     };
   }
 
@@ -4992,7 +4993,7 @@ function buildOtterSpeakerEnrichmentHealth({
         ? `${recentMissingAudio.length} recent Otter call(s) are missing full audio; examples: ${recentMissingAudioSample || 'see coverage artifact'}.`
         : (v.blockers && v.blockers[0]) || summary,
     blockerNeed:
-      'sync/download the missing recent full-audio files, rerun the voiceprint resolver and coverage reports, then refresh Otter speaker Pareto and System Health.',
+      'Repair: Amy must sync/download the missing full-audio files, rerun the voiceprint resolver and coverage reports, verify voice-lock freshness, then refresh the Otter speaker Pareto and System Health.',
   };
 }
 

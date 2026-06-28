@@ -29,8 +29,18 @@ function readJsonFile(file) {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (e) {
-    const msg = clean((e && e.message) || e, 180) || 'ExampleCo error';
-    throw new Error(`git hygiene snapshot unavailable at ${file}: ${msg}`);
+    const base = path.basename(file);
+    // The raw fs error (ENOENT etc.) embeds the full absolute path; collapse any
+    // path that ends in our basename down to just the basename so no drive/dir
+    // path leaks to the card. Matches both Windows (C:\a\b\file) and posix
+    // (/a/b/file) directory prefixes.
+    const baseEsc = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rawMsg = String((e && e.message) || e).replace(
+      new RegExp(`(?:[A-Za-z]:)?[\\\\/][^'"\\s]*${baseEsc}`, 'g'),
+      base,
+    );
+    const msg = clean(rawMsg, 180) || 'ExampleCo error';
+    throw new Error(`git hygiene snapshot unavailable at ${base}: ${msg}`);
   }
 }
 
@@ -65,7 +75,7 @@ function readGitHygieneSnapshot(snapshotPath, opts = {}) {
   );
   const snapshot = unwrapSnapshotPayload(payload);
   if (!snapshot || !snapshot.buckets) {
-    throw new Error(`git hygiene snapshot malformed at ${snapshotPath}`);
+    throw new Error(`git hygiene snapshot malformed at ${path.basename(snapshotPath)}`);
   }
   return snapshot;
 }
