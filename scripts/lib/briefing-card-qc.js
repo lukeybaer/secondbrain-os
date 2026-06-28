@@ -39,6 +39,20 @@ function isTokenUsageCardTitle(title) {
   return /^(?:TOKEN USAGE|LLM SUBSCRIPTION)/i.test(String(title || '').trim());
 }
 
+
+// The otter speaker-pareto card mixes Amy's status preamble (As of / Freshness /
+// Repair / No ExampleCo action required) with THIRD-PARTY call exec-summary prose. The
+// preamble ends where the call-history / lifetime content begins: lines from the
+// first "Past 24 Hours" / "Day Before" / "Lifetime stats" heading onward are call
+// content, not Amy status. Only the preamble can declare a real card blocker.
+function otterStatusPreamble(body) {
+  const lines = String(body || '').split('\n');
+  const idx = lines.findIndex((l) =>
+    /^\s*(?:Past 24 Hours|Day Before|Lifetime stats)\b/i.test(l),
+  );
+  return (idx === -1 ? lines : lines.slice(0, idx)).join('\n');
+}
+
 // SOFT false-positive terms: bare vendor / process / particulate words an article
 // legitimately uses. In a NEWS body these are replaced with a neutral token
 // BEFORE the operational-leak check, so they do not trip the gate -- but only
@@ -101,13 +115,23 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
   if (containsRawOperationalLeak(operationalScope))
     failures.push(`${surface}:${id}: raw operational detail`);
 
-  if (/\bblocker|need from ExampleCo|action required\b/i.test(text)) {
+  // Scope the blocker-actionability trigger so THIRD-PARTY content prose cannot
+  // falsely demand a ExampleCo action. The otter speaker-pareto card ExampleCos call
+  // exec-summaries that legitimately contain the word "blocker" (a call where
+  // ExampleCo discussed briefing blockers); only its Amy-status preamble can declare a
+  // real card blocker. A fresh roster then never false-blocks publish, while a
+  // real "Freshness: BLOCKER:" preamble line still requires the recognized escape
+  // or a concrete step. 2026-06-28 EC2 publish abort.
+  const blockerScopeText = /OTTER SPEAKER PARETO/i.test(title)
+    ? [title, otterStatusPreamble(body)].filter(Boolean).join('\n')
+    : text;
+  if (/\bblocker|need from ExampleCo|action required\b/i.test(blockerScopeText)) {
     const actionableLines = body
       .split('\n')
       .map((line) => line.replace(/^[-*]\s+/, '').trim())
       .filter(Boolean)
       .filter(lineLooksLikeExampleCoBlocker);
-    if (!/No ExampleCo action required/i.test(text) && actionableLines.length === 0) {
+    if (!/No ExampleCo action required/i.test(blockerScopeText) && actionableLines.length === 0) {
       failures.push(`${surface}:${id}: blocker lacks a yes/no question or concrete steps`);
     }
   }
