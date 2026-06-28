@@ -37,6 +37,12 @@ const DEFAULT_FORBID = [
   'start a new session',
   'restart the task',
   'investigate further',
+  'Amy Call',
+  '0 1 9 f',
+  '7 0 0 0',
+  '7000 launched',
+  '7000 completed',
+  '7000 of 7000',
 ];
 
 function usage() {

@@ -51,6 +51,8 @@ function normalizeSearchText(value) {
 
 function normalizeSpokenProjectAliases(value) {
   let text = ` ${normalizeSearchText(value)} `;
+  text = text.replace(/\bpixie\s+pixie\b/g, ' ExampleCo ');
+  text = text.replace(/\bpixie\s+(deployment|deploy|scale|scaling|session|status|app|test)\b/g, ' ExampleCo $1 ');
   text = text.replace(
     /\b(?:pix\s*seat|ExampleCo|pix\s*seed|pixseed|pick\s*seat|big\s*speed|pix\s*speed|pig\s*seed|pig\s*speed|pigs?\s*yet|pigs?y\s*et|pigs?y\s*at|pigs?\s*at|pigsyet|picc\s*c|picc|pic\s*c)\b/g,
     ' ExampleCo ',

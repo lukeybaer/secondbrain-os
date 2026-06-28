@@ -10,6 +10,7 @@
 //  - voice_if_live   : speak into the call if it is still active, else telegram
 //  - voice_callback  : place an outbound call (only on explicit "call me back")
 const { speechSafe } = require('./speech-safe');
+const { sanitizeLiveStatusSpeech } = require('./vapi-voice-output');
 const {
   buildLiveStateItems,
   formatLiveStateAnswer,
@@ -17,6 +18,7 @@ const {
 } = require('./live-dev-state');
 const {
   displaySpineQueryForVoice,
+  isArchiveQueryTerms,
   isProjectStatusQueryTerms,
   normalizeSpineQueryForVoice,
   spineQueryTerms,
@@ -258,6 +260,27 @@ function isProjectLiveStatusQuery(query) {
   return isProjectStatusQueryTerms(searchTerms(query));
 }
 
+function isStatusLikeLookup(query) {
+  const terms = searchTerms(query);
+  return (
+    isProjectLiveStatusQuery(query) ||
+    terms.some((term) =>
+      [
+        'active',
+        'current',
+        'deploy',
+        'deployment',
+        'latest',
+        'progress',
+        'session',
+        'status',
+        'thread',
+        'work',
+      ].includes(term),
+    )
+  );
+}
+
 function detailStatus(record) {
   return String(record && record.status || '').replace(/[_-]+/g, ' ').toLowerCase().trim();
 }
@@ -329,13 +352,21 @@ function recordSourceText(record) {
 function isLowSignalIngest(record) {
   const source = record && record.source && typeof record.source === 'object' ? record.source : {};
   const text = normalizeSearchText([
+    record && record.id,
     record && record.kind,
     record && record.origin,
     record && record.title,
+    record && record.prompt,
     record && record._sourcePath,
+    record && record._source,
     source.type,
+    source.ref,
   ].join(' '));
-  return /\bingest\b/.test(text) || /\bgmail\b/.test(text) || /\bvapi call\b|\bvoice call\b|\bcall transcript\b/.test(text);
+  return (
+    /\bingest\b/.test(text) ||
+    /\bgmail\b/.test(text) ||
+    /\bvapi\b|\bamy call\b|\bvoice call\b|\bcall transcript\b|\bend of call\b|\bcall log\b/.test(text)
+  );
 }
 
 function isAgentSessionRecord(record) {
@@ -488,6 +519,57 @@ function scoreSpineRecord(record, query) {
   return hits / terms.length;
 }
 
+function scopedNoLiveStatusMatch(query, reason = '') {
+  const display = speechSafe(displaySpineQueryForVoice(query) || query || 'that topic');
+  if (reason) {
+    return `I ${reason} for ${display}, not active project or agent-session proof in ${SPINE_DETAIL_SCOPE_VOICE}.`;
+  }
+  return `I do not have active project or agent-session proof for ${display} in ${SPINE_DETAIL_SCOPE_VOICE}.`;
+}
+
+function briefSourceLabel(label) {
+  const value = String(label || '').trim();
+  if (/codex thread mirror/i.test(value)) return 'the Codex mirror';
+  if (/codex thread/i.test(value)) return 'a Codex thread';
+  if (/live command/i.test(value)) return 'a live command';
+  if (/task spine|spine task|spine item/i.test(value)) return 'a spine task';
+  return value ? `a ${value}` : 'the spine';
+}
+
+function statusForBrief(status) {
+  const text = String(status || '').replace(/[_-]+/g, ' ').trim();
+  if (!text) return 'ExampleCo';
+  if (/^active or recent$/i.test(text)) return 'active or recent';
+  return text;
+}
+
+function briefProgressText(value, max = 170) {
+  const text = sanitizeLiveStatusSpeech(speechSafe(value || ''))
+    .replace(/\bLatest:\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!max || text.length <= max) return text;
+  return text.slice(0, max).replace(/\s+\S*$/, '').replace(/[,:;]+$/, '').trim();
+}
+
+function formatBriefSpineStatus(liveItems, { query = '' } = {}) {
+  const items = Array.isArray(liveItems) ? liveItems.filter(Boolean) : [];
+  if (!items.length) return '';
+  const item = items[0];
+  const objective = briefProgressText(item.objective || query || 'the best match', 90);
+  const status = statusForBrief(item.status);
+  const source = briefSourceLabel(item.source);
+  const freshness = item.freshness ? ` updated ${item.freshness}` : '';
+  const progress = briefProgressText(item.lastProgress || '', 160);
+  if (progress) {
+    return `${objective} is ${status} from ${source}${freshness}: ${progress}.`;
+  }
+  if (item.confidence === 'title-status-only') {
+    return `${objective} is ${status} from ${source}${freshness}, but I only have title and status, not deeper progress yet.`;
+  }
+  return `${objective} is ${status} from ${source}${freshness}.`;
+}
+
 function summarizeSpineDetailForVoice({
   commands = [],
   tasks = [],
@@ -501,6 +583,7 @@ function summarizeSpineDetailForVoice({
 } = {}) {
   const genericQuery = isGenericSpineQuery(query);
   const broadStatusQuery = !genericQuery && (isBroadStatusQuery(query) || isProjectLiveStatusQuery(query));
+  const statusLookup = !isArchiveQueryTerms(searchTerms(query)) && isStatusLikeLookup(query);
   const scoringQuery = genericQuery ? '' : normalizeSpineQueryForVoice(query);
   const displayQuery = genericQuery ? '' : displaySpineQueryForVoice(query);
   const commandRecords = (commands || [])
@@ -527,7 +610,9 @@ function summarizeSpineDetailForVoice({
     .filter((x) => !scoringQuery || x.score >= 0.34);
   let candidates = scored;
   if (scoringQuery) {
-    const exactTitleMatches = scored.filter((x) => isExactTitleMatch(x.record, scoringQuery));
+    const exactTitleMatches = scored.filter(
+      (x) => isExactTitleMatch(x.record, scoringQuery) && (!statusLookup || !isLowSignalIngest(x.record)),
+    );
     if (!broadStatusQuery && exactTitleMatches.length) candidates = exactTitleMatches;
   }
   if (genericQuery || !query) {
@@ -536,6 +621,8 @@ function summarizeSpineDetailForVoice({
   }
   if (broadStatusQuery) {
     const broadCandidates = rawScored.filter((x) => !scoringQuery || x.score > 0);
+    const usableBroadCandidates = broadCandidates.filter((x) => !isLowSignalIngest(x.record));
+    const lowSignalMatches = broadCandidates.filter((x) => isLowSignalIngest(x.record));
     const freshLive = broadCandidates
       .filter((x) => isFreshLiveStatusRecord(x.record, nowMs) && !isLowSignalIngest(x.record));
     const bestLiveRank = freshLive.reduce((max, x) => Math.max(max, liveStatusRank(x.record, nowMs)), 0);
@@ -551,7 +638,7 @@ function summarizeSpineDetailForVoice({
       .map((x) => x.record);
     const projectPhraseQuery = isProjectLiveStatusQuery(query) && searchTerms(query).length > 1;
     const terminalProof = projectPhraseQuery
-      ? broadCandidates
+      ? usableBroadCandidates
           .filter((x) => !isLowSignalIngest(x.record) && isRecentProjectTerminalProof(x.record, nowMs))
           .sort((a, b) => compareSpineCandidates(a, b, nowMs))
           .slice(0, maxItems)
@@ -571,6 +658,9 @@ function summarizeSpineDetailForVoice({
           .map((x) => x.record);
         const olderUnique = uniqueSpineRecords(older).slice(0, 1);
         const r = olderUnique[0];
+        if (!r && lowSignalMatches.length) {
+          return scopedNoLiveStatusMatch(displayQuery || query, 'only found call-log or ingest matches');
+        }
         const spokenTitle = r ? voiceTaskTitle(r) : '';
         const titleMatchesQuery = spokenTitle && normalizeSearchText(spokenTitle).includes(normalizeSearchText(query));
         const title = titleMatchesQuery ? spokenTitle : '';
@@ -592,6 +682,14 @@ function summarizeSpineDetailForVoice({
     }
   }
 
+  if (statusLookup) {
+    const usable = candidates.filter((x) => !isLowSignalIngest(x.record));
+    if (!usable.length && candidates.length) {
+      return scopedNoLiveStatusMatch(displayQuery || query, 'only found call-log or ingest matches');
+    }
+    candidates = usable;
+  }
+
   const all = candidates
     .sort((a, b) => compareSpineCandidates(a, b, nowMs))
     .slice(0, maxItems)
@@ -599,7 +697,7 @@ function summarizeSpineDetailForVoice({
 
   if (!all.length) {
     return displayQuery
-      ? `I found no matching spine item for ${speechSafe(displayQuery)}. I only checked ${SPINE_DETAIL_SCOPE_VOICE}, so that is a scoped no-match, not whole-life proof.`
+      ? `I found no active project or agent-session match for ${speechSafe(displayQuery)} in ${SPINE_DETAIL_SCOPE_VOICE}; that is a scoped no-match, not whole-life proof.`
       : `I found no active spine items in ${SPINE_DETAIL_SCOPE_VOICE}.`;
   }
 
@@ -615,18 +713,17 @@ function summarizeSpineDetailForVoice({
   });
 
   if (normalizedProbeLevel > 0) {
-    return formatLiveStateAnswer(liveItems, {
+    return sanitizeLiveStatusSpeech(formatLiveStateAnswer(liveItems, {
       query: displayQuery,
       probeLevel: normalizedProbeLevel,
       nowMs,
-    });
+    }));
   }
 
-  const lines = [
-    displayQuery
-      ? `I found ${all.length} matching spine item${all.length === 1 ? '' : 's'} for ${speechSafe(displayQuery)}.`
-      : `I found ${all.length} active or recent spine item${all.length === 1 ? '' : 's'}.`,
-  ];
+  const brief = formatBriefSpineStatus(liveItems, { query: displayQuery || query });
+  if (brief) return brief;
+
+  const lines = [];
   for (const r of all) {
     const liveItem = liveItems.find((item) => item.id && r.id && item.id === r.id) || null;
     const title = voiceTaskTitle(r);

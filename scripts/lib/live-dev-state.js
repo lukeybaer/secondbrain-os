@@ -2,6 +2,7 @@
 
 const path = require('path');
 const { speechSafe } = require('./speech-safe');
+const { sanitizeLiveStatusSpeech } = require('./vapi-voice-output');
 
 const PROBE_LEVELS = {
   situation: 0,
@@ -283,15 +284,14 @@ function packetAge(packet, nowMs) {
 
 function formatSituation(items, opts) {
   const item = items[0];
-  const prefix = opts.query ? `I found ${items.length} matching spine item${items.length === 1 ? '' : 's'} for ${safeText(opts.query, 120)}. ` : '';
   if (items.length > 1) {
     const parts = items.slice(0, 4).map((x) => {
       const age = x.freshness ? `, updated ${x.freshness}` : '';
       const progress = x.lastProgress ? `, latest: ${x.lastProgress}` : '';
-      return `${x.objective} is ${x.status}${age}${progress}`;
+      return sanitizeLiveStatusSpeech(`${x.objective} is ${x.status}${age}${progress}`);
     });
     const more = items.length > parts.length ? ` Plus ${items.length - parts.length} more.` : '';
-    return `${prefix}${parts.join('. ')}.${more}`;
+    return `${parts.join('. ')}.${more}`;
   }
   const age = item.freshness ? `, updated ${item.freshness}` : '';
   const progress = item.lastProgress
@@ -301,7 +301,7 @@ function formatSituation(items, opts) {
       : 'I have source-backed context but no progress note';
   const blocker = item.currentBlocker ? `; blocker: ${item.currentBlocker}` : '';
   const next = item.nextAction ? `; next: ${item.nextAction}` : '';
-  return `${prefix}${item.objective} is ${item.status}${age} from ${item.source}. ${progress}${blocker}${next}.`;
+  return sanitizeLiveStatusSpeech(`${item.objective} is ${item.status}${age} from ${item.source}. ${progress}${blocker}${next}.`);
 }
 
 function formatDetails(item) {

@@ -875,7 +875,10 @@ const NEW_LIVE_FILES = new Set([
   'scripts/callback-watchdog.js',
   'scripts/lib/voice-cloud-runtime.js',
   'scripts/lib/live-dev-state.js',
+  'scripts/lib/dispatch-delivery.js',
   'scripts/lib/vapi-tool-contract.js',
+  'scripts/lib/vapi-voice-output.js',
+  'scripts/lib/voice-spine-query.js',
   'scripts/lib/voice-tool-policy.js',
   'scripts/lib/spine-ingress.js',
 ]);

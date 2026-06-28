@@ -34,6 +34,7 @@ LIVE_DEPS=(
   "scripts/lib/vapi-live-assistant.js"
   "scripts/lib/vapi-tool-contract.js"
   "scripts/lib/vapi-voice-output.js"
+  "scripts/lib/voice-spine-query.js"
   "scripts/lib/voice-recent-context.js"
   "scripts/lib/voice-tool-policy.js"
   "scripts/lib/spine-ingress.js"
