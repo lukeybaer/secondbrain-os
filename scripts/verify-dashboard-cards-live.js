@@ -1298,10 +1298,58 @@ function videoManifestDriftDefects(card, tile) {
   ];
 }
 
+function systemHealthProofContractDefects(card, tile) {
+  const inner = String((tile && tile.inner) || '');
+  const articles = [
+    ...inner.matchAll(
+      /<article class="[^"]*\bdetail-item\b[^"]*"[^>]*data-item="([^"]*)"[^>]*>([\s\S]*?)<\/article>/gi,
+    ),
+  ];
+  if (!articles.length) {
+    return [
+      `SYSTEM-HEALTH-PROOF: ${card.id} (${tile.name}) drilldown has no itemized health-check articles; each metric needs definition, status, timestamp, source, and proof rows`,
+    ];
+  }
+  const defects = [];
+  for (const m of articles) {
+    const name = strip(m[1] || '').trim() || 'unnamed metric';
+    const html = m[2] || '';
+    const text = strip(html);
+    const missing = [];
+    if (!/\bMetric\b/i.test(text)) missing.push('metric');
+    if (!/\bDefinition\b/i.test(text)) missing.push('definition');
+    if (!/\bStatus\b/i.test(text)) missing.push('status');
+    if (!/\bTimestamp\b/i.test(text)) missing.push('timestamp');
+    if (!/\bSource\b/i.test(text)) missing.push('source');
+    const proofTexts = [
+      ...html.matchAll(/<li class="[^"]*\bhealth-proof-item\b[^"]*"[^>]*>([\s\S]*?)<\/li>/gi),
+    ].map((li) => strip(li[1] || ''));
+    const proofItemCount = proofTexts.length;
+    if (!/\bProof\s+\d+\b/i.test(text) || proofItemCount < 1) missing.push('itemized proof');
+    if (/No itemized proof was available|Proof missing/i.test(text)) missing.push('real proof');
+    const weakProof = proofTexts.find((proof) => {
+      const core = proof
+        .replace(/\bProof\s+\d+\b/gi, ' ')
+        .replace(/\b(summary row|probe data|probe note|raw proof)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return /^(ok|green|healthy|current|all good|all clear|passing|passed)$/i.test(core);
+    });
+    if (weakProof) missing.push('concrete proof');
+    if (missing.length) {
+      defects.push(
+        `SYSTEM-HEALTH-PROOF: ${card.id} (${tile.name}) metric "${name}" drilldown is missing ${[...new Set(missing)].join(', ')}`,
+      );
+    }
+  }
+  return defects;
+}
+
 function systemHealthDetailDefects(card, tile) {
   if (!tile || card.id !== 'system_health') return [];
   const text = `${tile.body || ''} ${tile.inner || ''}`;
   const defects = [];
+  defects.push(...systemHealthProofContractDefects(card, tile));
   const otterRequired = [
     ['transcript', /\btranscripts?\b/i],
     ['full audio', /\bfull audio\b|\baudio downloaded\b|\bdownloaded audio\b/i],
