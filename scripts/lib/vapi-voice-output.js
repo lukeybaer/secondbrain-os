@@ -14,8 +14,26 @@ const BANNED_LIVE_STATUS_TAIL_RE =
 function compact(text) {
   return String(text || '')
     .replace(RAW_OBJECT_PATTERN, '')
+    .replace(/\.{2,}/g, '.')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function collapseSpacedDigitRuns(text) {
+  return String(text || '').replace(/\b(?:\d\s+){2,}\d\b/g, (match) => match.replace(/\s+/g, ''));
+}
+
+function normalizeExampleCoVoiceAliases(text) {
+  return String(text || '')
+    .replace(/\bpig\s+seed\b/gi, 'ExampleCo')
+    .replace(/\bpig\s+seat\b/gi, 'ExampleCo')
+    .replace(/\bpigsyet\b/gi, 'ExampleCo')
+    .replace(/\bPix\s*Seat\b/gi, 'ExampleCo')
+    .replace(/\bP(?:I?CC|IC|CC)(?:'s)?\s+seat\b/gi, 'ExampleCo')
+    .replace(/\bP(?:I?CC|IC|CC)(?:'s)?(?=\s+(?:scale|scale-up|up readiness|large-scale))\b/gi, 'ExampleCo')
+    .replace(/\bExampleCo\s+seat\b/gi, 'ExampleCo')
+    .replace(/\bExampleCo\b/g, 'the deployment')
+    .replace(/\bthe deployment\s+seat\b/gi, 'the deployment');
 }
 
 function stripLiveSpeechArtifacts(text) {
@@ -34,24 +52,57 @@ function stripLiveSpeechArtifacts(text) {
 }
 
 function replaceScaleResultPhrases(text) {
-  return String(text || '')
+  return normalizeExampleCoVoiceAliases(collapseSpacedDigitRuns(text))
+    .replace(/\bthe deployment\.\s+Large scale\b/gi, 'the deployment large-scale')
+    .replace(/\b7\s*k\s+scale[- ]?up\s+test\s+completed\b/gi, 'large-scale test completed')
+    .replace(/\b7\s*k\s+scale[- ]?up\b/gi, 'large-scale')
     .replace(
-      /\b7000\s+launched,\s*7000\s+completed,\s*0\s+failed,\s*7000\s+reached\s+playback\b/gi,
-      'the seven thousand user scale test completed with zero failures and reached playback',
+      /\b7000\s+launched[,.]?\s*7000\s+completed[,.]?\s*0\s+failed[,.]?\s*7000\s+reached\s+playback\b/gi,
+      'the large-scale playback test completed with no failures',
+    )
+    .replace(
+      /\b7000\s*\/\s*7000\s+completed\s+and\s+reached\s+playback\s+across\s+\d+\s+instances?\b/gi,
+      'large-scale playback completed',
     )
     .replace(
       /\b7000\s+(?:of|\/)\s+7000\s+completed(?:\s+and\s+reached\s+playback)?\b/gi,
-      'the seven thousand user run completed and reached playback',
+      'the large-scale playback run completed',
     )
-    .replace(/\b7\s*k\b/gi, 'seven thousand')
-    .replace(/\b0\s+failed\b/gi, 'zero failures')
+    .replace(
+      /\b\d{2,4}\s+and\s+\d{1,4}\.\s*\d{1,4}\s+completed\s+and\s+reached\s+playback\b/gi,
+      'large-scale playback completed',
+    )
+    .replace(/\b\d{2,4}\s+and\s+\d(?:\s+\d){0,3}\.\s*/gi, '')
+    .replace(/\b\d{1,4}\s+completed\s+and\s+reached\s+playback\b/gi, '')
+    .replace(/\b7000\s+user\s+scale\s+test\s+completed\s+with\s+0\s+failures\s+and\s+reached\s+playback\b/gi, 'large-scale playback test completed with no failures')
+    .replace(/\b7000\s+scale\s+up\s+test\s+completed\b/gi, 'large-scale test completed')
+    .replace(/\b7\s*k\b/gi, 'large-scale')
+    .replace(/\b0\s+failed\b/gi, 'no failures')
+    .replace(/\bzero\s+failures\b/gi, 'no failures')
+    .replace(/\bno\s+429s?\b/gi, 'no rate-limit errors')
+    .replace(/\bno\s+429\s*s\b/gi, 'no rate-limit errors')
+    .replace(/\bMP3\b/g, 'audio')
     .replace(/\b5xx\b/gi, 'server-error')
+    .replace(/\bno\s+Redis\s+evictions?\b/gi, 'no cache evictions')
+    .replace(/\bservices?\s+(?:is\s+)?idle\s+and\s+(?:Redis|read)\s+(?:is\s+|as\s+)?idle\b/gi, 'service and cache are idle')
+    .replace(/\b(?:Redis|read)\s+(?:is\s+|as\s+)?idle\b/gi, 'cache is idle')
+    .replace(/\bcool\s*down\s+returned\s+to\s+idle\b/gi, 'service is idle')
     .replace(/\bcaveat\s+network\s+timeouts?\s+and\s+server-error\s+need\s+follow-up\b/gi, 'network and server-error caveats remain')
     .replace(/\bnetwork\s+timeouts?\s+and\s+server-error\s+need\s+follow-up\b/gi, 'network and server-error caveats remain')
-    .replace(/\bcooldown\s+returned\s+ECS\s+to\s+\d+\b/gi, 'service is idle')
+    .replace(/\bcool\s*down\s+returned\s+ECS\s+to\s+\d+(?:\s+running)?(?:\s+and\s+read\s+as\s+idle)?\b/gi, 'service is idle')
+    .replace(/\bacross\s+\d+\s+instances?\b/gi, '')
     .replace(/\b\d{4,}\s+network\s+timeouts?\b/gi, 'network-timeout caveats')
     .replace(/\b\d{3,}\s+server-error\b/gi, 'server-error caveats')
     .replace(/\b\d{5,}\s+requests?\b/gi, 'the request volume');
+}
+
+function focusKnownTopic(text) {
+  const cleaned = compact(text);
+  if (!/\bthe deployment\b/i.test(cleaned)) return cleaned;
+  const pieces = cleaned.match(/[^.!?;]+[.!?;]+|[^.!?;]+$/g) || [cleaned];
+  const idx = pieces.findIndex((piece) => /\bthe deployment\b/i.test(piece));
+  if (idx <= 0) return cleaned;
+  return compact([...pieces.slice(idx), ...pieces.slice(0, idx)].join(' '));
 }
 
 function stripRawIdentifiers(text) {
@@ -83,7 +134,7 @@ function sanitizeLiveStatusSpeech(text) {
     .replace(/\bDetails:\s*/gi, 'Details: ')
     .replace(/\b([A-Za-z0-9_-]+)\.\s+(js|ts|tsx|jsx|json|md|mjs|cjs|py)\b/g, '$1.$2')
     .replace(/\s+([,.!?;:])/g, '$1');
-  return compact(out);
+  return focusKnownTopic(out);
 }
 
 function removeBannedLiveStatusTails(text) {
@@ -93,9 +144,10 @@ function removeBannedLiveStatusTails(text) {
 function limitSentences(text, maxSentences = 0) {
   const cleaned = compact(text);
   if (!maxSentences || maxSentences < 1) return cleaned;
-  const pieces = cleaned.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
+  const pieces = cleaned.match(/[^.!?;]+[.!?;]+|[^.!?;]+$/g) || [];
   if (pieces.length <= maxSentences) return cleaned;
-  return compact(pieces.slice(0, maxSentences).join(' '));
+  const limited = compact(pieces.slice(0, maxSentences).join(' ')).replace(/[;:]+$/g, '');
+  return /[.!?]$/.test(limited) ? limited : limited + '.';
 }
 
 function truncateForVoice(text, maxChars = 0) {

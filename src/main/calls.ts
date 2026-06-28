@@ -637,7 +637,7 @@ async function buildCallbackAssistantConfig(callerPhone: string): Promise<object
     stopSpeakingPlan: {
       numWords: 0,
       voiceSeconds: 0.1,
-      backoffSeconds: 0.2,
+      backoffSeconds: 0.5,
     },
     endCallPhrases: ['goodbye', 'thank you, bye', 'have a great day', 'bye bye'],
     serverUrl: webhookUrl,

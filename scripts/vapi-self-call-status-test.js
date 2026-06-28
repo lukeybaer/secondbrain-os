@@ -55,6 +55,7 @@ Options:
   --first <text>         First synthetic ExampleCo utterance.
   --expect <text>        Required transcript text. Repeatable.
   --forbid <text>        Forbidden transcript text. Repeatable.
+  --score-speaker <who>  all, user, or ai. Default: user, because outbound self-calls label inbound Amy as User.
   --no-default-expect    Do not require the default update-blocker fixture text.
   --timeout-sec <n>      Poll timeout. Default: 180.
   --dry-run              Print the call target and prompt without dialing.
@@ -75,6 +76,7 @@ function parseArgs(argv) {
     first: "Hey. How's the latest session going?",
     expect: [...DEFAULT_EXPECT],
     forbid: [...DEFAULT_FORBID],
+    scoreSpeaker: 'user',
     timeoutSec: 180,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -87,6 +89,7 @@ function parseArgs(argv) {
     else if (arg === '--no-default-expect') opts.expect = [];
     else if (arg === '--expect') opts.expect.push(argv[++i] || '');
     else if (arg === '--forbid') opts.forbid.push(argv[++i] || '');
+    else if (arg === '--score-speaker') opts.scoreSpeaker = argv[++i] || 'user';
     else if (arg === '--timeout-sec') opts.timeoutSec = Number(argv[++i] || 180);
     else throw new Error('PRIVATE_NAME argument: ' + arg);
   }
@@ -263,6 +266,23 @@ function saveCallRecord(call) {
   return file;
 }
 
+function transcriptForSpeaker(transcript, speaker = 'all') {
+  const mode = String(speaker || 'all').toLowerCase();
+  if (mode === 'all') return String(transcript || '');
+  if (!['user', 'ai'].includes(mode)) throw new Error('Invalid --score-speaker: ' + speaker);
+
+  const wanted = mode === 'user' ? 'User' : 'AI';
+  return String(transcript || '')
+    .split(/\r?\n/)
+    .map((line) => {
+      const match = line.match(/^\s*(AI|User):\s*(.*)$/i);
+      if (!match) return '';
+      return match[1].toLowerCase() === wanted.toLowerCase() ? match[2] : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
 function scoreTranscript(transcript, expectList, forbidList) {
   const text = String(transcript || '');
   const lower = text.toLowerCase();
@@ -318,7 +338,9 @@ async function main() {
   console.log('[self-call] transcript:');
   console.log(transcript);
 
-  const score = scoreTranscript(transcript, opts.expect, opts.forbid);
+  const scoredTranscript = transcriptForSpeaker(transcript, opts.scoreSpeaker);
+  console.log('[self-call] scoring speaker: ' + opts.scoreSpeaker);
+  const score = scoreTranscript(scoredTranscript, opts.expect, opts.forbid);
   if (!score.ok) {
     if (score.missing.length) console.error('[self-call] missing expected: ' + score.missing.join(', '));
     if (score.forbidden.length) console.error('[self-call] forbidden text: ' + score.forbidden.join(', '));

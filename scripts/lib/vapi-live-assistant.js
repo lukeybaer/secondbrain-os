@@ -16,6 +16,19 @@ function isOwnerPhone(callerPhone, ownerPhones = []) {
   return ownerPhones.some((p) => normalizePhone(p) === norm);
 }
 
+function isDynamicCallerPhone(callerPhone) {
+  const text = String(callerPhone || '');
+  return !text.trim() || /\{\{\s*customer\.number\s*\}\}/i.test(text);
+}
+
+function ownerPhonesForPrompt(ownerPhones = []) {
+  return ownerPhones
+    .map((p) => normalizePhone(p))
+    .filter(Boolean)
+    .filter((p, i, arr) => arr.indexOf(p) === i)
+    .join(', ');
+}
+
 function formatCentralDate(now = new Date()) {
   try {
     return new Intl.DateTimeFormat('en-CA', {
@@ -98,7 +111,9 @@ function buildLiveVapiSystemPrompt({
   recentOwnerContext = '',
   now = new Date(),
 } = {}) {
-  const owner = isOwnerPhone(callerPhone, ownerPhones);
+  const dynamicCaller = isDynamicCallerPhone(callerPhone);
+  const owner = !dynamicCaller && isOwnerPhone(callerPhone, ownerPhones);
+  const ownerList = ownerPhonesForPrompt(ownerPhones) || '+ExampleCo';
   const callerSection = owner
     ? [
         '## Caller Identification: OWNER',
@@ -106,6 +121,15 @@ function buildLiveVapiSystemPrompt({
         'Open with exactly: "Hey ExampleCo, what\'s going on?"',
         'Do not ask who is calling. Do not use returned-call greetings. This is an inbound owner call, not a callback.',
       ].join('\n')
+    : dynamicCaller
+      ? [
+          '## Caller Identification: DYNAMIC',
+          'Current caller phone from Vapi: {{customer.number}}.',
+          `Verified owner phones: ${ownerList}.`,
+          'If the current caller phone matches a verified owner phone after ignoring punctuation and a leading country code, this is ExampleCo or an owner. Treat the call as OWNER: help directly, do not ask who is calling, and do not call it a callback.',
+          'If the current caller phone does not match a verified owner phone, treat the call as ExampleCo: use the access keyword for private information and let server-side tool policy block owner-only tools.',
+          'Never classify the caller as ExampleCo merely because this saved Vapi assistant prompt was built before the phone number was known.',
+        ].join('\n')
     : [
         '## Caller Identification: ExampleCo',
         'This caller is not on the verified owner list.',
@@ -133,6 +157,7 @@ function buildLiveVapiSystemPrompt({
     'Be terse, direct, warm, and source-grounded. Never fabricate.',
     'Live calls are interruptible. Default to one short sentence, then stop. If ExampleCo starts talking, yield immediately.',
     'Start with the high-level answer. Give raw detail, provenance inventory, or line-by-line status only when ExampleCo asks for detail.',
+    'When a tool result is available, speak only the tool result. Never prepend "hold on", "just a sec", "give me a moment", "okay", "sure", or any other transition before the tool text.',
     'Never read markdown, code fences, separators, symbol runs, or words like equal sign equal sign aloud.',
     'Use tools instead of guessing. Say partial truth live: what you found, what source, what remains unproven.',
     'If a tool returns no match, say the scope of the no-match and widen or escalate. Never treat one narrow no-match as the whole truth.',
@@ -158,15 +183,16 @@ function buildLiveVapiSystemPrompt({
     'If ExampleCo asks "read the news", "can you read the news", or similar, call read_briefing_news with action=start immediately. Do not answer with capability talk. Do not use query_knowledge, graphiti_query_live, web_search, or check_spine for that request.',
     'News-reader mode is always interruptible. If ExampleCo says "skip" or "next" while news is being read, stop the current sentence and call read_briefing_news with action=next_article. If he says "skip section" or "next section", stop immediately and call action=next_section. Treat these as efficiency commands: Do not acknowledge the command, do not finish the sentence, and never say hold on, okay, sure, moving on, one moment, or any filler.',
     'After a news-reader tool call, the first spoken words must be the returned section or headline text. If the returned text starts a new section because of next_section or because next_article rolled over after the last article, say the section name before the headline. Speak only the returned section, headline, and ExampleCoraphs.',
+    'Never preface news with wait language. The first spoken words after a news request must be the returned section or headline text.',
     'Never say hold-music phrases, delay apologies, or generic waiting lines. No seconds-counting, no holding language, no moment language, no patience requests.',
     'Never say "let me know", "if you need anything else", "if you need more details", "want to start something new", "start something new", or "investigate further" in live status output. Those phrases fail the owner-call regression.',
     'Do not say raw object placeholders, raw JSON, tool ids, raw numeric counters, or internal errors out loud. Give the readable result or say the result needs a readable summary.',
     'Do not promise a callback unless ExampleCo explicitly requested one.',
   ].join('\n');
 
-  const trimmedMemory = String(memory || '').slice(0, 3000).trim();
-  const trimmedContacts = String(contactsSummary || '').slice(0, 2000).trim();
-  const trimmedRecentOwnerContext = String(recentOwnerContext || '').slice(0, 1200).trim();
+  const trimmedMemory = String(memory || '').slice(0, 1800).trim();
+  const trimmedContacts = String(contactsSummary || '').slice(0, 1200).trim();
+  const trimmedRecentOwnerContext = String(recentOwnerContext || '').slice(0, 1000).trim();
   const memoryBlock =
     trimmedMemory || trimmedContacts || trimmedRecentOwnerContext
       ? ['## Current Context', trimmedRecentOwnerContext, trimmedMemory, trimmedContacts].filter(Boolean).join('\n\n')
@@ -221,7 +247,7 @@ function sanitizeLiveAssistantConfig(
       : {}),
     numWords: 0,
     voiceSeconds: 0.1,
-    backoffSeconds: 0.2,
+    backoffSeconds: 0.5,
   };
   config.serverMessages = VAPI_LIVE_SERVER_MESSAGES;
   config.firstMessage = buildLiveVapiFirstMessage(callerPhone, { ownerPhones });
@@ -236,4 +262,5 @@ module.exports = {
   VAPI_LIVE_SERVER_MESSAGES,
   normalizePhone,
   isOwnerPhone,
+  isDynamicCallerPhone,
 };

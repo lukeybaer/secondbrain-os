@@ -24,6 +24,8 @@ const VAPI_FUNCTION_TOOL_NAMES = [
 
 const TOOL_RESULT_ONLY_HINT =
   'Answer with only the tool result. Do not add greetings, offers, callbacks, follow-up questions, or closing chatter. For status lookups, stop after the source-grounded status sentence.';
+const NEWS_RESULT_ONLY_HINT =
+  'Speak only the news-reader tool result exactly as returned. Do not prepend hold on, just a sec, okay, sure, moving on, one moment, or any other filler.';
 const PROBE_LEVEL_ENUM = ['0', '1', '2', '3', '4'];
 
 function toolMessages(message, delayedMessage = '', options = {}) {
@@ -393,7 +395,7 @@ function buildVapiFunctionTools() {
         messages: [
           { type: 'request-start', content: '' },
           { type: 'request-response-delayed', content: '' },
-          { type: 'request-complete', role: 'assistant', content: '' },
+          { type: 'request-complete', role: 'system', content: NEWS_RESULT_ONLY_HINT },
         ],
       },
     ),
