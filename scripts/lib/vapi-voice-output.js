@@ -48,6 +48,7 @@ function replaceScaleResultPhrases(text) {
     .replace(/\b5xx\b/gi, 'server-error')
     .replace(/\bcaveat\s+network\s+timeouts?\s+and\s+server-error\s+need\s+follow-up\b/gi, 'network and server-error caveats remain')
     .replace(/\bnetwork\s+timeouts?\s+and\s+server-error\s+need\s+follow-up\b/gi, 'network and server-error caveats remain')
+    .replace(/\bcooldown\s+returned\s+ECS\s+to\s+\d+\b/gi, 'cooldown returned the service to idle')
     .replace(/\b\d{4,}\s+network\s+timeouts?\b/gi, 'network-timeout caveats')
     .replace(/\b\d{3,}\s+server-error\b/gi, 'server-error caveats')
     .replace(/\b\d{5,}\s+requests?\b/gi, 'the request volume');
