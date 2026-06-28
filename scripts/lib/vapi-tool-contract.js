@@ -370,7 +370,7 @@ function buildVapiFunctionTools() {
     ),
     functionTool(
       'read_briefing_news',
-      "Read the latest morning briefing news cards aloud for ExampleCo. Use when ExampleCo says 'read the news'. While in news-reader mode, if ExampleCo says 'skip' or 'next', call action=next_article immediately. If he says 'skip section' or 'next section', call action=next_section immediately. Do not acknowledge the command; the tool result is the next thing to say.",
+      "Read the latest morning briefing news cards aloud for ExampleCo. Use when ExampleCo says 'read the news'. While in news-reader mode, if ExampleCo says 'skip' or 'next', call action=next_article immediately. If he says 'skip section' or 'next section', call action=next_section immediately. Treat controls as efficiency commands: do not acknowledge, do not say hold on, okay, one moment, or filler, and speak only the tool result. The result includes the section name whenever the cursor enters a new section.",
       {
         action: {
           type: 'string',
@@ -389,7 +389,6 @@ function buildVapiFunctionTools() {
         },
       },
       [],
-      { messages: toolMessages('', '', { silentStart: true }) },
     ),
     functionTool(
       'read_otter_transcripts',

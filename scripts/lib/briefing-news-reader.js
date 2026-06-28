@@ -293,6 +293,7 @@ function atEnd(session) {
 
 function advanceArticle(session) {
   if (!session) return;
+  const previousSectionIndex = session.sectionIndex;
   session.articleIndex += 1;
   while (
     session.sectionIndex < session.sections.length &&
@@ -301,12 +302,16 @@ function advanceArticle(session) {
     session.sectionIndex += 1;
     session.articleIndex = 0;
   }
+  if (session.sectionIndex !== previousSectionIndex) {
+    session.lastSpokenSectionIndex = -1;
+  }
 }
 
 function advanceSection(session) {
   if (!session) return;
   session.sectionIndex += 1;
   session.articleIndex = 0;
+  session.lastSpokenSectionIndex = -1;
 }
 
 function currentSpeech(session) {
