@@ -1991,16 +1991,28 @@ function verifyDashboard(html, runDate, options = {}) {
   const reportedBlockers = blockersTile
     ? parseInt((String(blockersTile.metric).match(/\d+/) || ['0'])[0], 10)
     : 0;
+  // distinctDefectiveCards is the canonical denominator for BOTH accounting
+  // checks: one defective card counts once, whether it ExampleCos one defect string
+  // or several (a red SYSTEM HEALTH with multiple subsystem strings is ONE card),
+  // and a card NAMED on the Blockers card as unresolved is already recorded into
+  // defectsByCard above (blockersNamedCardDefects), so it counts here as exactly
+  // one defective card. Using this single basis keeps BLOCKERS-FLOOR and
+  // BLOCKERS-COUNT reconciled instead of comparing the reported count against the
+  // raw defect-string total (which double-counted multi-defect cards and produced
+  // the "5 reported but 7 found" drift, live 2026-06-29 blockers-accounting defect).
   const distinctDefectiveCards = [...defectsByCard.values()].filter((b) => b.length).length;
-  const rawDefectsBeforeBlockerCountCheck = defects.length;
   if (reportedBlockers > 0 && distinctDefectiveCards === 0) {
     defects.push(
       `BLOCKERS-FLOOR: the briefing's Blockers card reports ${reportedBlockers} hard blocker(s) but the QC found no defective cards; the QC must not call the dashboard clean while Blockers says it is blocked`,
     );
   }
-  if (blockersTile && rawDefectsBeforeBlockerCountCheck > 0 && reportedBlockers < rawDefectsBeforeBlockerCountCheck) {
+  // STRICT, never papered over: every distinct defective card (including each card
+  // named on the Blockers card as unresolved) must be reflected in the reported
+  // hard-blocker count. When the reported count is lower than the distinct
+  // defective-card count, the Blockers card under-reports and this fires.
+  if (blockersTile && distinctDefectiveCards > 0 && reportedBlockers < distinctDefectiveCards) {
     defects.push(
-      `BLOCKERS-COUNT: the Blockers card reports ${reportedBlockers} hard blocker(s), but live render QC found ${rawDefectsBeforeBlockerCountCheck} defect(s); every prose/content/render defect that survived self-heal must count as a blocker`,
+      `BLOCKERS-COUNT: the Blockers card reports ${reportedBlockers} hard blocker(s), but live render QC found ${distinctDefectiveCards} defective card(s); every defective card (including each card named on the Blockers card as unresolved) must count as a blocker`,
     );
   }
 

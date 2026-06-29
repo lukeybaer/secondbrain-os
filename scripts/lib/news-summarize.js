@@ -86,7 +86,16 @@ function isThreeExampleCoraphArticleSummary(paras, item = {}) {
   const terms = articleSummaryTerms(item);
   if (terms.length < 2) return true;
   const hasExpandedMetadata = Boolean(item.excerpt || item.summaryText || item.sourceText);
-  if (!hasExpandedMetadata) return true;
+  if (!hasExpandedMetadata) {
+    // Title-only grounding (no excerpt/body to match against): the summary must
+    // still reference the title's distinctive terms, so generic boilerplate that
+    // names nothing from the headline is rejected. Lighter bar than the full-
+    // metadata check (a title ExampleCos few distinctive terms), but never skipped.
+    const titleHits = new Set(
+      terms.filter((term) => list.some((p) => p.toLowerCase().includes(term))),
+    ).size;
+    return titleHits >= Math.min(2, terms.length);
+  }
   const ExampleCoraphHits = list.map((ExampleCoraph) => {
     const lower = ExampleCoraph.toLowerCase();
     return terms.filter((term) => lower.includes(term)).length;
@@ -656,8 +665,7 @@ const PUBLISHER_CHROME_RULES = [
   new RegExp(CLAUSE_START + 'Business reporter\\b[.!?]?', 'g'),
   new RegExp(CLAUSE_START + 'BBC Verify\\b[.!?]?', 'g'),
   new RegExp(
-    CLAUSE_START +
-      '(?:Published|Updated)\\s+\\d{1,2}\\s+(?:minutes?|hours?|days?)\\s+ago\\b[.!?]?',
+    CLAUSE_START + '(?:Published|Updated)\\s+\\d{1,2}\\s+(?:minutes?|hours?|days?)\\s+ago\\b[.!?]?',
     'g',
   ),
   new RegExp(
@@ -691,6 +699,21 @@ const PUBLISHER_CHROME_RULES = [
     'g',
   ),
   /\bBy [A-Z][A-Za-z .-]{2,80}\s+(?:Business reporter|News reporter|Reporter|Correspondent|Technology reporter|Paris correspondent|BBC News)\s+Published\s+\d{1,2}\s+[A-Z][a-z]+\s+\d{4}(?:,\s*\d{1,2}:\d{2}\s*[A-Z]{3})?(?:\s+Updated\s+[^.!?\n]{0,80})?/g,
+  // GENERAL inline byline + dateline run (live WORLD NEWS miss 2026-06-29). The
+  // two BBC rules above only match a FIXED role list ("Reporter", "Correspondent",
+  // ...) immediately after the name; live BBC chrome leaked a lowercase non-listed
+  // role ("Seoul correspondent"), TWO authors joined by "and", and the run sat
+  // MID-sentence with no preceding period ("...South Korea By PRIVATE_NAME Kwon, Seoul
+  // correspondent and Fan Wang Published 29 June 2026, 04:34 BST Updated 3 hours
+  // ago ..."). Category encoded: a "By <author run> ... Published|Updated <date>"
+  // byline+dateline is page chrome wherever it sits. Over-strip is bounded by
+  // making the "Published|Updated <date>" marker MANDATORY (a real "By Monday, the
+  // committee ..." opener or a bare "By <Name>" with no dateline does NOT match)
+  // and by stopping the author/role tail at the first sentence punctuation so the
+  // preceding article sentence is never eaten. The date matches BOTH orders
+  // ("29 June 2026" and "June 26, 2026"); the trailing time/timezone and any
+  // "Updated ... ago" tail are consumed up to the clause end so no fragment leaks.
+  /\bBy [A-Z][a-z]+[^.!?\n]{0,90}?(?:Published|Updated)\s+(?:\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|[A-Z][a-z]+\s+\d{1,2},\s+\d{4})(?:,?\s*\d{1,2}:\d{2}\s*(?:[AP]M\s+)?[A-Z]{2,4})?(?:\s+Updated\s+[^.!?\n]{0,40}?ago)?[^.!?\n]{0,15}?(?=[.!?]|\s+[A-Z]|$)/g,
   /\bShare Add [A-Z][A-Za-z ]{1,80} to Google\b[.!?\s]*/g,
   /\bLimited time:\s*Save\s+\d+%\s+on\s+[A-Z][A-Za-z ]{1,80}\s+subscription\b[.!?\s]*/g,
   // Photo caption / credit lines: a Capitalized label + colon at a clause start.
@@ -723,7 +746,10 @@ function stripPublisherChrome(text) {
   // can leave ". <space><space>Sponsor Message ...", and a multi-space gap would
   // defeat the next rule's fixed lookbehind (keep anchored AND order-independent).
   for (const re of PUBLISHER_CHROME_RULES) {
-    s = s.replace(re, ' ').replace(/[ \t]{2,}/g, ' ').replace(/^\s+/, '');
+    s = s
+      .replace(re, ' ')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/^\s+/, '');
   }
   // A removed chrome run can leave an orphaned punctuation island (". ." when a
   // CTA between two sentences was stripped). Collapse a lone punctuation mark
