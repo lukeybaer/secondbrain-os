@@ -267,6 +267,7 @@ function blockersFromLedger(date, opts = {}) {
 
 module.exports = {
   defaultDataDir,
+  safeDate,
   ledgerDir,
   ledgerPath,
   defectKey,

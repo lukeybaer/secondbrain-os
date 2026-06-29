@@ -32,6 +32,7 @@ const {
   generateKingdomEquippingIdeas,
 } = require('./kingdom-equipping-ideas.js');
 const { formatUncommittedParkedWorkSection } = require('./lib/git-hygiene-briefing.js');
+const { generateSelfHealHealthCard } = require('./self-heal/self-heal-health-card.js');
 const { probeDevOpsHealth } = require('./lib/devops-health.js');
 const { computeSpeakerFreshness } = require('./lib/speaker-freshness.js');
 const { CARDS: BRIEFING_MANIFEST_CARDS } = require('./lib/briefing-card-manifest.js');
@@ -1102,6 +1103,11 @@ const MANIFEST_CARD_RENDER = {
       'The live AWS cost scan did not run on the cloud build, so no verified spend figure is available. Needs: the AWS billing profiles available to the cloud host.',
   },
   system_health: { title: 'SYSTEM HEALTH' },
+  self_heal_health: {
+    title: 'SELF-HEAL HEALTH',
+    blockerDetail:
+      'The self-heal repair ledger and executor-health signal were not available to this build, so daily attempted/cleared/escalated counts cannot be shown. Needs: data/agent/briefing-repair-ledger and data/agent/overnight-self-heal-runs.jsonl on the build host.',
+  },
   full_life_backup: {
     title: 'FULL-LIFE DATA BACKUP',
     blockerDetail:
@@ -5133,6 +5139,7 @@ function buildOtterSpeakerEnrichmentHealth({
       `probe clips built: ${cs.total_substantive_speaker_tracks_with_probe_audio != null ? cs.total_substantive_speaker_tracks_with_probe_audio : '?'}/${cs.total_substantive_speaker_tracks != null ? cs.total_substantive_speaker_tracks : '?'} substantive speaker track(s) have probe clips`,
       `call summaries built: ${callSummaryCount} executive call summar${callSummaryCount === 1 ? 'y' : 'ies'} available`,
       `identity/voiceprint rosters: ${cs.call_roster_available != null ? cs.call_roster_available : '?'}/${m.total_calls} call roster(s), ${cs.track_identity_table_available != null ? cs.track_identity_table_available : '?'} track identity table(s)`,
+      `recent audio coverage (true denominator, all in-window calls incl. no-audio): ${p(m.audio_coverage_7d)} (${m.audio_coverage_7d_calls_with_audio != null ? m.audio_coverage_7d_calls_with_audio : '?'}/${m.audio_coverage_7d_total_calls != null ? m.audio_coverage_7d_total_calls : '?'} calls; ${recentMissingAudio.length} in-window call(s) have no audio and are counted in the denominator)`,
       `ingest -> audio: ${p(m.audio_coverage_all)} all-time (${cs.full_audio_available != null ? cs.full_audio_available : '?'}/${m.total_calls}), ${p(m.audio_coverage_7d)} last 7d`,
       `audio -> enriched transcript: ${p(m.enriched_coverage_all)} (${cs.enriched_transcript_available != null ? cs.enriched_transcript_available : '?'}/${m.total_calls})`,
       `enriched -> speakers named off voiceprints: ${p(m.named_speaker_rate)} (${m.named_speakers}/${m.total_speakers} tracks)`,
@@ -6589,13 +6596,16 @@ function formatTokenUsageSection(
 function refreshTokenUsageArtifacts(
   dataDir = DEFAULT_DATA_DIR,
   date = new Date().toISOString().slice(0, 10),
+  forceSpawn = false,
 ) {
   const env = { ...process.env, SECONDBRAIN_DATA_DIR: dataDir };
   // token-usage collectors skipped under test: each is a real child-process spawn
   // that ETIMEDOUTs (30s) under VITEST/NODE_ENV=test, the same real-spawn cost the
   // floor was gated for. Skipping them keeps the cloud integration test well within
-  // its timeout. Prod (floorSpawnEnabled true) runs every collector unchanged.
-  if (!floorSpawnEnabled()) return;
+  // its timeout. A caller that injects a fast/mocked spawn (the token-wiring test)
+  // passes forceSpawn so the collector contract stays verifiable. Prod
+  // (floorSpawnEnabled true) runs every collector unchanged.
+  if (!floorSpawnEnabled() && !forceSpawn) return;
   const collectors = [
     { script: 'collect-claude-plan-usage.js', args: [], timeout: 30000, label: 'claude plan-usage' },
     { script: 'collect-bedrock-budget-usage.js', args: [], timeout: 30000, label: 'bedrock budget' },
@@ -6633,6 +6643,7 @@ function buildCloudMorningBriefing({
   extraBlockers = [],
   selfHealRefresh = isSelfHealRefreshMode(),
   refreshTargets = selfHealRefreshTargets(),
+  forceTokenArtifactRefresh = false,
 } = {}) {
   const refreshTargetSet = normalizedRefreshTargetSet(refreshTargets);
   const narrowSelfHealRefresh = !!selfHealRefresh || isSelfHealRefreshMode();
@@ -6893,7 +6904,8 @@ function buildCloudMorningBriefing({
   // honest blocker. Everything else maps its generator output to its id.
   const reputationCard = buildReputationCard(dataDir, date);
   const fullLifeCard = buildFullLifeBackupCard(dataDir);
-  if (buildTargeted('token_usage')) refreshTokenUsageArtifacts(dataDir, date);
+  if (buildTargeted('token_usage'))
+    refreshTokenUsageArtifacts(dataDir, date, forceTokenArtifactRefresh);
   const realById = {
     blockers: renderBlockersSection(blockers),
     token_usage: legacySection(
@@ -6950,6 +6962,18 @@ function buildCloudMorningBriefing({
         testsHealth,
       }),
     ),
+    // Phase 4b: the daily SELF-HEAL HEALTH card. Its owning generator reads the
+    // per-defect repair ledger + executor-health and renders attempted/cleared/
+    // escalated, executor status, and ledger freshness. generateSelfHealHealthCard
+    // never throws and falls back to honest counts, so a build with no ledger still
+    // renders a real (zero-state) card rather than vanishing.
+    self_heal_health: (() => {
+      try {
+        return generateSelfHealHealthCard({ dataDir, date }).section;
+      } catch {
+        return null;
+      }
+    })(),
     full_life_backup: fullLifeCard.real
       ? legacySection(fullLifeCard.title, fullLifeCard.body)
       : null,

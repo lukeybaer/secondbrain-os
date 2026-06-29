@@ -43,6 +43,17 @@ LIVE_DEPS=(
   "scripts/lib/shared-tree-guard.js"
   "scripts/lib/integration-session.js"
   "scripts/lib/mutation-surface-matrix.js"
+  # New briefing-path modules added in Phase 2-4b. The deployed cloud-morning-briefing.js
+  # and ec2-server.js require these; ship them directly so a flaky build-path git-pull
+  # cannot leave EC2 importing a file it does not have. See
+  # feedback_ec2_build_path_silent_revert.md. Same category as the heal-error-budget.js
+  # gap, but on the deploy surface instead of git tracking.
+  "scripts/lib/briefing-fallback-expiry.js"
+  "scripts/lib/briefing-card-manifest.js"
+  "scripts/lib/executor-health-row.js"
+  "scripts/otter-processing-coverage-probe.js"
+  "scripts/self-heal/briefing-repair-ledger.js"
+  "scripts/self-heal/self-heal-health-card.js"
 )
 
 echo "[deploy] syntax-checking repo ec2-server.js"

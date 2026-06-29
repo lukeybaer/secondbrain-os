@@ -188,6 +188,13 @@ const CARD_DEFINITIONS = [
     condition:
       'Always: system health tile. FULL-LIFE DATA BACKUP "Life:" chips are merged INTO this tile (ec2-server.js ~11785).',
   },
+  {
+    id: 'self_heal_health',
+    match: /^SELF[- ]HEAL HEALTH\b/i,
+    always: true,
+    condition:
+      'Always: daily self-heal health tile (Phase 4b). Reads the per-defect repair ledger + executor health; shows attempted/cleared/escalated, executor status, and ledger freshness so ExampleCo never opens the logs.',
+  },
 
   // FULL-LIFE DATA BACKUP is CONDITIONAL: the render merges it into SYSTEM
   // HEALTH as "Life:" chips (ExampleCo ask 2026-05-24). So it is "represented" by
@@ -342,6 +349,7 @@ const CARD_DEFINITIONS = [
 const CARD_PRIORITY_IDS = [
   'blockers',
   'system_health',
+  'self_heal_health',
   'action_items',
   'token_usage',
   'meetings',
