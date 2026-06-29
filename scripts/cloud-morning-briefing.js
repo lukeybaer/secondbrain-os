@@ -10,6 +10,10 @@ const { spawnSync } = childProcess;
 const { buildBriefingDashboardUrl } = require('./lib/briefing-auth.js');
 const { notifyWithFallback } = require('./lib/notify-with-fallback.js');
 const {
+  fallbackExpiresAt,
+  isFallbackExpired,
+} = require('./lib/briefing-fallback-expiry.js');
+const {
   qcBriefingMarkdown,
   repairBriefingMarkdown,
   splitMarkdownCards,
@@ -1591,7 +1595,15 @@ function readDatedArtifact(dataDir, parts, date) {
   return readJson(path.join(dataDir, ...parts, `${date}.json`), null);
 }
 
-function readLatestCompleteDatedArtifact(dataDir, parts, date, keys, minCount, maxAgeDays = 2) {
+function readLatestCompleteDatedArtifact(
+  dataDir,
+  parts,
+  date,
+  keys,
+  minCount,
+  maxAgeDays = 2,
+  now = new Date(),
+) {
   const dir = path.join(dataDir, ...parts);
   let files = [];
   try {
@@ -1607,6 +1619,10 @@ function readLatestCompleteDatedArtifact(dataDir, parts, date, keys, minCount, m
       if (!Number.isFinite(lag) || lag < 0 || lag > maxAgeDays) return null;
       const full = path.join(dir, file);
       const raw = readJson(full, null);
+      // An already-expired materialized fallback must never be re-promoted as a
+      // fresh fallback source -- that would chain yesterday's content forward
+      // indefinitely. Skip it so the search finds a real complete set or none.
+      if (isFallbackExpired(raw, now)) return null;
       const items = normalizeArtifactArray(raw, keys);
       if (items.length < minCount) return null;
       return { date: m[1], file: full, raw, items, lag };
@@ -1616,15 +1632,19 @@ function readLatestCompleteDatedArtifact(dataDir, parts, date, keys, minCount, m
   return rows.length ? rows[rows.length - 1] : null;
 }
 
-function materializeFallbackArtifact(dataDir, parts, date, fallback, label) {
+function materializeFallbackArtifact(dataDir, parts, date, fallback, label, now = new Date()) {
   if (!fallback || !fallback.raw) return;
   const target = path.join(dataDir, ...parts, `${date}.json`);
+  const stamp = (now instanceof Date ? now : new Date(now)).toISOString();
   const payload = {
     ...fallback.raw,
     date,
-    generatedAt: new Date().toISOString(),
-    generated_at: new Date().toISOString(),
+    generatedAt: stamp,
+    generated_at: stamp,
     fallbackFrom: fallback.date,
+    // Hard 24h expiry: past this stamp the fallback is yesterday-as-today and
+    // both the load path and the render path reject it for an honest blocker.
+    fallbackExpires: fallbackExpiresAt(now),
     fallbackReason: `${label} fresh generation did not complete before briefing; latest complete set preserved the approval workflow.`,
   };
   writeJsonAtomic(target, payload);
@@ -2988,9 +3008,14 @@ function buildCovidNewsCard(dataDir, date, blockers) {
   };
 }
 
-function buildShortsProposalsCard(dataDir, date, blockers) {
+function buildShortsProposalsCard(dataDir, date, blockers, now = new Date()) {
   let raw = readDatedArtifact(dataDir, ['agent', 'shorts-proposals'], date);
   let fallback = null;
+  // A materialized fallback sitting in today's file is only good for 24h. Once
+  // expired it is yesterday-as-today: drop it before counting so it can never
+  // render as fresh content, and let the re-sourcing below find a current set
+  // or fall through to an honest blocker.
+  if (isFallbackExpired(raw, now)) raw = null;
   let proposalsRaw = normalizeArtifactArray(raw, ['proposals', 'items']);
   if (proposalsRaw.length < 10) {
     fallback = readLatestCompleteDatedArtifact(
@@ -3000,6 +3025,7 @@ function buildShortsProposalsCard(dataDir, date, blockers) {
       ['proposals', 'items'],
       10,
       2,
+      now,
     );
     if (fallback) {
       materializeFallbackArtifact(
@@ -3008,6 +3034,7 @@ function buildShortsProposalsCard(dataDir, date, blockers) {
         date,
         fallback,
         'Shorts proposals',
+        now,
       );
       raw = readDatedArtifact(dataDir, ['agent', 'shorts-proposals'], date) || fallback.raw;
       proposalsRaw = normalizeArtifactArray(raw, ['proposals', 'items']);
@@ -3052,9 +3079,12 @@ function buildShortsProposalsCard(dataDir, date, blockers) {
   };
 }
 
-function buildViralTechCard(dataDir, date, blockers) {
+function buildViralTechCard(dataDir, date, blockers, now = new Date()) {
   let raw = readDatedArtifact(dataDir, ['agent', 'viral-tech-clips'], date);
   let fallback = null;
+  // Drop an expired materialized fallback before counting so a >24h-old clip
+  // set never renders as today's; re-source or fall through to honest blocker.
+  if (isFallbackExpired(raw, now)) raw = null;
   let proposalsRaw = normalizeArtifactArray(raw, ['proposals', 'clips', 'items']);
   if (proposalsRaw.length < 3) {
     fallback = readLatestCompleteDatedArtifact(
@@ -3064,6 +3094,7 @@ function buildViralTechCard(dataDir, date, blockers) {
       ['proposals', 'clips', 'items'],
       3,
       2,
+      now,
     );
     if (fallback) {
       materializeFallbackArtifact(
@@ -3072,6 +3103,7 @@ function buildViralTechCard(dataDir, date, blockers) {
         date,
         fallback,
         'Viral tech clips',
+        now,
       );
       raw = readDatedArtifact(dataDir, ['agent', 'viral-tech-clips'], date) || fallback.raw;
       proposalsRaw = normalizeArtifactArray(raw, ['proposals', 'clips', 'items']);
@@ -3401,7 +3433,7 @@ function runPeopleAndMemorySnapshot(dataDir) {
   }
 }
 
-function buildRequiredCloudCards(dataDir, date, blockerLines) {
+function buildRequiredCloudCards(dataDir, date, blockerLines, now = new Date()) {
   // Each entry pairs the generated card with its canonical manifest id so the
   // manifest-driven assembly can resolve the card by id (never-drop) instead of
   // relying on positional order. A card may produce an empty markdown (the video
@@ -3422,8 +3454,8 @@ function buildRequiredCloudCards(dataDir, date, blockerLines) {
     [EMPLOYER_NEWS_MANIFEST_ID, formatExampleCoNewsSection(dataDir, date)],
     ['covid_news', formatHealedNewsSection(dataDir, date, 'covid', 'COVID-19 TREATMENTS & NEWS')],
     ['mortgage_rate_indexes', buildMortgageRateIndexesCard(dataDir, date)],
-    ['shorts_proposals', buildShortsProposalsCard(dataDir, date, blockerLines)],
-    ['viral_tech_clips', buildViralTechCard(dataDir, date, blockerLines)],
+    ['shorts_proposals', buildShortsProposalsCard(dataDir, date, blockerLines, now)],
+    ['viral_tech_clips', buildViralTechCard(dataDir, date, blockerLines, now)],
     ['video_approval_queue', buildVideoQueueCard(dataDir, blockerLines)],
   ];
   const cards = entries.map(([, item]) => item);
@@ -6559,7 +6591,7 @@ function buildCloudMorningBriefing({
         }))
         .filter((item) => item.title)
     : [];
-  const requiredCards = buildRequiredCloudCards(dataDir, date, blockers);
+  const requiredCards = buildRequiredCloudCards(dataDir, date, blockers, now);
   const sourceDecisions = readBriefingSourceDecisions(dataDir);
   const calendarDecision = normalizeSourceDecision(sourceDecisions.calendar);
   // QC rule (ExampleCo): the calendar can never be silently omitted to look clean.
@@ -7521,4 +7553,9 @@ module.exports = {
   buildEc2SubsystemHealthRows,
   runningOnEc2,
   inspectBusinessPulse,
+  buildShortsProposalsCard,
+  buildViralTechCard,
+  buildRequiredCloudCards,
+  materializeFallbackArtifact,
+  readLatestCompleteDatedArtifact,
 };
