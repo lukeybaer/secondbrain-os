@@ -31,6 +31,11 @@ const { runHeals, createSerializer } = require('./lib/heal-scheduler.js');
 const { runIsolatedHealSession } = require('./lib/isolated-heal-session.js');
 const { buildClaudeCliEnv, isCliFailureOutput } = require('./lib/cli-output-guard.js');
 const { refreshIfNeeded } = require('./claude-token-refresh.js');
+// Phase 4a desired-state reconciler pieces (each pure + DI-able):
+const repairLedger = require('./self-heal/briefing-repair-ledger.js');
+const { executorHealthRow } = require('./lib/executor-health-row.js');
+const { assertModeEquivalence, loadRunGraph } = require('./lib/briefing-heal-run-graph.js');
+const { createBudget, phaseExhausted, budgetExhaustedRed } = require('./lib/heal-error-budget.js');
 
 const REPO = path.resolve(__dirname, '..');
 
@@ -3427,6 +3432,49 @@ async function runOrchestrator(opts = {}) {
     });
   }
   announceMode(mode, logRun, rawBlockerCount);
+  // MODE-EQUIVALENCE PREFLIGHT (Phase 4a, item 5): before any spawn, assert the
+  // overnight path and the attended/babysitter path read the SAME heal run-graph
+  // (scripts/lib/briefing-heal-run-graph.json). A divergence means one path heals
+  // differently than the other (split-brain), so we stop BEFORE spawning anything and
+  // surface the divergence. Default-on: both paths resolve to the same authority graph,
+  // so this passes silently; opts.modeEquivalence:false disables it, and the tests inject
+  // divergent overnightStages/attendedStages to prove the guard fires.
+  if (opts.modeEquivalence !== false) {
+    const equivalence = (opts.assertModeEquivalence || assertModeEquivalence)({
+      overnightStages: opts.overnightStages,
+      attendedStages: opts.attendedStages,
+    });
+    if (!equivalence.ok) {
+      logRun({
+        stage: 'mode-equivalence-preflight',
+        pass: passNumber,
+        ok: false,
+        divergence: equivalence.divergence,
+        detail: 'overnight and attended heal paths read divergent run-graphs; no worker spawned',
+      });
+      logRun({
+        stage: 'repair-loop-stopped',
+        pass: passNumber,
+        reason: 'mode-equivalence-divergence',
+        mode: modeLabel(mode),
+      });
+      // This preflight runs before the cleared/escalated counters are declared (nothing
+      // has run yet), so the counts are 0 + the unattempted blockers.
+      return {
+        ok: false,
+        escalated: true,
+        modeEquivalenceFailed: true,
+        divergence: equivalence.divergence,
+        pass: passNumber,
+        cleared: 0,
+        clearedCount: 0,
+        escalatedCount: blockers.length,
+        totalBlockers: rawBlockerCount,
+        repairGroups: blockers.length,
+      };
+    }
+    logRun({ stage: 'mode-equivalence-preflight', pass: passNumber, ok: true, stages: equivalence.stages.length });
+  }
   // midday mode has no fixed deadline (run to completion); overnight keeps it.
   const deadlineMs = mode.midday
     ? null
@@ -3440,6 +3488,33 @@ async function runOrchestrator(opts = {}) {
   const actionItemsRepair = opts.actionItemsRepair || tryActionItemsRepair;
   const videoApprovalRepair = opts.videoApprovalRepair || tryVideoApprovalQueueRepair;
   const runSession = opts.spawnSession || spawnSession;
+  // SRE SPLIT DEADLINES + ERROR BUDGET (Phase 4a, item 6): overnight runs split the
+  // total wall-clock into audit/repair/decide/read phases with a HARD budget. When a
+  // phase budget is exhausted we publish a NAMED, EVIDENCED RED (from the per-defect
+  // repair ledger) and NEVER retry past the deadline. midday/observe have no fixed clock
+  // (run to completion), so the budget is overnight-only; opts.errorBudget overrides it.
+  const errorBudget =
+    opts.errorBudget ||
+    (!mode.midday && !mode.observe && deadlineMs
+      ? createBudget({
+          totalBudgetMs: Math.max(60000, deadlineMs - Date.now()),
+          startMs: opts.nowMs || Date.now(),
+        })
+      : null);
+  // PER-DEFECT REPAIR LEDGER (Phase 4a, items 1-3): one row per defect attempt this
+  // briefing day. ledgerOpts.dataDir is injectable so tests never touch the real store.
+  // Mirrors shouldCollectLiveRenderQc/shouldRunAuthPreflight: under VITEST/test the
+  // ledger is OFF by default (a real append to the shared default store would cross-
+  // contaminate other tests) unless the caller explicitly enables it or injects a
+  // dataDir; the new ledger tests drive the module directly and the orchestrator wiring
+  // test opts in with an injected dataDir.
+  const ledgerOpts = opts.repairLedgerOpts || {};
+  const recordRepairLedger =
+    opts.recordRepairLedger === true || (ledgerOpts && ledgerOpts.dataDir)
+      ? true
+      : opts.recordRepairLedger === false
+        ? false
+        : !(process.env.VITEST || process.env.NODE_ENV === 'test');
   let branchSummary = null;
   let cleared = 0;
   let escalated = 0;
@@ -3662,6 +3737,20 @@ async function runOrchestrator(opts = {}) {
       tokenPath: opts.authProbeTokenPath,
     });
     if (!authPreflight.ok) {
+      // EXECUTOR-HEALTH -> SYSTEM HEALTH (Phase 4a, item 4): convert THIS single
+      // preflight result into ONE named System Health row (executor health), not N card
+      // defects or a 12-session cascade. quota/latency, when cheaply observed by the
+      // probe, collapse into the same one row.
+      const executorRow = executorHealthRow(authPreflight, opts.executorHealthSignals || {});
+      logRun({
+        stage: 'system-health-row',
+        pass: passNumber,
+        source: 'executor-health',
+        label: executorRow.label,
+        status: executorRow.status,
+        detail: executorRow.detail,
+        runbook: executorRow.runbook,
+      });
       logRun({
         stage: 'self-heal-health',
         status: 'red',
@@ -3670,6 +3759,7 @@ async function runOrchestrator(opts = {}) {
         probeDetail: authPreflight.probeDetail || '',
         refreshDetail: authPreflight.refreshDetail || '',
         plannedSessions: survivors.length,
+        executorHealthRow: executorRow,
         detail: 'pre-spawn Claude auth probe failed; worker fan-out suppressed',
       });
       // Persist the single named auth-failed DEFECT to the same run-log JSONL the
@@ -3717,6 +3807,7 @@ async function runOrchestrator(opts = {}) {
         escalatedCount: escalated + survivors.length,
         plannedSessions: survivors.length,
         authBlocker: authPreflight.blocker,
+        executorHealthRow: executorHealthRow(authPreflight, opts.executorHealthSignals || {}),
         totalBlockers: rawBlockerCount,
         repairGroups: blockers.length,
       };
@@ -3784,19 +3875,110 @@ async function runOrchestrator(opts = {}) {
       blockerTitle: blocker.title,
       blockerId: blocker.blocker_id || blocker.blockerId || '',
       rawDefects: Array.isArray(blocker.rawDefects) ? blocker.rawDefects : [],
+      // Carry the heal-tactic identity onto the result so the per-defect repair ledger
+      // (Phase 4a item 1) records the exact { defect, tactic, tacticInputHash }.
+      healDefectKey: blocker.__healDefectKey || '',
+      healTactic: blocker.__healTactic || blocker.repair || blocker.title || '',
+      healTacticInputHash: blocker.__healTacticInputHash || '',
     };
   };
+
+  // SRE ERROR-BUDGET REPAIR-PHASE GATE (Phase 4a, item 6): if the repair phase is
+  // already exhausted before we spawn, do NOT spawn; publish the named, evidenced RED
+  // from the per-defect repair ledger and stop. Never retry past the deadline.
+  if (errorBudget) {
+    const repairGate = phaseExhausted(errorBudget, 'repair', opts.nowMs || Date.now());
+    if (repairGate.exhausted) {
+      const red = budgetExhaustedRed({
+        phase: 'repair',
+        budget: errorBudget,
+        nowMs: opts.nowMs || Date.now(),
+        openDefects: repairLedger.openDefects(date, ledgerOpts),
+      });
+      logRun({
+        stage: 'system-health-row',
+        pass: passNumber,
+        source: 'error-budget',
+        label: red.row.label,
+        status: red.row.status,
+        detail: red.row.detail,
+        runbook: red.row.runbook,
+      });
+      logRun({
+        stage: 'self-heal-health',
+        status: 'red',
+        pass: passNumber,
+        errorBudgetExhausted: true,
+        phase: 'repair',
+        detail: red.row.detail,
+      });
+      logRun({
+        stage: 'repair-loop-stopped',
+        pass: passNumber,
+        reason: 'error-budget-exhausted',
+        phase: 'repair',
+        mode: modeLabel(mode),
+      });
+      return {
+        ok: false,
+        escalated: true,
+        errorBudgetExhausted: true,
+        budgetExhaustedPhase: 'repair',
+        budgetRed: red,
+        pass: passNumber,
+        cleared,
+        clearedCount: cleared,
+        escalatedCount: escalated + survivors.length,
+        totalBlockers: rawBlockerCount,
+        repairGroups: blockers.length,
+      };
+    }
+  }
+
+  // NO-REPEAT TACTIC (Phase 4a, item 2): before dispatching a survivor, read the
+  // per-defect repair ledger. If the SAME tactic (the blocker repair plan) + SAME input
+  // hash already FAILED on the prior attempt for this defect, do NOT re-run that identical
+  // move; escalate it as "tactic exhausted" and drop it from the wave. A different tactic,
+  // a different input, or a prior clear lets it through.
+  const dispatchSurvivors = [];
+  for (const blocker of survivors) {
+    const defect = blocker.defectKey || blocker.blocker_id || blocker.blockerId || blocker.title;
+    const tactic = blocker.repair || blocker.title;
+    const inputHash = repairLedger.hashTacticInput({
+      evidence: blocker.evidence || '',
+      rawDefects: Array.isArray(blocker.rawDefects) ? blocker.rawDefects : [],
+    });
+    blocker.__healDefectKey = repairLedger.defectKey(defect);
+    blocker.__healTactic = tactic;
+    blocker.__healTacticInputHash = inputHash;
+    if (
+      recordRepairLedger &&
+      repairLedger.tacticAlreadyFailed(date, defect, tactic, inputHash, ledgerOpts)
+    ) {
+      logRun({
+        stage: 'no-repeat-tactic',
+        pass: passNumber,
+        blocker: blocker.title,
+        defect: blocker.__healDefectKey,
+        reason: repairLedger.tacticExhaustedReason(defect, tactic),
+        status: 'escalated',
+      });
+      escalated++;
+      continue;
+    }
+    dispatchSurvivors.push(blocker);
+  }
 
   let results = [];
   if (mode.parallel) {
     // Fan out: independent heal sessions run concurrently (bounded); each session's
     // git landing serializes via the shared serializer. No per-blocker deadline gate
     // in parallel mode (the mid-day heal has no fixed timer).
-    results = await runHeals(survivors, runOneSession, { concurrency: mode.concurrency });
+    results = await runHeals(dispatchSurvivors, runOneSession, { concurrency: mode.concurrency });
   } else {
     // Sequential legacy (overnight): one session at a time, deadline-gated.
-    for (let i = 0; i < survivors.length; i++) {
-      const blocker = survivors[i];
+    for (let i = 0; i < dispatchSurvivors.length; i++) {
+      const blocker = dispatchSurvivors[i];
       if (deadlineMs && shouldRespectDeadline(Date.now(), deadlineMs, perSessionBudgetMs)) {
         logRun({ stage: 'deadline', blocker: blocker.title, remainingMs: deadlineMs - Date.now() });
         escalated++;
@@ -3861,6 +4043,45 @@ async function runOrchestrator(opts = {}) {
         survivedKeys: gate.survivedKeys,
         status: 'survived',
       });
+    }
+  }
+  // PER-DEFECT REPAIR LEDGER (Phase 4a, item 1): write one row per worker result for
+  // THIS defect, now that the authenticated post-repair live QC has decided cleared vs
+  // survived. qcResult drives the no-repeat guard (item 2) and openDefects/Blockers
+  // (item 3) on the next pass. Best-effort: a ledger write must never wedge the loop.
+  if (recordRepairLedger) {
+    for (const r of results) {
+      if (!r || !r.healDefectKey) continue;
+      const qcResult =
+        r.status === 'cleared' && !r.liveQcGateSurvived
+          ? 'cleared'
+          : r.status === 'cleared'
+            ? 'survived'
+            : r.status === 'escalated'
+              ? 'escalated'
+              : 'failed';
+      try {
+        repairLedger.recordAttempt(
+          date,
+          {
+            defect: r.healDefectKey,
+            tactic: r.healTactic,
+            tacticInputHash: r.healTacticInputHash,
+            fix: r.verification || r.tests || '',
+            qcResult,
+            reflection: r.reflection || r.escalationReason || '',
+            deployedHash: r.commit_sha || '',
+          },
+          ledgerOpts,
+        );
+      } catch (e) {
+        logRun({
+          stage: 'repair-ledger-write-failed',
+          pass: passNumber,
+          defect: r.healDefectKey,
+          error: String((e && e.message) || e).slice(0, 200),
+        });
+      }
     }
   }
   const repairLoopEntry = repairLoopEntryFromDefects(
@@ -4235,6 +4456,10 @@ async function runOrchestrator(opts = {}) {
     cleared,
     totalBlockers: rawBlockerCount,
     repairGroups: blockers.length,
+    // BLOCKERS FROM LEDGER (Phase 4a, item 3): the Blockers card content is generated
+    // from OPEN per-defect repair-ledger rows, so it always matches reality and shrinks
+    // when a defect's latest attempt clears.
+    ledgerBlockers: recordRepairLedger ? repairLedger.blockersFromLedger(date, ledgerOpts) : [],
   };
 }
 
@@ -4292,6 +4517,15 @@ module.exports = {
   mergeBlockers,
   modeLabel,
   announceMode,
+  // Phase 4a desired-state reconciler seams (re-exported so callers/tests reach the
+  // same implementations the orchestrator wires in).
+  repairLedger,
+  executorHealthRow,
+  assertModeEquivalence,
+  loadRunGraph,
+  createBudget,
+  phaseExhausted,
+  budgetExhaustedRed,
   RUNS_LOG_PATH,
 };
 

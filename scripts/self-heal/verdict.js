@@ -363,11 +363,25 @@ function cardFreshlyPublished(cardId, observed = {}, opts = {}) {
   }
   const acc = (card.qc && card.qc.acceptance) || null;
   if (!acc || acc.kind !== 'freshness') {
-    // No freshness floor declared: the freshly-published gate does not apply; the
-    // ordinary verdict governs. We report attributable (owner exists) but note it.
+    // No freshness floor declared. The owner flag ALONE is NOT a run-receipt: a prior-
+    // day artifact would be falsely treated as freshly published and skip a regen it
+    // actually needs (Phase 3 fix-forward, 2026-06-29). Require a POSITIVE run-receipt
+    // -- a dated artifact young enough to prove the owner produced output THIS run --
+    // before claiming fresh. We reuse the SAME dated-artifact age logic the function
+    // uses for freshness-accepting cards (observed.ageHours), with a default
+    // this-run window (overridable via opts.maxRunReceiptAgeHours). If there is no
+    // fresh dated-artifact receipt, return freshlyPublished:false so a stale card is
+    // not skipped.
+    const maxRunReceiptAgeHours = Number(opts.maxRunReceiptAgeHours || 24);
+    const receipt = evalAcceptance(
+      { kind: 'freshness', maxAgeHours: maxRunReceiptAgeHours },
+      observed,
+    );
     return {
-      freshlyPublished: true,
-      reason: `owner ${owner.module}#${owner.function} declared; no freshness floor to assert run-this-build`,
+      freshlyPublished: receipt.ok,
+      reason: receipt.ok
+        ? `owner ${owner.module}#${owner.function} declared; dated-artifact run-receipt is fresh (${receipt.reason})`
+        : `owner ${owner.module}#${owner.function} declared but NO fresh run-receipt: ${receipt.reason} (owner flag alone is not proof of this-build publish)`,
     };
   }
   const r = evalAcceptance(acc, observed);

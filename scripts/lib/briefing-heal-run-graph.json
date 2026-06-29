@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "description": "PHASE 4a item 5: the single authoritative heal RUN-GRAPH. Both the overnight (deadline-bounded) self-heal path and the attended/babysitter (midday, no-deadline) path MUST read this same graph so the two paths cannot silently diverge. The mode-equivalence preflight asserts both paths resolve to this graph before any spawn; a divergence exits nonzero BEFORE spawning anything. The graph is the ORDERED list of heal stages every path runs; modes differ ONLY in the allowed knobs declared in modeKnobs (deadline vs none, sequential vs parallel), never in which stages run or their order.",
+  "stages": [
+    "live-render-qc",
+    "canonical-defects",
+    "pre-repair-publish-refresh",
+    "pre-repair-live-render-qc",
+    "ownership-classify",
+    "deterministic-preflights",
+    "auth-preflight",
+    "heal-wave",
+    "post-repair-publish-refresh",
+    "post-repair-live-render-qc",
+    "per-worker-live-qc-gate",
+    "self-heal-health",
+    "repair-loop-decide"
+  ],
+  "modeKnobs": {
+    "overnight": { "deadline": true, "parallel": false, "midday": false },
+    "attended": { "deadline": false, "parallel": true, "midday": true }
+  },
+  "invariant": "Both modes run every stage above, in this exact order. A mode may only differ in modeKnobs (deadline-bounded vs run-to-completion, sequential vs parallel fan-out). If either path's resolved stage list differs from this array, the mode-equivalence preflight fails and no worker is spawned."
+}
