@@ -178,10 +178,14 @@ function isClearedRow(row) {
 }
 
 // NO-REPEAT TACTIC (item 2). Returns true when the SAME tactic + SAME input hash
-// already FAILED on the immediately prior attempt(s) for this defect, so the loop
-// must NOT re-dispatch that identical move and should escalate "tactic exhausted".
-// "Immediately prior attempts" = the trailing run of the most recent attempts that
-// all share this tactic+hash and all failed (a clear in between resets the run).
+// already FAILED at any point since the last clear for this defect, so the loop must
+// NOT re-dispatch that identical move and should escalate "tactic exhausted". This is
+// the canonical "no repeat without changed input" rule: an identical tactic+input is
+// deterministic, so re-running it just reproduces the failure. A DIFFERENT tactic, a
+// CHANGED input (new tacticInputHash), or a prior CLEAR all let the defect through;
+// only the exact failed tactic+input is blocked. When every tactic+input is exhausted
+// the defect escalates to a blocker (the caller increments escalated, never silently
+// drops). A clear in between resets the memory (we stop at the first cleared row).
 function tacticAlreadyFailed(date, defect, tactic, tacticInputHash, opts = {}) {
   const attempts = attemptsForDefect(date, defect, opts);
   if (!attempts.length) return false;

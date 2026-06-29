@@ -3893,7 +3893,12 @@ async function runOrchestrator(opts = {}) {
         phase: 'repair',
         budget: errorBudget,
         nowMs: opts.nowMs || Date.now(),
-        openDefects: repairLedger.openDefects(date, ledgerOpts),
+        // Hermeticity (Phase 4a Codex HOLD #4): read the per-defect ledger only when
+        // recording is active (prod, or a test that injected a temp dataDir). Under
+        // test-mode-without-dataDir recordRepairLedger is false, so default to [] here
+        // too; the RED still publishes (the "no per-defect ledger rows" branch) without
+        // touching the shared default store.
+        openDefects: recordRepairLedger ? repairLedger.openDefects(date, ledgerOpts) : [],
       });
       logRun({
         stage: 'system-health-row',
