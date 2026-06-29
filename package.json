@@ -25,7 +25,8 @@
     "verify:vapi-owner-status-context": "node scripts/probe-vapi-owner-status-context.js",
     "verify:vapi-self-call-status": "node scripts/vapi-self-call-status-test.js --live --seed-topic \"update blocker card diagnostics\"",
     "verify:scheduled-tasks-silent": "node scripts/lib/scheduled-task-popup-guard.js",
-    "verify:rubric-integrity": "python src/main/empire/video-quality-tools/verify-rubric-integrity.py"
+    "verify:rubric-integrity": "python src/main/empire/video-quality-tools/verify-rubric-integrity.py",
+    "verify:video-quality-saturation": "python src/main/empire/video-quality-tools/audit-tool-sprawl.py --fail-on-saturation"
   },
   "build": {
     "appId": "com.secondbrain.app",
