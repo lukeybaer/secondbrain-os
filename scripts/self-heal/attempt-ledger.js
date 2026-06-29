@@ -32,14 +32,26 @@ function ledgerDir(opts = {}) {
   return path.join(opts.dataDir || defaultDataDir(), 'agent', 'heal-attempts');
 }
 
+// The stable string label of a heal-ladder rung. A legacy rung is a string; a
+// callable rung is { module, function, args, label }. Without this an object rung
+// would stringify to "[object Object]" and EVERY object rung would collapse to a
+// single identity, so remainingUniqueOptions would treat them as one already-tried
+// option. This mirrors verdict.healLadderRungLabel (kept inline here so the ledger
+// has no dependency edge on verdict, avoiding any require cycle).
+function rungLabel(option) {
+  if (option && typeof option === 'object' && !Array.isArray(option)) {
+    if (option.label) return String(option.label);
+    if (option.module && option.function) return `${option.module}#${option.function}`;
+    return JSON.stringify(option);
+  }
+  return String(option == null ? '' : option);
+}
+
 // A stable identity for an option so a retry of the same option is recognized as
-// "already tried" rather than counted as a new unique option.
+// "already tried" rather than counted as a new unique option. Accepts both legacy
+// string rungs and callable { module, function } rungs (via rungLabel).
 function optionKey(option) {
-  return String(option || '')
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .replace(/[`'"]/g, '')
-    .trim();
+  return rungLabel(option).toLowerCase().replace(/\s+/g, ' ').replace(/[`'"]/g, '').trim();
 }
 
 function safeCardId(cardId) {
@@ -68,7 +80,7 @@ function recordAttempt(cardId, attempt, opts = {}) {
     {
       type: 'attempt',
       cardId,
-      option: String(a.option || '').trim(),
+      option: rungLabel(a.option).trim(),
       optionKey: optionKey(a.option),
       outcome: a.outcome || 'failed',
       failureReason: a.failureReason ? String(a.failureReason).trim() : '',
@@ -168,6 +180,7 @@ function summarizeForHonestBlock(cardId, opts = {}) {
 
 module.exports = {
   optionKey,
+  rungLabel,
   ledgerPath,
   recordAttempt,
   recordResolved,

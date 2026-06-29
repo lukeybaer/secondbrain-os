@@ -3868,6 +3868,73 @@ function selfHealRefreshTargets(env = process.env) {
   );
 }
 
+// Phase 3 item 3: BLACKLIST not whitelist for always-render lightweight cards.
+//
+// The narrow SELF_HEAL_REFRESH_CARDS whitelist exists to keep the budget-heavy
+// news summarizer scoped to the one defective card before the 5:30am deadline
+// (self-heal.LESSONS.md 2026-06-25). That opt-in targeting STAYS for the heavy
+// content cards. But an ALWAYS-render lightweight card (kingdom_equipping,
+// communication_coaching) must NEVER be silently left stale just because a narrow
+// refresh did not name it -- that is exactly how KINGDOM EQUIPPING went stale.
+//
+// So these cards regenerate EVERY run (full or narrow refresh), and the ONLY way
+// to skip one is to list it explicitly in SELF_HEAL_REFRESH_SKIP. Every skip is
+// LOGGED with its reason, so nothing is ever silently dropped.
+const ALWAYS_REFRESH_FLOOR = [
+  {
+    card: 'kingdom_equipping',
+    scriptName: 'kingdom-equipping-ideas.js',
+    args: (date) => ['--date', date, '--force'],
+    timeout: 120000,
+    env: {},
+  },
+  {
+    card: 'communication_coaching',
+    scriptName: 'comm-coaching-card.js',
+    args: (date) => ['--date', date],
+    timeout: 180000,
+    env: { COMM_COACHING_DETERMINISTIC: '1' },
+  },
+];
+
+function selfHealRefreshSkip(env = process.env) {
+  return new Set(
+    String(env.SELF_HEAL_REFRESH_SKIP || '')
+      .split(',')
+      .map((s) => normalizeRefreshTarget(s))
+      .filter(Boolean),
+  );
+}
+
+// Decide, for the always-render floor, which cards run and which are skipped (and
+// why). A floor card is skipped ONLY when explicitly skip-listed; that decision is
+// logged so a stale floor card is always traceable to an explicit skip, never to a
+// missing whitelist entry. Pure + returns the plan so a test can assert it.
+// The always-render floor regenerates real artifacts via child-process spawns
+// (kingdom-equipping-ideas.js, comm-coaching-card.js). Under test those real
+// spawns are slow (RSS fetches + a second briefing build) and tip the cloud
+// integration test over its timeout, exactly like the news summarizer and render
+// QC, which already no-op under VITEST/NODE_ENV=test. So the floor SPAWN is gated
+// the same way: skipped under test unless a caller injects a runHealer (the
+// dependency-injection seam the tests use to assert the plan without spawning).
+function floorSpawnEnabled(env = process.env) {
+  return env.NODE_ENV !== 'test' && env.VITEST !== 'true';
+}
+
+function planAlwaysRefreshFloor(env = process.env, floor = ALWAYS_REFRESH_FLOOR) {
+  const skip = selfHealRefreshSkip(env);
+  const run = [];
+  const skipped = [];
+  for (const entry of floor) {
+    if (skip.has(normalizeRefreshTarget(entry.card))) {
+      skipped.push({ card: entry.card, reason: 'explicitly listed in SELF_HEAL_REFRESH_SKIP' });
+    } else {
+      run.push(entry);
+    }
+  }
+  return { run, skipped };
+}
+
 function contentHealCardsForRefreshTargets(targets) {
   const orderedTargets = [...(targets || [])]
     .map((target) => normalizeRefreshTarget(target))
@@ -3950,16 +4017,10 @@ function cloudSelfHealScriptRunsForRefreshTargets(targets, opts = {}) {
     [...(targets || [])].map((target) => normalizeRefreshTarget(target)).filter(Boolean),
   );
   const runs = [];
-  if (normalized.has('communication_coaching')) {
-    runs.push({
-      scriptName: 'comm-coaching-card.js',
-      args: ['--date', date],
-      timeout: 180000,
-      env: {
-        COMM_COACHING_DETERMINISTIC: '1',
-      },
-    });
-  }
+  // communication_coaching is no longer whitelist-gated here: it is an ALWAYS-render
+  // lightweight floor card (planAlwaysRefreshFloor / ALWAYS_REFRESH_FLOOR), so it
+  // regenerates every run unless explicitly skip-listed. Keeping a second push here
+  // would double-run it on a narrow communication_coaching refresh.
   if (normalized.has('graphiti') || normalized.has('graphiti_coverage')) {
     runs.push({
       scriptName: 'graphiti-coverage-health.js',
@@ -4044,6 +4105,10 @@ function maybeRunCloudSelfHeal({
   date,
   selfHealRefresh = isSelfHealRefreshMode(),
   env = process.env,
+  // Injectable healer runner so a test can assert the floor plan without spawning
+  // real child processes. Defaults to the real spawn; null/undefined under test
+  // means "do not spawn" (gated by floorSpawnEnabled).
+  runHealer = floorSpawnEnabled(env) ? runNodeHealer : null,
 }) {
   const attempts = [];
   const refreshTargets = selfHealRefreshTargets(env);
@@ -4062,11 +4127,25 @@ function maybeRunCloudSelfHeal({
   ) {
     attempts.push(refreshActionItemsForCloud(dataDir, date));
   }
-  if (!narrowSelfHealRefresh) {
+  // ALWAYS-render lightweight floor (blacklist, not whitelist): regenerate these
+  // every run -- full OR narrow refresh -- unless explicitly skip-listed, and log
+  // every skip with its reason. comm-coaching used to run ONLY when
+  // !narrowSelfHealRefresh, so a targeted refresh silently left it (and kingdom,
+  // which had no entry at all) stale. The floor closes that gap.
+  const floorPlan = planAlwaysRefreshFloor(env);
+  for (const skip of floorPlan.skipped) {
+    console.log(`[cloud-morning-briefing] self-heal floor SKIP ${skip.card}: ${skip.reason}`);
+  }
+  for (const entry of floorPlan.run) {
+    if (!runHealer) {
+      // Test mode (no injected runner): do NOT spawn the real regen child process.
+      attempts.push({ script: entry.scriptName, ok: true, skipped: 'test-mode' });
+      continue;
+    }
     attempts.push(
-      runNodeHealer('comm-coaching-card.js', ['--date', date], dataDir, {
-        timeout: 180000,
-        env: { COMM_COACHING_DETERMINISTIC: '1' },
+      runHealer(entry.scriptName, entry.args(date), dataDir, {
+        timeout: entry.timeout,
+        env: entry.env || {},
       }),
     );
   }
@@ -6512,6 +6591,11 @@ function refreshTokenUsageArtifacts(
   date = new Date().toISOString().slice(0, 10),
 ) {
   const env = { ...process.env, SECONDBRAIN_DATA_DIR: dataDir };
+  // token-usage collectors skipped under test: each is a real child-process spawn
+  // that ETIMEDOUTs (30s) under VITEST/NODE_ENV=test, the same real-spawn cost the
+  // floor was gated for. Skipping them keeps the cloud integration test well within
+  // its timeout. Prod (floorSpawnEnabled true) runs every collector unchanged.
+  if (!floorSpawnEnabled()) return;
   const collectors = [
     { script: 'collect-claude-plan-usage.js', args: [], timeout: 30000, label: 'claude plan-usage' },
     { script: 'collect-bedrock-budget-usage.js', args: [], timeout: 30000, label: 'bedrock budget' },
@@ -7530,6 +7614,11 @@ module.exports = {
   buildRenderableNewsSummaryParas,
   isSelfHealRefreshMode,
   selfHealRefreshTargets,
+  selfHealRefreshSkip,
+  planAlwaysRefreshFloor,
+  ALWAYS_REFRESH_FLOOR,
+  maybeRunCloudSelfHeal,
+  floorSpawnEnabled,
   contentHealCardsForRefreshTargets,
   refreshTargetAllows,
   speakerParetoRegenAllowedForRefreshTargets,
