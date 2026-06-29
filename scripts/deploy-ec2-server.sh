@@ -54,6 +54,9 @@ LIVE_DEPS=(
   "scripts/otter-processing-coverage-probe.js"
   "scripts/self-heal/briefing-repair-ledger.js"
   "scripts/self-heal/self-heal-health-card.js"
+  # Wave 1 (green-tomorrow): the QC validator is required by a deployed entrypoint, so the
+  # blocker-naming fix must ship to /opt, not rely on the build-path sync.
+  "scripts/validate-briefing-quality.js"
 )
 
 echo "[deploy] syntax-checking repo ec2-server.js"

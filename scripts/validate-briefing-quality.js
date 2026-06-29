@@ -320,6 +320,16 @@ function nonGreenSubsystems(systemHealthBody) {
       line,
     );
   for (const line of lines) {
+    // The "Probe detail (proof of health)" funnel is a DRILL-DOWN, not the
+    // subsystem roster. Its lines (e.g. "<glyph> Otter speaker enrichment
+    // probe:") look like roster rows but name the probe, not a subsystem. Once
+    // we reach that block, stop scanning: a "... probe:" line was being parsed
+    // as a PHANTOM subsystem ("Otter speaker enrichment probe") that no blocker
+    // could ever name, so the health<->blockers set-diff failed deterministically
+    // and the publish gate stayed RED (ExampleCo 2026-06-29 green-tomorrow WAVE 1).
+    // The block is always appended AFTER the roster + Attention block, so a hard
+    // break is safe and never drops a real subsystem.
+    if (/^\s*Probe detail \(proof of health\)\s*$/.test(line)) break;
     // A non-green row starts with the cross/X glyph or a question glyph, then
     // the subsystem name. Match both the "name: detail" and bare "name" forms
     // (the Attention block lists bare names).

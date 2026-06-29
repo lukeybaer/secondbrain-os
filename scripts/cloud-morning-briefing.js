@@ -3554,6 +3554,33 @@ function readDevOpsSnapshot(dataDir, now = Date.now()) {
   };
 }
 
+// ONE source of truth for the Dev Ops verdict consumed by BOTH the SYSTEM
+// HEALTH "Dev Ops" row (buildEc2SubsystemHealthRows) and the matching BLOCKERS
+// entry, so a non-green row can never lack a named blocker (the QC
+// health<->blockers set-diff requires the literal "Dev Ops" in BLOCKERS). On
+// the cloud host the probe is told it is the file-deploy so a non-repo git
+// status and a missing ~/.claude/settings.json are informational, not RED.
+// Never throws: a probe error falls back to the captured shared-checkout
+// snapshot, then to an honest RED. ExampleCo 2026-06-29 green-tomorrow WAVE 1.
+function computeDevOpsHealthVerdict(dataDir) {
+  try {
+    const devops = probeDevOpsHealth({
+      mainRoot: REPO_ROOT,
+      cloudHost: runningOnEc2(dataDir),
+    });
+    return { status: devops.status, detail: devops.detail };
+  } catch (e) {
+    const snapshot = readDevOpsSnapshot(dataDir);
+    if (snapshot) return { status: snapshot.status, detail: snapshot.detail };
+    return {
+      status: 'red',
+      detail: `shared checkout snapshot missing, and cloud host is not a git checkout (${String(
+        (e && e.message) || e,
+      ).slice(0, 100)})`,
+    };
+  }
+}
+
 function readLatestJsonlRow(file) {
   try {
     const lines = fs
@@ -4829,26 +4856,10 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
     );
   }
 
-  try {
-    const devops = probeDevOpsHealth({ mainRoot: REPO_ROOT });
-    push(
-      devops.status === 'green' ? OK : BAD,
-      `Dev Ops: ${devops.detail}.`,
-    );
-  } catch (e) {
-    const snapshot = readDevOpsSnapshot(dataDir);
-    if (snapshot) {
-      push(
-        snapshot.status === 'green' ? OK : BAD,
-        `Dev Ops: ${snapshot.detail}.`,
-      );
-    } else {
-      push(
-        BAD,
-        `Dev Ops: shared checkout snapshot missing, and cloud host is not a git checkout (${String((e && e.message) || e).slice(0, 100)}).`,
-      );
-    }
-  }
+  // The Dev Ops verdict is computed via the shared helper so the row glyph and
+  // the BLOCKERS entry below come from the SAME verdict (no divergence).
+  const devopsVerdict = computeDevOpsHealthVerdict(dataDir);
+  push(devopsVerdict.status === 'green' ? OK : BAD, `Dev Ops: ${devopsVerdict.detail}.`);
 
   return rows;
 }
@@ -6867,6 +6878,24 @@ function buildCloudMorningBriefing({
       evidence: speakerFreshness.blockerEvidence,
       need: speakerFreshness.blockerNeed,
     });
+  }
+
+  // Dev Ops health is a non-green SYSTEM HEALTH row on EC2 when the shared
+  // checkout is dirty/diverged or the hooks are mis-wired. The row alone is not
+  // enough: the QC health<->blockers set-diff requires every non-green subsystem
+  // to be NAMED in BLOCKERS. Emit a matching blocker whose title contains the
+  // literal "Dev Ops" so the row and the blocker reconcile. EC2-only (the row is
+  // EC2-only); the shared helper applies the cloud file-deploy carve-outs so an
+  // expected non-repo/missing-home-config no longer trips this. ExampleCo 2026-06-29.
+  if (runningOnEc2(dataDir)) {
+    const devopsHealth = computeDevOpsHealthVerdict(dataDir);
+    if (devopsHealth.status !== 'green') {
+      addBlocker(blockers, {
+        title: 'Dev Ops checkout or hooks need repair',
+        evidence: `The Dev Ops health probe is non-green: ${devopsHealth.detail}.`,
+        need: 'Repair: Amy must reconcile the shared checkout (clean/sync) and rewire any missing hooks, then rerun the Dev Ops probe.',
+      });
+    }
   }
 
   // Tests-truth is HONEST SURFACING of real failures, not hiding them (build QC
