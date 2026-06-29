@@ -40,6 +40,10 @@ const CLI_FAILURE_PATTERNS = [
   /overloaded_error/i,
   /invalid_request_error/i,
   /api_error:/i,
+  // The Claude CLI prints "API Error: 401" (space, colon, no underscore) on an
+  // expired/invalid OAuth token; the underscore form above does not match it, so
+  // the pre-spawn auth probe never saw a real 401 as a failure. Match it explicitly.
+  /api error:\s*401/i,
   /Bad Request:\s*message is too long/i,
   /telegram_error/i,
   // Codex CLI / OpenAI API sentinels (2026-06-11 ladder plan -- the guard now

@@ -304,6 +304,53 @@ function collectLiveRenderQcBlockers(opts = {}) {
   return { blockers: renderQcDefectsToBlockers(defects), defects, status };
 }
 
+// CANONICAL DEFECT SOURCE (Phase 1, item 4). The loop's card-defect list is built
+// from the live render-QC verifier (verify-dashboard-cards-live.js), NOT from parsing
+// the markdown BLOCKERS card. Each live defect line becomes a first-class Defect record
+// keyed by { card_id, defect_type }. The markdown BLOCKERS card stays a render/display
+// artifact only; it is no longer an input to this loop (Phase 1, DELETE).
+function buildCanonicalDefects(defects = []) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of defects || []) {
+    const row = String(raw || '').trim();
+    if (!row) continue;
+    const cardId = renderQcCardId(row) || 'dashboard';
+    const defectType = renderQcDefectType(row);
+    const key = `${cardId}:${defectType}`;
+    const dedupKey = `${key}::${row}`;
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+    out.push({ card_id: cardId, defect_type: defectType, key, raw: row });
+  }
+  return out;
+}
+
+// PER-WORKER LIVE-QC GATE (Phase 1, item 2). For ONE worker result, decide whether the
+// defect(s) it claimed cleared actually dropped from the authenticated post-repair live
+// render-QC. A worker "cleared its defect" only when NONE of the defect-group keys it was
+// dispatched against still appear in postRepairDefects. If any survive, the card stays red
+// (the caller must NOT count it cleared and must re-plan it). Returns
+// { cleared, survivedKeys } so the caller can downgrade the worker and re-plan the card.
+function workerLiveQcCleared(result, postRepairDefects = []) {
+  const postKeys = defectGroupKeySet(postRepairDefects);
+  const rawDefects = Array.isArray(result && result.rawDefects) ? result.rawDefects : [];
+  const rawKeys = [...defectGroupKeySet(rawDefects)];
+  if (!rawKeys.length) {
+    // No machine-known defect keys for this worker: fall back to the wave-level signal
+    // (cannot prove per-worker reduction, so do not override the worker's own status).
+    return { cleared: true, survivedKeys: [], ExampleCo: true };
+  }
+  const survivedKeys = rawKeys.filter((key) => {
+    if (!postKeys.has(key)) return false;
+    if (key === 'dashboard:BLOCKERS-ACCOUNTING') {
+      return blockersAccountingSurvived(rawDefects, postRepairDefects);
+    }
+    return true;
+  });
+  return { cleared: survivedKeys.length === 0, survivedKeys };
+}
+
 function defectSignature(defects = []) {
   return (defects || []).map(String).filter(Boolean).sort().join('\n');
 }
@@ -1129,11 +1176,21 @@ function selfHealLandingConflictRepairBlocker({
 // strips ANTHROPIC_API_KEY). A login/quota/401 sentinel in the output means auth
 // is dead; isCliFailureOutput reuses the canonical guard pattern.
 function defaultClaudeAuthProbe(opts = {}) {
-  const claudeBin = process.platform === 'win32'
+  // platform + spawn are injectable so the Windows cmd.exe routing is unit-testable
+  // without a real CLI spawn.
+  const platform = opts.platform || process.platform;
+  const spawn = opts.spawnSync || spawnSync;
+  const claudeBin = platform === 'win32'
     ? (process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'claude.cmd') : 'claude.cmd')
     : 'claude';
+  const probeArgs = ['--print', '--setting-sources', '', '-p', 'ping'];
+  // On win32 a .cmd shim must be routed through cmd.exe /c with shell:false, or
+  // spawnSync sets res.error and a healthy run falsely reports auth-failed. Non-win
+  // calls the binary directly. Mirrors scripts/lib/heal-executor.js spawnClaude.
+  const spawnFile = platform === 'win32' ? 'cmd.exe' : claudeBin;
+  const spawnArgs = platform === 'win32' ? ['/c', claudeBin, ...probeArgs] : probeArgs;
   try {
-    const res = spawnSync(claudeBin, ['--print', '--setting-sources', '', '-p', 'ping'], {
+    const res = spawn(spawnFile, spawnArgs, {
       cwd: opts.repoRoot || REPO,
       encoding: 'utf8',
       timeout: Number(opts.timeoutMs || 60_000),
@@ -3114,7 +3171,11 @@ async function runOrchestrator(opts = {}) {
   );
   const repairLoopHistory = Array.isArray(opts.repairLoopHistory)
     ? opts.repairLoopHistory
-    : loadPersistentRepairLoopHistory(runLogPath, { limit: repairLoopHistoryLimit, date });
+    : loadPersistentRepairLoopHistory(runLogPath, {
+        limit: repairLoopHistoryLimit,
+        date,
+        nowMs: opts.nowMs,
+      });
   const briefingsDir = opts.briefingsDir || path.join(REPO, 'data', 'briefings');
   const inheritedRepairBlockers = Array.isArray(opts.extraBlockers) ? opts.extraBlockers : [];
   const inheritedFalseClearSelfHeal = inheritedRepairBlockers.some(isFalseClearSelfHealBlocker);
@@ -3213,6 +3274,11 @@ async function runOrchestrator(opts = {}) {
   const activeLandingConflictSelfHeal =
     inheritedLandingConflictSelfHeal || (!activeFalseClearSelfHeal && parsedLandingConflictSelfHeal);
   const activeSelfHealMechanism = activeFalseClearSelfHeal || activeLandingConflictSelfHeal;
+  // Phase 1 DELETE: the markdown BLOCKERS card is no longer a DEFECT SOURCE for this
+  // loop. parseBlockersFromMarkdown is still parsed, but only its self-heal-MECHANISM
+  // control rows (SELF-HEAL-FALSE-CLEAR / SELF-HEAL-LANDING that a prior pass wrote)
+  // are honored here; generic card-defect rows from the markdown are dropped. Card
+  // defects come exclusively from the live render-QC canonical source below.
   const parsedBlockers = activeSelfHealMechanism
     ? suppressParsedFalseClearSelfHeal
       ? []
@@ -3223,10 +3289,8 @@ async function runOrchestrator(opts = {}) {
         )
     : parsedBlockerCandidates.filter(
         (blocker) =>
-          !(
-            suppressParsedFalseClearSelfHeal &&
-            (isFalseClearSelfHealBlocker(blocker) || isLandingConflictSelfHealBlocker(blocker))
-          ),
+          !suppressParsedFalseClearSelfHeal &&
+          (isFalseClearSelfHealBlocker(blocker) || isLandingConflictSelfHealBlocker(blocker)),
       );
   const liveRenderBlockers = activeSelfHealMechanism
     ? []
@@ -3234,6 +3298,18 @@ async function runOrchestrator(opts = {}) {
         (liveRenderQc && liveRenderQc.blockers) || [],
         opts.knownFalseClearPreflightCards || [],
       );
+  // CANONICAL DEFECT SOURCE (Phase 1, item 4): first-class Defect records keyed by
+  // { card_id, defect_type } from the live render-QC verifier. This is the loop's
+  // source of truth for card defects; the repair groups above are derived from the
+  // same live defects, so the canonical list and the repair plan cannot diverge.
+  const canonicalDefects = buildCanonicalDefects(liveRenderQc.defects || []);
+  logRun({
+    stage: 'canonical-defects',
+    pass: passNumber,
+    source: 'live-render-qc',
+    count: canonicalDefects.length,
+    defects: canonicalDefects.slice(0, 25).map((d) => d.key),
+  });
   const rawBlockers = mergeBlockers([
     ...parsedBlockers,
     ...liveRenderBlockers,
@@ -3596,6 +3672,24 @@ async function runOrchestrator(opts = {}) {
         plannedSessions: survivors.length,
         detail: 'pre-spawn Claude auth probe failed; worker fan-out suppressed',
       });
+      // Persist the single named auth-failed DEFECT to the same run-log JSONL the
+      // briefing reads, so it survives this session and surfaces on the dashboard as a
+      // named System Health defect, not just an in-memory return value.
+      logRun({
+        stage: 'self-heal-defect',
+        status: 'red',
+        pass: passNumber,
+        source: 'self-heal-health',
+        defectType: 'SELF-HEAL-AUTH-FAILED',
+        title: (authPreflight.blocker && authPreflight.blocker.title) || 'Self-Heal Executor: auth failed',
+        owner: (authPreflight.blocker && authPreflight.blocker.owner) || 'ExampleCo',
+        evidence: (authPreflight.blocker && authPreflight.blocker.evidence) || '',
+        repair: (authPreflight.blocker && authPreflight.blocker.repair) || '',
+        need: (authPreflight.blocker && authPreflight.blocker.need) || '',
+        rawDefects: (authPreflight.blocker && authPreflight.blocker.rawDefects) || [
+          'SELF-HEAL-AUTH-FAILED: pre-spawn Claude auth probe and forced refresh both failed',
+        ],
+      });
       logRun({
         stage: 'repair-loop-stopped',
         pass: passNumber,
@@ -3744,6 +3838,31 @@ async function runOrchestrator(opts = {}) {
   });
   const postRepairRawDefects = (postRepairLiveRenderQc.defects || []).length;
   const preWorkerLiveDefects = liveRenderQc.defects || [];
+  // PER-WORKER LIVE-QC GATE (Phase 1, item 2): a worker that self-reported cleared but
+  // whose defect group(s) still appear in the authenticated post-repair live QC did NOT
+  // clear its defect. Make the reported COUNT honest (it is not counted cleared) and RECORD
+  // the survivor; r.status is deliberately LEFT so the wave-level false-clear machinery
+  // (summarizeSelfHealHealth -> falseClearGroups) still fires and re-plans the card. No
+  // reduction => the card stays red, never reported cleared.
+  // The cleared/escalated tally above ran before post-repair live QC existed, so adjust
+  // the counts for every worker this gate finds still-red (cleared-- / escalated++).
+  for (const r of results) {
+    if (!r || r.status !== 'cleared') continue;
+    const gate = workerLiveQcCleared(r, postRepairLiveRenderQc.defects || []);
+    if (!gate.cleared) {
+      r.liveQcGateSurvived = true;
+      r.liveQcGateSurvivedKeys = gate.survivedKeys;
+      cleared = Math.max(0, cleared - 1);
+      escalated += 1;
+      logRun({
+        stage: 'per-worker-live-qc-gate',
+        pass: passNumber,
+        blocker: r.blockerTitle || '',
+        survivedKeys: gate.survivedKeys,
+        status: 'survived',
+      });
+    }
+  }
   const repairLoopEntry = repairLoopEntryFromDefects(
     postRepairLiveRenderQc.defects || [],
     passNumber,
@@ -4167,6 +4286,8 @@ module.exports = {
   pidIsAlive,
   parseRenderQcDefects,
   renderQcDefectsToBlockers,
+  buildCanonicalDefects,
+  workerLiveQcCleared,
   collectLiveRenderQcBlockers,
   mergeBlockers,
   modeLabel,

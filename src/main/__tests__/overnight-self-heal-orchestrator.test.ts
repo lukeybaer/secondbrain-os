@@ -235,7 +235,11 @@ describe('overnight-self-heal-orchestrator: live render-QC intake', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('does not run post-repair live QC when live render QC is intentionally disabled', async () => {
+  it('never invokes the live render QC runner when live render QC is disabled (no canonical defect source => nothing to heal)', async () => {
+    // Phase 1 DELETE: the markdown BLOCKERS card is no longer a DEFECT SOURCE for the
+    // loop. With live render QC disabled there is no canonical defect source, so the
+    // markdown "Tests" row is ignored, the runner is never called, and the loop has
+    // nothing to heal.
     const fs = require('fs');
     const os = require('os');
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-live-qc-off-'));
@@ -255,12 +259,15 @@ describe('overnight-self-heal-orchestrator: live render-QC intake', () => {
       ].join('\n'),
       'utf8',
     );
+    let runnerCalled = false;
+    let spawned = false;
     const result = await orch.runOrchestrator({
       date: '2026-06-24',
       briefingsDir,
       runLogPath: path.join(tmp, 'runs.jsonl'),
       liveRenderQc: false,
       liveRenderQcRunner: () => {
+        runnerCalled = true;
         throw new Error('live QC should not run');
       },
       mode: { observe: false, parallel: false, midday: true, concurrency: 1 },
@@ -269,17 +276,21 @@ describe('overnight-self-heal-orchestrator: live render-QC intake', () => {
       videoBlockerPreflight: () => null,
       actionItemsRepair: () => null,
       videoApprovalRepair: () => null,
-      spawnSession: async () => ({
-        status: 'cleared',
-        commit_sha: 'abc123',
-        pushed: true,
-        verification: 'targeted passed',
-        tests: 'targeted',
-        reflection: 'targeted QC passed',
-      }),
+      spawnSession: async () => {
+        spawned = true;
+        return {
+          status: 'cleared',
+          commit_sha: 'abc123',
+          pushed: true,
+          verification: 'targeted passed',
+          tests: 'targeted',
+          reflection: 'targeted QC passed',
+        };
+      },
     });
+    expect(runnerCalled).toBe(false);
+    expect(spawned).toBe(false);
     expect(result.ok).toBe(true);
-    expect(result.postRepairRawDefects).toBe(0);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });
@@ -855,34 +866,38 @@ describe('overnight-self-heal-orchestrator: runOrchestrator scheduled-task prefl
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-scheduled-preflight-'));
     const runLogPath = path.join(tmpRoot, 'runs.jsonl');
     const briefingPath = path.join(tmpRoot, 'briefing.md');
-    fs.writeFileSync(
-      briefingPath,
-      `BLOCKERS - briefing quality gates:
-
-1. Scheduled tasks (system health red)
-     Requirement: Every scheduled Amy task due today must have a successful same-day completion proof.
-     Evidence: 0/2 scheduled tasks fired for 2026-06-14.
-     Repair now: Run the cloud scheduled-task catch-up.
-     Owner: Amy
-     Need from ExampleCo: Nothing.
-
----
-
-MEETINGS:
-`,
-      'utf8',
-    );
+    fs.writeFileSync(briefingPath, 'BLOCKERS - briefing quality gates:\n\n  No hard blockers need ExampleCo.\n\nMEETINGS:\n', 'utf8');
 
     try {
       let spawned = false;
+      let repaired = false;
+      // Phase 1: the blocker comes from the live render-QC canonical source, not the
+      // markdown BLOCKERS card. The defect text ExampleCos "scheduled tasks" so the
+      // scheduled-task preflight matcher fires. The live-QC runner reports the defect
+      // until the preflight has run, then clean (so post-repair live QC confirms it).
       const result = await orch.runOrchestrator({
         briefingPath,
         runLogPath,
-        scheduledRepair: () => ({
-          repaired: 2,
-          cleared: true,
-          actions: [{ action: 'ran scheduled task catch-up for 2026-06-14' }],
-        }),
+        liveRenderQc: true,
+        preRepairPublishRefresh: false,
+        liveRenderQcRunner: () =>
+          repaired
+            ? { status: 0, stdout: 'dashboard QC passed', stderr: '' }
+            : {
+                status: 1,
+                stdout: '',
+                stderr:
+                  'dashboard QC FAILED: 1 defect(s):\n  - BLOCKED-TILE: system_health (SYSTEM HEALTH) 0/2 scheduled tasks fired for 2026-06-14\n',
+              },
+        publishRefresh: () => ({ ok: true }),
+        scheduledRepair: () => {
+          repaired = true;
+          return {
+            repaired: 2,
+            cleared: true,
+            actions: [{ action: 'ran scheduled task catch-up for 2026-06-14' }],
+          };
+        },
         mechanicalRepair: () => null,
         spawnSession: async () => {
           spawned = true;
@@ -1043,30 +1058,37 @@ describe('overnight-self-heal-orchestrator: runOrchestrator video-approval-queue
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-vidapproval-run-'));
     const runLogPath = path.join(tmpRoot, 'runs.jsonl');
     const briefingPath = path.join(tmpRoot, 'briefing.md');
-    fs.writeFileSync(briefingPath, `BLOCKERS - briefing quality gates:
-
-1. Video approval queue has unresolved rejected work
-     Requirement: Rejected or failed-gate videos must not be surfaced as approval-ready.
-     Evidence: spec_stub_no_music_video has exhausted retries.
-     Repair now: Dead-letter exhausted videos.
-     Owner: Amy
-     Need from ExampleCo: None.
-
----
-
-MEETINGS:
-`, 'utf8');
+    fs.writeFileSync(briefingPath, 'BLOCKERS - briefing quality gates:\n\n  No hard blockers need ExampleCo.\n\nMEETINGS:\n', 'utf8');
 
     try {
       let spawned = false;
+      let repaired = false;
+      // Phase 1: the blocker comes from the live render-QC canonical source. The defect
+      // routes to video_approval_queue so the video-approval preflight matcher fires.
+      // The runner reports the defect until the preflight has run, then clean.
       const result = await orch.runOrchestrator({
         briefingPath,
         runLogPath,
-        videoApprovalRepair: () => ({
-          repaired: 1,
-          cleared: true,
-          actions: [{ action: 'dead-lettered exhausted video', videoId: 'spec_stub_no_music_video' }],
-        }),
+        liveRenderQc: true,
+        preRepairPublishRefresh: false,
+        liveRenderQcRunner: () =>
+          repaired
+            ? { status: 0, stdout: 'dashboard QC passed', stderr: '' }
+            : {
+                status: 1,
+                stdout: '',
+                stderr:
+                  'dashboard QC FAILED: 1 defect(s):\n  - BLOCKED-TILE: video_approval_queue (VIDEO APPROVAL QUEUE) spec_stub_no_music_video has exhausted retries\n',
+              },
+        publishRefresh: () => ({ ok: true }),
+        videoApprovalRepair: () => {
+          repaired = true;
+          return {
+            repaired: 1,
+            cleared: true,
+            actions: [{ action: 'dead-lettered exhausted video', videoId: 'spec_stub_no_music_video' }],
+          };
+        },
         scheduledRepair: () => null,
         mechanicalRepair: () => null,
         spawnSession: async () => {

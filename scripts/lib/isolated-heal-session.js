@@ -301,6 +301,130 @@ function validateWorkerDiffBeforeLanding(blocker, { diffText } = {}) {
   return { ok: true };
 }
 
+// PROOF-CONTRACT ENFORCEMENT (Phase 1, item 3). A reusable, machine-checkable
+// predicate: a worker may only mark a self-heal-mechanism blocker cleared when its
+// verification/reflection field contains, VERBATIM, the survivor-group identifiers
+// and the live-QC defect count that the blocker metadata claims. The survivor groups
+// and count are MACHINE-EXTRACTED from the blocker (falseClearSurvivorGroups +
+// falseClearLiveQcDefectCount above); a clear whose proof text lacks either is
+// rejected. Returns { ok, missingGroups, missingCount, reason }. When the blocker
+// declares no contract (no groups and no count), the contract is vacuously satisfied.
+function verificationProofTexts(result) {
+  if (!result) return [];
+  const direct = [
+    result.tests,
+    result.verification,
+    result.summary,
+    result.reflection,
+  ].filter(Boolean);
+  const attempts = Array.isArray(result.attempts)
+    ? result.attempts
+        .flatMap((a) => [a && a.tests, a && a.verification, a && a.summary])
+        .filter(Boolean)
+    : [];
+  return [...direct, ...attempts].map(String);
+}
+
+function verificationCoversProofContract(result, blocker) {
+  const groups = falseClearSurvivorGroups(blocker);
+  const count = falseClearLiveQcDefectCount(blocker);
+  if (!groups.length && count == null) {
+    return { ok: true, missingGroups: [], missingCount: false, reason: '' };
+  }
+  const texts = verificationProofTexts(result);
+  // The contract must be satisfied WITHIN A SINGLE field (one verbatim string that
+  // names every survivor group AND the live-QC count), not stitched across fields.
+  const satisfied = coversFalseClearSurvivorContractInOneField(texts, blocker);
+  if (satisfied) {
+    return { ok: true, missingGroups: [], missingCount: false, reason: '' };
+  }
+  const haystack = texts.join('\n').toLowerCase();
+  const missingGroups = groups
+    .filter((g) => !haystack.includes(String(g.label || '').toLowerCase()))
+    .map((g) => g.label);
+  const missingCount = count != null && !texts.some((t) => coversFalseClearLiveQcCount(t, blocker));
+  return {
+    ok: false,
+    missingGroups,
+    missingCount,
+    reason: falseClearProofRejectionReason(blocker),
+  };
+}
+
+// PRE-PUSH VERIFICATION (Phase 1, item 1). Derive the affected test files from the
+// worker's landing diff: any changed file under a tests dir or matching *.test.* /
+// *.node-test.* / *.spec.* is an affected test. When the worker changed source but no
+// test, we cannot mechanically name the affected test, so we do NOT block (ran:false);
+// blocking on an underivable target would false-escalate every source-only fix.
+const TEST_FILE_RE = /(?:^|\/)(?:[^\/]+\.(?:test|node-test|spec)\.[cm]?[jt]sx?)$/i;
+const TESTS_DIR_RE = /(?:^|\/)(?:__tests__|tests?)\//i;
+
+function changedPathsFromDiff(diffText) {
+  const out = new Set();
+  for (const line of String(diffText || '').split(/\r?\n/)) {
+    const m = line.match(/^diff --git a\/(.+?) b\/(.+?)\s*$/);
+    if (m) {
+      out.add(m[2]);
+      out.add(m[1]);
+      continue;
+    }
+    const plus = line.match(/^\+\+\+ b\/(.+?)\s*$/);
+    if (plus && plus[1] !== '/dev/null') out.add(plus[1]);
+  }
+  return [...out];
+}
+
+function affectedTestFiles(diffText) {
+  return [
+    ...new Set(
+      changedPathsFromDiff(diffText).filter(
+        (p) => TEST_FILE_RE.test(p) || (TESTS_DIR_RE.test(p) && /\.[cm]?[jt]sx?$/i.test(p)),
+      ),
+    ),
+  ];
+}
+
+// Run vitest on the affected test files inside the worker checkout BEFORE the push.
+// Injectable runner (opts.runTests) so tests never spawn a real vitest. Default
+// runner shells out to the repo's vitest with --no-file-parallelism on just those
+// files. Returns { ok, ran, files, detail }.
+function defaultRunAffectedTests({ wt, files } = {}) {
+  if (!files || !files.length) return { ok: true, ran: false, files: [], detail: 'no affected tests' };
+  try {
+    const res = require('node:child_process').spawnSync(
+      process.execPath,
+      [
+        path.join(wt, 'node_modules', 'vitest', 'vitest.mjs'),
+        'run',
+        '--no-file-parallelism',
+        ...files,
+      ],
+      { cwd: wt, encoding: 'utf8', timeout: 5 * 60 * 1000, maxBuffer: 32 * 1024 * 1024 },
+    );
+    const out = ((res.stdout || '') + '\n' + (res.stderr || '')).slice(-2000);
+    return { ok: res.status === 0, ran: true, files, detail: out };
+  } catch (e) {
+    return { ok: false, ran: true, files, detail: String((e && e.message) || e).slice(0, 400) };
+  }
+}
+
+// Coordinator-side pre-push gate: re-run the defect's affected tests in the worktree.
+// ok:true with ran:false means there was nothing mechanically derivable to re-run, so
+// landing proceeds (the existing verification-evidence gate still applies). ok:false
+// means an affected test FAILED, so the caller must NOT push and must escalate.
+function verifyAffectedTestsBeforePush(blocker, { diffText, wt, git, runTests } = {}) {
+  const files = affectedTestFiles(diffText);
+  if (!files.length) return { ok: true, ran: false, files: [], detail: 'no affected tests in diff' };
+  const runner = runTests || defaultRunAffectedTests;
+  const result = runner({ wt, files, git, blocker });
+  return {
+    ok: result && result.ok !== false,
+    ran: !!(result && result.ran),
+    files,
+    detail: (result && result.detail) || '',
+  };
+}
+
 function selfHealCommitMessage(blocker) {
   const id = slugify((blocker && (blocker.blocker_id || blocker.title)) || 'briefing-blocker');
   return `fix(briefing): self-heal ${id}`.slice(0, 72);
@@ -416,6 +540,7 @@ async function runIsolatedHealSession(blocker, opts = {}) {
   let preserveFailedLanding = false;
   let preservedLandingWorktree = '';
   let preservedLandingBranch = '';
+  let prePushVerifyFailed = null;
   try {
     const result = await runSession(blocker, {
       ...opts.sessionOpts,
@@ -554,6 +679,26 @@ async function runIsolatedHealSession(blocker, opts = {}) {
             // worker checkout for inspection instead of trying a dirty rebase.
             throw new Error(`worktree dirty before landing: ${dirtyStatus.slice(0, 180)}`);
           }
+          // PRE-PUSH VERIFICATION (Phase 1, item 1): re-run the defect's affected
+          // test(s) in the worktree before landing. A failure here means we do NOT
+          // push; the throw is caught by the landing-error handler, which preserves
+          // the worktree and escalates the blocker (it stays open, recorded in the
+          // run log) instead of landing an unverified change.
+          const preLandDiff = collectWorkerLandingDiff(git, wt, baseSha, headSha);
+          const preLandVerify = verifyAffectedTestsBeforePush(blocker, {
+            diffText: preLandDiff,
+            wt,
+            git,
+            runTests: opts.runAffectedTests,
+          });
+          if (preLandVerify.ran && !preLandVerify.ok) {
+            prePushVerifyFailed = preLandVerify;
+            throw new Error(
+              `pre-push verification failed on ${preLandVerify.files.join(', ')}: ${String(
+                preLandVerify.detail || '',
+              ).slice(-180)}`,
+            );
+          }
           git(['fetch', 'origin', 'master'], wt);
           git(['rebase', 'origin/master'], wt);
           headSha = gitTrim(git, ['rev-parse', 'HEAD'], wt) || headSha;
@@ -597,7 +742,11 @@ async function runIsolatedHealSession(blocker, opts = {}) {
           : selfStatus;
     const escalationReason = unlandedClear
       ? committed
-        ? `isolated session committed but landing push failed${landingError ? `: ${landingError}` : ''}`
+        ? prePushVerifyFailed
+          ? `pre-push verification failed; not landed${
+              landingError ? `: ${landingError}` : ''
+            }`
+          : `isolated session committed but landing push failed${landingError ? `: ${landingError}` : ''}`
         : dirtyStatus
           ? `isolated session reported cleared with dirty verified work but produced no commit to land${autoCommitError ? `: ${autoCommitError}` : ''}`
           : 'isolated session reported cleared but produced no commit to land'
@@ -621,6 +770,9 @@ async function runIsolatedHealSession(blocker, opts = {}) {
       preservedBranch: preserveFailedLanding ? preservedLandingBranch : '',
       escalationReason,
       autoCommitError,
+      prePushVerifyFailed: prePushVerifyFailed
+        ? { files: prePushVerifyFailed.files, detail: String(prePushVerifyFailed.detail || '').slice(-400) }
+        : null,
       commit_sha: committed ? headSha : (result && result.commit_sha) || '',
     };
   } finally {
@@ -658,6 +810,10 @@ module.exports = {
   collectWorkerLandingDiff,
   isRedCardStatusDemotion,
   validateWorkerDiffBeforeLanding,
+  verificationCoversProofContract,
+  affectedTestFiles,
+  changedPathsFromDiff,
+  verifyAffectedTestsBeforePush,
   DEFAULT_GIT_TIMEOUT_MS,
   DEFAULT_CLEANUP_GIT_TIMEOUT_MS,
 };

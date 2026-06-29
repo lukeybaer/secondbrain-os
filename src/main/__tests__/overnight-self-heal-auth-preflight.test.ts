@@ -52,7 +52,18 @@ describe('overnight-self-heal auth preflight', () => {
       date: '2026-06-28',
       briefingsDir,
       runLogPath,
-      liveRenderQc: false,
+      // Phase 1: the survivor comes from the live render-QC canonical source, not the
+      // markdown BLOCKERS card, so the auth preflight has a worker to gate. maxPasses
+      // bounds the loop to a single pass so the auth preflight runs exactly once.
+      liveRenderQc: true,
+      preRepairPublishRefresh: false,
+      maxPasses: 1,
+      liveRenderQcRunner: () => ({
+        status: 1,
+        stdout: '',
+        stderr:
+          'dashboard QC FAILED: 1 defect(s):\n  - NEWS-PROSE: us_news (US NEWS) row 1 is not a three-ExampleCoraph summary of its article\n',
+      }),
       mode: { observe: false, parallel: false, midday: false, concurrency: 1 },
       scheduledRepair: () => null,
       mechanicalRepair: () => null,
@@ -101,7 +112,18 @@ describe('overnight-self-heal auth preflight', () => {
       date: '2026-06-28',
       briefingsDir,
       runLogPath,
-      liveRenderQc: false,
+      // Phase 1: the survivor comes from the live render-QC canonical source, not the
+      // markdown BLOCKERS card, so the auth preflight has a worker to gate. maxPasses
+      // bounds the loop to a single pass so the auth preflight runs exactly once.
+      liveRenderQc: true,
+      preRepairPublishRefresh: false,
+      maxPasses: 1,
+      liveRenderQcRunner: () => ({
+        status: 1,
+        stdout: '',
+        stderr:
+          'dashboard QC FAILED: 1 defect(s):\n  - NEWS-PROSE: us_news (US NEWS) row 1 is not a three-ExampleCoraph summary of its article\n',
+      }),
       mode: { observe: false, parallel: false, midday: false, concurrency: 1 },
       scheduledRepair: () => null,
       mechanicalRepair: () => null,
@@ -139,7 +161,18 @@ describe('overnight-self-heal auth preflight', () => {
       date: '2026-06-28',
       briefingsDir,
       runLogPath,
-      liveRenderQc: false,
+      // Phase 1: the survivor comes from the live render-QC canonical source, not the
+      // markdown BLOCKERS card, so the auth preflight has a worker to gate. maxPasses
+      // bounds the loop to a single pass so the auth preflight runs exactly once.
+      liveRenderQc: true,
+      preRepairPublishRefresh: false,
+      maxPasses: 1,
+      liveRenderQcRunner: () => ({
+        status: 1,
+        stdout: '',
+        stderr:
+          'dashboard QC FAILED: 1 defect(s):\n  - NEWS-PROSE: us_news (US NEWS) row 1 is not a three-ExampleCoraph summary of its article\n',
+      }),
       mode: { observe: false, parallel: false, midday: false, concurrency: 1 },
       scheduledRepair: () => null,
       mechanicalRepair: () => null,
