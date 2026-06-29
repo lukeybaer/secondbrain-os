@@ -36,6 +36,7 @@
 
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
+const { buildClaudeCliEnv } = require('./cli-output-guard.js');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -102,7 +103,12 @@ function cleanEnv() {
 }
 
 function workerEnv(opts = {}) {
-  const e = cleanEnv();
+  // Compose: cleanEnv() strips the nested-CC session markers; buildClaudeCliEnv()
+  // then injects CLAUDE_CODE_OAUTH_TOKEN from the pushed token file and strips any
+  // stray ANTHROPIC_API_KEY, so the spawned worker authenticates exactly like an
+  // attended session instead of hitting "API Error: 401" before its prompt.
+  // Without this the overnight fan-out spawned 12 dead sessions every night.
+  const e = buildClaudeCliEnv(cleanEnv(), opts.tokenPath);
   if (opts.cwd) e.SB_SELF_HEAL_WORKER_ROOT = opts.cwd;
   if (opts.coordinatorRoot) e.SB_SELF_HEAL_COORDINATOR_ROOT = opts.coordinatorRoot;
   const protectedRoots = [

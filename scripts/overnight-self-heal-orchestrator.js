@@ -29,6 +29,8 @@ const { execFileSync, spawnSync } = require('child_process');
 const { runWithFallback } = require('./lib/heal-executor.js');
 const { runHeals, createSerializer } = require('./lib/heal-scheduler.js');
 const { runIsolatedHealSession } = require('./lib/isolated-heal-session.js');
+const { buildClaudeCliEnv, isCliFailureOutput } = require('./lib/cli-output-guard.js');
+const { refreshIfNeeded } = require('./claude-token-refresh.js');
 
 const REPO = path.resolve(__dirname, '..');
 
@@ -252,6 +254,17 @@ function defaultLiveRenderQcRunner({ date, repoRoot = REPO } = {}) {
 function shouldCollectLiveRenderQc(opts = {}) {
   if (opts.liveRenderQc === false) return false;
   if (opts.liveRenderQc === true || opts.liveRenderQcRunner) return true;
+  if (process.env.VITEST || process.env.NODE_ENV === 'test') return false;
+  return true;
+}
+
+// Same shape as shouldCollectLiveRenderQc: never spawn a real `claude` auth
+// probe in unit tests. Explicit authProbe injection (or authPreflight:true)
+// forces it on; authPreflight:false forces it off; under VITEST/test it defaults
+// off so existing orchestrator tests with injected spawnSession are unaffected.
+function shouldRunAuthPreflight(opts = {}) {
+  if (opts.authPreflight === false) return false;
+  if (opts.authPreflight === true || opts.authProbe) return true;
   if (process.env.VITEST || process.env.NODE_ENV === 'test') return false;
   return true;
 }
@@ -1100,6 +1113,105 @@ function selfHealLandingConflictRepairBlocker({
     source: 'self-heal-health',
     rawDefectCount: 1,
     rawDefects: ['SELF-HEAL-LANDING: verified worker fix failed to land after parallel repair'],
+  };
+}
+
+// ── Pre-spawn auth preflight ────────────────────────────────────────────────
+// 2026-06-28 RED root cause: the overnight fan-out spawned 12 heal workers that
+// each hit "API Error: 401" before their prompt because the worker env never
+// ExampleCod the Claude OAuth token. heal-executor.workerEnv now injects it, and
+// THIS preflight guarantees we never spawn the fan-out into a known-dead auth
+// state: one cheap authenticated probe, one refresh attempt, one re-probe, then
+// a single named System Health defect plus a clean stop if auth is still dead.
+
+// Cheap authenticated probe: spawn one minimal `claude -p` with the same env an
+// attended session uses (buildClaudeCliEnv injects CLAUDE_CODE_OAUTH_TOKEN and
+// strips ANTHROPIC_API_KEY). A login/quota/401 sentinel in the output means auth
+// is dead; isCliFailureOutput reuses the canonical guard pattern.
+function defaultClaudeAuthProbe(opts = {}) {
+  const claudeBin = process.platform === 'win32'
+    ? (process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'claude.cmd') : 'claude.cmd')
+    : 'claude';
+  try {
+    const res = spawnSync(claudeBin, ['--print', '--setting-sources', '', '-p', 'ping'], {
+      cwd: opts.repoRoot || REPO,
+      encoding: 'utf8',
+      timeout: Number(opts.timeoutMs || 60_000),
+      env: buildClaudeCliEnv(process.env, opts.tokenPath),
+      windowsHide: true,
+      shell: false,
+    });
+    const out = ((res.stdout || '') + '\n' + (res.stderr || '')).trim();
+    if (res.error) {
+      return { ok: false, detail: 'claude probe spawn error: ' + String(res.error.message || res.error).slice(0, 200) };
+    }
+    if (res.status !== 0) {
+      return { ok: false, detail: 'claude probe exited ' + res.status + ': ' + out.slice(0, 200) };
+    }
+    if (!out || isCliFailureOutput(out)) {
+      return { ok: false, detail: 'claude probe returned an auth/quota failure: ' + out.slice(0, 200) };
+    }
+    return { ok: true, detail: 'claude auth probe ok' };
+  } catch (e) {
+    return { ok: false, detail: 'claude probe threw: ' + String((e && e.message) || e).slice(0, 200) };
+  }
+}
+
+// One token refresh attempt via the canonical refresher. Best-effort: any throw
+// is reported as a failed refresh so the caller still surfaces a clean defect.
+async function defaultTokenRefresh() {
+  try {
+    const r = await refreshIfNeeded({ force: true });
+    return { ok: true, refreshed: !!(r && r.refreshed), skipped: !!(r && r.skipped) };
+  } catch (e) {
+    return { ok: false, detail: String((e && e.message) || e).slice(0, 200) };
+  }
+}
+
+// The single named auth System Health defect. Concrete runbook so morning ExampleCo
+// (or the next pass) knows exactly what to run.
+function selfHealAuthFailedRepairBlocker({ probeDetail = '', refreshDetail = '' } = {}) {
+  return {
+    title: 'Self-Heal Executor: auth failed',
+    requirement:
+      'The overnight self-heal executor must hold a valid Claude credential before spawning any heal workers.',
+    evidence: [
+      'SELF-HEAL-AUTH-FAILED: the pre-spawn Claude auth probe failed and a forced token refresh did not recover it, so the worker fan-out was not spawned (no dead 401 sessions).',
+      probeDetail ? 'Probe: ' + String(probeDetail).slice(0, 240) + '.' : '',
+      refreshDetail ? 'Refresh: ' + String(refreshDetail).slice(0, 240) + '.' : '',
+    ]
+      .filter(Boolean)
+      .join(' '),
+    repair:
+      'Runbook: on ExampleCo laptop run `claude /login` to re-seed ~/.claude/.credentials.json, then verify data/agent/claude-token-refresh.jsonl shows a recent "refreshed" or "fresh-skipped" row and that ~/.claude-oauth-token is recent. Re-run the overnight self-heal orchestrator once auth is restored.',
+    owner: 'ExampleCo',
+    need: 'Run claude /login to re-seed the Claude Max credential; the refresh token itself has expired and only ExampleCo can re-authenticate.',
+    source: 'self-heal-health',
+    rawDefectCount: 1,
+    rawDefects: ['SELF-HEAL-AUTH-FAILED: pre-spawn Claude auth probe and forced refresh both failed'],
+  };
+}
+
+// Probe, refresh-once, re-probe. Returns {ok:true} when auth is good, or
+// {ok:false, blocker} with the single named defect when it stays dead.
+async function preflightHealAuth(opts = {}) {
+  const probe = opts.authProbe || defaultClaudeAuthProbe;
+  const refresh = opts.tokenRefresh || defaultTokenRefresh;
+  const first = await Promise.resolve(probe({ repoRoot: opts.repoRoot, tokenPath: opts.tokenPath }));
+  if (first && first.ok) return { ok: true, probe: 'first', detail: first.detail || '' };
+  const refreshResult = await Promise.resolve(refresh());
+  const second = await Promise.resolve(probe({ repoRoot: opts.repoRoot, tokenPath: opts.tokenPath }));
+  if (second && second.ok) {
+    return { ok: true, probe: 'after-refresh', detail: second.detail || '', refreshed: !!(refreshResult && refreshResult.refreshed) };
+  }
+  return {
+    ok: false,
+    probeDetail: (second && second.detail) || (first && first.detail) || 'auth probe failed',
+    refreshDetail: (refreshResult && (refreshResult.detail || (refreshResult.ok ? (refreshResult.refreshed ? 'refreshed but probe still failed' : 'refresh skipped') : 'refresh failed'))) || '',
+    blocker: selfHealAuthFailedRepairBlocker({
+      probeDetail: (second && second.detail) || (first && first.detail) || '',
+      refreshDetail: (refreshResult && (refreshResult.detail || (refreshResult.ok ? (refreshResult.refreshed ? 'refreshed' : 'refresh skipped') : 'refresh failed'))) || '',
+    }),
   };
 }
 
@@ -3462,6 +3574,68 @@ async function runOrchestrator(opts = {}) {
     };
   }
 
+  // Pre-spawn auth preflight: never fan out heal workers into a known-dead auth
+  // state. One cheap authenticated probe, one forced token refresh, one re-probe.
+  // If auth is still dead, surface exactly one named System Health defect and stop
+  // cleanly instead of spawning N sessions that each hit "API Error: 401".
+  if (survivors.length > 0 && shouldRunAuthPreflight(opts)) {
+    const authPreflight = await preflightHealAuth({
+      authProbe: opts.authProbe,
+      tokenRefresh: opts.tokenRefresh,
+      repoRoot: opts.repoRoot,
+      tokenPath: opts.authProbeTokenPath,
+    });
+    if (!authPreflight.ok) {
+      logRun({
+        stage: 'self-heal-health',
+        status: 'red',
+        pass: passNumber,
+        authFailed: true,
+        probeDetail: authPreflight.probeDetail || '',
+        refreshDetail: authPreflight.refreshDetail || '',
+        plannedSessions: survivors.length,
+        detail: 'pre-spawn Claude auth probe failed; worker fan-out suppressed',
+      });
+      logRun({
+        stage: 'repair-loop-stopped',
+        pass: passNumber,
+        reason: 'self-heal-executor-auth-failed',
+        plannedSessions: survivors.length,
+        mode: modeLabel(mode),
+      });
+      logRun({
+        stage: 'orchestrator-complete',
+        pass: passNumber,
+        cleared,
+        escalated: escalated + survivors.length,
+        escalatedUnresolved: true,
+        authFailed: true,
+        plannedSessions: survivors.length,
+        repairGroups: blockers.length,
+      });
+      return {
+        ok: false,
+        escalated: true,
+        authFailed: true,
+        pass: passNumber,
+        cleared,
+        clearedCount: cleared,
+        escalatedCount: escalated + survivors.length,
+        plannedSessions: survivors.length,
+        authBlocker: authPreflight.blocker,
+        totalBlockers: rawBlockerCount,
+        repairGroups: blockers.length,
+      };
+    }
+    logRun({
+      stage: 'self-heal-auth-preflight',
+      pass: passNumber,
+      ok: true,
+      probe: authPreflight.probe,
+      refreshed: !!authPreflight.refreshed,
+    });
+  }
+
   // Phase 2: one LLM heal session per survivor. The git landing inside each session
   // serializes through this one serializer so two heals never push at once, even
   // when their WORK runs concurrently.
@@ -3984,6 +4158,11 @@ module.exports = {
   deployChangedFilesFromWorktree,
   refreshPublishedBriefingAfterHeal,
   selfHealFalseClearRepairBlocker,
+  selfHealAuthFailedRepairBlocker,
+  preflightHealAuth,
+  defaultClaudeAuthProbe,
+  defaultTokenRefresh,
+  shouldRunAuthPreflight,
   acquireLock,
   pidIsAlive,
   parseRenderQcDefects,
