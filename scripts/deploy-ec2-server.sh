@@ -57,6 +57,10 @@ LIVE_DEPS=(
   # Wave 1 (green-tomorrow): the QC validator is required by a deployed entrypoint, so the
   # blocker-naming fix must ship to /opt, not rely on the build-path sync.
   "scripts/validate-briefing-quality.js"
+  # Wave 2 (green-tomorrow): both are required by the deployed briefing/QC entrypoints, so
+  # the news-chrome + grounding + blocker-accounting fixes must ship to /opt directly.
+  "scripts/lib/news-summarize.js"
+  "scripts/verify-dashboard-cards-live.js"
 )
 
 echo "[deploy] syntax-checking repo ec2-server.js"
