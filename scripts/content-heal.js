@@ -61,7 +61,12 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
-const { stripPublisherChrome } = require('./lib/news-summarize.js');
+const {
+  stripPublisherChrome,
+  isGoogleNewsArticleUrl,
+  resolveGoogleNewsUrl,
+  fetchArticleText,
+} = require('./lib/news-summarize.js');
 
 const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
 const DATA_DIR = process.env.SECONDBRAIN_DATA_DIR || path.join(REPO, 'data');
@@ -87,9 +92,10 @@ const DEFAULT_PER_CARD_MS = 90 * 1000;
 const DEFAULT_PER_PASS_MS = 8 * 60 * 1000;
 const DEFAULT_DISCOVERY_MAX = 12;
 const CONFIGURED_BODY_FETCH_MAX = Number(process.env.CONTENT_HEAL_BODY_FETCH_MAX);
-const DEFAULT_BODY_FETCH_MAX = Number.isFinite(CONFIGURED_BODY_FETCH_MAX) && CONFIGURED_BODY_FETCH_MAX > 0
-  ? Math.floor(CONFIGURED_BODY_FETCH_MAX)
-  : null;
+const DEFAULT_BODY_FETCH_MAX =
+  Number.isFinite(CONFIGURED_BODY_FETCH_MAX) && CONFIGURED_BODY_FETCH_MAX > 0
+    ? Math.floor(CONFIGURED_BODY_FETCH_MAX)
+    : null;
 const SUMMARY_SOURCE_MIN_CHARS = 200;
 
 const HOUR_MS = 3600 * 1000;
@@ -171,25 +177,91 @@ function readCachedViralProposals(date, dir = VIRAL_CACHE_DIR) {
 // real bylined articles from publishers with no public RSS. Keep it real.
 
 const COVID_FEEDS = [
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('"COVID-19 treatment" OR Paxlovid OR remdesivir OR "COVID antiviral" OR "COVID vaccine effectiveness"') + '&hl=en-US&gl=US&ceid=US:en', 'Google News COVID Treatments'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('"long COVID" OR "post-COVID" OR "SARS-CoV-2"') + '&hl=en-US&gl=US&ceid=US:en', 'Google News Long COVID'],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent(
+        '"COVID-19 treatment" OR Paxlovid OR remdesivir OR "COVID antiviral" OR "COVID vaccine effectiveness"',
+      ) +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'Google News COVID Treatments',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('"long COVID" OR "post-COVID" OR "SARS-CoV-2"') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'Google News Long COVID',
+  ],
   ['https://www.cdc.gov/media/rss.xml', 'CDC Newsroom'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:cdc.gov (covid OR coronavirus)') + '&hl=en-US&gl=US&ceid=US:en', 'CDC via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:who.int (covid OR coronavirus OR "SARS-CoV-2")') + '&hl=en-US&gl=US&ceid=US:en', 'WHO via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:nih.gov (covid OR coronavirus OR "SARS-CoV-2" OR "long COVID")') + '&hl=en-US&gl=US&ceid=US:en', 'NIH via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:cidrap.umn.edu (covid OR coronavirus OR "SARS-CoV-2" OR "long COVID")') + '&hl=en-US&gl=US&ceid=US:en', 'CIDRAP via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:fda.gov (covid OR coronavirus OR Paxlovid OR remdesivir OR vaccine)') + '&hl=en-US&gl=US&ceid=US:en', 'FDA via Google'],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:cdc.gov (covid OR coronavirus)') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'CDC via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:who.int (covid OR coronavirus OR "SARS-CoV-2")') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'WHO via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:nih.gov (covid OR coronavirus OR "SARS-CoV-2" OR "long COVID")') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'NIH via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent(
+        'site:cidrap.umn.edu (covid OR coronavirus OR "SARS-CoV-2" OR "long COVID")',
+      ) +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'CIDRAP via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent(
+        'site:fda.gov (covid OR coronavirus OR Paxlovid OR remdesivir OR vaccine)',
+      ) +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'FDA via Google',
+  ],
   ['https://www.statnews.com/feed/', 'STAT News'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:medpagetoday.com covid') + '&hl=en-US&gl=US&ceid=US:en', 'MedPage Today via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:reuters.com (covid OR coronavirus OR pandemic)') + '&hl=en-US&gl=US&ceid=US:en', 'Reuters Health via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:apnews.com (covid OR coronavirus OR pandemic)') + '&hl=en-US&gl=US&ceid=US:en', 'AP Health via Google'],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:medpagetoday.com covid') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'MedPage Today via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:reuters.com (covid OR coronavirus OR pandemic)') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'Reuters Health via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:apnews.com (covid OR coronavirus OR pandemic)') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'AP Health via Google',
+  ],
   ['https://www.nejm.org/action/showFeed?type=etoc&feed=rss&jc=nejm', 'NEJM'],
   ['https://www.nature.com/nm.rss', 'Nature Medicine'],
 ];
 
 const US_FEEDS = [
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:apnews.com US news') + '&hl=en-US&gl=US&ceid=US:en', 'AP via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:reuters.com US news') + '&hl=en-US&gl=US&ceid=US:en', 'Reuters via Google'],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:apnews.com US news') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'AP via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:reuters.com US news') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'Reuters via Google',
+  ],
   ['https://feeds.npr.org/1001/rss.xml', 'NPR News'],
   ['https://www.cbsnews.com/latest/rss/us', 'CBS US'],
   ['https://feeds.nbcnews.com/nbcnews/public/news', 'NBC News'],
@@ -204,8 +276,14 @@ const WORLD_FEEDS = [
   ['https://www.cbsnews.com/latest/rss/world', 'CBS World'],
   ['https://www.aljazeera.com/xml/rss/all.xml', 'Al Jazeera'],
   ['https://rss.dw.com/rdf/rss-en-world', 'DW World'],
-  ['https://news.google.com/rss/search?q=site:reuters.com+world+news&hl=en-US&gl=US&ceid=US:en', 'Reuters via Google'],
-  ['https://news.google.com/rss/search?q=site:apnews.com+world&hl=en-US&gl=US&ceid=US:en', 'AP via Google'],
+  [
+    'https://news.google.com/rss/search?q=site:reuters.com+world+news&hl=en-US&gl=US&ceid=US:en',
+    'Reuters via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=site:apnews.com+world&hl=en-US&gl=US&ceid=US:en',
+    'AP via Google',
+  ],
 ];
 
 const AITECH_FEEDS = [
@@ -220,20 +298,60 @@ const AITECH_FEEDS = [
 ];
 
 const IMMIGRATION_FEEDS = [
-  ['https://news.google.com/rss/search?q=' +
-    encodeURIComponent(
-      '"US immigration" OR "USCIS" OR "EB-1A" OR "EB1A" OR "green card" OR ' +
-        '"I-485" OR "visa bulletin" OR "adjustment of status" OR ' +
-        '"China visa" OR "immigration policy"',
-    ) +
-    '&hl=en-US&gl=US&ceid=US:en', 'Google News Immigration'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:uscis.gov news') + '&hl=en-US&gl=US&ceid=US:en', 'USCIS via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:dhs.gov immigration OR USCIS OR "green card" OR visa') + '&hl=en-US&gl=US&ceid=US:en', 'DHS Immigration via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:federalregister.gov immigration OR USCIS OR "visa bulletin" OR "green card"') + '&hl=en-US&gl=US&ceid=US:en', 'Federal Register Immigration via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:justice.gov/eoir immigration OR asylum OR "immigration court"') + '&hl=en-US&gl=US&ceid=US:en', 'DOJ EOIR via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:aila.org immigration OR USCIS OR "visa bulletin" OR "green card"') + '&hl=en-US&gl=US&ceid=US:en', 'AILA Immigration via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:reuters.com US immigration') + '&hl=en-US&gl=US&ceid=US:en', 'Reuters Immigration via Google'],
-  ['https://news.google.com/rss/search?q=' + encodeURIComponent('site:apnews.com US immigration') + '&hl=en-US&gl=US&ceid=US:en', 'AP Immigration via Google'],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent(
+        '"US immigration" OR "USCIS" OR "EB-1A" OR "EB1A" OR "green card" OR ' +
+          '"I-485" OR "visa bulletin" OR "adjustment of status" OR ' +
+          '"China visa" OR "immigration policy"',
+      ) +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'Google News Immigration',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:uscis.gov news') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'USCIS via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:dhs.gov immigration OR USCIS OR "green card" OR visa') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'DHS Immigration via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent(
+        'site:federalregister.gov immigration OR USCIS OR "visa bulletin" OR "green card"',
+      ) +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'Federal Register Immigration via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:justice.gov/eoir immigration OR asylum OR "immigration court"') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'DOJ EOIR via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:aila.org immigration OR USCIS OR "visa bulletin" OR "green card"') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'AILA Immigration via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:reuters.com US immigration') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'Reuters Immigration via Google',
+  ],
+  [
+    'https://news.google.com/rss/search?q=' +
+      encodeURIComponent('site:apnews.com US immigration') +
+      '&hl=en-US&gl=US&ceid=US:en',
+    'AP Immigration via Google',
+  ],
 ];
 
 const NEWS_FEEDS = {
@@ -254,17 +372,41 @@ const NEWS_FRESHNESS = {
   immigration: { currentHours: 24, cascadeHours: [24, 48, 7 * 24] },
 };
 
-// Live render QC allows at most one headline-only news row per card. Immigration
-// is especially prone to Google-News/title-only evidence, so it cannot be marked
-// healed unless enough rows are summary-grade to stay under that live stub gate.
+// The LIVE render QC (verify-dashboard-cards-live.js newsStubDefects + the
+// validate-briefing-quality.js news-section check) does NOT cap the number of
+// honest headline-rescue rows: the NEWS-STUB hook is deliberately non-blocking,
+// and the section check accepts a labeled headline-only row as long as it ExampleCos
+// a real source link and the content-heal card owns it (a wall or source-bound
+// evidence). The only hard render rule is the canonical headline-only NOTE shape.
+//
+// So the default "at most one headline" floor below is a SELF-IMPOSED
+// content-heal conservatism for the high-volume general cards (us/world/aitech)
+// and mortgage, where summary-grade material is plentiful, NOT a render-QC limit.
+// Immigration is a thin, Google-News-stub-heavy specialized beat: on a low body
+// yield day a strict "target - 1 must be summary-grade" floor drops every honest
+// headline row and the card collapses to 1/5. Because the live render QC permits
+// those honest rows, immigration is allowed to fill its remaining slots with
+// headline-tier rows (still real URL + real in-window date + real title text;
+// never padded, never fabricated). minSummary 0 means "no summary-grade floor".
 const NEWS_MAX_HEADLINE_FALLBACKS = 1;
 const NEWS_MIN_SUMMARY_GRADE = {
   covid: NEWS_TARGETS.covid - NEWS_MAX_HEADLINE_FALLBACKS,
   us: NEWS_TARGETS.us - NEWS_MAX_HEADLINE_FALLBACKS,
   world: NEWS_TARGETS.world - NEWS_MAX_HEADLINE_FALLBACKS,
   aitech: NEWS_TARGETS.aitech - NEWS_MAX_HEADLINE_FALLBACKS,
-  immigration: NEWS_TARGETS.immigration - NEWS_MAX_HEADLINE_FALLBACKS,
+  // immigration: no summary-grade floor; honest headline rows may fill to target
+  // because the live render QC permits them and a real low-yield day otherwise
+  // collapses an otherwise-real card to a single article.
+  immigration: 0,
   mortgage: MORTGAGE_TARGET - NEWS_MAX_HEADLINE_FALLBACKS,
+};
+
+// Per-card cap on how many headline-rescue rows may fill toward target once the
+// summary-grade floor (NEWS_MIN_SUMMARY_GRADE) is met. Immigration can fill all
+// remaining slots with honest headline rows (live render QC allows it); every
+// other card keeps the conservative one-row fallback.
+const NEWS_MAX_HEADLINE_FALLBACKS_BY_CARD = {
+  immigration: Infinity,
 };
 
 const COVID_TOPIC_RE =
@@ -290,26 +432,33 @@ async function defaultRunViral({ date, now } = {}) {
 // mortgage feed, dedups by link, filters to a freshness window, and fetches a
 // real excerpt from each article body. Returns enriched article objects.
 const MORTGAGE_FEEDS = [
-  ['https://news.google.com/rss/search?q=mortgage+rates+OR+housing+market+OR+refinance&hl=en-US&gl=US&ceid=US:en', 'Google News'],
+  [
+    'https://news.google.com/rss/search?q=mortgage+rates+OR+housing+market+OR+refinance&hl=en-US&gl=US&ceid=US:en',
+    'Google News',
+  ],
   ['https://www.mortgagenewsdaily.com/rss/news', 'Mortgage News Daily'],
   ['https://www.housingwire.com/feed/', 'HousingWire'],
   ['https://www.inman.com/feed/', 'Inman'],
-  ['https://news.google.com/rss/search?q=site:nationalmortgagenews.com&hl=en-US&gl=US&ceid=US:en', 'National Mortgage News'],
+  [
+    'https://news.google.com/rss/search?q=site:nationalmortgagenews.com&hl=en-US&gl=US&ceid=US:en',
+    'National Mortgage News',
+  ],
   ['https://www.mba.org/x36608.xml', 'MBA NewsLink'],
   ['https://www.mpamag.com/us/rss', 'Mortgage Professional America'],
-  ['https://news.google.com/rss/search?q=site:scotsmanguide.com&hl=en-US&gl=US&ceid=US:en', 'Scotsman Guide'],
+  [
+    'https://news.google.com/rss/search?q=site:scotsmanguide.com&hl=en-US&gl=US&ceid=US:en',
+    'Scotsman Guide',
+  ],
   ['https://www.inman.com/category/mortgage/feed/', 'Inman Mortgage'],
 ];
 
 const GDELT_DISCOVERY = {
-  covid:
-    '"COVID-19 treatment" OR Paxlovid OR remdesivir OR "COVID antiviral" OR "long COVID"',
+  covid: '"COVID-19 treatment" OR Paxlovid OR remdesivir OR "COVID antiviral" OR "long COVID"',
   us: '("United States" OR US) (policy OR court OR Congress OR "White House" OR state)',
   world: 'world news OR geopolitics OR diplomacy OR conflict OR election',
   aitech:
     'artificial intelligence OR AI OR chip OR semiconductor OR cybersecurity OR "data center"',
-  immigration:
-    '"US immigration" OR USCIS OR EB-1A OR EB1A OR "green card" OR "visa bulletin"',
+  immigration: '"US immigration" OR USCIS OR EB-1A OR EB1A OR "green card" OR "visa bulletin"',
   mortgage:
     'mortgage rates OR housing market OR refinance OR mortgage lender OR "mortgage industry"',
 };
@@ -394,7 +543,10 @@ function parseGdeltSeenDate(value) {
 
 async function defaultFetchGdelt(query, name = 'GDELT', max = DEFAULT_DISCOVERY_MAX) {
   if (!query) return [];
-  const cappedMax = Math.max(1, Math.min(DEFAULT_DISCOVERY_MAX, Number(max) || DEFAULT_DISCOVERY_MAX));
+  const cappedMax = Math.max(
+    1,
+    Math.min(DEFAULT_DISCOVERY_MAX, Number(max) || DEFAULT_DISCOVERY_MAX),
+  );
   const url =
     'https://api.gdeltproject.org/api/v2/doc/doc?query=' +
     encodeURIComponent(query) +
@@ -426,7 +578,10 @@ async function fetchGdeltDiscovery(card, { deps = {}, max = DEFAULT_DISCOVERY_MA
   const fetchGdelt = deps.fetchGdelt || defaultFetchGdelt;
   if (!query || typeof fetchGdelt !== 'function') return [];
   try {
-    const cappedMax = Math.max(1, Math.min(DEFAULT_DISCOVERY_MAX, Number(max) || DEFAULT_DISCOVERY_MAX));
+    const cappedMax = Math.max(
+      1,
+      Math.min(DEFAULT_DISCOVERY_MAX, Number(max) || DEFAULT_DISCOVERY_MAX),
+    );
     return (await fetchGdelt(query, `${card} GDELT`, cappedMax)) || [];
   } catch {
     return [];
@@ -443,13 +598,45 @@ function hasInlineExcerpt(article) {
 }
 
 function hasSubstantialInlineExcerpt(article) {
-  return cleanText((article && (article.desc || article.excerpt)) || '').length >= SUMMARY_SOURCE_MIN_CHARS;
+  return (
+    cleanText((article && (article.desc || article.excerpt)) || '').length >=
+    SUMMARY_SOURCE_MIN_CHARS
+  );
 }
 
 function prioritizeDiscoveryCandidates(feedCandidates, discoveryCandidates) {
   const feedWithText = feedCandidates.filter(hasInlineExcerpt);
   const feedNeedsBody = feedCandidates.filter((article) => !hasInlineExcerpt(article));
   return [...feedWithText, ...discoveryCandidates, ...feedNeedsBody];
+}
+
+// Google-News RSS feeds (immigration is ~100% these) hand us
+// news.google.com/rss/articles/<id> stub URLs, not the publisher article. The
+// legacy fetchArticleBody cannot read those: the stub 302s to itself then 400s,
+// so every immigration row stays headline-tier and the summary-grade gate drops
+// the whole card. Resolve the stub to the real publisher URL FIRST (same path
+// cloud-covid-news.js already uses), then fetch the publisher body. Non-stub
+// URLs and resolver/text failures fall straight through to the legacy fetch, so
+// this only ADDS reach -- it never drops a row that already worked.
+// resolveUrl / fetchText are injectable via deps for network-free tests.
+function makeNewsBodyFetcher(fetchArticleBody, deps = {}) {
+  const baseFetch = typeof fetchArticleBody === 'function' ? fetchArticleBody : async () => '';
+  const resolver = typeof deps.resolveUrl === 'function' ? deps.resolveUrl : resolveGoogleNewsUrl;
+  const textFetch = typeof deps.fetchText === 'function' ? deps.fetchText : fetchArticleText;
+  return async (url, sourceUrl) => {
+    if (url && isGoogleNewsArticleUrl(url)) {
+      try {
+        const resolved = await resolver(url);
+        if (resolved && /^https?:\/\//i.test(resolved) && !/news\.google\.com/i.test(resolved)) {
+          const body = await textFetch(resolved, {});
+          if (body && String(body).trim()) return body;
+        }
+      } catch {
+        // Fall through to the legacy body fetch below.
+      }
+    }
+    return baseFetch(url, sourceUrl || url);
+  };
 }
 
 function startBodyFetches(candidates, fetchArticleBody, maxBodyFetches, argsForArticle) {
@@ -477,7 +664,10 @@ function startBodyFetches(candidates, fetchArticleBody, maxBodyFetches, argsForA
 async function runNewsCardPull(card, { now, deps = {}, feeds, limit, bodyFetchLimit } = {}) {
   const { fetchFeed, fetchArticleBody } = resolveBriefingFetchers(deps);
   const feedList = feeds || NEWS_FEEDS[card] || [];
-  const maxCandidates = Math.max(1, Number(limit) || newsRescueCollectionTarget(NEWS_TARGETS[card] || 10));
+  const maxCandidates = Math.max(
+    1,
+    Number(limit) || newsRescueCollectionTarget(NEWS_TARGETS[card] || 10),
+  );
   const maxBodyFetches = bodyFetchLimitFor(maxCandidates, bodyFetchLimit);
   const feedCandidates = [];
   const discoveryCandidates = [];
@@ -485,7 +675,11 @@ async function runNewsCardPull(card, { now, deps = {}, feeds, limit, bodyFetchLi
   const feedResults = await Promise.all(
     feedList.map(async ([url, source]) => {
       try {
-        return (await fetchFeed(url, source, card === 'covid' ? 40 : 10)) || [];
+        // immigration feeds are ~100% Google-News stubs that rank evergreen
+        // picks near the top, so a depth-10 parse starves the in-window pool the
+        // same way covid did; parse 40 deep for both thin specialized beats.
+        const parseDepth = card === 'covid' || card === 'immigration' ? 40 : 10;
+        return (await fetchFeed(url, source, parseDepth)) || [];
       } catch {
         return [];
       }
@@ -499,7 +693,10 @@ async function runNewsCardPull(card, { now, deps = {}, feeds, limit, bodyFetchLi
       feedCandidates.push(it);
     }
   }
-  for (const it of await fetchGdeltDiscovery(card, { deps, max: Math.min(DEFAULT_DISCOVERY_MAX, maxCandidates) })) {
+  for (const it of await fetchGdeltDiscovery(card, {
+    deps,
+    max: Math.min(DEFAULT_DISCOVERY_MAX, maxCandidates),
+  })) {
     const link = it && (it.link || it.url);
     if (!link || seen.has(link)) continue;
     seen.add(link);
@@ -511,12 +708,14 @@ async function runNewsCardPull(card, { now, deps = {}, feeds, limit, bodyFetchLi
       ? feedCandidates.slice(0, feedCandidateLimit(maxCandidates))
       : feedCandidates;
   const candidates = prioritizeDiscoveryCandidates(feedForCandidates, discoveryCandidates);
-  const bodyFetches = startBodyFetches(
-    candidates,
-    fetchArticleBody,
-    maxBodyFetches,
-    (a) => [a.link || a.url, a.sourceUrl || a.link || a.url],
-  );
+  // Resolve Google-News stub URLs to the real publisher BEFORE the body fetch so
+  // immigration (and any other stub-heavy feed) yields summary-grade bodies
+  // instead of collapsing every row to headline tier.
+  const newsBodyFetcher = makeNewsBodyFetcher(fetchArticleBody, deps);
+  const bodyFetches = startBodyFetches(candidates, newsBodyFetcher, maxBodyFetches, (a) => [
+    a.link || a.url,
+    a.sourceUrl || a.link || a.url,
+  ]);
   // Enrich each with real source text. Prefer the RSS description only when it
   // is substantial enough to support the later three-ExampleCoraph summarizer;
   // otherwise use the fetched article body. A thin feed blurb is not
@@ -535,7 +734,12 @@ async function runNewsCardPull(card, { now, deps = {}, feeds, limit, bodyFetchLi
       excerpt = cleanText(a.title || '');
       tier = 'headline';
     }
-    enriched.push({ ...a, excerpt: excerpt.slice(0, 400), sourceText: excerpt.slice(0, 2200), tier });
+    enriched.push({
+      ...a,
+      excerpt: excerpt.slice(0, 400),
+      sourceText: excerpt.slice(0, 2200),
+      tier,
+    });
   }
   return enriched;
 }
@@ -567,7 +771,10 @@ async function defaultRunMortgage({ now, deps = {}, limit, bodyFetchLimit } = {}
     }
     if (feedCandidates.length >= maxCandidates) break;
   }
-  for (const it of await fetchGdeltDiscovery('mortgage', { deps, max: Math.min(DEFAULT_DISCOVERY_MAX, maxCandidates) })) {
+  for (const it of await fetchGdeltDiscovery('mortgage', {
+    deps,
+    max: Math.min(DEFAULT_DISCOVERY_MAX, maxCandidates),
+  })) {
     const link = it && (it.link || it.url);
     if (!link || seen.has(link)) continue;
     seen.add(link);
@@ -578,13 +785,14 @@ async function defaultRunMortgage({ now, deps = {}, limit, bodyFetchLimit } = {}
     discoveryCandidates.length > 0
       ? feedCandidates.slice(0, feedCandidateLimit(maxCandidates))
       : feedCandidates;
-  const candidates = prioritizeDiscoveryCandidates(feedForCandidates, discoveryCandidates).slice(0, maxCandidates);
-  const bodyFetches = startBodyFetches(
-    candidates,
-    fetchArticleBody,
-    maxBodyFetches,
-    (a) => [a.link, a.link],
+  const candidates = prioritizeDiscoveryCandidates(feedForCandidates, discoveryCandidates).slice(
+    0,
+    maxCandidates,
   );
+  const bodyFetches = startBodyFetches(candidates, fetchArticleBody, maxBodyFetches, (a) => [
+    a.link,
+    a.link,
+  ]);
   // 7-day freshness window; keep undated items (sparse feeds) so the pool is
   // never silently emptied, but the wall reason names the window queried.
   const fresh = candidates.filter((a) => {
@@ -702,12 +910,24 @@ function collectNewsEvidence(card, articles, { now, windowHours } = {}) {
     // "<![CDATA[https://...]]>" which the validator correctly rejects as
     // untraceable, dropping otherwise-real articles (ExampleCo 2026-06-04).
     let url = String(a.link || a.url || '').trim();
-    url = url.replace(/^<!\[CDATA\[/i, '').replace(/\]\]>$/, '').trim();
-    if (!/^https?:\/\//i.test(url)) { dropped.noUrl += 1; continue; }
+    url = url
+      .replace(/^<!\[CDATA\[/i, '')
+      .replace(/\]\]>$/, '')
+      .trim();
+    if (!/^https?:\/\//i.test(url)) {
+      dropped.noUrl += 1;
+      continue;
+    }
     const bodyExcerpt = cleanNewsEvidenceText(a.sourceText || a.excerpt || a.desc || '');
     const excerpt = bodyExcerpt || cleanText(a.title || '');
-    if (!nonEmpty(excerpt)) { dropped.noExcerpt += 1; continue; }
-    if (!isOnTopicNewsEvidence(card, a, url, excerpt)) { dropped.offTopic += 1; continue; }
+    if (!nonEmpty(excerpt)) {
+      dropped.noExcerpt += 1;
+      continue;
+    }
+    if (!isOnTopicNewsEvidence(card, a, url, excerpt)) {
+      dropped.offTopic += 1;
+      continue;
+    }
 
     // tier: a real body/RSS excerpt is summary-grade; a headline rescue (excerpt
     // collapsed to the title) is the degraded headline tier.
@@ -746,7 +966,10 @@ function collectNewsEvidence(card, articles, { now, windowHours } = {}) {
     }
 
     const uniqueKey = url; // dedup by URL so padding the same article is impossible
-    if (usedKeys.has(uniqueKey)) { dropped.duplicate += 1; continue; }
+    if (usedKeys.has(uniqueKey)) {
+      dropped.duplicate += 1;
+      continue;
+    }
     usedKeys.add(uniqueKey);
 
     const item = {
@@ -777,12 +1000,7 @@ function rankNewsEvidence(items) {
 
 function isOnTopicNewsEvidence(card, article, url, excerpt) {
   if (card !== 'covid') return true;
-  const text = [
-    article && article.title,
-    article && article.source,
-    excerpt,
-    url,
-  ]
+  const text = [article && article.title, article && article.source, excerpt, url]
     .filter(Boolean)
     .join(' ');
   return COVID_TOPIC_RE.test(text);
@@ -791,11 +1009,18 @@ function isOnTopicNewsEvidence(card, article, url, excerpt) {
 function enforceNewsSummaryGrade(card, items, target) {
   const ranked = rankNewsEvidence(items);
   const minSummary = NEWS_MIN_SUMMARY_GRADE[card] || 0;
-  if (!minSummary) return ranked;
+  const maxHeadlines =
+    card in NEWS_MAX_HEADLINE_FALLBACKS_BY_CARD
+      ? NEWS_MAX_HEADLINE_FALLBACKS_BY_CARD[card]
+      : NEWS_MAX_HEADLINE_FALLBACKS;
   const summaries = ranked.filter((item) => item.tier === 'summary');
   const headlines = ranked.filter((item) => item.tier !== 'summary');
-  const headlineAllowance =
-    summaries.length >= minSummary ? Math.max(0, target - summaries.length) : 0;
+  // Headlines may fill toward target only once the summary-grade floor is met.
+  // A card with no floor (immigration) admits honest headline rows immediately
+  // because the live render QC permits them; the per-card cap bounds how many.
+  const floorMet = summaries.length >= minSummary;
+  const slotsToTarget = Math.max(0, target - summaries.length);
+  const headlineAllowance = floorMet ? Math.min(slotsToTarget, maxHeadlines) : 0;
   return summaries.concat(headlines.slice(0, headlineAllowance));
 }
 
@@ -947,12 +1172,11 @@ async function runContentHeal(opts = {}) {
   const runViral = deps.runViral || ((args) => defaultRunViral({ date, now, ...args }));
   const runMortgage = deps.runMortgage || ((args) => defaultRunMortgage({ now, deps, ...args }));
   const runNews = deps.runNews || ((card, args) => runNewsCardPull(card, { now, deps, ...args }));
-  const cachedViralProposals =
-    which.includes('viral')
-      ? (typeof deps.cachedViralProposals === 'function'
-        ? deps.cachedViralProposals({ date, now })
-        : readCachedViralProposals(date))
-      : [];
+  const cachedViralProposals = which.includes('viral')
+    ? typeof deps.cachedViralProposals === 'function'
+      ? deps.cachedViralProposals({ date, now })
+      : readCachedViralProposals(date)
+    : [];
 
   const cards = {};
 
@@ -965,7 +1189,8 @@ async function runContentHeal(opts = {}) {
       collect: collectViralEvidence,
       target: VIRAL_TARGET,
       sourcesWallReason: viralWallReason,
-      budgetWallReason: (c) => `budget-exhausted: hit the ${Math.round(perCardMs / 1000)}s viral cap with ${c}/${VIRAL_TARGET} clips; next pass continues`,
+      budgetWallReason: (c) =>
+        `budget-exhausted: hit the ${Math.round(perCardMs / 1000)}s viral cap with ${c}/${VIRAL_TARGET} clips; next pass continues`,
       perCardMs,
       deadlineMs: passDeadline,
       clock,
@@ -980,7 +1205,11 @@ async function runContentHeal(opts = {}) {
     cards.mortgage = await healCard({
       runGenerator: async (args) => {
         if (!mortgageRawCache)
-          mortgageRawCache = await runMortgage({ ...args, limit: collectionTarget, bodyFetchLimit });
+          mortgageRawCache = await runMortgage({
+            ...args,
+            limit: collectionTarget,
+            bodyFetchLimit,
+          });
         return mortgageRawCache;
       },
       collect: (raw) =>
@@ -988,7 +1217,8 @@ async function runContentHeal(opts = {}) {
       target: MORTGAGE_TARGET,
       collectionTarget,
       sourcesWallReason: mortgageWallReason,
-      budgetWallReason: (c) => `budget-exhausted: hit the ${Math.round(perCardMs / 1000)}s mortgage cap with ${c}/${MORTGAGE_TARGET} articles; next pass continues`,
+      budgetWallReason: (c) =>
+        `budget-exhausted: hit the ${Math.round(perCardMs / 1000)}s mortgage cap with ${c}/${MORTGAGE_TARGET} articles; next pass continues`,
       perCardMs,
       deadlineMs: passDeadline,
       clock,
@@ -1063,6 +1293,8 @@ module.exports = {
   collectViralEvidence,
   collectMortgageEvidence,
   collectNewsEvidence,
+  enforceNewsSummaryGrade,
+  makeNewsBodyFetcher,
   readCachedViralProposals,
   runNewsCardPull,
   viralWallReason,
@@ -1079,6 +1311,7 @@ module.exports = {
   NEWS_TARGETS,
   NEWS_FEEDS,
   NEWS_FRESHNESS,
+  NEWS_MIN_SUMMARY_GRADE,
   DEFAULT_PER_CARD_MS,
   DEFAULT_PER_PASS_MS,
 };
@@ -1086,12 +1319,19 @@ module.exports = {
 if (require.main === module) {
   const date = argValue('--date') || todayIso();
   const cardArg = argValue('--cards');
-  const cards = cardArg ? cardArg.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+  const cards = cardArg
+    ? cardArg
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : undefined;
   const bodyFetchLimit = Number(argValue('--body-fetch-limit')) || undefined;
   runContentHeal({ date, cards, bodyFetchLimit })
     .then((res) => {
       for (const [name, c] of Object.entries(res.cards)) {
-        console.log(`[content-heal] ${name} ${c.count}/${c.target}${c.wall ? ` WALL(${c.wallKind}): ${c.wall}` : ' ok'}`);
+        console.log(
+          `[content-heal] ${name} ${c.count}/${c.target}${c.wall ? ` WALL(${c.wallKind}): ${c.wall}` : ' ok'}`,
+        );
       }
       console.log(`[content-heal] wrote ${res.outputPath || '(no file)'}`);
     })

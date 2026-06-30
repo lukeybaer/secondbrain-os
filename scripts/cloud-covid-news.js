@@ -14,19 +14,33 @@ const DEFAULT_DATA_DIR =
   process.env.SECONDBRAIN_DATA_DIR ||
   (process.platform === 'linux'
     ? '/opt/secondbrain/data'
-    : path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'secondbrain', 'data'));
+    : path.join(
+        process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+        'secondbrain',
+        'data',
+      ));
+
+// COVID is a thin beat: the strict 72h cut plus when:3d feed queries left whole
+// days at 0/1 real articles. Widen the source window to 7 days (168h) so a quiet
+// COVID news day can still surface >= 1 REAL, topical, body-backed article. This
+// only widens the candidate pool; the topical AND-gate (isCovidArticleLike) and
+// the >= 500-char body gate (attachSourceText) are unchanged, so no off-topic or
+// bodyless row is ever admitted.
+const COVID_FRESHNESS_HOURS = 168;
 
 const COVID_FEEDS = [
   [
     'Google News COVID',
     'https://news.google.com/rss/search?q=' +
-      encodeURIComponent('COVID OR "COVID-19" OR coronavirus OR "long COVID" when:3d') +
+      encodeURIComponent('COVID OR "COVID-19" OR coronavirus OR "long COVID" when:7d') +
       '&hl=en-US&gl=US&ceid=US:en',
   ],
   [
     'Google News COVID Treatments',
     'https://news.google.com/rss/search?q=' +
-      encodeURIComponent('"COVID treatment" OR Paxlovid OR remdesivir OR "COVID clinical trial" when:3d') +
+      encodeURIComponent(
+        '"COVID treatment" OR Paxlovid OR remdesivir OR "COVID clinical trial" when:7d',
+      ) +
       '&hl=en-US&gl=US&ceid=US:en',
   ],
   [
@@ -38,7 +52,7 @@ const COVID_FEEDS = [
   [
     'Google News Long COVID',
     'https://news.google.com/rss/search?q=' +
-      encodeURIComponent('"long COVID" OR PASC OR "post-COVID" OR "post-acute COVID" when:3d') +
+      encodeURIComponent('"long COVID" OR PASC OR "post-COVID" OR "post-acute COVID" when:7d') +
       '&hl=en-US&gl=US&ceid=US:en',
   ],
   [
@@ -48,39 +62,39 @@ const COVID_FEEDS = [
       '&hl=en-US&gl=US&ceid=US:en',
   ],
   [
-    'Google News COVID 72h',
+    'Google News COVID 7d',
     'https://news.google.com/rss/search?q=' +
-      encodeURIComponent('COVID OR "COVID-19" OR coronavirus when:3d') +
+      encodeURIComponent('COVID OR "COVID-19" OR coronavirus when:7d') +
       '&hl=en-US&gl=US&ceid=US:en',
   ],
   [
     'CDC COVID',
     'https://news.google.com/rss/search?q=' +
-      encodeURIComponent('site:cdc.gov (covid OR coronavirus OR respiratory virus) when:3d') +
+      encodeURIComponent('site:cdc.gov (covid OR coronavirus OR respiratory virus) when:7d') +
       '&hl=en-US&gl=US&ceid=US:en',
   ],
   [
     'STAT COVID',
     'https://news.google.com/rss/search?q=' +
-      encodeURIComponent('site:statnews.com (covid OR coronavirus OR pandemic) when:3d') +
+      encodeURIComponent('site:statnews.com (covid OR coronavirus OR pandemic) when:7d') +
       '&hl=en-US&gl=US&ceid=US:en',
   ],
   [
     'WHO COVID',
     'https://news.google.com/rss/search?q=' +
-      encodeURIComponent('site:who.int (covid OR coronavirus OR "SARS-CoV-2") when:3d') +
+      encodeURIComponent('site:who.int (covid OR coronavirus OR "SARS-CoV-2") when:7d') +
       '&hl=en-US&gl=US&ceid=US:en',
   ],
   [
     'AP Health COVID',
     'https://news.google.com/rss/search?q=' +
-      encodeURIComponent('site:apnews.com (covid OR coronavirus OR pandemic) when:3d') +
+      encodeURIComponent('site:apnews.com (covid OR coronavirus OR pandemic) when:7d') +
       '&hl=en-US&gl=US&ceid=US:en',
   ],
   [
     'Reuters COVID',
     'https://news.google.com/rss/search?q=' +
-      encodeURIComponent('site:reuters.com (covid OR coronavirus OR pandemic) when:3d') +
+      encodeURIComponent('site:reuters.com (covid OR coronavirus OR pandemic) when:7d') +
       '&hl=en-US&gl=US&ceid=US:en',
   ],
 ];
@@ -137,10 +151,10 @@ function isCovidArticleLike(item) {
   const text = clean(`${lead} ${item && item.sourceText}`, 2000);
   return Boolean(
     lead &&
-      COVID_EXPLICIT_RE.test(lead) &&
-      COVID_HEALTH_NEWS_RE.test(lead) &&
-      !COVID_NON_HEALTH_CONTEXT_RE.test(lead) &&
-      !COVID_PAGE_CHROME_RE.test(text),
+    COVID_EXPLICIT_RE.test(lead) &&
+    COVID_HEALTH_NEWS_RE.test(lead) &&
+    !COVID_NON_HEALTH_CONTEXT_RE.test(lead) &&
+    !COVID_PAGE_CHROME_RE.test(text),
   );
 }
 
@@ -180,7 +194,7 @@ async function attachSourceText(item, deps = {}) {
     source: clean(item.source, 80),
     url: cleanUrl(item.link || item.url),
     sourceUrl: cleanUrl(item.sourceUrl || ''),
-    summary: clean(item.desc || 'Fresh COVID headline from the 72-hour source window.', 220),
+    summary: clean(item.desc || 'Fresh COVID headline from the 7-day source window.', 220),
     pubDate: item.pubDate || item.isoDate || '',
   };
   if (!article.url) return article;
@@ -194,7 +208,11 @@ async function attachSourceText(item, deps = {}) {
   return article;
 }
 
-async function generateCovidNews({ dataDir = DEFAULT_DATA_DIR, date = todayIso(), deps = {} } = {}) {
+async function generateCovidNews({
+  dataDir = DEFAULT_DATA_DIR,
+  date = todayIso(),
+  deps = {},
+} = {}) {
   const manual = require('./manual-briefing-v3.js');
   const fetchFeed = deps.fetchFeed || manual.fetchFeed;
   const fetchArticleBody = deps.fetchArticleBody || manual.fetchArticleBody;
@@ -213,7 +231,7 @@ async function generateCovidNews({ dataDir = DEFAULT_DATA_DIR, date = todayIso()
   }
   const freshPool = dedupeArticles(fetched)
     .filter((item) => keywordRe.test(`${item.title || ''} ${item.desc || ''}`))
-    .filter((item) => manual.isFreshWithinHours(item, 72))
+    .filter((item) => manual.isFreshWithinHours(item, COVID_FRESHNESS_HOURS))
     .sort((a, b) => {
       const at = treatmentRe.test(`${a.title || ''} ${a.desc || ''}`) ? 0 : 1;
       const bt = treatmentRe.test(`${b.title || ''} ${b.desc || ''}`) ? 0 : 1;
@@ -243,7 +261,7 @@ async function generateCovidNews({ dataDir = DEFAULT_DATA_DIR, date = todayIso()
     wall:
       fresh.length >= 5
         ? null
-        : `Only ${fresh.length}/5 current COVID items cleared the 72-hour source window.`,
+        : `Only ${fresh.length}/5 current COVID items cleared the 7-day source window.`,
   };
   const outDir = path.join(dataDir, 'agent', 'covid-news');
   fs.mkdirSync(outDir, { recursive: true });
