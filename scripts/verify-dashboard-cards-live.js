@@ -316,6 +316,27 @@ function denylistHits(text) {
   return hits;
 }
 
+// The path-leak denylist entries (POSIX + drive-letter). Their MATCH is a raw
+// filesystem path, so quoting it verbatim in a defect message turns that very
+// message into a path leak. The Blockers card is built from these messages, so
+// on the next QC pass the path-leak detector re-reads its own prior evidence and
+// re-flags it -- a self-reinforcing false positive that never clears. We redact
+// the matched path to a token before it ever lands in a defect string. Sourced
+// from FACE_DENYLIST by label so the redactor and the detector can never drift.
+const PATH_LEAK_LABELS = new Set(['raw path (POSIX)', 'raw path (drive-letter)']);
+const PATH_LEAK_RES = FACE_DENYLIST.filter((e) => PATH_LEAK_LABELS.has(e.label)).map(
+  (e) => new RegExp(e.re.source, e.re.flags.includes('g') ? e.re.flags : e.re.flags + 'g'),
+);
+
+// Replace every raw filesystem path in an evidence snippet with a redacted
+// "<path>" token so the snippet cannot itself trip the path-leak detector on a
+// later scan. Idempotent and deterministic; non-path text is untouched.
+function redactPathsInEvidence(snippet) {
+  let out = String(snippet || '');
+  for (const re of PATH_LEAK_RES) out = out.replace(re, '<path>');
+  return out;
+}
+
 // 2. ANSWER-FIRST -- the first non-chrome sentence of the face must lead with a
 // verdict. "Chrome" = the metric chip and leading punctuation/whitespace; the
 // metric is extracted separately, so we strip a duplicate leading copy of it
@@ -588,11 +609,13 @@ function execCrispnessDefects(card, tile, runDate) {
   const face = String(tile.face || '');
   const body = String(tile.body || '');
 
-  // 1. TOKEN DENYLIST on the face.
+  // 1. TOKEN DENYLIST on the face. The quoted snippet is redacted of any raw
+  // filesystem path first, so a path-leak defect message can never itself trip
+  // the path-leak detector when the Blockers card built from these messages is
+  // re-scanned on the next QC pass (the self-reinforcing false positive).
   for (const hit of denylistHits(face)) {
-    defects.push(
-      `EXEC-CRISPNESS: ${card.id} (${tile.name}) face leaks ${hit.label}: "${strip(hit.match).slice(0, 60)}"`,
-    );
+    const snippet = redactPathsInEvidence(strip(hit.match)).slice(0, 60);
+    defects.push(`EXEC-CRISPNESS: ${card.id} (${tile.name}) face leaks ${hit.label}: "${snippet}"`);
   }
 
   // 2. ANSWER-FIRST: the verdict must be up front. The metric chip is itself the
@@ -2322,6 +2345,7 @@ module.exports = {
   readTokenFromEnvFile,
   resolveToken,
   denylistHits,
+  redactPathsInEvidence,
   fetchLiveHtml,
   findTiles,
   FACE_DENYLIST,
