@@ -119,7 +119,9 @@ function workerEnv(opts = {}) {
 }
 
 function quoteSettingCommandPath(p) {
-  return String(p || '').replace(/\\/g, '/').replace(/"/g, '\\"');
+  return String(p || '')
+    .replace(/\\/g, '/')
+    .replace(/"/g, '\\"');
 }
 
 function buildSelfHealWorkerSettings(opts = {}) {
@@ -133,10 +135,18 @@ function buildSelfHealWorkerSettings(opts = {}) {
   return JSON.stringify({
     permissions: { defaultMode: 'bypassPermissions' },
     hooks: {
-      PreToolUse: ['Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'].map((matcher) => ({
-        matcher,
-        hooks: [hook],
-      })),
+      // Task/Agent are matched so the worker guard's inline-only block actually
+      // fires in production. The worker escalates 0-cleared when it spawns a
+      // background Task (the fix detaches). The guard rejects Task/Agent by name,
+      // but a PreToolUse hook only runs for tools named in its matcher, so Task
+      // and Agent MUST be listed here or the block is dead in prod (Codex HOLD
+      // 2026-06-30).
+      PreToolUse: ['Bash', 'Task', 'Agent', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'].map(
+        (matcher) => ({
+          matcher,
+          hooks: [hook],
+        }),
+      ),
     },
   });
 }
@@ -539,12 +549,9 @@ function runHealSession(prompt, opts = {}) {
     let hangTimer = setTimeout(() => {
       if (gotByte) return;
       treeKill(child);
-      finish(
-        124,
-        `${executor} produced no output for ${Math.round(hangMs / 1000)}s (hang)`,
-        null,
-        { watchdog: { kind: 'first-byte-hang', killed: true, thresholdMs: hangMs } },
-      );
+      finish(124, `${executor} produced no output for ${Math.round(hangMs / 1000)}s (hang)`, null, {
+        watchdog: { kind: 'first-byte-hang', killed: true, thresholdMs: hangMs },
+      });
     }, hangMs);
 
     let idleTimer = null;
@@ -570,7 +577,8 @@ function runHealSession(prompt, opts = {}) {
       if (!parsed) return false;
       earlyFinalResult = true;
       const contractMiss =
-        parsed.status === 'escalated' && /no JSON status block/i.test(parsed.escalationReason || '');
+        parsed.status === 'escalated' &&
+        /no JSON status block/i.test(parsed.escalationReason || '');
       treeKill(child);
       finish(0, null, parsed, {
         watchdog: contractMiss
