@@ -1780,6 +1780,21 @@ function blockerRows(blockersBody) {
   return rows;
 }
 
+// A blocker row reads "<SUBJECT> <detail marker>: <evidence/remediation prose>".
+// A card is "named as an unresolved blocker" only when it is the SUBJECT of a
+// row (its name leads the row, before the first detail marker), never when its
+// name appears incidentally inside another row's evidence or remediation prose
+// (e.g. a failing-test name that says "video approval queue" or a remediation
+// step that says "refresh ... and System Health"). Strip everything from the
+// first detail marker onward so the match only sees the row subject.
+const BLOCKER_ROW_DETAIL_MARKER =
+  /\b(?:What.?s failing|What you need to do|Tried|Need(?: from [A-Za-z]+)?|Failure|Evidence)\s*:/i;
+function blockerRowLead(rowText) {
+  const text = String(rowText || '');
+  const cut = text.search(BLOCKER_ROW_DETAIL_MARKER);
+  return (cut >= 0 ? text.slice(0, cut) : text).trim();
+}
+
 function blockersNamedCardDefects(tiles, defectsByCard) {
   const blockersTile = tiles.find((t) => /^BLOCKERS\b/i.test(t.name));
   if (!blockersTile) return [];
@@ -1788,6 +1803,7 @@ function blockersNamedCardDefects(tiles, defectsByCard) {
   const out = [];
   const seen = new Set();
   for (const row of rows) {
+    const rowSubject = blockerRowLead(row.text);
     for (const part of ['lead', 'subtitle']) {
       let matched = false;
       for (const card of manifest.CARDS) {
@@ -1796,7 +1812,7 @@ function blockersNamedCardDefects(tiles, defectsByCard) {
         if (!tile) continue;
         const existing = defectsByCard.get(card.id) || [];
         if (existing.length) continue;
-        if (!isNamedInBlockersPart(tile, row.text, part, card.id)) continue;
+        if (!isNamedInBlockersPart(tile, rowSubject, part, card.id)) continue;
         if (seen.has(card.id)) continue;
         seen.add(card.id);
         out.push({
