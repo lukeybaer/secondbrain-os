@@ -27,7 +27,10 @@
     "verify:vapi-self-call-status": "node scripts/vapi-self-call-status-test.js --live --seed-topic \"update blocker card diagnostics\"",
     "verify:scheduled-tasks-silent": "node scripts/lib/scheduled-task-popup-guard.js",
     "verify:rubric-integrity": "python src/main/empire/video-quality-tools/verify-rubric-integrity.py",
-    "verify:video-quality-saturation": "python src/main/empire/video-quality-tools/audit-tool-sprawl.py --fail-on-saturation"
+    "verify:video-quality-saturation": "python src/main/empire/video-quality-tools/audit-tool-sprawl.py --fail-on-saturation",
+    "report:llm-ladder": "node scripts/lib/llm-ladder-observability.js",
+    "report:escalation-recurrence": "node scripts/lib/escalation-recurrence.js",
+    "verify:memory-hygiene": "node scripts/lib/memory-hygiene-audit.js"
   },
   "build": {
     "appId": "com.secondbrain.app",
