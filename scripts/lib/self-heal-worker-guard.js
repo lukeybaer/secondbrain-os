@@ -97,8 +97,30 @@ function evaluateSelfHealWorkerCommand({ command, env = {} } = {}) {
   return reason ? { blocked: true, reason } : { blocked: false, reason: 'allowed' };
 }
 
+// Self-heal workers MUST fix the defect inline. Spawning a background sub-agent
+// (Task/Agent) or backgrounding a Bash command detaches the work from the worker
+// session: the executor then sees a task_started / backgroundTaskId, cannot
+// track the detached work to completion inside the budget, and escalates the
+// heal as an executor-fault. That is the observed 0-cleared / "claude started a
+// nested background task inside a self-heal worker" failure. The worker prompt
+// already forbids this; this is the mechanical hook enforcement of that rule so a
+// fixable defect actually clears instead of faulting.
+function isWorkerBackgroundSpawn(name, toolInput = {}) {
+  if (/^(Task|Agent)$/i.test(name)) {
+    return 'self-heal workers must fix the defect inline; spawning a background Task or sub-agent detaches the fix from this worker and forces an executor-fault escalation (the 0-cleared failure). Do the edit and affected-test run in this session.';
+  }
+  if ((!name || /^Bash$/i.test(name)) && toolInput && toolInput.run_in_background === true) {
+    return 'self-heal workers must run commands in the foreground; backgrounding detaches work the executor cannot track to completion within the heal budget. Run it inline.';
+  }
+  return '';
+}
+
 function evaluateSelfHealWorkerTool({ toolName, toolInput = {}, env = {} } = {}) {
   const name = String(toolName || '');
+  const backgroundReason = isWorkerBackgroundSpawn(name, toolInput);
+  if (backgroundReason) {
+    return { blocked: true, reason: backgroundReason };
+  }
   if (!name || name === 'Bash') {
     return evaluateSelfHealWorkerCommand({ command: toolInput.command || '', env });
   }
@@ -117,6 +139,7 @@ function evaluateSelfHealWorkerTool({ toolName, toolInput = {}, env = {} } = {})
 module.exports = {
   evaluateSelfHealWorkerTool,
   evaluateSelfHealWorkerCommand,
+  isWorkerBackgroundSpawn,
   isWorkerForbiddenCommand,
   pathIsAllowedWorkerWrite,
   mentionsPath,
