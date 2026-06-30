@@ -1178,6 +1178,27 @@ function buildSummaryPrompt(item, sourceText) {
 //     (but/and/while/...), keeping the conjunction and the full following clause
 //     ("..., but the article says that did not happen" -> "..., but that did not
 //     happen"). A real "..., but activity remained subdued" is untouched.
+//   - the INLINE-CONNECTOR form (live MORTGAGE-NEWS miss 2026-06-30, the row this
+//     fix targets) generalizes the inline form to a mid-sentence connector with
+//     NO required leading comma: the detector matches "the article says" wherever
+//     it sits, but the old inline form only fired after a comma ("..., but the
+//     article says ..."). A no-comma coordinate ("...rebound but the article says
+//     ...", "...risk yet the report points to ...") or a subordinator ("...costs
+//     while the report notes that ...", "...dropped because the story reports
+//     ...") slipped through. This form keeps the connector + the full following
+//     clause and drops only the meta subject+verb (and an optional trailing
+//     particle to/on/out/that/how so "points to X"/"focuses on X" leave clean
+//     residual, not a dangling "yet to X"). Over-strip is bounded by REQUIRING
+//     the meta subject+verb right after the connector: a real "...costs while
+//     approvals slowed ..." (connector + ordinary prose) and "..., but the report
+//     is notable ..." (connector + copula, no reporting verb) are untouched.
+//   - the RELATIVE-pronoun form ("..., which the analysis argues will raise costs,
+//     ...") keeps the comma + which/who/that and the following clause, dropping
+//     only the meta subject+verb. A real "..., which regulators argue will ..." is
+//     untouched (no meta subject).
+//   - the AS-ASIDE form strips a mid-sentence comma-bracketed "as <subject>
+//     <verb>," aside ("..., as the article notes, even ..." -> "..., even ..."),
+//     which the clause-anchored AS form below does not reach.
 //   - the INTERJECTION form fires only on a comma-bracketed aside
 //     (", the report notes,") and removes the whole aside, leaving the host
 //     sentence intact.
@@ -1202,6 +1223,38 @@ const ARTICLE_META_SUBJECT = `(?:(?:the|this)\\s+(?:${ARTICLE_META_NOUN})|housin
 
 const ARTICLE_META_INLINE = new RegExp(
   `,\\s+(but|and|while|though|although|yet|however)\\s+${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s+`,
+  'gi',
+);
+// Mid-sentence connector that introduces a meta clause, with NO required leading
+// comma (live MORTGAGE-NEWS miss 2026-06-30). A coordinating/subordinating
+// connector immediately followed by the meta subject+verb is article-meta framing
+// wherever it sits ("...rebound but the article says ...", "...costs while the
+// report notes that ...", "...dropped because the story reports ..."). Keep the
+// connector group ($1) and the following clause; drop only the subject+verb and an
+// optional trailing particle (to/on/out for the "points to"/"focuses on" idioms,
+// that/how for the complementizer) so the residual reads as substance, not a
+// dangling preposition. The mandatory meta subject+verb right after the connector
+// bounds over-strip: "...while approvals slowed ..." (no meta subject) and "...but
+// the report is notable ..." (copula, not a reporting verb) are left untouched.
+const ARTICLE_META_CONNECTORS =
+  '(?:but|and|while|whilst|though|although|yet|however|because|since|so|as|where|when)';
+const ARTICLE_META_INLINE_CONNECTOR = new RegExp(
+  `(,?\\s+${ARTICLE_META_CONNECTORS}\\s+)${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s+(?:to\\s+|on\\s+|out\\s+|that\\s+|how\\s+)?`,
+  'gi',
+);
+// Relative-pronoun aside: "..., which the analysis argues will raise costs, ..."
+// -> "..., which will raise costs, ...". Keep the comma + which/who/that ($1) and
+// the following clause; drop only the meta subject+verb. The leading comma keeps a
+// real "..., which regulators argue ..." (no meta subject) untouched.
+const ARTICLE_META_RELATIVE = new RegExp(
+  `(,\\s+(?:which|who|that)\\s+)${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s+`,
+  'gi',
+);
+// Mid-sentence comma-bracketed "as <subject> <verb>," aside ("..., as the article
+// notes, even ..." -> "..., even ..."). The clause-anchored ARTICLE_META_AS below
+// only fires at a clause start, so this catches the embedded aside form.
+const ARTICLE_META_AS_ASIDE = new RegExp(
+  `,\\s+as\\s+${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s*,`,
   'gi',
 );
 // Comma-bracketed aside: "..., the report notes, ..." -> "..., ...". Requires the
@@ -1231,11 +1284,21 @@ const ARTICLE_META_IN_PIECE = /(^|[.!?]\s)In this piece,?\s+([a-z])/g;
 
 function stripArticleMetaFraming(text) {
   let out = String(text || '');
+  // Comma-bracketed asides FIRST (they require trailing commas the later, looser
+  // forms would otherwise consume): the "as <subject> <verb>," aside, then the
+  // bare ", <subject> <verb>," aside.
+  out = out.replace(ARTICLE_META_AS_ASIDE, ',');
   // Comma-bracketed aside ("..., the report notes, ...") -> drop the aside.
   out = out.replace(ARTICLE_META_INTERJECT, ',');
-  // Inline attribution after a conjunction: keep the conjunction and the full
-  // following clause, drop only "the article says".
+  // Relative-pronoun aside ("..., which the analysis argues will ...") -> keep the
+  // comma + relative pronoun and the following clause.
+  out = out.replace(ARTICLE_META_RELATIVE, '$1');
+  // Inline attribution after a comma + conjunction: keep the conjunction and the
+  // full following clause, drop only "the article says".
   out = out.replace(ARTICLE_META_INLINE, ', $1 ');
+  // Mid-sentence connector (no required comma) introducing a meta clause: keep the
+  // connector group and the following clause, drop the subject+verb+particle.
+  out = out.replace(ARTICLE_META_INLINE_CONNECTOR, '$1');
   // Clause-start openers: keep the sentence boundary and capitalize ONLY the
   // first surviving letter at the removal site (a global recap would corrupt real
   // abbreviations like "U.S. economy" / "Inc. and Co.").
