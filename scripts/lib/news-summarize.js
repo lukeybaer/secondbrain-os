@@ -88,13 +88,19 @@ function isThreeExampleCoraphArticleSummary(paras, item = {}) {
   const hasExpandedMetadata = Boolean(item.excerpt || item.summaryText || item.sourceText);
   if (!hasExpandedMetadata) {
     // Title-only grounding (no excerpt/body to match against): the summary must
-    // still reference the title's distinctive terms, so generic boilerplate that
-    // names nothing from the headline is rejected. Lighter bar than the full-
-    // metadata check (a title ExampleCos few distinctive terms), but never skipped.
+    // reference at least one distinctive term from the headline, so generic
+    // boilerplate that names NOTHING from the title is rejected (the zero-hit
+    // filler case). The bar is exactly one hit, never the term count: a short
+    // title ExampleCos few distinctive terms and a genuine on-topic summary often
+    // paraphrases the headline verb (e.g. title "Repositioning retail for the AI
+    // era" -> a real summary says "retail" but not "repositioning"/"era"), so
+    // demanding 2-of-2 wrongly stubbed legitimate articles. Category: zero title
+    // hits = filler (reject); >=1 = grounded (accept). Full-metadata grounding
+    // below stays strict; this is the explicit lighter title-only bar.
     const titleHits = new Set(
       terms.filter((term) => list.some((p) => p.toLowerCase().includes(term))),
     ).size;
-    return titleHits >= Math.min(2, terms.length);
+    return titleHits >= 1;
   }
   const ExampleCoraphHits = list.map((ExampleCoraph) => {
     const lower = ExampleCoraph.toLowerCase();
@@ -681,6 +687,13 @@ const PUBLISHER_CHROME_RULES = [
   /^Toggle Play\s+/i,
   /^News\s+(?:AI|Mobile Smartphones|EVs and Transportation)\s+/i,
   /^Big Tech\s+/i,
+  // Leading date-fragment + relative-timestamp dateline (live WORLD NEWS miss
+  // 2026-06-30: the body opened "une 2026 Updated 7 hours ago Many areas ..."
+  // where an earlier strip left a partial month, followed by a relative "Updated
+  // N hours ago" dateline). A "<word> <year> (Published|Updated) N
+  // (minutes|hours|days) ago" run at the VERY START of the body is a publisher
+  // dateline fragment, not article prose (real prose does not open that way).
+  /^[A-Za-z]+ \d{4} (?:Published|Updated) \d{1,2} (?:minutes?|hours?|days?) ago\b[.!?]?\s*/,
   /^Why you can trust ZDNET\b[\s\S]{0,360}?(?:ZDNET Recommendations|Our process)\s*/i,
   new RegExp(CLAUSE_START + "Don'?t Miss an Update\\b[.!?]?", 'g'),
   new RegExp(CLAUSE_START + 'Download\\s+Embed\\b[.!?]?', 'g'),
@@ -713,7 +726,18 @@ const PUBLISHER_CHROME_RULES = [
   // preceding article sentence is never eaten. The date matches BOTH orders
   // ("29 June 2026" and "June 26, 2026"); the trailing time/timezone and any
   // "Updated ... ago" tail are consumed up to the clause end so no fragment leaks.
-  /\bBy [A-Z][a-z]+[^.!?\n]{0,90}?(?:Published|Updated)\s+(?:\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|[A-Z][a-z]+\s+\d{1,2},\s+\d{4})(?:,?\s*\d{1,2}:\d{2}\s*(?:[AP]M\s+)?[A-Z]{2,4})?(?:\s+Updated\s+[^.!?\n]{0,40}?ago)?[^.!?\n]{0,15}?(?=[.!?]|\s+[A-Z]|$)/g,
+  /\bBy [A-Z][a-z]+[^.!?\n]{0,90}?(?:Published|Updated)\s+(?:\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|[A-Z][a-z]+\s+\d{1,2},\s+\d{4}|\d{1,2}\s+(?:minutes?|hours?|days?)\s+ago)(?:,?\s*\d{1,2}:\d{2}\s*(?:[AP]M\s+)?[A-Z]{2,4})?(?:\s+Updated\s+[^.!?\n]{0,40}?ago)?[^.!?\n]{0,15}?(?=[.!?]|\s+[A-Z]|$)/g,
+  // BBC-style "Reporting from" byline run (live WORLD NEWS miss 2026-06-30:
+  // "By Nomsa Maseko, BBC Africa, Reporting from Durban." and "By Thomas Naadi,
+  // BBC Africa, Reporting from Accra and Hafsa Khalil Published 33 minutes ago").
+  // A leading "By <Name>" + a "Reporting from <Place>" tag is an unambiguous BBC
+  // byline: real article prose never reads "By <Name>, BBC <section>, Reporting
+  // from <Place>". CASE-SENSITIVE "Reporting" (the lowercase "reporting from the
+  // field" and a no-"By" "Reporting from HQ, the analyst said" opener are real
+  // prose and survive). The whole byline (optional second author) is consumed up
+  // to the clause end so no name/place fragment leaks; any trailing
+  // Published/Updated dateline on the same row is taken out by the rule above.
+  /\bBy [A-Z][a-z]+[^.!?\n]{0,120}?\bReporting from [A-Z][^.!?\n]{0,80}?(?=[.!?]|$)/g,
   /\bShare Add [A-Z][A-Za-z ]{1,80} to Google\b[.!?\s]*/g,
   /\bLimited time:\s*Save\s+\d+%\s+on\s+[A-Z][A-Za-z ]{1,80}\s+subscription\b[.!?\s]*/g,
   // Photo caption / credit lines: a Capitalized label + colon at a clause start.
@@ -1093,12 +1117,61 @@ function buildSummaryPrompt(item, sourceText) {
     'ExampleCoraph 1: what happened, with the concrete who/what/when.',
     'ExampleCoraph 2: the key details, numbers, quotes, and context from the article.',
     'ExampleCoraph 3: why it is notable and what it signals, grounded in the article.',
+    'State the facts directly. NEVER frame the summary as a description of an',
+    'article: do not write "this article", "the article says/reports/notes",',
+    '"in this piece", or "the provided/supplied text". Lead with the substance,',
+    'not with what the article does.',
     `Source: ${source}`,
     `Title: ${title}`,
     '',
     'Article text:',
     body,
   ].join('\n');
+}
+
+// Live MORTGAGE INDUSTRY NEWS defect (2026-06-30): two rows "summarized the
+// article as an article" instead of stating the substance -- e.g. "..., but the
+// article says that did not happen" and "..., but the article says builders
+// already face regulatory costs ...". The model framed the summary as a
+// DESCRIPTION of an article rather than reporting the facts directly. The prompt
+// now forbids this; this post-filter is the mechanical backstop so a stray
+// article-meta phrase never reaches the dashboard.
+//
+// Category encoded (not the two literal strings): a phrase that ATTRIBUTES the
+// prose to "the article / piece / report / story / author" ("the article says
+// X", "this article reports X", "in this piece", "the provided text ...") is
+// stripped so the surviving clause leads with substance. Over-strip is bounded:
+//   - the INLINE form only fires after a comma + a conjunction (but/and/while/
+//     ...), and removes ONLY the attribution verb phrase, keeping the conjunction
+//     and the full following clause ("..., but the article says that did not
+//     happen" -> "..., but that did not happen"). A real "..., but activity
+//     remained subdued" (no "the article says") is untouched.
+//   - the LEADING form only fires at a clause start on "(This|The) (article|
+//     piece|report|story) <attribution-verb>", so a real "The article of
+//     incorporation was filed" (no attribution verb) and the conventional "The
+//     report is notable because ..." ExampleCoraph-3 framing (the verb is "is", not
+//     an attribution verb) both survive.
+// The attribution verbs are an explicit list (say/report/note/state/describe/
+// discuss/explain/argue/claim/add/write/highlight/mention/caution/warn) so an
+// "is/are/was/were" analytical clause is never matched.
+const ARTICLE_META_INLINE =
+  /,\s+(but|and|while|though|although|yet|however)\s+the (?:article|piece|report|story|author)\s+(?:says?|said|reports?|reported|notes?|noted|states?|stated|describes?|discusses?|explains?|argues?|claims?|adds?|writes?|wrote|highlights?|mentions?|cautions?|warns?)\s+/gi;
+const ARTICLE_META_LEAD =
+  /(^|[.!?]\s)(?:This|The)\s+(?:article|piece|report|story)\s+(?:says?|said|reports?|reported|notes?|noted|states?|stated|describes?|discusses?|explains?|argues?|claims?|adds?|writes?|wrote|highlights?|mentions?|cautions?|warns?)\s+(?:that\s+)?([a-z])/g;
+const ARTICLE_META_IN_PIECE = /(^|[.!?]\s)In this piece,?\s+([a-z])/g;
+
+function stripArticleMetaFraming(text) {
+  let out = String(text || '');
+  // Inline attribution: keep the conjunction (a lowercase "but"/"and" stays
+  // correctly mid-sentence) and a following "that" (it reads as the clause
+  // subject), drop only "the article says".
+  out = out.replace(ARTICLE_META_INLINE, ', $1 ');
+  // Leading attribution opener: keep the sentence boundary and capitalize ONLY
+  // the first surviving letter at the removal site (a global recap would corrupt
+  // real abbreviations like "U.S. economy" / "Inc. and Co.").
+  out = out.replace(ARTICLE_META_LEAD, (_m, b, c) => b + c.toUpperCase());
+  out = out.replace(ARTICLE_META_IN_PIECE, (_m, b, c) => b + c.toUpperCase());
+  return out.replace(/\s+/g, ' ').trim();
 }
 
 // A valid summary is exactly three substantial ExampleCoraphs that read as a summary
@@ -1110,7 +1183,7 @@ function normalizeSummary(text, item = {}) {
   if (!raw) return null;
   const paras = raw
     .split(/\n{2,}/)
-    .map((p) => p.replace(/\s+/g, ' ').trim())
+    .map((p) => stripArticleMetaFraming(p.replace(/\s+/g, ' ').trim()))
     .filter((p) => p.length >= 40);
   const firstThree = paras.slice(0, 3);
   if (!isThreeExampleCoraphArticleSummary(firstThree, item)) return null;
