@@ -60,6 +60,18 @@ const NEWS_SUMMARY_TERM_STOPWORDS = new Set(
   ),
 );
 
+// Generic news-filler words. These appear in boilerplate "this matters because..."
+// summaries and in many weak headlines, so a title-only grounding hit on one of
+// these alone is NOT proof the summary is about the article (adversarial false-
+// pass 2026-06-30: title "Markets brace for Fed decision" + filler that says
+// "markets" hit titleHits >= 1 and published filler as a real summary). A hit on
+// one of these counts toward the total but never as a DISTINCTIVE hit.
+const NEWS_TITLE_BOILERPLATE_TERMS = new Set(
+  'markets market leaders leader strategy strategies future reporting report reports public momentum stakeholders stakeholder headline headlines response responses coverage sources source development developments institutions planning information consequences outlook'.split(
+    /\s+/,
+  ),
+);
+
 function newsSummarySentences(ExampleCoraph) {
   return String(ExampleCoraph || '').match(/[.!?]["']?(?=\s|$)/g) || [];
 }
@@ -88,19 +100,21 @@ function isThreeExampleCoraphArticleSummary(paras, item = {}) {
   const hasExpandedMetadata = Boolean(item.excerpt || item.summaryText || item.sourceText);
   if (!hasExpandedMetadata) {
     // Title-only grounding (no excerpt/body to match against): the summary must
-    // reference at least one distinctive term from the headline, so generic
-    // boilerplate that names NOTHING from the title is rejected (the zero-hit
-    // filler case). The bar is exactly one hit, never the term count: a short
-    // title ExampleCos few distinctive terms and a genuine on-topic summary often
+    // reference at least one DISTINCTIVE term from the headline. A short title
+    // ExampleCos few distinctive terms and a genuine on-topic summary often
     // paraphrases the headline verb (e.g. title "Repositioning retail for the AI
     // era" -> a real summary says "retail" but not "repositioning"/"era"), so
-    // demanding 2-of-2 wrongly stubbed legitimate articles. Category: zero title
-    // hits = filler (reject); >=1 = grounded (accept). Full-metadata grounding
-    // below stays strict; this is the explicit lighter title-only bar.
-    const titleHits = new Set(
-      terms.filter((term) => list.some((p) => p.toLowerCase().includes(term))),
+    // demanding 2-of-N wrongly stubbed legitimate articles. But >=1 of ANY term
+    // is too lax: a generic-news word the headline shares with boilerplate filler
+    // ("markets", "leaders", "future") gets hit by accident and publishes filler
+    // as a real summary. So: accept on >=1 DISTINCTIVE (non-boilerplate) hit, or
+    // >=2 total hits; reject a lone boilerplate hit and the zero-hit filler case.
+    const titleHitTerms = terms.filter((term) => list.some((p) => p.toLowerCase().includes(term)));
+    const titleHits = new Set(titleHitTerms).size;
+    const distinctiveHits = new Set(
+      titleHitTerms.filter((term) => !NEWS_TITLE_BOILERPLATE_TERMS.has(term)),
     ).size;
-    return titleHits >= 1;
+    return distinctiveHits >= 1 || titleHits >= 2;
   }
   const ExampleCoraphHits = list.map((ExampleCoraph) => {
     const lower = ExampleCoraph.toLowerCase();

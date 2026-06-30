@@ -40,16 +40,29 @@ function readJsonMaybe(file) {
 // Freshness is gated on the PROBE timestamp (when health was last measured), NOT on
 // last_episode_age_hours -- a quiet overnight with no new episodes is normal and must
 // NOT read as down. A missing, unhealthy, or stale probe = genuinely down = RED.
+//
+// Fail-safe gates (adversarial review 2026-06-30, false-green hunt):
+//  - EXACT status match, not a substring. /healthy|green/ matched "unhealthy"
+//    (a real health-endpoint value) because it contains "healthy", rendering a
+//    down graph GREEN. Anchor to ^(healthy|green)$ so "unhealthy"/"degraded"/""
+//    are RED.
+//  - NO g.date fallback. A date-only stamp parses to UTC midnight, which reads
+//    "fresh" for the 00:00-06:00 UTC window regardless of the real probe time.
+//    Require a real probe instant (ts/generated_at); a date alone is not proof a
+//    probe ran.
+//  - LOWER age bound. A future-dated ts yields a negative age that slipped the
+//    <= window, so a stale record carrying a forward timestamp rendered GREEN.
+//    Require 0 <= age <= window.
 const GRAPHITI_LIVE_PROBE_STALE_HOURS = 6;
 function graphitiGraphHealthy(coverage) {
   const g = coverage && coverage.graphiti;
   if (!g) return false;
-  if (!/healthy|green/i.test(String(g.status))) return false;
-  const stamp = g.ts || g.generated_at || g.date;
+  if (!/^(healthy|green)$/i.test(String(g.status).trim())) return false;
+  const stamp = g.ts || g.generated_at;
   const ts = stamp ? Date.parse(stamp) : NaN;
   if (!Number.isFinite(ts)) return false;
   const ageH = (Date.now() - ts) / 3600000;
-  return ageH <= GRAPHITI_LIVE_PROBE_STALE_HOURS;
+  return ageH >= 0 && ageH <= GRAPHITI_LIVE_PROBE_STALE_HOURS;
 }
 
 function buildGraphitiLine(coverage) {
