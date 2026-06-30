@@ -17,7 +17,11 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const BUNDLE = path.join(REPO_ROOT, 'out', 'main', 'index.js');
 const SRC_AMY = path.join(REPO_ROOT, 'src', 'main', 'amy-versions.ts');
 
-describe('amy-versions compiled bundle (out/main/index.js)', () => {
+// The compiled Electron bundle (out/) is gitignored and only exists where the desktop
+// app is built (ExampleCo's laptop). On the EC2 Node backend, CI, or a fresh worktree there is
+// no bundle, so the freshness/content guards are N/A and would false-fail. Skip the whole
+// suite when the bundle is absent; where it IS built, the stale-bundle guard still fires.
+describe.skipIf(!fs.existsSync(BUNDLE))('amy-versions compiled bundle (out/main/index.js)', () => {
   it('bundle exists — run `npm run build` if missing', () => {
     expect(fs.existsSync(BUNDLE)).toBe(true);
   });
