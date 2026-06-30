@@ -88,10 +88,16 @@ const UNBOUNDED_MAX_PASSES = Number.POSITIVE_INFINITY;
 const RUNS_LOG_PATH = path.join(REPO, 'data', 'agent', 'overnight-self-heal-runs.jsonl');
 const LOCK_PATH = path.join(os.tmpdir(), 'secondbrain-overnight-self-heal.lock');
 const LOCK_STALE_MS = 6 * 60 * 60 * 1000; // 6h (overnight window)
-// Self-heal workers need patience, not an open floor. The executor has a
-// generic 30-minute default; this loop uses a tighter per-worker budget so a
-// spinning repair lane cannot monopolize the overnight window.
-const DEFAULT_PER_SESSION_BUDGET_MS = 8 * 60 * 1000;
+// Self-heal workers need patience, not an open floor. Workers fix inline now
+// (no background-task spawning), so a real repair must read, edit, run the
+// affected vitest, and return the contract object in ONE bounded session. Eight
+// minutes was too short for that and workers cleared 0 ("exceeded budget 480s").
+// Twenty gives an inline fix room while still bounding the lane so a spinning
+// repair cannot monopolize the overnight window. This stays well under the
+// executor generic 30-minute fallback and is still clamped by the hard
+// overnight deadline (shouldRespectDeadline + the per-worker
+// Math.min(perSessionBudgetMs, deadlineMs - now) cap), so it never blows 05:15.
+const DEFAULT_PER_SESSION_BUDGET_MS = 20 * 60 * 1000;
 const DEFAULT_PUBLISH_REFRESH_BUDGET_MS = 10 * 60 * 1000;
 const DEFAULT_NO_FRUIT_ATTEMPT_LIMIT = 10;
 const DEFAULT_NO_LIVE_REDUCTION_ATTEMPT_LIMIT = 20;
@@ -4532,6 +4538,7 @@ module.exports = {
   phaseExhausted,
   budgetExhaustedRed,
   RUNS_LOG_PATH,
+  DEFAULT_PER_SESSION_BUDGET_MS,
 };
 
 if (require.main === module) {
