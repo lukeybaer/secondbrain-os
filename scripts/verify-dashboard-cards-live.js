@@ -1261,9 +1261,29 @@ function otterRollingWindowDefects(card, tile) {
   const updateMinutes = parseUpdatedMinutes(tile.inner || '') ?? 5 * 60 + 30;
   const dayBefore = previousIsoDateFromRunText(text);
   if (!dayBefore) return [];
-  const dayBeforeIdx = text.search(new RegExp(`Day Before\\s+${dayBefore.replace(/-/g, '\\-')}`, 'i'));
-  if (dayBeforeIdx < 0) return [];
-  const dayBeforeText = text.slice(dayBeforeIdx);
+  // Scan ONLY the "Day Before" bucket's own call rows for times. The old code did
+  // text.slice(dayBeforeIdx) -- everything from the first "Day Before" header to
+  // the END of the tile -- so the card's OWN chrome that renders AFTER the bucket
+  // (the "Updated <mon> <d>, h:mm AM" freshness stamp, the "As of <date>" line,
+  // "Lifetime stats", the voice-stat grid, and the drilldown's repeated headers)
+  // leaked a non-call clock string into the scan. Live PEOPLE TAGGED defect
+  // 2026-06-30: both buckets were empty ("No calls") yet "Updated Jun 30, 6:53 AM"
+  // sat downstream of "Day Before" and was misread as a 6:53 AM Day-Before call
+  // >= the 6:53 AM update time, flagging OTTER-TIME-WINDOW on a card that was
+  // actually consistent. Bound the section at the next boundary so only real
+  // Day-Before call timestamps are considered. Category: a non-call chrome time
+  // appearing anywhere after the bucket must never be treated as a bucket entry.
+  const dayBeforeRe = new RegExp(
+    `Day Before\\s+${dayBefore.replace(/-/g, '\\-')}([\\s\\S]*?)(?:Lifetime stats|Past 24 Hours|Updated\\s+[A-Z]|As of\\s|Speaker enrichment|\\d[\\d,]*\\s+calls\\b|$)`,
+    'i',
+  );
+  const dayBeforeMatch = text.match(dayBeforeRe);
+  if (!dayBeforeMatch) return [];
+  const dayBeforeText = dayBeforeMatch[1] || '';
+  // An empty bucket ("No calls in this group") has no real call times; a chrome
+  // time that slips through the boundary is not a call entry, so an empty bucket
+  // can never be a mis-bucket.
+  if (/No calls in this group/i.test(dayBeforeText)) return [];
   const times = [...dayBeforeText.matchAll(/\b(\d{1,2}):(\d{2})\s*([AP]M)\b/gi)].map((m) =>
     timeToMinutes(m[1], m[2], m[3]),
   );
