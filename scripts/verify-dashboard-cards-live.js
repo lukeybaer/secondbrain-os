@@ -421,16 +421,15 @@ function newsFaceRows(tile) {
   while ((m = re.exec(html))) {
     const row = m[1];
     const title = strip(
-      (row.match(/<div[^>]*\bclass="[^"]*\bitem-name\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i) ||
-        [])[1] || '',
+      (row.match(/<div[^>]*\bclass="[^"]*\bitem-name\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i) || [])[1] ||
+        '',
     );
     const why = strip(
-      (row.match(/<div[^>]*\bclass="[^"]*\bitem-why\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i) ||
-        [])[1] || '',
+      (row.match(/<div[^>]*\bclass="[^"]*\bitem-why\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i) || [])[1] ||
+        '',
     );
     const url = strip(
-      (row.match(/<a[^>]*\bclass="[^"]*\bitem-src\b[^"]*"[^>]*\bhref="([^"]+)"/i) || [])[1] ||
-        '',
+      (row.match(/<a[^>]*\bclass="[^"]*\bitem-src\b[^"]*"[^>]*\bhref="([^"]+)"/i) || [])[1] || '',
     );
     rows.push({ title, why, url });
   }
@@ -454,7 +453,8 @@ const NEWS_JUMBLE_TOKENS = [
   /read more/i,
   /overview/i,
 ];
-const NEWS_LOWERCASE_FRAGMENT_TITLE_RE = /^(?:[a-z]|f people\b|ut with\b|nd\b|he\b|she\b|they\b|it\b)/;
+const NEWS_LOWERCASE_FRAGMENT_TITLE_RE =
+  /^(?:[a-z]|f people\b|ut with\b|nd\b|he\b|she\b|they\b|it\b)/;
 const NEWS_BROADCAST_PROMO_TITLE_RE =
   /\b(?:CBS News Sunday Morning|broadcast on (?:the )?CBS|streams on (?:the )?CBS|watch CBS News)\b/i;
 const NEWS_ARTICLE_META_PROSE_RE =
@@ -476,7 +476,12 @@ function newsTitleLooksJumbled(title) {
   if (NEWS_PUBLISHER_CHROME.test(s)) return true;
   const trimmed = s.trim();
   if (NEWS_LOWERCASE_FRAGMENT_TITLE_RE.test(trimmed)) return true;
-  if (/^(?:The|This)\s+(?:article|story|report|author|reporter|piece|column|op-?ed|analysis)\b/i.test(trimmed)) return true;
+  if (
+    /^(?:The|This)\s+(?:article|story|report|author|reporter|piece|column|op-?ed|analysis)\b/i.test(
+      trimmed,
+    )
+  )
+    return true;
   if (/^(?:You|We|I|They|It)\s+\w+/i.test(trimmed) && trimmed.length > 75) return true;
   if (NEWS_ARTICLE_META_PROSE_RE.test(trimmed)) return true;
   if (/\b(?:line|quote)\s+was\b/i.test(trimmed)) return true;
@@ -516,7 +521,9 @@ function newsRowQualityDefects(card, tile) {
       `NEWS-TITLE-JUMBLE: ${card.id} (${tile.name}) ${jumbled.length} headline(s) look like scraped navigation/title fragments instead of crisp executive titles`,
     );
   }
-  const metaProse = rows.filter((row) => NEWS_ARTICLE_META_PROSE_RE.test(`${row.title} ${row.why}`));
+  const metaProse = rows.filter((row) =>
+    NEWS_ARTICLE_META_PROSE_RE.test(`${row.title} ${row.why}`),
+  );
   if (metaProse.length) {
     defects.push(
       `NEWS-ARTICLE-META: ${card.id} (${tile.name}) ${metaProse.length} row(s) summarize the article as an article instead of giving the executive substance`,
@@ -855,7 +862,9 @@ function statusDefects(card, tile) {
   if (!tile || card.id === 'blockers') return [];
   if (tile.status === 'red') {
     const detail =
-      card.id === 'system_health' ? systemHealthBlockedTileDetail(tile.body || tile.face || '') : '';
+      card.id === 'system_health'
+        ? systemHealthBlockedTileDetail(tile.body || tile.face || '')
+        : '';
     return [
       `BLOCKED-TILE: ${card.id} (${tile.name}) renders RED (the briefing itself flags this card blocked); it is not clean${detail ? `; ${detail}` : ''}`,
     ];
@@ -912,7 +921,9 @@ function peopleFilesDetailDefects(card, tile) {
       `PEOPLE-FILE-DETAIL: ${card.id} (${tile.name}) renders blank or placeholder "What was new" detail; 24h people changes need a concrete title/detail`,
     );
   }
-  if (/\b(?:Why:\s*)?Contact file changed\b|\bcontact file changed by \+\d+\/-\d+ lines\b/i.test(text)) {
+  if (
+    /\b(?:Why:\s*)?Contact file changed\b|\bcontact file changed by \+\d+\/-\d+ lines\b/i.test(text)
+  ) {
     defects.push(
       `PEOPLE-FILE-DETAIL: ${card.id} (${tile.name}) renders generic "contact file changed" copy instead of the concrete 24h people-file detail`,
     );
@@ -1009,7 +1020,9 @@ function communicationCoachingDefects(card, tile) {
       `COMM-COACHING-SOURCE: ${card.id} (${tile.name}) lacks a visible ExampleCo quote and vetted source citation`,
     );
   }
-  const longQuote = [...String(tile.body || '').matchAll(/Evidence quote:\s*["“][^"”]{181,}["”]/gi)];
+  const longQuote = [
+    ...String(tile.body || '').matchAll(/Evidence quote:\s*["“][^"”]{181,}["”]/gi),
+  ];
   if (longQuote.length) {
     defects.push(
       `COMM-COACHING-VISUAL: ${card.id} (${tile.name}) renders oversized evidence quotes on the card face; quote snippets must be short enough to scan`,
@@ -1026,7 +1039,11 @@ function communicationCoachingDefects(card, tile) {
 function ownerlessRepairLanguageDefects(card, tile) {
   if (!tile) return [];
   const text = `${tile.body || ''} ${tile.inner || ''}`;
-  if (!/(?:\bSee the card\b|\bNo ExampleCo action\b|\bNothing for you to do\b|\bNothing\.|\bno action needed\b|\brequired unless\b)/i.test(text)) {
+  if (
+    !/(?:\bSee the card\b|\bNo ExampleCo action\b|\bNothing for you to do\b|\bNothing\.|\bno action needed\b|\brequired unless\b)/i.test(
+      text,
+    )
+  ) {
     return [];
   }
   return [
@@ -1083,7 +1100,11 @@ function meetingsHorizonDefects(card, tile) {
   const metric = String(tile.metric || '').trim();
   const metricCount = /^\d+$/.test(metric) ? parseInt(metric, 10) : null;
   const text = `${tile.face || ''} ${tile.body || ''}`;
-  if (metricCount && /\bmeeting today\b/i.test(text) && /\b0\s+meetings;\s+next\s+7\s+days\b/i.test(text)) {
+  if (
+    metricCount &&
+    /\bmeeting today\b/i.test(text) &&
+    /\b0\s+meetings;\s+next\s+7\s+days\b/i.test(text)
+  ) {
     return [
       `MEETINGS-TODAY-CONTRADICTION: ${card.id} (${tile.name}) says ${metricCount} meeting(s) today while the calendar proof says 0 meetings today`,
     ];
@@ -1136,13 +1157,19 @@ function otterCallHistoryContentDefects(card, tile) {
       `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) renders generic fallback prose instead of what happened, decisions made, and ExampleCo next actions`,
     );
   }
-  if (/\b(?:clearest source-backed read is|Touches [^.;]{0,120}; Contains|family wealth\s*\/\s*mission|relationship capital)\b/i.test(text)) {
+  if (
+    /\b(?:clearest source-backed read is|Touches [^.;]{0,120}; Contains|family wealth\s*\/\s*mission|relationship capital)\b/i.test(
+      text,
+    )
+  ) {
     defects.push(
       `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) renders boilerplate relevance labels instead of what happened, decisions made, and ExampleCo next actions`,
     );
   }
   if (
-    /\bDecisions\/actions:\s*(?:Yes|Yeah|Okay|Ok|Again|Always|A feedback|I think|Like|You know|For\b)/i.test(text) ||
+    /\bDecisions\/actions:\s*(?:Yes|Yeah|Okay|Ok|Again|Always|A feedback|I think|Like|You know|For\b)/i.test(
+      text,
+    ) ||
     /\b[A-Z][A-Za-z0-9 '&/-]{4,80}:\s*(?:Yes|Yeah|Okay|Ok|Again|Always|A feedback|I think|Like|You know|For\b)/.test(
       text,
     )
@@ -1161,12 +1188,20 @@ function otterCallHistoryContentDefects(card, tile) {
       `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) splits a numeric value while trimming the call summary`,
     );
   }
-  if (/\b(?:Briefing summary|Detail:)\b/i.test(text) || /\b(?:and|or|with|to|for|from|between|around|whether)\.\s*(?:-|Day Before|Lifetime stats|$)/i.test(text)) {
+  if (
+    /\b(?:Briefing summary|Detail:)\b/i.test(text) ||
+    /\b(?:and|or|with|to|for|from|between|around|whether)\.\s*(?:-|Day Before|Lifetime stats|$)/i.test(
+      text,
+    )
+  ) {
     defects.push(
       `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) renders labeled or clipped prose instead of complete executive-summary sentences`,
     );
   }
-  if (/call-history-detail-table/i.test(tile.inner || '') && !/Executive summary/i.test(tile.inner || '')) {
+  if (
+    /call-history-detail-table/i.test(tile.inner || '') &&
+    !/Executive summary/i.test(tile.inner || '')
+  ) {
     defects.push(
       `OTTER-CALL-HEADERS: ${card.id} (${tile.name}) call-history drilldown is missing column headers including Executive summary`,
     );
@@ -1190,9 +1225,10 @@ function otterFutureTimestampDefects(card, tile) {
     .map((m) => ({
       label: m[0],
       minutes: timeToMinutes(m[1], m[2], m[3]),
-      hasExplicitPriorDate: /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s*$/i.test(
-        todayMatch[2].slice(Math.max(0, m.index - 14), m.index),
-      ),
+      hasExplicitPriorDate:
+        /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s*$/i.test(
+          todayMatch[2].slice(Math.max(0, m.index - 14), m.index),
+        ),
     }))
     .filter((m) => m.minutes >= 0);
   const future = times.filter((m) => !m.hasExplicitPriorDate && m.minutes > updateMinutes + 5);
@@ -1201,7 +1237,9 @@ function otterFutureTimestampDefects(card, tile) {
     `OTTER-FUTURE-TIME: ${card.id} (${tile.name}) shows past-call timestamp(s) after the card update time (${future
       .slice(0, 4)
       .map((m) => m.label)
-      .join(', ')}); Otter call times must be Central Time and not future relative to the rendered card`,
+      .join(
+        ', ',
+      )}); Otter call times must be Central Time and not future relative to the rendered card`,
   ];
 }
 
@@ -1212,9 +1250,15 @@ function callHistoryRows(tile) {
   let m;
   while ((m = re.exec(html))) {
     const block = m[1];
-    const title = strip((block.match(/class="call-title"[^>]*>([\s\S]*?)<\/span>/i) || [])[1] || '');
-    const speakers = strip((block.match(/class="call-speakers"[^>]*>([\s\S]*?)<\/div>/i) || [])[1] || '');
-    const summary = strip((block.match(/class="call-summary"[^>]*>([\s\S]*?)<\/div>/i) || [])[1] || '');
+    const title = strip(
+      (block.match(/class="call-title"[^>]*>([\s\S]*?)<\/span>/i) || [])[1] || '',
+    );
+    const speakers = strip(
+      (block.match(/class="call-speakers"[^>]*>([\s\S]*?)<\/div>/i) || [])[1] || '',
+    );
+    const summary = strip(
+      (block.match(/class="call-summary"[^>]*>([\s\S]*?)<\/div>/i) || [])[1] || '',
+    );
     rows.push({ title, speakers, summary });
   }
   return rows;
@@ -1224,7 +1268,9 @@ function otterSpeakerMismatchDefects(card, tile) {
   if (!tile || card.id !== 'otter_speaker_pareto') return [];
   const rows = callHistoryRows(tile);
   if (!rows.length) return [];
-  const ExampleCoMissing = rows.filter((row) => /\bExampleCo\b/i.test(row.summary) && !/\bExampleCo\b/i.test(row.speakers));
+  const ExampleCoMissing = rows.filter(
+    (row) => /\bExampleCo\b/i.test(row.summary) && !/\bExampleCo\b/i.test(row.speakers),
+  );
   const expectedPeople = [
     ['Ed', /\bEd(?:\s+Evans)?\b/i],
     ['PRIVATE_NAME', /\bPRIVATE_NAME(?:\s+Bluth)?\b/i],
@@ -1296,7 +1342,9 @@ function otterRollingWindowDefects(card, tile) {
 }
 
 function parseUpdatedMinutes(html) {
-  const m = String(html || '').match(/Updated\s+[A-Z][a-z]{2}\s+\d{1,2},\s+(\d{1,2}):(\d{2})\s*([AP]M)/i);
+  const m = String(html || '').match(
+    /Updated\s+[A-Z][a-z]{2}\s+\d{1,2},\s+(\d{1,2}):(\d{2})\s*([AP]M)/i,
+  );
   if (!m) return null;
   return timeToMinutes(m[1], m[2], m[3]);
 }
@@ -1392,7 +1440,11 @@ function systemHealthDetailDefects(card, tile) {
     );
   }
   if (/Graphiti/i.test(text)) {
-    if (/Direct Graphiti proof JSON\s+Field\s+Value/i.test(text) || !/\bDescription\b/i.test(text) || !/\bMetric\b/i.test(text)) {
+    if (
+      /Direct Graphiti proof JSON\s+Field\s+Value/i.test(text) ||
+      !/\bDescription\b/i.test(text) ||
+      !/\bMetric\b/i.test(text)
+    ) {
       defects.push(
         `GRAPHITI-HEALTH-TEST-LIST: ${card.id} (${tile.name}) Graphiti health renders field/value JSON instead of named tests with descriptions and metric confirmations`,
       );
@@ -1413,7 +1465,10 @@ function tokenUsageFreshnessDefects(card, tile, runDate) {
       `TOKEN-USAGE-STALE-RESET: ${card.id} (${tile.name}) presents Claude usage as current while its reset date is already past (${staleClaudeReset})`,
     );
   }
-  if (/\bClaude\b[\s\S]{0,120}\b(?:\d{1,2})%/i.test(text) && !/\b(?:stale|unreachable|not current|max(?:ed)?|usage limit|100%)\b/i.test(text)) {
+  if (
+    /\bClaude\b[\s\S]{0,120}\b(?:\d{1,2})%/i.test(text) &&
+    !/\b(?:stale|unreachable|not current|max(?:ed)?|usage limit|100%)\b/i.test(text)
+  ) {
     defects.push(
       `TOKEN-USAGE-HONESTY: ${card.id} (${tile.name}) shows a sub-100 Claude percent without stale/unreachable/maxed-state disclosure`,
     );
@@ -1499,12 +1554,19 @@ function voiceConfirmationDefects(card, tile) {
       `VOICE-PROPOSED-NAMES: ${card.id} (${tile.name}) says 0 proposed names while unresolved voice rows contain people-file suggestions`,
     );
   }
-  if (/\bKnown speakers by voiceprint\b[\s\S]{0,3000}\b(?:reference clips|\(\d+\s+refs?\b)/i.test(text)) {
+  if (
+    /\bKnown speakers by voiceprint\b[\s\S]{0,3000}\b(?:reference clips|\(\d+\s+refs?\b)/i.test(
+      text,
+    )
+  ) {
     defects.push(
       `VOICE-KNOWN-SPEAKERS-CALLS: ${card.id} (${tile.name}) known voices are organized by reference clips; they must show and sort by number of calls with each person`,
     );
   }
-  if (/\b0\s+known-speaker matches internal\b/i.test(text) && /\bKnown speakers by voiceprint\b/i.test(text)) {
+  if (
+    /\b0\s+known-speaker matches internal\b/i.test(text) &&
+    /\bKnown speakers by voiceprint\b/i.test(text)
+  ) {
     defects.push(
       `VOICE-KNOWN-MATCHES: ${card.id} (${tile.name}) reports 0 known-speaker matches while known voices are banked, so identity matching is not proving itself`,
     );
@@ -1699,9 +1761,11 @@ const GENERIC_SINGLE_BLOCKER_TOKENS = new Set([
 ]);
 
 function tokensFromText(text) {
-  return (String(text || '').toUpperCase().match(/[A-Z0-9]{4,}/g) || []).filter(
-    (t) => !NAME_FILLER.has(t),
-  );
+  return (
+    String(text || '')
+      .toUpperCase()
+      .match(/[A-Z0-9]{4,}/g) || []
+  ).filter((t) => !NAME_FILLER.has(t));
 }
 
 function cardNameTokenParts(name) {
@@ -1709,10 +1773,7 @@ function cardNameTokenParts(name) {
   const [leadAndMaybeSlash, ...tailParts] = withoutSuffix.split(/[-|]/);
   const slashParts = String(leadAndMaybeSlash || '').split('/');
   const lead = tokensFromText(slashParts.shift() || '');
-  const subtitle = [
-    ...slashParts.flatMap(tokensFromText),
-    ...tailParts.flatMap(tokensFromText),
-  ];
+  const subtitle = [...slashParts.flatMap(tokensFromText), ...tailParts.flatMap(tokensFromText)];
   return { lead, subtitle };
 }
 
@@ -1775,10 +1836,13 @@ function tokenListNamedInBlockers(tokens, blockersBody) {
 
 function isNamedInBlockersPart(tile, blockersBody, part, cardId = '') {
   if (normalizedCardIdMentioned(cardId, blockersBody)) return true;
-  if (cardNamePhrases(tile.name, part).some((phrase) => phraseNamedInBlockers(phrase, blockersBody))) {
+  if (
+    cardNamePhrases(tile.name, part).some((phrase) => phraseNamedInBlockers(phrase, blockersBody))
+  ) {
     return true;
   }
-  const tokens = part === 'subtitle' ? cardNameTokenParts(tile.name).subtitle : nameTokens(tile.name);
+  const tokens =
+    part === 'subtitle' ? cardNameTokenParts(tile.name).subtitle : nameTokens(tile.name);
   return tokenListNamedInBlockers(tokens, blockersBody);
 }
 
@@ -1790,7 +1854,9 @@ function isNamedInBlockers(tile, blockersBody, cardId = '') {
 }
 
 function blockerRows(blockersBody) {
-  const body = String(blockersBody || '').replace(/\s+/g, ' ').trim();
+  const body = String(blockersBody || '')
+    .replace(/\s+/g, ' ')
+    .trim();
   const rows = [];
   const re = /(?:^|\s)(\d+)\.\s+([\s\S]*?)(?=\s+\d+\.\s+|$)/g;
   let m;
@@ -1807,12 +1873,20 @@ function blockerRows(blockersBody) {
 // (e.g. a failing-test name that says "video approval queue" or a remediation
 // step that says "refresh ... and System Health"). Strip everything from the
 // first detail marker onward so the match only sees the row subject.
+//
+// Fail-safe direction: only slice when the marker is NOT the first token (cut >
+// 0). If a row LEADS with a detail marker (cut === 0, no subject before it) the
+// lead would be empty and a card named in the body would be silently missed -- a
+// false-negative that lets a broken briefing publish. For a publish gate that is
+// the dangerous direction, so a subjectless row falls back to the whole row text
+// (over-flag, never under-flag). cut === -1 (no marker) already returns the whole
+// row.
 const BLOCKER_ROW_DETAIL_MARKER =
   /\b(?:What.?s failing|What you need to do|Tried|Need(?: from [A-Za-z]+)?|Failure|Evidence)\s*:/i;
 function blockerRowLead(rowText) {
   const text = String(rowText || '');
   const cut = text.search(BLOCKER_ROW_DETAIL_MARKER);
-  return (cut >= 0 ? text.slice(0, cut) : text).trim();
+  return (cut > 0 ? text.slice(0, cut) : text).trim();
 }
 
 function blockersNamedCardDefects(tiles, defectsByCard) {
