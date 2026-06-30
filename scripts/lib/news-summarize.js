@@ -1152,38 +1152,96 @@ function buildSummaryPrompt(item, sourceText) {
 // article-meta phrase never reaches the dashboard.
 //
 // Category encoded (not the two literal strings): a phrase that ATTRIBUTES the
-// prose to "the article / piece / report / story / author" ("the article says
-// X", "this article reports X", "in this piece", "the provided text ...") is
-// stripped so the surviving clause leads with substance. Over-strip is bounded:
-//   - the INLINE form only fires after a comma + a conjunction (but/and/while/
-//     ...), and removes ONLY the attribution verb phrase, keeping the conjunction
-//     and the full following clause ("..., but the article says that did not
-//     happen" -> "..., but that did not happen"). A real "..., but activity
-//     remained subdued" (no "the article says") is untouched.
-//   - the LEADING form only fires at a clause start on "(This|The) (article|
-//     piece|report|story) <attribution-verb>", so a real "The article of
-//     incorporation was filed" (no attribution verb) and the conventional "The
-//     report is notable because ..." ExampleCoraph-3 framing (the verb is "is", not
-//     an attribution verb) both survive.
-// The attribution verbs are an explicit list (say/report/note/state/describe/
-// discuss/explain/argue/claim/add/write/highlight/mention/caution/warn) so an
-// "is/are/was/were" analytical clause is never matched.
-const ARTICLE_META_INLINE =
-  /,\s+(but|and|while|though|although|yet|however)\s+the (?:article|piece|report|story|author)\s+(?:says?|said|reports?|reported|notes?|noted|states?|stated|describes?|discusses?|explains?|argues?|claims?|adds?|writes?|wrote|highlights?|mentions?|cautions?|warns?)\s+/gi;
-const ARTICLE_META_LEAD =
-  /(^|[.!?]\s)(?:This|The)\s+(?:article|piece|report|story)\s+(?:says?|said|reports?|reported|notes?|noted|states?|stated|describes?|discusses?|explains?|argues?|claims?|adds?|writes?|wrote|highlights?|mentions?|cautions?|warns?)\s+(?:that\s+)?([a-z])/g;
+// prose to "the article / piece / report / story / author / reporter / column /
+// op-ed / analysis" (or the named publisher, "HousingWire reports X") is
+// stripped so the surviving clause leads with substance.
+//
+// THE AUTHORITATIVE definition of "summarizes the article as an article" is the
+// NEWS-ARTICLE-META detector in scripts/verify-dashboard-cards-live.js
+// (NEWS_ARTICLE_META_PROSE_RE):
+//
+//   /\b(?:the|this|housingwires?)\s+(?:article|story|report|author|reporter|
+//      piece|column|op-?ed|analysis)\s+
+//      (?:centers?|centres?|focus(?:es|ed)?|reports?|says|said|argues?|notes?|
+//       points?)\b/i
+//
+// So the stripper's noun list (ARTICLE_META_NOUN) and verb list
+// (ARTICLE_META_VERB) below are kept as a strict SUPERSET of that detector's
+// vocabularies -- every (subject)(noun)(verb) the detector flags is stripped
+// here, so the stripper and the detector can never disagree and a surviving
+// summary can never trip NEWS-ARTICLE-META. (We also strip equally-meta lead-ins
+// the detector happens not to enumerate -- "according to the report,", "as the
+// article notes,", "in this piece," -- for clean prose.)
+//
+// Over-strip is bounded (the cardinal sin):
+//   - the INLINE-conjunction form fires only after a comma + a conjunction
+//     (but/and/while/...), keeping the conjunction and the full following clause
+//     ("..., but the article says that did not happen" -> "..., but that did not
+//     happen"). A real "..., but activity remained subdued" is untouched.
+//   - the INTERJECTION form fires only on a comma-bracketed aside
+//     (", the report notes,") and removes the whole aside, leaving the host
+//     sentence intact.
+//   - the LEADING / "as" / "according to" forms fire only at a clause start.
+//   - the verb list is the detector's reporting verbs (say/report/note/state/
+//     argue/claim/add/write/describe/discuss/explain/highlight/mention/caution/
+//     warn/center on/centre on/focus on/point out), which deliberately EXCLUDES
+//     the copula (is/are/was/were/seems/remains), so "The report is notable
+//     because ..." (ExampleCoraph-3 framing) and "The article of incorporation was
+//     filed" (no reporting verb) both survive.
+// "U.S."/"Inc." capitalization is never mangled: we capitalize ONLY the single
+// surviving letter at each removal site, never a global recap.
+const ARTICLE_META_NOUN = 'article|piece|report|story|author|reporter|column|op-?ed|analysis';
+// Reporting verbs as a single fragment. "centers?|centres?" and "focus(?:es|ed)?"
+// take an "on", "points?" takes an "out"; we make those particles optional so a
+// "centers? on" still matches even if the model drops the particle. The detector
+// uses the bare verb, so matching the bare verb is sufficient and safe.
+const ARTICLE_META_VERB =
+  '(?:says?|said|reports?|reported|notes?|noted|states?|stated|describes?|discusses?|explains?|explained|argues?|argued|claims?|claimed|adds?|added|writes?|wrote|highlights?|highlighted|mentions?|mentioned|cautions?|cautioned|warns?|warned|centers?(?:\\s+on)?|centres?(?:\\s+on)?|focus(?:es|ed)?(?:\\s+on)?|points?(?:\\s+out)?)';
+// Subject: "the/this <noun>" OR the named mortgage publisher "HousingWire(s)".
+const ARTICLE_META_SUBJECT = `(?:(?:the|this)\\s+(?:${ARTICLE_META_NOUN})|housingwires?)`;
+
+const ARTICLE_META_INLINE = new RegExp(
+  `,\\s+(but|and|while|though|although|yet|however)\\s+${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s+`,
+  'gi',
+);
+// Comma-bracketed aside: "..., the report notes, ..." -> "..., ...". Requires the
+// trailing comma so a real "..., the report says lenders ..." (clause, not aside)
+// falls to the INLINE/LEAD forms instead, not this one.
+const ARTICLE_META_INTERJECT = new RegExp(
+  `,\\s+${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s*,`,
+  'gi',
+);
+const ARTICLE_META_LEAD = new RegExp(
+  `(^|[.!?]\\s)${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s+(?:that\\s+|how\\s+)?([a-z])`,
+  'gi',
+);
+// "As the article notes, <clause>" / "As HousingWire reports, <clause>".
+const ARTICLE_META_AS = new RegExp(
+  `(^|[.!?]\\s)as\\s+${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s*,?\\s+([a-z])`,
+  'gi',
+);
+// "According to the report, <clause>" / "Per the article, <clause>". The detector
+// does not flag this shape (no reporting verb after the noun), but it is the same
+// article-meta framing, so we strip it for clean prose.
+const ARTICLE_META_ACCORDING = new RegExp(
+  `(^|[.!?]\\s)(?:according to|per)\\s+${ARTICLE_META_SUBJECT}\\s*,?\\s+([a-z])`,
+  'gi',
+);
 const ARTICLE_META_IN_PIECE = /(^|[.!?]\s)In this piece,?\s+([a-z])/g;
 
 function stripArticleMetaFraming(text) {
   let out = String(text || '');
-  // Inline attribution: keep the conjunction (a lowercase "but"/"and" stays
-  // correctly mid-sentence) and a following "that" (it reads as the clause
-  // subject), drop only "the article says".
+  // Comma-bracketed aside ("..., the report notes, ...") -> drop the aside.
+  out = out.replace(ARTICLE_META_INTERJECT, ',');
+  // Inline attribution after a conjunction: keep the conjunction and the full
+  // following clause, drop only "the article says".
   out = out.replace(ARTICLE_META_INLINE, ', $1 ');
-  // Leading attribution opener: keep the sentence boundary and capitalize ONLY
-  // the first surviving letter at the removal site (a global recap would corrupt
-  // real abbreviations like "U.S. economy" / "Inc. and Co.").
+  // Clause-start openers: keep the sentence boundary and capitalize ONLY the
+  // first surviving letter at the removal site (a global recap would corrupt real
+  // abbreviations like "U.S. economy" / "Inc. and Co.").
   out = out.replace(ARTICLE_META_LEAD, (_m, b, c) => b + c.toUpperCase());
+  out = out.replace(ARTICLE_META_AS, (_m, b, c) => b + c.toUpperCase());
+  out = out.replace(ARTICLE_META_ACCORDING, (_m, b, c) => b + c.toUpperCase());
   out = out.replace(ARTICLE_META_IN_PIECE, (_m, b, c) => b + c.toUpperCase());
   return out.replace(/\s+/g, ' ').trim();
 }
@@ -1449,6 +1507,7 @@ module.exports = {
   stripPublisherChrome,
   buildSummaryPrompt,
   normalizeSummary,
+  stripArticleMetaFraming,
   buildExtractiveSummary,
   summarizeNewsItem,
   summarizeNewsItems,
