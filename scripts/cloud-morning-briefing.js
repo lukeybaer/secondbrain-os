@@ -35,6 +35,9 @@ const { formatUncommittedParkedWorkSection } = require('./lib/git-hygiene-briefi
 const { generateSelfHealHealthCard } = require('./self-heal/self-heal-health-card.js');
 const { probeDevOpsHealth } = require('./lib/devops-health.js');
 const { computeSpeakerFreshness } = require('./lib/speaker-freshness.js');
+// Same non-green SYSTEM HEALTH parser the publish validator uses, so the named
+// blocker we emit per non-green row covers EXACTLY the set the QC counts.
+const { nonGreenSubsystems } = require('./lib/system-health-nongreen.js');
 const { CARDS: BRIEFING_MANIFEST_CARDS } = require('./lib/briefing-card-manifest.js');
 const {
   summarizeNewsItems,
@@ -1053,6 +1056,104 @@ function blockedCardEntries(realById = {}, skipIds = new Set()) {
     });
   }
   return entries;
+}
+
+// Escape a string for inclusion in a RegExp body (identical to the validator's
+// escapeRe so our membership test matches the gate's exactly).
+function escapeForRegExp(s) {
+  return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// SYSTEM HEALTH <-> BLOCKERS coverage. The publish gate
+// (validate-briefing-quality.js checkHealthBlockersConsistency) requires EVERY
+// non-green (red OR yellow) SYSTEM HEALTH subsystem row -- and Life:* backup row
+// -- to be NAMED in the BLOCKERS body by its bare name (Life: prefix stripped),
+// even when other blockers exist. blockedCardEntries only covers cards that
+// hard-block in their OWN body; aggregate/per-source health rows ("Content
+// readiness", "US immigration news", "COVID treatments") live only in SYSTEM
+// HEALTH with no owning card and slip past it, and Life:* rows live only in the
+// FULL-LIFE DATA BACKUP card. This derives a named blocker for every non-green
+// subsystem not already named, across BOTH sources.
+//
+// MATCHER PARITY (no QC weakening): the gate's allNonGreenSubsystems = the
+// SHARED nonGreenSubsystems parser over SYSTEM HEALTH UNION the non-green Life:*
+// rows from parseFullLifeBackupBody, and it tests membership with a
+// case-insensitive word-boundary regex on the bare name against the lowercased
+// BLOCKERS body. We compute the SAME union with the SAME helpers and use the
+// SAME membership test here, so we add exactly the names the gate would flag as
+// missing and never duplicate one already present. Evidence/need are DERIVED
+// from the row's own text (no fabrication). Mutates and returns `blockers`.
+function deriveNonGreenSubsystemBlockers(systemHealthSection, blockers, fullLifeSection = '') {
+  const body = String(systemHealthSection || '').replace(/^SYSTEM HEALTH[^\n]*\n?/, '');
+  const lines = body.split(/\r?\n/);
+  // (name -> evidence-detail) so each derived blocker quotes the row's own text.
+  const nonGreen = new Map();
+  for (const rawName of nonGreenSubsystems(body)) {
+    const bare = String(rawName)
+      .replace(/^life:\s*/i, '')
+      .trim();
+    if (!bare || nonGreen.has(bare.toLowerCase())) continue;
+    const rowLine = lines.find((l) =>
+      new RegExp(`^\\s*[✗?]\\s+${escapeForRegExp(bare)}\\b`, 'i').test(l),
+    );
+    const detail = rowLine
+      ? rowLine
+          .replace(/^\s*[✗?]\s+/, '')
+          .replace(/^[^:]*:\s*/, '')
+          .trim()
+      : '';
+    nonGreen.set(bare.toLowerCase(), {
+      name: bare,
+      evidence: detail
+        ? `SYSTEM HEALTH reports ${bare} as non-green: ${detail}`
+        : `SYSTEM HEALTH reports ${bare} as a non-green subsystem.`,
+    });
+  }
+  // Life:* backup rows (FULL-LIFE DATA BACKUP) -- same union the validator's
+  // allNonGreenSubsystems builds. A yellow 79% backfill is still non-green.
+  const lifeBody = String(fullLifeSection || '').replace(
+    /^FULL[\s-]?LIFE DATA BACKUP[^\n]*\n?/i,
+    '',
+  );
+  if (lifeBody.trim()) {
+    try {
+      // eslint-disable-next-line global-require
+      const { parseFullLifeBackupBody } = require('./lib/parse-full-life-backup.js');
+      const parsed = parseFullLifeBackupBody(lifeBody);
+      for (const item of parsed.items || []) {
+        if (!item || !item.status || item.status === 'green') continue;
+        // item.name is "Life: <source>"; the gate strips the Life: prefix.
+        const bare = String(item.name || '')
+          .replace(/^life:\s*/i, '')
+          .trim();
+        if (!bare || nonGreen.has(bare.toLowerCase())) continue;
+        nonGreen.set(bare.toLowerCase(), {
+          name: bare,
+          evidence: item.detail
+            ? `Full-life backup reports ${bare} as non-green: ${item.detail}.`
+            : `Full-life backup reports ${bare} as a non-green source.`,
+        });
+      }
+    } catch {
+      // Parser unavailable: SYSTEM HEALTH rows are still covered.
+    }
+  }
+  for (const { name: bare, evidence } of nonGreen.values()) {
+    // Same membership test the gate applies: word-boundary, case-insensitive,
+    // over the already-named blocker text. If present, do not double-count.
+    const haystack = blockers
+      .map((b) => `${b.title || ''} ${b.evidence || ''} ${b.need || ''}`)
+      .join(' ')
+      .toLowerCase();
+    if (new RegExp(`\\b${escapeForRegExp(bare)}\\b`, 'i').test(haystack)) continue;
+    addBlocker(blockers, {
+      title: `${bare} system health is non-green`,
+      category: 'source/data',
+      evidence,
+      need: blockedCardRepairNeed('', bare, '', evidence),
+    });
+  }
+  return blockers;
 }
 
 function legacySection(title, body) {
@@ -7096,6 +7197,17 @@ function buildCloudMorningBriefing({
   const blockedSkipIds = new Set();
   if (speakerStalenessSurfaced) blockedSkipIds.add('otter_speaker_pareto');
   for (const entry of blockedCardEntries(realById, blockedSkipIds)) addBlocker(blockers, entry);
+
+  // SYSTEM HEALTH <-> BLOCKERS set-diff (validate-briefing-quality.js
+  // checkHealthBlockersConsistency): EVERY non-green (red OR yellow) SYSTEM
+  // HEALTH subsystem row must be NAMED in the BLOCKERS body, even when other
+  // blockers already exist. The card-level loop above only covers cards that
+  // hard-block in their own body; aggregate health rows like "Content readiness"
+  // and per-source rows like "US immigration news" / "COVID treatments" live
+  // only in SYSTEM HEALTH with no owning card, so they slipped past it and
+  // tripped the gate. deriveNonGreenSubsystemBlockers names every non-green
+  // subsystem (incl Life:* backup rows) not already named, satisfying the gate.
+  deriveNonGreenSubsystemBlockers(realById.system_health, blockers, realById.full_life_backup);
   realById.blockers = renderBlockersSection(blockers);
 
   // ---- NEVER-DROP CHOKEPOINT: assemble from the canonical manifest ----
@@ -7628,6 +7740,7 @@ module.exports = {
   hasOnlyBlockersFeedbackDefects,
   shouldRepaintBlockersFeedbackOnly,
   renderBlockersSection,
+  deriveNonGreenSubsystemBlockers,
   normalizeCommandQueue,
   extractActionItems,
   readTaskRows,

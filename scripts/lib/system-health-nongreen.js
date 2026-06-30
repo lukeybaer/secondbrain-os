@@ -1,0 +1,63 @@
+'use strict';
+
+// ONE shared source of truth for "which SYSTEM HEALTH rows are non-green".
+// The publish validator (validate-briefing-quality.js) and the cloud briefing
+// generator (cloud-morning-briefing.js) BOTH parse the SYSTEM HEALTH body for
+// the same set of non-green subsystem names: the validator to enforce the
+// health<->blockers set-diff, the generator to emit a matching named blocker for
+// every non-green row so that gate passes. Defining the parser once here keeps
+// the two from drifting -- if the generator named fewer rows than the validator
+// counts, the publish gate would deterministically fail (the 2026-06-30
+// "[Content readiness, US immigration news, COVID treatments] are not named in
+// BLOCKERS" incident category).
+
+// Parse the SYSTEM HEALTH section for every non-green subsystem row.
+// A non-green row starts with the cross/X glyph or a question glyph, then the
+// subsystem name. Returns the de-duped list of bare subsystem names.
+function nonGreenSubsystems(systemHealthBody) {
+  const out = [];
+  const text = String(systemHealthBody || '');
+  const lines = text.split(/\r?\n/);
+  const fileChurnWatchOnly =
+    /\bFileChurn\b/i.test(text) && /watch alert,\s*not a failure/i.test(text);
+  // The cloud build cannot run the test suite (tests run on the desktop and in
+  // CI), so the cloud SYSTEM HEALTH card ExampleCos a "?" Tests row that is
+  // INFORMATIONAL, not a failing subsystem. Treat a Tests row that explicitly
+  // declares it is not evaluated on the cloud build (or runs on the desktop/CI)
+  // as informational, NOT a non-green subsystem requiring a BLOCKERS entry. This
+  // mirrors the FileChurn watch-only carve-out above. Category, not literal
+  // trigger: any subsystem row that states on its own line that it is not
+  // evaluated/measured on this build is informational. ExampleCo 2026-06-20 #gap.
+  const isInformationalNotEvaluatedRow = (line) =>
+    /\bTests\b/i.test(line) &&
+    /(not evaluated on the cloud build|run on the desktop and in ci|not (?:run|evaluated|measured) (?:live |on )|informational, not a failure)/i.test(
+      line,
+    );
+  for (const line of lines) {
+    // The "Probe detail (proof of health)" funnel is a DRILL-DOWN, not the
+    // subsystem roster. Its lines (e.g. "<glyph> Otter speaker enrichment
+    // probe:") look like roster rows but name the probe, not a subsystem. Once
+    // we reach that block, stop scanning: a "... probe:" line was being parsed
+    // as a PHANTOM subsystem ("Otter speaker enrichment probe") that no blocker
+    // could ever name, so the health<->blockers set-diff failed deterministically
+    // and the publish gate stayed RED (ExampleCo 2026-06-29 green-tomorrow WAVE 1).
+    // The block is always appended AFTER the roster + Attention block, so a hard
+    // break is safe and never drops a real subsystem.
+    if (/^\s*Probe detail \(proof of health\)\s*$/.test(line)) break;
+    // A non-green row starts with the cross/X glyph or a question glyph, then
+    // the subsystem name. Match both the "name: detail" and bare "name" forms
+    // (the Attention block lists bare names).
+    const m = line.match(/^\s*([✗?])\s+([A-Za-z][\w:\s-]*?)\s*(?::\s+.+)?$/);
+    if (m) {
+      const name = m[2].trim().replace(/:$/, '');
+      if (fileChurnWatchOnly && /^FileChurn(?: probe)?$/i.test(name)) continue;
+      if (isInformationalNotEvaluatedRow(line)) continue;
+      out.push(name);
+    }
+  }
+  // De-dupe: the same subsystem appears once in the roster and again in the
+  // Attention block.
+  return Array.from(new Set(out));
+}
+
+module.exports = { nonGreenSubsystems };
