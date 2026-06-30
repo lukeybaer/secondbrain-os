@@ -150,6 +150,83 @@ function defectCounts(date, opts = {}) {
   };
 }
 
+// THRASH DETECTION (genuinely stuck). A defect is THRASHING when the SAME tactic +
+// SAME input hash FAILED two or more times with NO clearing attempt in between, i.e.
+// the healer kept replaying an identical move with no changed input. This is the
+// "no repeat without changed input" violation surfaced as a health signal: a healer
+// that re-runs the exact failed move is stuck, not merely degraded. We walk each
+// defect's attempts in append order, resetting the per-(tactic,input) failure memory
+// on any clear, and count a defect as thrashing the moment one move fails twice.
+// Returns the list of thrashing defect keys (canonical, deduped).
+function thrashingDefects(date, opts = {}) {
+  const attempts = ledger.attemptRows(date, opts);
+  const byDefect = new Map();
+  for (const row of attempts) {
+    const key = ledger.normDefectKey(row.defect);
+    const list = byDefect.get(key) || [];
+    list.push(row);
+    byDefect.set(key, list);
+  }
+  const thrashing = [];
+  for (const [key, rows] of byDefect.entries()) {
+    const failsByMove = new Map(); // "tacticKey inputHash" -> fail count since last clear
+    let isThrash = false;
+    for (const row of rows) {
+      if (ledger.isClearedRow(row)) {
+        failsByMove.clear(); // a clear resets the no-repeat memory
+        continue;
+      }
+      const moveKey = `${row.tacticKey || ''} ${row.tacticInputHash || ''}`;
+      const n = (failsByMove.get(moveKey) || 0) + 1;
+      failsByMove.set(moveKey, n);
+      if (n >= 2) {
+        isThrash = true;
+        break;
+      }
+    }
+    if (isThrash) thrashing.push(key);
+  }
+  return thrashing;
+}
+
+// AUTHORITATIVE RED / YELLOW / GREEN VERDICT (ExampleCo, 2026-06-30).
+//
+// Red is reserved for GENUINELY broken/blocked/stuck. A self-heal that actually ran,
+// attempted every defect, and escalated them with honest reasons is WORKING (degraded)
+// -> YELLOW, not RED. This card's OWN renderer is the authoritative place this verdict
+// lives (exempt from "workers must not demote red cards": this is the renderer ExampleCo
+// ordered, not a worker gaming QC).
+//
+//   GREEN  : no defects, or every defect cleared (escalated === 0), executor not red,
+//            ledger fresh. Nothing to surface.
+//   RED    : genuinely stuck/broken. ANY of:
+//              - the run did not happen / nothing was attempted while defects exist
+//                (no signal = stale ledger with 0 attempts),
+//              - the ledger is stale beyond its freshness floor,
+//              - the executor is RED (crashed / cannot run -- NOT merely "ExampleCo"),
+//              - the healer is thrashing the SAME tactic with no changed input.
+//   YELLOW : the run executed and attempted defects but some escalated honestly
+//            (attempted > 0, escalated > 0) AND the run is otherwise healthy (ledger
+//            fresh, executor not red, no thrash). "executor status ExampleCo" alone,
+//            when attempts were recorded and the ledger is fresh, is YELLOW: it ran.
+//
+// Inputs are already-computed primitives so the verdict is pure and unit-testable.
+function severityVerdict({ attempted, escalated, ledgerStale, executorRed, thrashing }) {
+  // RED first: any genuinely-stuck condition wins regardless of escalated count.
+  if (ledgerStale) return 'red'; // no run recorded, or signal older than the floor
+  if (executorRed) return 'red'; // executor crashed / cannot run
+  if (thrashing) return 'red'; // same move, no changed input -> stuck loop
+  // GREEN: nothing still escalated and no stuck condition above.
+  if (escalated <= 0) return 'green';
+  // From here escalated > 0 and the run is otherwise healthy (fresh ledger, executor
+  // not red, no thrash). If attempts were recorded, the run executed and honestly
+  // escalated -> degraded, not broken.
+  if (attempted > 0) return 'yellow';
+  // escalated > 0 but NOTHING was attempted: the defects exist yet no repair ran this
+  // window. That is "the run did not happen for these" -> genuinely stuck, RED.
+  return 'red';
+}
+
 function clamp(text, n = 200) {
   return String(text == null ? '' : text).slice(0, n);
 }
@@ -172,12 +249,21 @@ function buildSelfHealHealthCard(opts = {}) {
   const ledgerStale = fresh.ageHours == null || fresh.ageHours > maxAgeHours;
   const executorGreen = executorRow.status === 'green';
   const executorRed = executorRow.status === 'red';
+  const thrashing = thrashingDefects(date, opts);
+  const isThrashing = thrashing.length > 0;
 
-  // The card is CLEAN only when the executor is PROVEN green, the ledger is fresh, and
-  // nothing is still escalated. A red OR ExampleCo executor (no executor-health proof for
-  // this window means we cannot claim self-heal ran) is unproven and must surface as a
-  // defect, never a silent green pass. Cleared work alone is not a defect.
-  const defect = !executorGreen || ledgerStale || counts.escalated > 0;
+  // AUTHORITATIVE SEVERITY (ExampleCo, 2026-06-30): red = genuinely broken/blocked/stuck,
+  // yellow = ran + honestly escalated (degraded but working), green = clean. See
+  // severityVerdict for the full rule. The boolean `defect` is kept for backward
+  // compatibility (the QC freshness gate, render glyph) and means "not green".
+  const severity = severityVerdict({
+    attempted: counts.attempted,
+    escalated: counts.escalated,
+    ledgerStale,
+    executorRed,
+    thrashing: isThrashing,
+  });
+  const defect = severity !== 'green';
 
   const executorFace = executorGreen
     ? 'executor healthy'
@@ -224,6 +310,8 @@ function buildSelfHealHealthCard(opts = {}) {
       maxAgeHours,
       stale: ledgerStale,
     },
+    thrashing,
+    severity,
     defect,
     face,
     openDefects: openLines,
@@ -238,10 +326,16 @@ const SELF_HEAL_HEALTH_TITLE = 'SELF-HEAL HEALTH';
 
 function renderSelfHealHealthSection(opts = {}) {
   const card = opts.card || buildSelfHealHealthCard(opts);
-  const glyph = card.defect ? '✗' : '✓'; // cross / check, no em/en dashes anywhere
+  const severity = card.severity || (card.defect ? 'red' : 'green');
+  // Glyph maps to the authoritative tri-state: check = green, bang = yellow
+  // (ran + honestly escalated, degraded but working), cross = red (genuinely
+  // stuck/broken). No em/en dashes anywhere. The explicit "Severity:" line below is
+  // the machine-readable verdict the render seam reads (glyph is the human cue).
+  const glyph = severity === 'green' ? '✓' : severity === 'yellow' ? '!' : '✗';
   const lines = [];
   lines.push(`${glyph} ${card.face}`);
   lines.push('');
+  lines.push(`Severity: ${severity}`);
   lines.push(`Attempted: ${card.attempted}`);
   lines.push(`Cleared: ${card.cleared}`);
   lines.push(`Escalated: ${card.escalated}`);
@@ -259,6 +353,11 @@ function renderSelfHealHealthSection(opts = {}) {
           card.freshness.stale ? 'STALE' : 'fresh'
         }).`,
   );
+  if (card.thrashing && card.thrashing.length) {
+    lines.push(
+      `Thrash: ${card.thrashing.length} defect(s) re-ran the same tactic with no changed input (stuck loop).`,
+    );
+  }
   if (card.openDefects.length) {
     lines.push('');
     lines.push('Open repair defects:');
@@ -300,6 +399,8 @@ module.exports = {
   resolveExecutorRow,
   signalFreshness,
   defectCounts,
+  thrashingDefects,
+  severityVerdict,
   buildSelfHealHealthCard,
   renderSelfHealHealthSection,
   generateSelfHealHealthCard,
