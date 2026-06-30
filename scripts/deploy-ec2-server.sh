@@ -61,6 +61,7 @@ LIVE_DEPS=(
   # the news-chrome + grounding + blocker-accounting fixes must ship to /opt directly.
   "scripts/lib/news-summarize.js"
   "scripts/verify-dashboard-cards-live.js"
+  "scripts/lib/system-health-nongreen.js"
 )
 
 echo "[deploy] syntax-checking repo ec2-server.js"
