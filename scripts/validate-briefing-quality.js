@@ -10,7 +10,7 @@ const { isHeadlineOnlyExampleCoraphs } = require('./lib/news-summarize.js');
 // ONE shared parser for the non-green SYSTEM HEALTH roster so the cloud briefing
 // generator (which emits a named blocker per non-green row) and this validator
 // (which enforces the health<->blockers set-diff) can never count a different set.
-const { nonGreenSubsystems } = require('./lib/system-health-nongreen.js');
+const { nonGreenSubsystems, presentSubsystems } = require('./lib/system-health-nongreen.js');
 
 const REPO = path.resolve(__dirname, '..');
 // Runtime artifacts (shorts/mortgage/action-items/...) live in the data dir the
@@ -364,6 +364,75 @@ function checkHealthBlockersConsistency(markdown) {
   if (missing.length) {
     fails.push(
       `non-green subsystem(s) [${missing.join(', ')}] are not named in BLOCKERS; every non-green subsystem (System Health probes AND Life:* backup rows, including yellow) must appear in BLOCKERS even when other blockers exist`,
+    );
+  }
+  return fails;
+}
+
+// (a2) REVERSE SYSTEM-HEALTH <-> BLOCKERS consistency. The forward check above
+// enforces non-green-SH -> named-in-BLOCKERS. This enforces the OTHER direction:
+// a BLOCKERS entry that names a SYSTEM HEALTH subsystem as non-green must find
+// that subsystem PRESENT AND non-green in the SYSTEM HEALTH card. A blocker that
+// names a subsystem the SYSTEM HEALTH card shows GREEN, or OMITS entirely, is a
+// contradiction (ExampleCo 2026-07-01: BLOCKERS said "Scheduled tasks health system
+// health is non-green" while the SYSTEM HEALTH roster had collapsed to a single
+// green Graphiti row, so every other subsystem row had vanished). Together with
+// the forward check the two force the non-green sets EQUAL.
+//
+// Category, not literal trigger: we key ONLY on blockers that explicitly assert a
+// SYSTEM HEALTH state ("system health ... non-green", "SYSTEM HEALTH reports
+// <name>", or a subsystem-named blocker whose line references system health), so
+// a card-level blocker with no SYSTEM HEALTH claim (e.g. a stale git-hygiene
+// snapshot) is never false-flagged. The subsystem name is matched against the
+// PRESENT roster (any glyph) to tell "shows green" (present but not in the
+// non-green set) apart from "omitted" (absent from the roster).
+function checkHealthBlockersReverseConsistency(markdown) {
+  const fails = [];
+  const healthBody = extractSection(markdown, 'SYSTEM HEALTH');
+  const blockersBody =
+    extractSection(markdown, 'BLOCKERS - briefing quality gates') ||
+    extractSection(markdown, 'BLOCKERS / NEEDS FROM ExampleCo') ||
+    extractSection(markdown, 'BLOCKERS');
+  if (!healthBody || !blockersBody) return fails;
+  const present = presentSubsystems(healthBody).map((n) => n.toLowerCase());
+  const nonGreen = nonGreenSubsystems(healthBody).map((n) => n.toLowerCase());
+  const presentSet = new Set(present);
+  const nonGreenSet = new Set(nonGreen);
+
+  // Consider only blocker lines that make an explicit SYSTEM HEALTH claim, so a
+  // card-level blocker with no health assertion is not matched.
+  const claimRe =
+    /(system health\b|SYSTEM HEALTH reports|is non-green|health (?:system health )?is non-green)/i;
+  const lines = String(blockersBody).split(/\r?\n/);
+  const flagged = new Set();
+  for (const line of lines) {
+    if (!claimRe.test(line)) continue;
+    // Match the named subsystem against the present roster; report the ones that
+    // are green (present, not non-green) or omitted (absent from the roster).
+    for (const name of present) {
+      if (nonGreenSet.has(name)) continue; // named + non-green in SH: consistent
+      const re = new RegExp(`\\b${escapeRe(name)}\\b`, 'i');
+      if (re.test(line)) flagged.add(`${name} (SYSTEM HEALTH shows this subsystem green)`);
+    }
+    // Also catch a blocker that names a subsystem SYSTEM HEALTH omits entirely:
+    // the blocker asserts a SH state for a subsystem that has no roster row at
+    // all. Detect by a "SYSTEM HEALTH reports <name>" / "<name> ... system
+    // health is non-green" shape whose <name> is not in the present roster.
+    const named = line.match(
+      /(?:SYSTEM HEALTH reports\s+)?([A-Za-z][\w ]{2,60}?)\s+(?:system health\s+)?is non-green/i,
+    );
+    if (named) {
+      const bare = named[1].trim().toLowerCase();
+      if (bare && !presentSet.has(bare)) {
+        flagged.add(`${named[1].trim()} (SYSTEM HEALTH omits this subsystem)`);
+      }
+    }
+  }
+  if (flagged.size) {
+    fails.push(
+      `BLOCKERS names non-green subsystem(s) [${Array.from(flagged).join(
+        ', ',
+      )}] that SYSTEM HEALTH shows green or omits; a blocked subsystem must render as a present, non-green SYSTEM HEALTH row (the non-green sets must match in both directions)`,
     );
   }
   return fails;
@@ -1442,6 +1511,12 @@ function checkDashboardCardCompleteness(markdown, dateStr) {
 // (a) System-Health <-> Blockers coverage set-diff: every non-green subsystem
 // (probes AND Life:* rows, yellow included) must be named in BLOCKERS.
 for (const f of checkHealthBlockersConsistency(md)) fail(f);
+// (a-reverse) The other direction: a BLOCKERS entry that names a SYSTEM HEALTH
+// subsystem as non-green must find that subsystem present + non-green in SYSTEM
+// HEALTH. A blocker naming a subsystem SYSTEM HEALTH shows green or omits is a
+// contradiction (ExampleCo 2026-07-01 collapsed-roster incident). Together with (a)
+// the two force the non-green sets equal.
+for (const f of checkHealthBlockersReverseConsistency(md)) fail(f);
 // (a2) Dashboard parity: the live dashboard (server.js ~7940) derives a hard
 // blocker for any card whose DATA is incomplete -- empty token rollup, AWS $0
 // while the detail has spend, a stale source, a duplicated card. The local
@@ -1486,8 +1561,10 @@ module.exports = {
   blockersIsEmpty,
   isNonBlockingFileChurnLine,
   nonGreenSubsystems,
+  presentSubsystems,
   allNonGreenSubsystems,
   checkHealthBlockersConsistency,
+  checkHealthBlockersReverseConsistency,
   checkNoSelfNarration,
   checkReputationScan,
   checkHonestState,

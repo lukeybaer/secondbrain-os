@@ -60,4 +60,30 @@ function nonGreenSubsystems(systemHealthBody) {
   return Array.from(new Set(out));
 }
 
-module.exports = { nonGreenSubsystems };
+// Parse the SYSTEM HEALTH section for EVERY subsystem row PRESENT in the roster,
+// regardless of glyph (green checkmark, cross, or question). Used by the REVERSE
+// health<->blockers consistency check: a blocker that names a subsystem the
+// SYSTEM HEALTH card shows GREEN or OMITS entirely is a contradiction (ExampleCo
+// 2026-07-01: BLOCKERS named "Scheduled tasks health" non-green while SYSTEM
+// HEALTH showed only a green Graphiti row because the rest of the roster
+// vanished). Same probe-detail cutoff + informational-Tests carve-out as
+// nonGreenSubsystems so the two parsers cannot drift. Returns de-duped bare
+// subsystem names.
+function presentSubsystems(systemHealthBody) {
+  const out = [];
+  const text = String(systemHealthBody || '');
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    if (/^\s*Probe detail \(proof of health\)\s*$/.test(line)) break;
+    // Any glyph (green checkmark, cross, question) then the subsystem name, in
+    // both the "name: detail" and bare-name (Attention block) forms.
+    const m = line.match(/^\s*([✓✗?])\s+([A-Za-z][\w:\s-]*?)\s*(?::\s+.+)?$/);
+    if (m) {
+      const name = m[2].trim().replace(/:$/, '');
+      out.push(name);
+    }
+  }
+  return Array.from(new Set(out));
+}
+
+module.exports = { nonGreenSubsystems, presentSubsystems };

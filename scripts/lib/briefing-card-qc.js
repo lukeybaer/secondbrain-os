@@ -39,6 +39,31 @@ function isTokenUsageCardTitle(title) {
   return /^(?:TOKEN USAGE|LLM SUBSCRIPTION)/i.test(String(title || '').trim());
 }
 
+// SYSTEM HEALTH is Amy's OWN internal-infra roster. It legitimately names its own
+// subsystems as EVIDENCE ("active provider codex", "Backend PM2 fleet", "using
+// Claude Max plan", "Graphiti container up"), the same soft vendor/process words
+// (provider, pm2, Claude, Anthropic, OpenAI, Vapi) a news/token-usage card names.
+// Running the blanket operational scrub over the whole card body then collapses
+// the ENTIRE roster to the canned "Amy service status changed" line the moment a
+// soft term survives the per-regex (non-global) replace -- every subsystem row
+// vanishes and BLOCKERS (derived from the pre-scrub roster) contradicts it (ExampleCo
+// 2026-07-01). So this card is soft-term-neutralized before the operational
+// checks, exactly like token-usage: HARD error signatures (HTTP 5xx, *_error,
+// backend :3001, "claude exit N", "pm2 reset", stack trace, traceback) are STILL
+// caught + scrubbed, but a legitimate subsystem-evidence word never nukes the row
+// set.
+function isSystemHealthCardTitle(title) {
+  return /^SYSTEM HEALTH\b/i.test(String(title || '').trim());
+}
+
+// Cards that legitimately name soft vendor/process/plan words as their OWN
+// content and must NOT be collapsed by the operational scrub: the token-usage /
+// LLM-subscription card and the SYSTEM HEALTH internal-infra roster. News cards
+// are handled on their own third-party-prose path.
+function isSoftTermNeutralizedCardTitle(title) {
+  return isTokenUsageCardTitle(title) || isSystemHealthCardTitle(title);
+}
+
 // The otter speaker-pareto card mixes Amy's status preamble (As of / Freshness /
 // Repair / No ExampleCo action required) with THIRD-PARTY call exec-summary prose. The
 // preamble ends where the call-history / lifetime content begins: lines from the
@@ -94,12 +119,16 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
 
   // For a NEWS card, neutralize only the SOFT vendor/particulate false positives
   // in the body before the operational checks; the title + every hard error
-  // signature in the body are still checked. Non-news cards are checked verbatim.
+  // signature in the body are still checked. The token-usage and SYSTEM HEALTH
+  // cards legitimately name soft vendor/process/plan words as their OWN content
+  // (LLM plans; subsystem evidence like "active provider", "Backend PM2 fleet",
+  // "Claude Max"), so they are soft-neutralized the same way. Every other card is
+  // checked verbatim. HARD error signatures survive neutralization and still fail.
   const isNews = isNewsCardTitle(title);
-  const isTokenUsage = isTokenUsageCardTitle(title);
+  const isSoftNeutralized = isSoftTermNeutralizedCardTitle(title);
   const operationalScope = isNews
     ? [title, neutralizeNewsSoftTerms(body)].filter(Boolean).join('\n')
-    : isTokenUsage
+    : isSoftNeutralized
       ? neutralizeNewsSoftTerms(text)
       : text;
 
@@ -180,25 +209,26 @@ function splitMarkdownCards(markdown) {
 // Anthropic, PM2.5, ...) are replaced so legitimate news prose does not trip the
 // scrub, but HARD error signatures (HTTP NNN, backend :3001, claude exit N, pm2
 // reset, stack trace) are left intact so a real leak inside a news card is still
-// caught at the briefing level. Token/LLM usage is also neutralized narrowly
-// because that card legitimately names LLM plans. Other bodies + scaffolding
-// pass verbatim.
+// caught at the briefing level. The token-usage/LLM-subscription card and the
+// SYSTEM HEALTH internal-infra roster are also neutralized narrowly because they
+// legitimately name LLM plans / subsystem-evidence words as their own content.
+// Other bodies + scaffolding pass verbatim.
 function withAllowedSoftTermsNeutralized(markdown) {
   const lines = String(markdown || '').split('\n');
   const out = [];
   let inNewsCard = false;
-  let inTokenUsageCard = false;
+  let inSoftNeutralizedCard = false;
   for (const line of lines) {
     const heading = line.match(/^##\s+(.+?)\s*$/);
     const legacyHeading = line.match(/^([A-Z]{2,}[^\n]{0,200}):\s*$/);
     const title = heading ? heading[1].trim() : legacyHeading ? legacyHeading[1].trim() : '';
     if (title) {
       inNewsCard = isNewsCardTitle(title);
-      inTokenUsageCard = isTokenUsageCardTitle(title);
-      out.push(inTokenUsageCard ? neutralizeNewsSoftTerms(line) : line);
+      inSoftNeutralizedCard = isSoftTermNeutralizedCardTitle(title);
+      out.push(inSoftNeutralizedCard ? neutralizeNewsSoftTerms(line) : line);
       continue;
     }
-    out.push(inNewsCard || inTokenUsageCard ? neutralizeNewsSoftTerms(line) : line);
+    out.push(inNewsCard || inSoftNeutralizedCard ? neutralizeNewsSoftTerms(line) : line);
   }
   return out.join('\n');
 }
@@ -260,14 +290,17 @@ function repairBriefingMarkdown(markdown) {
   const scrubbed = scrubBriefingMarkdown(markdown);
   const lines = scrubbed.split('\n');
   const out = [];
-  let inNewsCard = false;
-  let inTokenUsageCard = false;
+  let inSoftNeutralizedCard = false;
   let buffer = [];
   const flush = () => {
     if (!buffer.length) return;
-    if (inNewsCard || inTokenUsageCard) {
-      // News and token-usage bodies can legitimately name providers/LLM plans.
-      // Scrub hard leaks while preserving those soft terms, matching qcCard().
+    if (inSoftNeutralizedCard) {
+      // News, token-usage, and SYSTEM HEALTH bodies can legitimately name
+      // providers / LLM plans / subsystem-evidence words. Scrub hard leaks while
+      // preserving those soft terms via the mask/scrub/restore path, matching
+      // qcCard(). This is what keeps a legitimate soft term from collapsing the
+      // whole card body to the canned service-status line (SYSTEM HEALTH roster
+      // vanishing, ExampleCo 2026-07-01).
       out.push(scrubNewsBody(buffer.join('\n')));
     } else {
       out.push(scrubExecutiveText(buffer.join('\n')));
@@ -280,8 +313,7 @@ function repairBriefingMarkdown(markdown) {
     const title = heading ? heading[1].trim() : legacyHeading ? legacyHeading[1].trim() : '';
     if (title) {
       flush();
-      inNewsCard = isNewsCardTitle(title);
-      inTokenUsageCard = isTokenUsageCardTitle(title);
+      inSoftNeutralizedCard = isNewsCardTitle(title) || isSoftTermNeutralizedCardTitle(title);
       out.push(line); // heading is scaffold, kept as-is
       continue;
     }
@@ -298,4 +330,7 @@ module.exports = {
   repairBriefingMarkdown,
   splitMarkdownCards,
   isNewsCardTitle,
+  isTokenUsageCardTitle,
+  isSystemHealthCardTitle,
+  isSoftTermNeutralizedCardTitle,
 };
