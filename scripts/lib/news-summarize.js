@@ -589,6 +589,117 @@ function htmlFragmentToText(h) {
 // "Read more" CTA) so the lowercase verb sense ("witnesses heard on", "read more
 // books") is preserved.
 const CLAUSE_START = '(?<=^|[.!?]\\s)';
+
+// SINGLE SOURCE OF TRUTH for the categorical publisher/page-chrome LABELS that
+// both this stripper AND the live render QC detector (verify-dashboard-cards-
+// live.js NEWS_PUBLISHER_CHROME) treat as chrome. The detector compiles its
+// chrome regex from newsPublisherChromeSource() below, and stripPublisherChrome
+// runs a generic clause-anchored pass over these same labels, so the stripper
+// and the detector can never disagree about what a chrome LABEL is: a label the
+// detector flags is, by construction, a label the stripper removes.
+//
+// These are GENERALIZABLE Capitalized boilerplate labels (NPR/CBS show credits,
+// caption toggles, navigation/recirculation CTAs, law-firm marketing banners).
+// They are intentionally NOT incident-pinned literal place names, bare company
+// names, or ordinary article sentences. A prior detector revision (commit
+// 40b6a2e5) pinned real prose fragments ("Gulf of Oman", "Strait of Hormuz",
+// "The move was highly unusual", "faking his own death", "Tankers and cargo
+// vessels", ...) into the detector; those flagged legitimate world-news prose as
+// chrome (world news routinely names those straits) and were removed. A chrome
+// detector must encode the CATEGORY, never the one literal trigger
+// (feedback_frugal_regression_tests.md).
+//
+// Over-strip guard: each label is a Capitalized boilerplate phrase, and the
+// generic strip pass is clause-anchored AND case-SENSITIVE, so a lowercase
+// in-prose sense survives. Bare company names / common lowercase phrases that
+// over-flag prose ("Getty Images", "AP Photo", "more coverage") are deliberately
+// NOT here -- they belong only inside a chrome SHAPE ("Credit: Getty Images"),
+// which the shape rules in PUBLISHER_CHROME_RULES handle (Codex review
+// 2026-06-30).
+const NEWS_PUBLISHER_CHROME_LABELS = [
+  'Image source',
+  'Image caption',
+  'Courtesy photo',
+  'Business reporter',
+  'BBC Verify',
+  'hide caption',
+  'toggle caption',
+  'Share Twitter',
+  'Share Copy URL',
+  'Read more Overview',
+  'Add NBC News to Google',
+  'CBS News Sunday Morning',
+  'Jane Pauley hosts',
+  "Sunday Morning's familiar faces",
+  'Essential American Songbook',
+  'LISTEN & FOLLOW',
+  'Audio will be available',
+  'Download it here',
+  'Leave your feedback',
+  'Request a Consultation',
+  'Start RFP Process',
+  'A Global Law Firm',
+  'JOIN AILA TODAY',
+  'Trailblazer in Legal Technology',
+  'Enhance your law practice',
+];
+
+// Structural chrome patterns the detector recognizes that are NOT fixed labels
+// (relative/absolute datelines, NPR "Heard on <Show>", CBS broadcast promos, a
+// raw "deltaMinutes" template token). The detector compiles these into its regex
+// alongside the literal labels above; the stripper already covers each via a
+// clause-anchored rule in PUBLISHER_CHROME_RULES. Exported so the detector and
+// stripper share one definition of the structural shapes too. These are matched
+// case-INSENSITIVELY by the detector (the detector regex ExampleCos the 'i' flag);
+// the stripper rules that cover them stay case-sensitive + clause-anchored, which
+// is a strict subset, so anything the stripper removes the detector also flags.
+const NEWS_PUBLISHER_CHROME_PATTERNS = [
+  String.raw`\bPublished \d+\b`,
+  String.raw`\bUpdated \d+\b`,
+  String.raw`\bHeard on\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*\b`,
+  String.raw`\bbroadcast on (?:the )?CBS\b`,
+  String.raw`\bstreams on (?:the )?CBS\b`,
+  String.raw`\bwatch CBS News\b`,
+  String.raw`\[?deltaMinutes?\]?`,
+];
+
+// Escape a literal label for use inside a RegExp source. "&" / "(" / "." etc. in
+// a label ("LISTEN & FOLLOW") must match literally, not as a regex metachar.
+function escapeRegExpLiteral(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Build the word-boundary-anchored literal-label alternation source that both the
+// detector regex and the stripper's generic label pass consume. A label that
+// starts/ends with a word char gets a \b on that side so a partial-word match
+// ("Sharer") is avoided.
+function newsChromeLabelAlternationSource() {
+  return NEWS_PUBLISHER_CHROME_LABELS.map((label) => {
+    const escaped = escapeRegExpLiteral(label);
+    const lead = /^\w/.test(label) ? '\\b' : '';
+    const tail = /\w$/.test(label) ? '\\b' : '';
+    return lead + escaped + tail;
+  }).join('|');
+}
+
+// The full chrome-detector alternation source (labels + structural patterns).
+// verify-dashboard-cards-live.js compiles this into NEWS_PUBLISHER_CHROME so the
+// authoritative live QC definition of "chrome" stays reconciled with the stripper
+// from a single place. Returned as a plain source string (no flags, no global
+// state) so the importer can compile a fresh, stateless RegExp at each call site.
+function newsPublisherChromeSource() {
+  return [newsChromeLabelAlternationSource(), ...NEWS_PUBLISHER_CHROME_PATTERNS].join('|');
+}
+
+// The stripper's generic label pass: every shared label, clause-anchored and
+// case-SENSITIVE, consuming only an optional immediately-trailing terminal mark
+// (never a greedy tail). This is the rule that mechanically reconciles the
+// stripper with the detector's literal-label set.
+const SHARED_LABEL_CHROME_RE = new RegExp(
+  CLAUSE_START + '(?:' + newsChromeLabelAlternationSource() + ')[.!?]?',
+  'g',
+);
+
 const PUBLISHER_CHROME_RULES = [
   // NPR-style show credit: "Heard on All Things Considered". CASE-SENSITIVE
   // "Heard on" at a clause start -- the lowercase verb "witnesses heard on
@@ -693,9 +804,9 @@ const PUBLISHER_CHROME_RULES = [
       '(?:Published|Updated)\\s+\\d{1,2}\\s+[A-Z][a-z]+\\s+\\d{4}(?:,\\s*\\d{1,2}:\\d{2}\\s*[A-Z]{2,4})?\\b[.!?]?',
     'g',
   ),
-  new RegExp(CLAUSE_START + 'Latest Big pharma\\b[.!?]?', 'g'),
-  new RegExp(CLAUSE_START + 'Help ensure someone\\b[.!?]?', 'g'),
-  new RegExp(CLAUSE_START + 'MAKING AMERICA SAFE AGAIN\\b[.!?]?', 'g'),
+  // ("Latest Big pharma", "Help ensure someone", "MAKING AMERICA SAFE AGAIN" were
+  // removed here 2026-06-30: incident-pinned fragments, not proven general chrome.
+  // They were also removed from the live detector. See NEWS_PUBLISHER_CHROME_LABELS.)
   /^Text settings Story text Size (?:Small|Standard|Large|\*){0,80}\s*Standard Wide Links Standard Orange \* Subscribers only Learn more Minimize to nav\s*/i,
   /^Listen Listen \(\d+\s+mins?\) Save Click here to share on social media share-nodes\b[\s\S]{0,260}?Add Al Jazeera on Google info\s*/i,
   /^Toggle Play\s+/i,
@@ -789,6 +900,21 @@ function stripPublisherChrome(text) {
       .replace(/[ \t]{2,}/g, ' ')
       .replace(/^\s+/, '');
   }
+  // GENERIC shared-label pass: strip every entry in NEWS_PUBLISHER_CHROME_LABELS
+  // (the single source of truth the live detector also compiles from). This is
+  // what GUARANTEES the stripper covers every chrome LABEL the detector flags --
+  // a label cannot be in the detector list without also being removed here. The
+  // pass is clause-anchored (start-of-text or after sentence punctuation, via the
+  // CLAUSE_START lookbehind) AND case-SENSITIVE (matchLabelChromeRe ExampleCos no 'i'
+  // flag), so a lowercase in-prose sense survives ("the editor said to leave your
+  // feedback later" is preserved; a "Leave your feedback" CTA at a clause start is
+  // removed). Each label is consumed with an optional immediately-trailing
+  // terminal punctuation only -- never a greedy run -- so a label with no trailing
+  // punctuation does not eat the following real sentence.
+  s = s
+    .replace(SHARED_LABEL_CHROME_RE, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/^\s+/, '');
   // A removed chrome run can leave an orphaned punctuation island (". ." when a
   // CTA between two sentences was stripped). Collapse a lone punctuation mark
   // that is now stranded between spaces so the result reads as clean prose.
@@ -801,6 +927,12 @@ function stripPublisherChrome(text) {
     // pattern requires a non-dot (or start) before the pair and a non-dot (or end)
     // after, so it never bites into a 3+ run.
     .replace(/(^|[^.!?])([.!?])\2(?![.!?])/g, '$1$2')
+    // Drop a comma/semicolon/colon that is now stranded right after a sentence
+    // mark because a clause-start label that began with the orphan's clause was
+    // stripped ("Markets fell. Image source, Reuters." -> "Markets fell., Reuters."
+    // -> "Markets fell. Reuters."). Only a secondary mark immediately following a
+    // terminal mark is collapsed; real prose never writes ".,".
+    .replace(/([.!?])\s*[,;:]+\s*/g, '$1 ')
     // A clause-initial label whose rule stopped BEFORE the sentence period (the
     // "By <Name>" lookahead) leaves a leading orphan period once the label is
     // gone ("By Jane Smith. The agency" -> ". The agency"). Drop a sentence mark
@@ -1568,6 +1700,9 @@ module.exports = {
   fetchArticleText,
   stripHtmlToText,
   stripPublisherChrome,
+  NEWS_PUBLISHER_CHROME_LABELS,
+  NEWS_PUBLISHER_CHROME_PATTERNS,
+  newsPublisherChromeSource,
   buildSummaryPrompt,
   normalizeSummary,
   stripArticleMetaFraming,

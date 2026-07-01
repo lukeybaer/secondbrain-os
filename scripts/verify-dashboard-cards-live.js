@@ -56,6 +56,7 @@ const manifest = require('./lib/briefing-card-manifest.js');
 const {
   HEADLINE_ONLY_NOTE_RE,
   isThreeExampleCoraphArticleSummary,
+  newsPublisherChromeSource,
 } = require('./lib/news-summarize.js');
 const { loadOperatorIdentity } = require('./lib/operator-identity.js');
 
@@ -457,8 +458,22 @@ function newsFaceRows(tile) {
   return rows;
 }
 
-const NEWS_PUBLISHER_CHROME =
-  /(?:\bImage source\b|\bImage caption\b|\bCourtesy photo\b|\bBusiness reporter\b|\bBBC Verify\b|\bPublished \d+\b|\bUpdated \d+\b|\bLatest Big pharma\b|\bHelp ensure someone\b|\bMAKING AMERICA SAFE AGAIN\b|\bShare Twitter\b|\bRead more Overview\b|\bCBS News Sunday Morning\b|\bbroadcast on (?:the )?CBS\b|\bstreams on (?:the )?CBS\b|\bwatch CBS News\b|\bAP Photo\b|\bGetty Images\b|\bHeard on\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*\b|\[?deltaMinutes?\]?|\bmore coverage\b|\bhide caption\b|\btoggle caption\b|\bDownload it here\b|\bJane Pauley hosts\b|\bSunday Morning["']?s familiar faces\b|\bEssential American Songbook\b|\bLISTEN\s*&\s*FOLLOW\b|\bAudio will be available\b|\bCoast Guard is smashing records\b|\bKnow Before You Go\b|\bOffice Closings?\b|\bEven areas above 1,000 metres\b|\bAdd NBC News to Google\b|\bHat-Trick\b|\bBaln de Oro\b|\bEN VIVO\b|\bBy Andrew Greif\b|\bTrailblazer in Legal Technology\b|\bEnhance your law practice\b|\bLeave your feedback\b|\bShare Copy URL\b|\bTankers and cargo vessels\b|\bGulf of Oman\b|\bStrait of Hormuz\b|\bRequest a Consultation\b|\bStart RFP Process\b|\bA Global Law Firm\b|\bJOIN AILA TODAY\b|\bAI agents are becoming more sophisticated\b|\bThe move was highly unusual\b|\bfaking his own death\b)/i;
+// The authoritative live-QC definition of news "chrome" is COMPILED from the
+// single source of truth in news-summarize.js (newsPublisherChromeSource), so it
+// can never drift from what stripPublisherChrome removes. Earlier this regex was
+// a hand-maintained flat alternation that had accrued incident-pinned literal
+// fragments -- place names ("Gulf of Oman", "Strait of Hormuz", "Tankers and
+// cargo vessels") and ordinary article sentences ("The move was highly unusual",
+// "faking his own death", "AI agents are becoming more sophisticated", "Coast
+// Guard is smashing records", "Even areas above 1,000 metres", "Hat-Trick",
+// "Balon de Oro", "EN VIVO", "Know Before You Go", "Office Closings") plus
+// fragments not proven to be page chrome ("Latest Big pharma", "Help ensure
+// someone", "MAKING AMERICA SAFE AGAIN") and bare names/phrases that over-flag
+// real prose ("Getty Images", "AP Photo", "more coverage"). Those flagged
+// legitimate world-news prose as chrome (world news routinely names those
+// straits) and are removed. The detector now ExampleCos only generalizable
+// categorical chrome shapes, shared with the stripper (Codex review 2026-06-30).
+const NEWS_PUBLISHER_CHROME = new RegExp(newsPublisherChromeSource(), 'i');
 const NEWS_JUMBLE_TOKENS = [
   /visualizing the quakes/i,
   /what'?s a doublet/i,
