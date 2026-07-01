@@ -35,7 +35,11 @@ function toolMessages(message, delayedMessage = '', options = {}) {
     messages.push({ type: 'request-response-delayed', content: delayedMessage });
   }
   if (options.silentComplete) {
-    messages.push({ type: 'request-complete', role: 'assistant', content: options.completeContent || '' });
+    messages.push({
+      type: 'request-complete',
+      role: 'assistant',
+      content: options.completeContent || '',
+    });
   } else {
     messages.push({
       type: 'request-complete',
@@ -72,7 +76,8 @@ function buildVapiFunctionTools() {
       {
         task: {
           type: 'string',
-          description: 'Clear task for Claude Code, including context, desired output, and any source files or systems to inspect.',
+          description:
+            'Clear task for Claude Code, including context, desired output, and any source files or systems to inspect.',
         },
         owner_explicit_start: {
           type: 'boolean',
@@ -86,7 +91,8 @@ function buildVapiFunctionTools() {
         },
         continue_session: {
           type: 'boolean',
-          description: 'True when this should continue the most recent Claude Code session instead of starting a new task.',
+          description:
+            'True when this should continue the most recent Claude Code session instead of starting a new task.',
         },
       },
       ['task', 'owner_explicit_start'],
@@ -159,7 +165,8 @@ function buildVapiFunctionTools() {
         },
         callback_requested: {
           type: 'boolean',
-          description: 'True when ExampleCo asked to be called back when done, blocked, failed, or needing feedback.',
+          description:
+            'True when ExampleCo asked to be called back when done, blocked, failed, or needing feedback.',
         },
       },
       ['prompt', 'owner_explicit_start'],
@@ -171,11 +178,13 @@ function buildVapiFunctionTools() {
       {
         task_id: {
           type: 'string',
-          description: 'Exact spine task_id returned by start_agent_session or run_claude_code. Do not pass Codex thread snapshot ids such as codex-thread-* or shortened spoken ids.',
+          description:
+            'Exact spine task_id returned by start_agent_session or run_claude_code. Do not pass Codex thread snapshot ids such as codex-thread-* or shortened spoken ids.',
         },
         session_id: {
           type: 'string',
-          description: 'Alias for task_id only when it is the exact task_id from start_agent_session or run_claude_code.',
+          description:
+            'Alias for task_id only when it is the exact task_id from start_agent_session or run_claude_code.',
         },
         probe_level: {
           type: 'string',
@@ -184,7 +193,12 @@ function buildVapiFunctionTools() {
         },
       },
       [],
-      { messages: toolMessages('Session progress lookup.', 'Session progress lookup still running.') },
+      {
+        messages: toolMessages(
+          'Session progress lookup.',
+          'Session progress lookup still running.',
+        ),
+      },
     ),
     functionTool(
       'callback_commitment',
@@ -274,11 +288,13 @@ function buildVapiFunctionTools() {
       {
         query: {
           type: 'string',
-          description: 'Optional words identifying the session/task to look up, such as "briefing surface" or "branch cleanliness".',
+          description:
+            'Optional words identifying the session/task to look up, such as "briefing surface" or "branch cleanliness".',
         },
         detail: {
           type: 'boolean',
-          description: 'True when ExampleCo asks what happened in a specific session, prompt, outcome, or history.',
+          description:
+            'True when ExampleCo asks what happened in a specific session, prompt, outcome, or history.',
         },
         probe_level: {
           type: 'string',
@@ -372,13 +388,13 @@ function buildVapiFunctionTools() {
     ),
     functionTool(
       'read_briefing_news',
-      "Read the latest morning briefing news cards aloud for ExampleCo. Use when ExampleCo says 'read the news'. While in news-reader mode, if ExampleCo says 'skip' or 'next', call action=next_article immediately. If he says 'skip section' or 'next section', call action=next_section immediately. Treat controls as efficiency commands: do not acknowledge, do not say hold on, okay, one moment, or filler, and speak only the tool result. The result includes the section name whenever the cursor enters a new section.",
+      "Read the latest morning briefing news cards aloud for ExampleCo. Call once with action=start when ExampleCo says 'read the news'. The server then reads every article, auto-advances to the next when one finishes, and handles skip, next, skip section, stop, start over, and repeat live on the spoken word. Do NOT call this tool again for navigation while news is being read; the server owns it. Only call action=stop if you must force-exit news mode out of band.",
       {
         action: {
           type: 'string',
           enum: ['start', 'next_article', 'next_section', 'current', 'stop'],
           description:
-            'start begins the latest briefing news. next_article advances on skip/next. next_section advances on skip section/next section. current repeats the current article. stop exits news-reader mode.',
+            'start begins the latest briefing news and hands control to the server. Navigation (next_article, next_section, current) is handled live by the server on the spoken word; do not call them. stop force-exits news-reader mode.',
         },
         date: {
           type: 'string',
@@ -406,7 +422,8 @@ function buildVapiFunctionTools() {
         action: {
           type: 'string',
           enum: ['list', 'get', 'search'],
-          description: 'list transcript inventory, get one transcript chunk, or search transcript text.',
+          description:
+            'list transcript inventory, get one transcript chunk, or search transcript text.',
         },
         date: {
           type: 'string',
@@ -442,7 +459,8 @@ function buildVapiFunctionTools() {
       {
         account_label: {
           type: 'string',
-          description: "Calendar account label to check. Defaults to personal for ExampleCo's personal Google Calendar. Use work only if he asks for the work calendar.",
+          description:
+            "Calendar account label to check. Defaults to personal for ExampleCo's personal Google Calendar. Use work only if he asks for the work calendar.",
         },
         days: {
           type: 'integer',
@@ -450,7 +468,8 @@ function buildVapiFunctionTools() {
         },
         include_subjects: {
           type: 'boolean',
-          description: 'True only when ExampleCo asks what the meetings are; otherwise return counts and availability without reading subjects aloud.',
+          description:
+            'True only when ExampleCo asks what the meetings are; otherwise return counts and availability without reading subjects aloud.',
         },
       },
     ),
@@ -464,11 +483,13 @@ function buildVapiFunctionTools() {
         },
         date: {
           type: 'string',
-          description: 'Event date: YYYY-MM-DD, today, or tomorrow. Defaults to today when ExampleCo says a same-day time.',
+          description:
+            'Event date: YYYY-MM-DD, today, or tomorrow. Defaults to today when ExampleCo says a same-day time.',
         },
         start_time: {
           type: 'string',
-          description: 'Start time. Prefer a concrete local time such as 8 PM, 20:00, or an ISO-like YYYY-MM-DDTHH:mm:ss value.',
+          description:
+            'Start time. Prefer a concrete local time such as 8 PM, 20:00, or an ISO-like YYYY-MM-DDTHH:mm:ss value.',
         },
         end_time: {
           type: 'string',
@@ -488,7 +509,8 @@ function buildVapiFunctionTools() {
         },
         account_label: {
           type: 'string',
-          description: "Calendar account label. Defaults to personal. Calendar writes currently support ExampleCo's personal Google Calendar.",
+          description:
+            "Calendar account label. Defaults to personal. Calendar writes currently support ExampleCo's personal Google Calendar.",
         },
       },
       ['title', 'start_time'],

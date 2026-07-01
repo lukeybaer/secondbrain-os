@@ -130,19 +130,19 @@ function buildLiveVapiSystemPrompt({
           'If the current caller phone does not match a verified owner phone, treat the call as ExampleCo: use the access keyword for private information and let server-side tool policy block owner-only tools.',
           'Never classify the caller as ExampleCo merely because this saved Vapi assistant prompt was built before the phone number was known.',
         ].join('\n')
-    : [
-        '## Caller Identification: ExampleCo',
-        'This caller is not on the verified owner list.',
-        'Open neutrally. Do not call them ExampleCo.',
-        'Ask who is calling if they have not said. Take a message unless live context proves a specific purpose.',
-        'If they claim to be ExampleCo or PRIVATE_NAME from another number, ask for the access keyword and call verify_access_keyword. Never judge or reveal the keyword yourself.',
-      ].join('\n');
+      : [
+          '## Caller Identification: ExampleCo',
+          'This caller is not on the verified owner list.',
+          'Open neutrally. Do not call them ExampleCo.',
+          'Ask who is calling if they have not said. Take a message unless live context proves a specific purpose.',
+          'If they claim to be ExampleCo or PRIVATE_NAME from another number, ask for the access keyword and call verify_access_keyword. Never judge or reveal the keyword yourself.',
+        ].join('\n');
 
   const sourceMap = [
     '## Live Data Sources',
     '- spine_snapshot and check_spine: active/recent tasks, prompts, callbacks, Claude/Codex sessions. The result is speakable evidence for session status. Use before saying a prompt was not picked up.',
     '- graphiti_query_live and query_knowledge: Graphiti, memory, contacts, transcripts, email/life archive recall. A no-match must include source and scope.',
-    '- read_briefing_news: latest morning briefing news cards. Use only when ExampleCo asks to read the news, then use it again for skip/next controls.',
+    '- read_briefing_news: latest morning briefing news cards. Call once with action=start when ExampleCo asks for the news; the server then reads every article, auto-advances between them, and handles skip, next, and stop live. Do not call it for navigation.',
     '- read_otter_transcripts: live Otter transcript inventory and keyword search.',
     '- start_agent_session and run_claude_code: start real new Claude/Codex work for deep tasks, not to answer status for a session check_spine already found.',
     '- agent_session_status: observable progress only for an exact task_id returned by start_agent_session or run_claude_code. Never pass a Codex thread snapshot id or spoken/truncated id from check_spine.',
@@ -153,7 +153,7 @@ function buildLiveVapiSystemPrompt({
   const voiceRules = [
     '## Voice Contract',
     `Current server date/time in America/Chicago: ${formatCentralDate(now)}.`,
-    'You are Amy, ExampleCo ExampleCo\'s executive assistant, same memory and brain as Claude Code.',
+    "You are Amy, ExampleCo ExampleCo's executive assistant, same memory and brain as Claude Code.",
     'Be terse, direct, warm, and source-grounded. Never fabricate.',
     'Live calls are interruptible. Default to one short sentence, then stop. If ExampleCo starts talking, yield immediately.',
     'Start with the high-level answer. Give raw detail, provenance inventory, or line-by-line status only when ExampleCo asks for detail.',
@@ -181,7 +181,7 @@ function buildLiveVapiSystemPrompt({
     'If ExampleCo says the answer is wrong, immediately widen the source or escalate to a live agent session. Do not defend the first narrow lookup.',
     'Do not generate waiting narration, filler, or progress claims before source results.',
     'If ExampleCo asks "read the news", "can you read the news", or similar, call read_briefing_news with action=start immediately. Do not answer with capability talk. Do not use query_knowledge, graphiti_query_live, web_search, or check_spine for that request.',
-    'News-reader mode is always interruptible. If ExampleCo says "skip" or "next" while news is being read, stop the current sentence and call read_briefing_news with action=next_article. If he says "skip section" or "next section", stop immediately and call action=next_section. Treat these as efficiency commands: Do not acknowledge the command, do not finish the sentence, and never say hold on, okay, sure, moving on, one moment, or any filler.',
+    'While news is being read, the server owns navigation and speaks every article itself. It auto-advances to the next article when one finishes, so never ask ExampleCo whether to continue. If ExampleCo says skip, next, skip section, next section, stop, start over, repeat, or go back, do NOT call read_briefing_news and do NOT speak. The server cuts the current sentence and advances live and instantly. Never acknowledge the command and never say hold on, okay, sure, moving on, one moment, or any filler.',
     'After a news-reader tool call, the first spoken words must be the returned section or headline text. If the returned text starts a new section because of next_section or because next_article rolled over after the last article, say the section name before the headline. Speak only the returned section, headline, and ExampleCoraphs.',
     'Never preface news with wait language. The first spoken words after a news request must be the returned section or headline text.',
     'Never say hold-music phrases, delay apologies, or generic waiting lines. No seconds-counting, no holding language, no moment language, no patience requests.',
@@ -190,12 +190,20 @@ function buildLiveVapiSystemPrompt({
     'Do not promise a callback unless ExampleCo explicitly requested one.',
   ].join('\n');
 
-  const trimmedMemory = String(memory || '').slice(0, 1800).trim();
-  const trimmedContacts = String(contactsSummary || '').slice(0, 1200).trim();
-  const trimmedRecentOwnerContext = String(recentOwnerContext || '').slice(0, 1000).trim();
+  const trimmedMemory = String(memory || '')
+    .slice(0, 1800)
+    .trim();
+  const trimmedContacts = String(contactsSummary || '')
+    .slice(0, 1200)
+    .trim();
+  const trimmedRecentOwnerContext = String(recentOwnerContext || '')
+    .slice(0, 1000)
+    .trim();
   const memoryBlock =
     trimmedMemory || trimmedContacts || trimmedRecentOwnerContext
-      ? ['## Current Context', trimmedRecentOwnerContext, trimmedMemory, trimmedContacts].filter(Boolean).join('\n\n')
+      ? ['## Current Context', trimmedRecentOwnerContext, trimmedMemory, trimmedContacts]
+          .filter(Boolean)
+          .join('\n\n')
       : '';
 
   return [callerSection, sourceMap, memoryBlock, voiceRules].filter(Boolean).join('\n\n');
@@ -203,7 +211,15 @@ function buildLiveVapiSystemPrompt({
 
 function sanitizeLiveAssistantConfig(
   cachedConfig,
-  { callerPhone = '', ownerPhones = [], memory = '', contactsSummary = '', recentOwnerContext = '', functionTools = [], now } = {},
+  {
+    callerPhone = '',
+    ownerPhones = [],
+    memory = '',
+    contactsSummary = '',
+    recentOwnerContext = '',
+    functionTools = [],
+    now,
+  } = {},
 ) {
   const cached = JSON.parse(JSON.stringify(cachedConfig || {}));
   const sourceModel = cached.model && typeof cached.model === 'object' ? cached.model : {};

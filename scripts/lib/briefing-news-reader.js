@@ -264,6 +264,10 @@ function normalizeAction(params = {}) {
     .trim();
   if (['skip_section', 'next_section', 'section'].includes(raw)) return 'next_section';
   if (['skip', 'next', 'next_article', 'article'].includes(raw)) return 'next_article';
+  if (['previous', 'previous_article', 'back', 'go_back', 'last'].includes(raw)) return 'previous';
+  if (['restart', 'start_over', 'startover', 'beginning', 'from_the_beginning'].includes(raw)) {
+    return 'restart';
+  }
   if (['repeat', 'current', 'again'].includes(raw)) return 'current';
   if (['stop', 'end', 'cancel'].includes(raw)) return 'stop';
   return 'start';
@@ -310,6 +314,33 @@ function advanceArticle(session) {
 function advanceSection(session) {
   if (!session) return;
   session.sectionIndex += 1;
+  session.articleIndex = 0;
+  session.lastSpokenSectionIndex = -1;
+}
+
+function previousArticle(session) {
+  if (!session) return;
+  const previousSectionIndex = session.sectionIndex;
+  if (session.sectionIndex >= session.sections.length) {
+    // Stepping back from the end lands on the last real article.
+    session.sectionIndex = Math.max(0, session.sections.length - 1);
+    const last = session.sections[session.sectionIndex];
+    session.articleIndex = last ? Math.max(0, last.articles.length - 1) : 0;
+  } else if (session.articleIndex > 0) {
+    session.articleIndex -= 1;
+  } else if (session.sectionIndex > 0) {
+    session.sectionIndex -= 1;
+    session.articleIndex = session.sections[session.sectionIndex].articles.length - 1;
+  }
+  // Already at the very first article: stay put.
+  if (session.sectionIndex !== previousSectionIndex) {
+    session.lastSpokenSectionIndex = -1;
+  }
+}
+
+function restartSession(session) {
+  if (!session) return;
+  session.sectionIndex = 0;
   session.articleIndex = 0;
   session.lastSpokenSectionIndex = -1;
 }
@@ -365,6 +396,10 @@ function handleBriefingNewsReader(params = {}, callObj = {}, opts = {}) {
     advanceSection(session);
   } else if (action === 'next_article') {
     advanceArticle(session);
+  } else if (action === 'previous') {
+    previousArticle(session);
+  } else if (action === 'restart') {
+    restartSession(session);
   }
 
   session.updatedAtMs = Date.now();
