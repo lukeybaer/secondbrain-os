@@ -21,6 +21,7 @@
     "verify:heal-ladder-refs": "node scripts/verify-heal-ladder-refs.js",
     "verify:devops": "node scripts/verify-shared-checkout-clean.js",
     "verify:otter-transcript-pipeline-drift": "node scripts/verify-otter-transcript-pipeline-drift.js",
+    "verify:voice-call-stack-drift": "node scripts/verify-voice-call-stack-drift.js",
     "verify:devops-release-drift": "vitest run scripts/__tests__/devops-release-core.test.js tests/pii-screen.spec.ts",
     "verify:voice-processing-coverage": "node scripts/otter-processing-coverage-probe.js",
     "verify:vapi-owner-status-context": "node scripts/probe-vapi-owner-status-context.js",
