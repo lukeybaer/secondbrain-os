@@ -13,15 +13,23 @@
 // every load-bearing step. If a future edit removes a step or reverts the
 // path, this test fails before the change ships.
 
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { execSync } from 'child_process';
 import * as path from 'path';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const HOOK = path.join(REPO_ROOT, 'scripts', 'claude-hooks', 'learn-and-usage.js');
 
-function runHook(): { systemMessage: string } {
-  const stdout = execSync(`node "${HOOK}"`, { encoding: 'utf8', timeout: 10_000 });
+function runRawHook(prompt: string): string {
+  return execSync(`node "${HOOK}"`, {
+    encoding: 'utf8',
+    input: JSON.stringify({ prompt }),
+    timeout: 10_000,
+  });
+}
+
+function runHook(prompt = '#learn remember this'): { systemMessage: string } {
+  const stdout = runRawHook(prompt);
   return JSON.parse(stdout);
 }
 
@@ -34,6 +42,10 @@ describe('#learn hook (scripts/claude-hooks/learn-and-usage.js)', () => {
     expect(typeof out.systemMessage).toBe('string');
     expect(out.systemMessage.length).toBeGreaterThan(200);
     msg = out.systemMessage;
+  });
+
+  it('stays silent for ordinary prompts when Claude matcher leaks', () => {
+    expect(runRawHook('Reply with exactly: OK')).toBe('');
   });
 
   describe('canonical workflow content (locked)', () => {
@@ -78,5 +90,3 @@ describe('#learn hook (scripts/claude-hooks/learn-and-usage.js)', () => {
     });
   });
 });
-
-import { beforeAll } from 'vitest';
