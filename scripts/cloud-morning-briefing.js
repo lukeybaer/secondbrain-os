@@ -3692,6 +3692,115 @@ function runPeopleAndMemorySnapshot(dataDir) {
   }
 }
 
+// Read a people/memory snapshot JSON from the SAME directory the generator
+// wrote it to. runPeopleAndMemorySnapshot spawns snapshot-people-and-memory-
+// delta.js with SECONDBRAIN_DATA_DIR=<dataDir>, and that generator writes
+// <dataDir>/agent/<basename>. The markdown card builders below MUST read from
+// that exact path or writer/reader disagree again and the card falsely renders
+// "the memory and people snapshot did not run on the cloud build". Mirrors the
+// SECONDBRAIN_DATA_DIR-aware candidate list ec2-server.js snapshotCandidatePaths
+// uses for the HTML dashboard, so both render surfaces read the same file.
+function readSnapshotForMarkdown(dataDir, basename) {
+  const candidates = [];
+  if (dataDir) candidates.push(path.join(dataDir, 'agent', basename));
+  if (process.env.SECONDBRAIN_DATA_DIR)
+    candidates.push(path.join(process.env.SECONDBRAIN_DATA_DIR, 'agent', basename));
+  candidates.push('/opt/secondbrain/data/agent/' + basename);
+  candidates.push(path.join(REPO_ROOT, 'data', 'agent', basename));
+  for (const p of [...new Set(candidates)]) {
+    try {
+      if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return null;
+}
+
+// Strip any raw filesystem path from an executive summary fragment. A raw POSIX
+// path (/opt/secondbrain/..., /life-archive/..., data/agent/..., or a bare
+// Windows drive-letter path) leaking into a card FACE is an EXEC-CRISPNESS
+// defect the live render QC hard-blocks on. Memory index lines legitimately
+// embed example paths in their prose, so scrub them from the crisp face while
+// leaving the drilldown detail intact. Category-based: matches any path shape,
+// not the single incident path.
+function scrubRawPathsFromFace(text) {
+  return String(text || '')
+    .replace(/\/(?:opt\/secondbrain|life-archive|Users|mnt|home|data\/agent)\/[^\s)]+/gi, '')
+    .replace(/\b[A-Za-z]:\\(?:[^\s\\]+\\?)+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\(\s*\)/g, '')
+    .replace(/\s+([.,;)])/g, '$1')
+    .trim();
+}
+
+// Build the MEMORY.MD CHANGES (24H) markdown section from the snapshot the
+// generator wrote to <dataDir>/agent/memory-delta-snapshot.json. Returns a
+// populated legacySection when the snapshot ExampleCos real 24h activity, or null
+// so the never-drop manifest loop emits the honest blocker instead. The FACE
+// (first content line, the crisp summary) is scrubbed of raw filesystem paths so
+// it passes EXEC-CRISPNESS.
+function buildMemoryDeltaMarkdownSection(dataDir) {
+  const snap = readSnapshotForMarkdown(dataDir, 'memory-delta-snapshot.json');
+  if (!snap) return null;
+  if (snap.empty || (!snap.added && !snap.deleted && !(snap.commits > 0))) return null;
+  const commits = Number(snap.commits || 0);
+  const added = Number(snap.added || 0);
+  const deleted = Number(snap.deleted || 0);
+  // Crisp face: the verdict up front, no raw path. Prefer a real commit subject
+  // (scrubbed) so the summary says WHAT changed, not just the counts.
+  const subjectFace = scrubRawPathsFromFace(
+    (Array.isArray(snap.subjects) && snap.subjects[0]) || '',
+  );
+  const face =
+    `${commits} memory commit${commits === 1 ? '' : 's'}, +${added}/-${deleted} lines` +
+    (subjectFace ? ` -- ${subjectFace}` : '') +
+    '.';
+  const detailLines = [];
+  const subjects = Array.isArray(snap.subjects) ? snap.subjects : [];
+  for (const s of subjects.slice(0, 3)) {
+    const clean = scrubRawPathsFromFace(s);
+    if (clean) detailLines.push(`- ${clean}`);
+  }
+  if (Number.isFinite(snap.currentLines) && snap.currentLines > 0) {
+    detailLines.push(`MEMORY.md is now ${snap.currentLines} lines (Tier 1 index).`);
+  }
+  return legacySection(
+    'MEMORY.MD CHANGES (24H)',
+    [face, ...detailLines].filter(Boolean).join('\n'),
+  );
+}
+
+// Build the PEOPLE FILES CHANGES (24H) markdown section from the snapshot the
+// generator wrote to <dataDir>/agent/people-files-snapshot.json. Returns a
+// populated legacySection when real per-contact changes exist, else null so the
+// honest blocker fires. Aggregator/index files (_gmail-daily-intel, INDEX) are
+// already excluded at snapshot-write time.
+function buildPeopleFilesMarkdownSection(dataDir) {
+  const snap = readSnapshotForMarkdown(dataDir, 'people-files-snapshot.json');
+  if (!snap) return null;
+  const entries = Array.isArray(snap.allEntries) ? snap.allEntries : [];
+  if (snap.empty || entries.length === 0) return null;
+  const totalFiles = Number(snap.totalFiles || entries.length);
+  const totalLines = Number(snap.totalLines || 0);
+  const face =
+    `${totalFiles} contact file${totalFiles === 1 ? '' : 's'} changed ` +
+    `(${totalLines} line${totalLines === 1 ? '' : 's'}).`;
+  const detailLines = [];
+  for (const e of entries.slice(0, 5)) {
+    const name = scrubRawPathsFromFace(e.name || e.file || 'contact');
+    const sample = scrubRawPathsFromFace(e.addedSample || e.lastSubject || '');
+    detailLines.push(
+      `- ${name}: +${Number(e.added || 0)}/-${Number(e.deleted || 0)}` +
+        (sample ? ` -- ${sample}` : ''),
+    );
+  }
+  return legacySection(
+    'PEOPLE FILES CHANGES (24H)',
+    [face, ...detailLines].filter(Boolean).join('\n'),
+  );
+}
+
 function buildRequiredCloudCards(dataDir, date, blockerLines, now = new Date()) {
   // Each entry pairs the generated card with its canonical manifest id so the
   // manifest-driven assembly can resolve the card by id (never-drop) instead of
@@ -7372,6 +7481,14 @@ function buildCloudMorningBriefing({
         snapshotPath: path.join(dataDir, 'agent', 'git-hygiene-snapshot.json'),
       }),
     ),
+    // MEMORY.MD / PEOPLE FILES CHANGES read the snapshot the generator wrote to
+    // <dataDir>/agent (runPeopleAndMemorySnapshot ran it above with
+    // SECONDBRAIN_DATA_DIR=dataDir). Reading the SAME dir the writer used is what
+    // stops the false "the memory and people snapshot did not run on the cloud
+    // build" blocker. null (no/empty snapshot) falls through to the honest
+    // blocker via the never-drop manifest loop, so the card can never vanish.
+    memory_md_changes: buildMemoryDeltaMarkdownSection(dataDir),
+    people_files_changes: buildPeopleFilesMarkdownSection(dataDir),
     // News bucket + employer-news + covid + mortgage-rate + shorts + viral +
     // video-queue come from buildRequiredCloudCards, keyed by manifest id.
     ...requiredCards.byManifestId,
@@ -8053,6 +8170,9 @@ module.exports = {
   buildShortsProposalsCard,
   buildViralTechCard,
   buildRequiredCloudCards,
+  buildMemoryDeltaMarkdownSection,
+  buildPeopleFilesMarkdownSection,
+  scrubRawPathsFromFace,
   materializeFallbackArtifact,
   readLatestCompleteDatedArtifact,
 };
