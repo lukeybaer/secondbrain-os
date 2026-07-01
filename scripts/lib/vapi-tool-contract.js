@@ -25,7 +25,7 @@ const VAPI_FUNCTION_TOOL_NAMES = [
 const TOOL_RESULT_ONLY_HINT =
   'Answer with only the tool result. Do not add greetings, offers, callbacks, follow-up questions, or closing chatter. For status lookups, stop after the source-grounded status sentence.';
 const NEWS_RESULT_ONLY_HINT =
-  'Speak only the news-reader tool result exactly as returned. Do not prepend hold on, just a sec, okay, sure, moving on, one moment, or any other filler.';
+  'If the news-reader tool result is empty, say nothing. Otherwise speak the result exactly as returned, verbatim, with no paraphrase, summary, omissions, hold on, just a sec, okay, sure, moving on, one moment, or filler.';
 const PROBE_LEVEL_ENUM = ['0', '1', '2', '3', '4'];
 
 function toolMessages(message, delayedMessage = '', options = {}) {
@@ -388,13 +388,13 @@ function buildVapiFunctionTools() {
     ),
     functionTool(
       'read_briefing_news',
-      "Read the latest morning briefing news cards aloud for ExampleCo. Call once with action=start when ExampleCo says 'read the news'. The server then reads every article, auto-advances to the next when one finishes, and handles skip, next, skip section, stop, start over, and repeat live on the spoken word. Do NOT call this tool again for navigation while news is being read; the server owns it. Only call action=stop if you must force-exit news mode out of band.",
+      "Read the latest morning briefing news cards aloud for ExampleCo. The tool returns exact article text; the model must speak that text verbatim. Call action=start when ExampleCo says 'read the news'. While news is being read, call next_article for skip/next or clean auto-advance, next_section for skip section, previous for go back, restart for start over, current for repeat, and stop to exit. The server dedupes repeated tool calls so one spoken command cannot advance multiple articles.",
       {
         action: {
           type: 'string',
-          enum: ['start', 'next_article', 'next_section', 'current', 'stop'],
+          enum: ['start', 'next_article', 'next_section', 'current', 'previous', 'restart', 'stop'],
           description:
-            'start begins the latest briefing news and hands control to the server. Navigation (next_article, next_section, current) is handled live by the server on the spoken word; do not call them. stop force-exits news-reader mode.',
+            'start begins the latest briefing news. next_article advances for skip/next or clean auto-advance. next_section advances sections. current repeats, previous goes back, restart starts over, and stop exits. Speak non-empty results verbatim; say nothing for an empty duplicate/no-op result.',
         },
         date: {
           type: 'string',

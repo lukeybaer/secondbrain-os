@@ -62,12 +62,10 @@ LIVE_DEPS=(
   "scripts/lib/news-summarize.js"
   "scripts/verify-dashboard-cards-live.js"
   "scripts/lib/system-health-nongreen.js"
-  # News-reader continuous auto-play + interruptible skip (2026-06-30). ec2-server.js
-  # requires the playback state machine, which requires the control classifier; ship
-  # both directly so a flaky build-path git-pull cannot leave EC2 importing a missing
-  # module on PM2 restart. See voice-call-stack.LESSONS.md.
-  "scripts/lib/news-reader-playback.js"
-  "scripts/lib/vapi-news-control.js"
+  # News-reader model-spoken auto-play + idempotent skip (2026-07-01). ec2-server.js
+  # requires the model playback guard directly so a flaky build-path git-pull cannot
+  # leave EC2 importing a missing module on PM2 restart.
+  "scripts/lib/news-reader-model-playback.js"
 )
 
 echo "[deploy] syntax-checking repo ec2-server.js"
