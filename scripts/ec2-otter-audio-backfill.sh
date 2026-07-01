@@ -26,20 +26,26 @@ ROOT="${SECONDBRAIN_ROOT:-/opt/secondbrain}"
 LOG_DIR="$ROOT/logs"
 LOCK="/tmp/secondbrain-otter-audio-backfill.lock"
 CONFIG="${OTTER_CONFIG_PATH:-$ROOT/data/config/otter.json}"
+# Pin the data root EXPLICITLY so audio lands where the coverage report counts it,
+# regardless of how node resolves the script-relative REPO. On EC2 the live store
+# is /opt/secondbrain/data, NOT the hourly-synced checkout root. ExampleCo 2026-07-01
+# #gap: the backfill used to ignore this and write into the checkout's empty
+# data/otter/audio-full. See dev-plans/core/otter-transcript-pipeline.md section 4.5.
+DATA_DIR="${SECONDBRAIN_DATA_DIR:-$ROOT/data}"
 # --limit caps a single pass so one run can never monopolize the host; the next
 # 30-min run picks up the remainder (still converges, never stacks).
 LIMIT="${OTTER_BACKFILL_LIMIT:-200}"
 NODE_BIN="${NODE_BIN:-/usr/bin/node}"
 
 STAMP="$(date -u +%FT%TZ)"
-echo "[otter-audio-backfill] $STAMP root=$ROOT config=$CONFIG limit=$LIMIT"
+echo "[otter-audio-backfill] $STAMP root=$ROOT dataDir=$DATA_DIR config=$CONFIG limit=$LIMIT"
 
 # Build the exact command once so the dry-run print and the real spawn cannot drift.
 CMD=("$NODE_BIN" scripts/otter-full-audio-backfill.js --write --limit "$LIMIT" --config "$CONFIG")
 
 # TEST GATE: never make a real Otter network call under test / dry-run.
 if [ "${NODE_ENV:-}" = "test" ] || [ "${VITEST:-}" = "true" ] || [ "${OTTER_BACKFILL_DRY_RUN:-}" = "1" ]; then
-  echo "[otter-audio-backfill] DRY-RUN (test mode): would run: (cd $ROOT && OTTER_CONFIG_PATH=$CONFIG ${CMD[*]})"
+  echo "[otter-audio-backfill] DRY-RUN (test mode): would run: (cd $ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR OTTER_CONFIG_PATH=$CONFIG ${CMD[*]})"
   exit 0
 fi
 
@@ -48,7 +54,7 @@ mkdir -p "$LOG_DIR"
 
 # flock -n: if a backfill is already running, this run is a clean no-op (idempotent
 # under overlap). The underlying script also skips otids that already have audio.
-flock -n "$LOCK" env OTTER_CONFIG_PATH="$CONFIG" "${CMD[@]}" | tail -20
+flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" OTTER_CONFIG_PATH="$CONFIG" "${CMD[@]}" | tail -20
 status=${PIPESTATUS[0]}
 
 if [ "$status" = "0" ]; then

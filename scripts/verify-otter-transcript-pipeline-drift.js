@@ -48,6 +48,11 @@ const MUST_CONTAIN = [
   ],
   ['scripts/otter-full-audio-backfill.js', "'--write'", 'audio download is gated behind --write'],
   [
+    'scripts/otter-full-audio-backfill.js',
+    'process.env.SECONDBRAIN_DATA_DIR',
+    'backfill resolves audio/raw/enriched from SECONDBRAIN_DATA_DIR (the same dir the coverage report counts), not a bare REPO join -- the 2026-07-01 path split',
+  ],
+  [
     'scripts/otter-post-ingest-voice-intelligence.js',
     'full_audio',
     'orchestrator runs the full_audio step',
