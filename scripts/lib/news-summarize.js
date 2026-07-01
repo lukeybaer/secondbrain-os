@@ -826,6 +826,14 @@ const PUBLISHER_CHROME_RULES = [
       '(?:Published|Updated)\\s+\\d{1,2}\\s+[A-Z][a-z]+\\s+\\d{4}(?:,\\s*\\d{1,2}:\\d{2}\\s*[A-Z]{2,4})?\\b[.!?]?',
     'g',
   ),
+  // Leading photo / wire credit: "<ALLCAPS PHOTOGRAPHER NAME>/<AGENCY> [Getty
+  // Images]" (live COVID 2026-07-01 -- "ExampleCo T. FALLON/AFP Getty Images Paxlovid
+  // ..."). A body that OPENS with 1-4 all-caps name tokens + "/" + a known wire
+  // agency is a photo caption credit, never article prose, so the whole leading
+  // credit (plus a trailing "Getty Images" agency tag) is removed. Anchored to the
+  // credit SHAPE (all-caps name + slash + agency), so an ordinary sentence that
+  // merely contains a slash or an agency name in prose is untouched.
+  /^\s*[A-Z][A-Z.]+(?:\s+[A-Z][A-Z.]+){0,3}\/(?:AFP|Reuters|AP|EPA|Bloomberg|Getty(?:\s+Images)?|Anadolu(?:\s+Agency)?)\b(?:\s+Getty\s+Images)?[\s,.:;-]*/,
   // ("Latest Big pharma", "Help ensure someone", "MAKING AMERICA SAFE AGAIN" were
   // removed here 2026-06-30: incident-pinned fragments, not proven general chrome.
   // They were also removed from the live detector. See NEWS_PUBLISHER_CHROME_LABELS.)
@@ -899,6 +907,14 @@ const PUBLISHER_CHROME_RULES = [
   // the platform run must actually follow "Share".
   /\bShare\s+(?:Twitter|Facebook|LinkedIn)(?:\s+(?:Twitter|Facebook|LinkedIn))*\b[^.!?\n]{0,40}[.!?]?/g,
   /\b(?:Twitter|Facebook|LinkedIn|Email|Print|Copy link)(?:\s+(?:Twitter|Facebook|LinkedIn|Email|Print|Copy link)){2,}\b/g,
+  // LAST rule: a STANDALONE relative-timestamp dateline that leaked MID-body (not
+  // at a clause start, no owning byline): live WORLD NEWS 2026-07-01 -- "... thought
+  // to be a firm Updated 55 minutes ago the filing ...". Runs after every combined
+  // byline+dateline rule above so it only mops up an orphan dateline they did not
+  // already consume as part of a byline (otherwise it would strip the dateline tail
+  // first and break those combined strips). CASE-SENSITIVE capital "Published|
+  // Updated" keeps real prose "... was updated 3 hours ago ..." (lowercase verb).
+  /(?:Published|Updated)\s+\d{1,2}\s+(?:minutes?|hours?|days?)\s+ago\b[.!?]?/g,
 ];
 
 // Strip the canonical publisher-chrome patterns from already-extracted plain
