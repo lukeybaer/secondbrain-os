@@ -21,17 +21,36 @@ const { execFileSync } = require('child_process');
 
 // REPO honors SECONDBRAIN_ROOT (the repo-wide convention used by
 // health-self-heal.js) so regression tests can point it at a temp git repo.
+// git still runs in REPO (that is where the .git lives).
 const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
-const OUT_PEOPLE = path.join(REPO, 'data', 'agent', 'people-files-snapshot.json');
-const OUT_MEMORY = path.join(REPO, 'data', 'agent', 'memory-delta-snapshot.json');
+// OUTPUT honors SECONDBRAIN_DATA_DIR so the snapshots land in the SAME live
+// data store the cloud briefing reader looks at (/opt/secondbrain/data/agent
+// on EC2). cloud-morning-briefing.js spawns this generator with
+// SECONDBRAIN_DATA_DIR=<live data dir>, but the generator used to ignore it and
+// wrote to REPO/data/agent (the build-path checkout), so the reader kept
+// reading a stale/missing snapshot at the live path and rendered "the memory
+// and people snapshot did not run on the cloud build" even when the data
+// existed. Defaulting to REPO/data keeps local runs and the regression tests
+// (which only set SECONDBRAIN_ROOT) unchanged.
+const DATA_DIR = process.env.SECONDBRAIN_DATA_DIR || path.join(REPO, 'data');
+const OUT_PEOPLE = path.join(DATA_DIR, 'agent', 'people-files-snapshot.json');
+const OUT_MEMORY = path.join(DATA_DIR, 'agent', 'memory-delta-snapshot.json');
 
 function execGit(args) {
   try {
-    return execFileSync('git', args, { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch { return ''; }
+    return execFileSync('git', args, {
+      cwd: REPO,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return '';
+  }
 }
 
-function ensureDir(p) { fs.mkdirSync(path.dirname(p), { recursive: true }); }
+function ensureDir(p) {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+}
 
 // ExampleCo 2026-04-29 dispatch (third pass): aggregator/index files like
 // _gmail-daily-intel.md and _upcoming-dates.md are not people. Filter them
@@ -99,8 +118,10 @@ function explicitPeopleDates(text, nowMs = Date.now()) {
 }
 
 function hasVoiceOrSourceProof(text) {
-  return /\b(?:voice(?:print)?|speaker|source|transcript)\b/i.test(text) &&
-    /\b(?:verified|confirmed|matched|identified|proof|evidence|explicitly)\b/i.test(text);
+  return (
+    /\b(?:voice(?:print)?|speaker|source|transcript)\b/i.test(text) &&
+    /\b(?:verified|confirmed|matched|identified|proof|evidence|explicitly)\b/i.test(text)
+  );
 }
 
 function isUnsafePeopleSample(text, file = '') {
@@ -125,13 +146,21 @@ function isPlaceholderPeopleSamplePart(text) {
 
 function freshPeopleSubjectText(text, hours = 24) {
   const subject = String(text || '').trim();
-  if (subject && peopleHistoryPartIsFresh(subject, hours) && !isUnsafePeopleSample(subject)) return subject;
+  if (subject && peopleHistoryPartIsFresh(subject, hours) && !isUnsafePeopleSample(subject))
+    return subject;
   return 'contact file changed';
 }
 
 function snapshotPeople(hours = 24) {
   const since = `${hours} hours ago`;
-  const numstat = execGit(['log', `--since=${since}`, '--numstat', '--format=__COMMIT__%H %s', '--', 'memory/contacts/']);
+  const numstat = execGit([
+    'log',
+    `--since=${since}`,
+    '--numstat',
+    '--format=__COMMIT__%H %s',
+    '--',
+    'memory/contacts/',
+  ]);
   if (!numstat) return null;
   const perFile = {};
   let lastSubject = '';
@@ -194,15 +223,17 @@ function snapshotPeople(hours = 24) {
     const lastSpace = cut.lastIndexOf(' ');
     return (lastSpace > 500 ? cut.slice(0, lastSpace) : cut) + ' [...]';
   }
-  const entries = Object.entries(perFile).map(([file, s]) => ({
-    file,
-    name: path.basename(file, '.md').replace(/-/g, ' '),
-    delta: s.added + s.deleted,
-    added: s.added,
-    deleted: s.deleted,
-    lastSubject: freshPeopleSubjectText(s.lastSubject, hours),
-    addedSample: addedSampleFor(file),
-  })).sort((a, b) => b.delta - a.delta);
+  const entries = Object.entries(perFile)
+    .map(([file, s]) => ({
+      file,
+      name: path.basename(file, '.md').replace(/-/g, ' '),
+      delta: s.added + s.deleted,
+      added: s.added,
+      deleted: s.deleted,
+      lastSubject: freshPeopleSubjectText(s.lastSubject, hours),
+      addedSample: addedSampleFor(file),
+    }))
+    .sort((a, b) => b.delta - a.delta);
   if (entries.length === 0) return null;
   return {
     biggest: entries[0],
@@ -231,7 +262,14 @@ function repoCommitCount(hours) {
 
 function snapshotMemory(hours = 24) {
   const since = `${hours} hours ago`;
-  const numstat = execGit(['log', `--since=${since}`, '--numstat', '--format=__COMMIT__%H|%s', '--', 'memory/MEMORY.md']);
+  const numstat = execGit([
+    'log',
+    `--since=${since}`,
+    '--numstat',
+    '--format=__COMMIT__%H|%s',
+    '--',
+    'memory/MEMORY.md',
+  ]);
   const repoCommits = repoCommitCount(hours);
   let added = 0;
   let deleted = 0;
@@ -243,7 +281,10 @@ function snapshotMemory(hours = 24) {
       continue;
     }
     const m = line.match(/^(\d+)\s+(\d+)\s+memory\/MEMORY\.md/);
-    if (m) { added += parseInt(m[1], 10); deleted += parseInt(m[2], 10); }
+    if (m) {
+      added += parseInt(m[1], 10);
+      deleted += parseInt(m[2], 10);
+    }
   }
   // Return null only when the repo was genuinely idle. If commits exist but
   // none touched MEMORY.md, still emit a card so the dashboard reflects real
@@ -272,12 +313,16 @@ function snapshotMemory(hours = 24) {
         if (addedLines.length >= 5 && deletedLines.length >= 5) break;
       }
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   let currentLines = 0;
   try {
     const memPath = path.join(REPO, 'memory', 'MEMORY.md');
     if (fs.existsSync(memPath)) currentLines = fs.readFileSync(memPath, 'utf8').split('\n').length;
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return {
     added,
     deleted,
@@ -319,7 +364,9 @@ function emptyMemorySnapshot(hours = 24) {
   try {
     const memPath = path.join(REPO, 'memory', 'MEMORY.md');
     if (fs.existsSync(memPath)) currentLines = fs.readFileSync(memPath, 'utf8').split('\n').length;
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return {
     added: 0,
     deleted: 0,
@@ -344,7 +391,9 @@ function main() {
   ensureDir(OUT_PEOPLE);
   if (people) {
     fs.writeFileSync(OUT_PEOPLE, JSON.stringify(people, null, 2));
-    console.log(`wrote ${OUT_PEOPLE}: biggest=${people.biggest.name} (${people.biggest.delta} lines), totalFiles=${people.totalFiles}`);
+    console.log(
+      `wrote ${OUT_PEOPLE}: biggest=${people.biggest.name} (${people.biggest.delta} lines), totalFiles=${people.totalFiles}`,
+    );
   } else {
     fs.writeFileSync(OUT_PEOPLE, JSON.stringify(emptyPeopleSnapshot(24), null, 2));
     console.log(`wrote ${OUT_PEOPLE}: no people-file changes in window`);
@@ -352,7 +401,9 @@ function main() {
   ensureDir(OUT_MEMORY);
   if (memory) {
     fs.writeFileSync(OUT_MEMORY, JSON.stringify(memory, null, 2));
-    console.log(`wrote ${OUT_MEMORY}: +${memory.added}/-${memory.deleted}, ${memory.commits} commits`);
+    console.log(
+      `wrote ${OUT_MEMORY}: +${memory.added}/-${memory.deleted}, ${memory.commits} commits`,
+    );
   } else {
     fs.writeFileSync(OUT_MEMORY, JSON.stringify(emptyMemorySnapshot(24), null, 2));
     console.log(`wrote ${OUT_MEMORY}: no MEMORY.md changes in window`);
