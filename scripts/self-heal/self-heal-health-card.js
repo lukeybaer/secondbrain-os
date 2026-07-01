@@ -231,6 +231,81 @@ function clamp(text, n = 200) {
   return String(text == null ? '' : text).slice(0, n);
 }
 
+// EXEC LANGUAGE (ExampleCo, 2026-07-01): the drilldown must read like an executive
+// briefing, not the healer's internals. A ledger defect key looks like
+// "live render qc system-health on system_health" (a humanized defect type + " on "
+// + the raw card_id). The only part ExampleCo cares about is WHICH card/subsystem, so we
+// pull the card_id (after " on "), fall back to the whole string, and title-case it
+// into a readable name. No "healer / generator / renderer / QC / live render qc /
+// tactic" tokens ever reach the card face or drilldown.
+function cardNameFromDefectKey(defectKey) {
+  const raw = String(defectKey == null ? '' : defectKey).trim();
+  // "<defect type> on <card_id>" -> card_id; else "<card_id>:<TYPE>" -> card_id; else raw.
+  let id = '';
+  const onMatch = raw.match(/\bon\s+([a-z0-9_]+)\s*$/i);
+  if (onMatch) id = onMatch[1];
+  else if (raw.includes(':')) id = raw.split(':')[0];
+  else id = raw;
+  id = id.trim();
+  if (!id) return 'a dashboard card';
+  return id
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+// One plain-English drilldown line per still-open defect: which card the auto-repair
+// could not fix, how many times it tried this pass, and what happens next. No jargon.
+function execOpenDefectLine(index, defect) {
+  const name = cardNameFromDefectKey(defect.defect);
+  const tries = Number(defect.attempts) || 1;
+  const timesWord = tries === 1 ? 'once' : `${tries} times`;
+  return `${index}. ${name} card: the auto-repair tried ${timesWord} this pass and could not fix it. It stays flagged and will be retried on the next run.`;
+}
+
+// EXPLAIN THE COLOR (ExampleCo, 2026-07-01): never show a color without a reason. This
+// derives ONE plain exec sentence from the card's own state, the same way RED already
+// justified itself, so a YELLOW tile always says WHY it is yellow. Plain English only:
+// no healer / generator / renderer / QC / tactic tokens.
+function severityReason({
+  severity,
+  attempted,
+  cleared,
+  escalated,
+  ledgerStale,
+  ledgerAgeHours,
+  executorRed,
+  thrashing,
+}) {
+  if (severity === 'green') {
+    return escalated > 0 || attempted > 0
+      ? `Green: the auto-repair ran and fixed every issue it found (${cleared} fixed, none left open).`
+      : 'Green: the auto-repair is clean, with no issues open and a fresh run on record.';
+  }
+  if (severity === 'yellow') {
+    const issues = escalated === 1 ? 'issue' : 'issues';
+    return `Yellow: the auto-repair ran and honestly escalated ${escalated} ${issues} it could not fix in its time budget this pass. It is working, not stuck; these carry to the next run.`;
+  }
+  // RED: name the single genuinely-stuck cause, most-severe first.
+  if (executorRed) {
+    return 'Red: the auto-repair cannot run at all right now, so nothing is being fixed until it is restored.';
+  }
+  if (ledgerStale) {
+    return ledgerAgeHours == null
+      ? 'Red: no self-heal run has completed, so nothing is being repaired. This is stuck, not degraded.'
+      : `Red: the last self-heal run is ${Math.round(ledgerAgeHours)}h old, so nothing is being repaired right now. This is stuck, not degraded.`;
+  }
+  if (thrashing) {
+    return 'Red: the auto-repair is repeating the same failed move with no change, so it is stuck and cannot make progress.';
+  }
+  if (escalated > 0 && attempted <= 0) {
+    const issues = escalated === 1 ? 'issue' : 'issues';
+    return `Red: ${escalated} ${issues} are open but the auto-repair did not run against them this window, so nothing was attempted.`;
+  }
+  return 'Red: the auto-repair is genuinely stuck and cannot make progress.';
+}
+
 // Build the structured card record. Pure; no side effects.
 function buildSelfHealHealthCard(opts = {}) {
   const date = ledger.safeDate
@@ -277,17 +352,30 @@ function buildSelfHealHealthCard(opts = {}) {
     : 'ledger fresh';
   const face = `${counts.attempted} attempted, ${counts.cleared} cleared, ${counts.escalated} escalated; ${executorFace}; ${ledgerFace}.`;
 
-  // Drilldown rows: one per still-open/escalated defect, naming its tried tactics
-  // and latest result -- never a jsonl path or stage name (executive-crisp).
+  // The one-sentence exec WHY for whatever color this is. Never a color without a
+  // reason: yellow explains itself the same way red already did (ExampleCo, 2026-07-01).
+  const reason = severityReason({
+    severity,
+    attempted: counts.attempted,
+    cleared: counts.cleared,
+    escalated: counts.escalated,
+    ledgerStale,
+    ledgerAgeHours: fresh.ageHours,
+    executorRed,
+    thrashing: isThrashing,
+  });
+
+  // Drilldown rows: one per still-open/escalated defect, in PLAIN EXECUTIVE ENGLISH.
+  // Which card the auto-repair could not fix, how many times it tried, what happens
+  // next -- never a defect key, tactic string, jsonl path, or stage name.
   const openLines = counts.open.map((d, i) => ({
     index: i + 1,
     defect: d.defect,
+    cardName: cardNameFromDefectKey(d.defect),
     attempts: d.attempts,
     lastResult: d.lastQcResult,
     triedTactics: (d.triedTactics || []).slice(0, 5),
-    text: `${i + 1}. ${d.defect}: ${d.attempts} attempt(s), latest ${d.lastQcResult}. Tried: ${
-      (d.triedTactics || []).slice(0, 5).join('; ') || 'none recorded'
-    }.`,
+    text: execOpenDefectLine(i + 1, d),
   }));
 
   return {
@@ -312,6 +400,7 @@ function buildSelfHealHealthCard(opts = {}) {
     },
     thrashing,
     severity,
+    reason,
     defect,
     face,
     openDefects: openLines,
@@ -332,9 +421,23 @@ function renderSelfHealHealthSection(opts = {}) {
   // stuck/broken). No em/en dashes anywhere. The explicit "Severity:" line below is
   // the machine-readable verdict the render seam reads (glyph is the human cue).
   const glyph = severity === 'green' ? '✓' : severity === 'yellow' ? '!' : '✗';
+  const reason =
+    card.reason ||
+    severityReason({
+      severity,
+      attempted: card.attempted,
+      cleared: card.cleared,
+      escalated: card.escalated,
+      ledgerStale: card.freshness && card.freshness.stale,
+      ledgerAgeHours: card.freshness ? card.freshness.ageHours : null,
+      executorRed: card.executor && card.executor.status === 'red',
+      thrashing: !!(card.thrashing && card.thrashing.length),
+    });
   const lines = [];
   lines.push(`${glyph} ${card.face}`);
   lines.push('');
+  // WHY this color, in one plain exec sentence. Never a color without a reason.
+  lines.push(`Why: ${reason}`);
   lines.push(`Severity: ${severity}`);
   lines.push(`Attempted: ${card.attempted}`);
   lines.push(`Cleared: ${card.cleared}`);
@@ -355,7 +458,7 @@ function renderSelfHealHealthSection(opts = {}) {
   );
   if (card.thrashing && card.thrashing.length) {
     lines.push(
-      `Thrash: ${card.thrashing.length} defect(s) re-ran the same tactic with no changed input (stuck loop).`,
+      `Stuck loop: ${card.thrashing.length} issue(s) had the same failed repair repeated with no change.`,
     );
   }
   if (card.openDefects.length) {
@@ -401,6 +504,9 @@ module.exports = {
   defectCounts,
   thrashingDefects,
   severityVerdict,
+  severityReason,
+  cardNameFromDefectKey,
+  execOpenDefectLine,
   buildSelfHealHealthCard,
   renderSelfHealHealthSection,
   generateSelfHealHealthCard,
