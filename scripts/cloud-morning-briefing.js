@@ -315,20 +315,30 @@ function extractActionItems(raw) {
     const clean = cleanExecutiveFragment(title, { max: 160 });
     if (!clean || containsRawOperationalLeak(clean)) return;
     const person = cleanExecutiveFragment(item.person || item.from || '', { max: 80 });
+    // PINNED / KEPT items persist across regenerations (ExampleCo 2026-07-01): an ask
+    // ExampleCo explicitly marked keep:true is his decision, so the sender-spam,
+    // self-sent, and stale-age exclusions below never drop it from the card. It
+    // still must render a real title (checked above); only ExampleCo resolving it
+    // (resolvedAt) retires it, which the regen store already honors upstream.
+    const isPinned = (item.keep === true || item.pinned === true) && !item.resolvedAt;
     // SPAM FILTER (#7): exclude automated/no-reply/promotional SENDERS from the
     // email-sourced asks so only real asks from real people surface. This is an
     // EXCLUSION of non-asks (machine/brand notifications), NOT a ranking/priority
     // drop -- the urgency override inside isActionItemSpam keeps any genuine money
     // emergency. Counted (spamExcluded), never silent. Scoped to unansweredEmails:
     // goal/manual/project asks are never sender-filtered.
-    if (source === 'unansweredEmails' && isActionItemSpam(item.person || item.from || '', clean)) {
+    if (
+      source === 'unansweredEmails' &&
+      !isPinned &&
+      isActionItemSpam(item.person || item.from || '', clean)
+    ) {
       spamExcluded += 1;
       return;
     }
     // SELF-SENT GUARD: an email ask whose sender is ExampleCo himself is not an ask
     // (it would tell him to reply to his own message). Excluded for the email
     // source only; goal/manual/project asks are never sender-filtered.
-    if (source === 'unansweredEmails' && isSelfSentAsk(item.person, item.from)) {
+    if (source === 'unansweredEmails' && !isPinned && isSelfSentAsk(item.person, item.from)) {
       spamExcluded += 1;
       return;
     }
@@ -338,6 +348,7 @@ function extractActionItems(raw) {
     const ageDays = Number.isFinite(explicitAge) ? explicitAge : titleAge;
     if (
       source === 'unansweredEmails' &&
+      !isPinned &&
       Number.isFinite(ageDays) &&
       ageDays > ACTION_ITEM_EMAIL_MAX_AGE_DAYS
     ) {
@@ -353,6 +364,7 @@ function extractActionItems(raw) {
     // rank score: bigger = surface earlier. Real asks all stay in the list;
     // this only decides ORDER, not membership.
     let rank = 0;
+    if (isPinned) rank += 5;
     if (isPriorityHigh) rank += 4;
     if (isHighValue) rank += 3;
     if (humanSender) rank += 2;

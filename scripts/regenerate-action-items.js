@@ -572,6 +572,19 @@ function buildItem(msg, rank) {
   };
 }
 
+// ExampleCo 2026-07-01: an item ExampleCo explicitly asked to KEEP (a curated/pinned ask,
+// e.g. a "tax" note) was dropped on a later regeneration because every prune
+// path is source-driven: carry-forward re-runs isLikelyActionable + the age
+// cap, and the reply verifier drops rows whose repliedAt > sentAt. None of that
+// respects ExampleCo's decision to keep an item. A pinned item is a durable floor:
+// once ExampleCo marks keep:true (or pinned:true), the regeneration never drops it,
+// even when it is not re-derived from the current Gmail source. It leaves only
+// when ExampleCo resolves it (resolvedAt set) -- source heuristics do not overrule a
+// human keep. Same shape as standing reminders, but scoped to a specific ask.
+function isPinnedActionItem(item) {
+  return !!(item && (item.keep === true || item.pinned === true) && !item.resolvedAt);
+}
+
 function existingDismissedSignatures(existing) {
   const replied = new Set();
   for (const item of existing.unansweredEmails || []) {
@@ -596,11 +609,15 @@ function loadExisting() {
 function activeUnansweredEmails(existing) {
   return (Array.isArray(existing && existing.unansweredEmails) ? existing.unansweredEmails : [])
     .filter((item) => {
+      // A pinned item survives even a detected reply: ExampleCo kept it on purpose.
+      if (isPinnedActionItem(item)) return true;
       const r = Date.parse(item && item.repliedAt ? item.repliedAt : '');
       const s = Date.parse(item && item.sentAt ? item.sentAt : '');
       return !(Number.isFinite(r) && Number.isFinite(s) && r > s);
     })
     .filter((item) => {
+      // A pinned item bypasses the source/actionability/age prune entirely.
+      if (isPinnedActionItem(item)) return true;
       const source = String(item?.source || '');
       if (!/gmail|imap|archive|inbox/i.test(source)) return true;
       const msgLike = {
@@ -740,6 +757,11 @@ function dropVerifiedReplies() {
   const kept = [];
   const replied = [];
   for (const item of data.unansweredEmails || []) {
+    // A pinned item is never dropped by the reply verifier: ExampleCo asked to keep it.
+    if (isPinnedActionItem(item)) {
+      kept.push(item);
+      continue;
+    }
     const r = Date.parse(item.repliedAt || '');
     const s = Date.parse(item.sentAt || '');
     if (Number.isFinite(r) && Number.isFinite(s) && r > s) replied.push(item);
@@ -878,4 +900,6 @@ module.exports = {
   activeUnansweredEmails,
   collapseGuardForActionItems,
   recordReplyVerifier,
+  dropVerifiedReplies,
+  isPinnedActionItem,
 };
