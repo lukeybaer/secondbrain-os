@@ -5165,6 +5165,69 @@ function formatSystemHealthSection({
   return lines.join('\n');
 }
 
+// Red/yellow/green severity for the Otter speaker-enrichment subsystem. Mirrors
+// the voice_confirmation grader (commit 94496eba) so the SYSTEM HEALTH row and
+// the otter_speaker_pareto blocker grade a shortfall by what it ACTUALLY is,
+// not by a blunt "any RED verdict -> hard blocker" rule (ExampleCo 2026-06-30:
+// "the fact that I haven't named 60 doesn't make red but 68h stale" does).
+//
+//   RED    = a RECOVERABLE processing failure or genuine staleness Amy can fix:
+//            coverage reports stale beyond the floor, an orphaned/stale lock, a
+//            trailing/blocked speaker roster, an enriched-transcript shortfall
+//            (audio present but no transcript built), or a recent-window
+//            recoverable defect (missing segment timestamps / a real out-of-
+//            bounds wall). Red names a repair, so red must promise one.
+//   YELLOW = the probe is non-green but the ONLY shortfalls are the naming
+//            percentage (an enrollment to-do) and recent-audio coverage caused
+//            by purged-at-source missing audio (unrecoverable). It is surfaced
+//            and ExampleCo-named, never a fake red repair promise and never a hidden
+//            green. A yellow subsystem is NOT a hard blocker.
+//   GREEN  = fully healthy (probe GREEN + no staleness/lock/freshness defect).
+//
+// Pure + exported for tests. Returns 'RED' | 'YELLOW' | 'GREEN'.
+function gradeOtterProcessingSeverity({
+  verdict,
+  textAudio = {},
+  stale = false,
+  freshDefect = false,
+  lockStale = false,
+} = {}) {
+  const v = verdict || {};
+  const m = v.metrics || {};
+  let enrichedAllRed = 0.7;
+  try {
+    const { TH } = require('./otter-processing-coverage-probe');
+    if (TH && typeof TH.enrichedAllRed === 'number') enrichedAllRed = TH.enrichedAllRed;
+  } catch {
+    /* fall back to the documented default threshold */
+  }
+  // Recoverable processing defect: audio was fetched but the enriched transcript
+  // was never built. That is a reprocess Amy can run, so it stays RED.
+  const enrichedShortfall =
+    m.enriched_coverage_all != null && m.enriched_coverage_all < enrichedAllRed;
+  // Recent-window recoverable defects, graded off the same last_7_days summary
+  // the reference grader uses: missing segment timestamps, or a real out-of-
+  // bounds wall below the 99.9% rounding tolerance. Purged-at-source MISSING
+  // AUDIO is deliberately excluded here -- it is unrecoverable, so it never
+  // forces RED.
+  const s = (textAudio.last_7_days && textAudio.last_7_days.summary) || {};
+  const totalSegments = Number(s.transcript_text_segments_total || 0);
+  const timestampedSegments = Number(s.text_segments_with_start_end_timestamps || 0);
+  const timestampsComplete = totalSegments === 0 || timestampedSegments >= totalSegments;
+  const inAudioTimestamped = Number(s.timestamped_segments_in_audio_calls || 0);
+  const inBoundsVerified = Number(s.timestamped_segments_verified_within_audio_duration || 0);
+  const inBoundsClean = inAudioTimestamped === 0 || inBoundsVerified / inAudioTimestamped >= 0.999;
+  const recentRecoverableDefect = !timestampsComplete || !inBoundsClean;
+
+  const recoverableOrStale =
+    stale || freshDefect || lockStale || enrichedShortfall || recentRecoverableDefect;
+  if (recoverableOrStale) return 'RED';
+  // No recoverable defect and no staleness: any remaining shortfall (a low
+  // recent-audio percentage from purged-at-source missing audio, an unenrolled
+  // naming percentage) is surfaced ExampleCo, not a red repair promise.
+  return v.status === 'GREEN' ? 'GREEN' : 'YELLOW';
+}
+
 function buildOtterSpeakerEnrichmentHealth({
   artifacts,
   lockState = 'free',
@@ -5231,20 +5294,45 @@ function buildOtterSpeakerEnrichmentHealth({
     .map((row) => `${row.date || 'ExampleCo date'} ${row.id || row.otid || '?'} ${row.title || ''}`.trim())
     .join('; ');
   const lockStale = /STALE/.test(lockState);
-  // The proof CLI exits 0 for GREEN and ExampleCo; ExampleCo is visible attention, not a
-  // hard blocker. RED/stale proof/stale freshness/stale lock still block.
-  const defect = v.status === 'RED' || stale || freshDefect || lockStale;
+  // Grade the subsystem RED/YELLOW/GREEN by what the shortfall ACTUALLY is. The
+  // probe's own RED can fire purely on a low recent-audio percentage; when that
+  // is caused by purged-at-source missing audio (unrecoverable) with no
+  // recoverable processing defect and no staleness, it is an ExampleCo note, not a
+  // hard blocker (ExampleCo 2026-06-30). RED only for a recoverable failure or
+  // genuine staleness: stale coverage reports, an orphaned/stale lock, a
+  // trailing/blocked roster, an enriched shortfall, or a recent recoverable
+  // defect.
+  const severity = gradeOtterProcessingSeverity({
+    verdict: v,
+    textAudio,
+    stale,
+    freshDefect,
+    lockStale,
+  });
+  // Only a RED grade is a hard blocker. YELLOW is surfaced-but-not-blocking:
+  // ExampleCo-named in the row/detail, never on the top BLOCKERS card. GREEN is
+  // clean.
+  const defect = severity === 'RED';
   const summary = `audio ${p(m.audio_coverage_all)} all-time / ${p(m.audio_coverage_7d)} last 7d, enriched ${p(m.enriched_coverage_all)}, voices named ${p(m.named_speaker_rate)}, ${m.recurring_unnamed} recurring unnamed; lock ${lockState}; freshness ${freshClause}`;
   const backlog =
     m.total_calls != null && cs.enriched_transcript_available != null
       ? m.total_calls - cs.enriched_transcript_available
       : '?';
+  // PRIVATE_NAME note appended to the row/detail when the subsystem is YELLOW: the
+  // shortfall stays VISIBLE and named (never hidden green), but it names an
+  // unrecoverable limit / enrollment to-do, not a repair, so it is not a hard
+  // blocker. Only shown for YELLOW; RED already ExampleCos its repair-need blocker.
+  const ExampleCoNote =
+    severity === 'YELLOW'
+      ? ' PRIVATE_NAME (surfaced, not a blocker): the only shortfall is naming coverage or recent-audio from purged-at-source missing audio, which is unrecoverable, so it is named here rather than promised as a repair.'
+      : '';
   return {
     subsystemLabel: LABEL,
     glyph: defect ? 'bad' : 'ok',
     defect,
+    severity,
     probeStatus: v.status,
-    detail: `${stale ? `coverage reports stale (${Math.round(ageH)}h old); ` : ''}${summary}.`,
+    detail: `${stale ? `coverage reports stale (${Math.round(ageH)}h old); ` : ''}${summary}.${ExampleCoNote}`,
     probeRaw: [
       `transcripts downloaded: ${cs.enriched_transcript_available != null ? cs.enriched_transcript_available : '?'}/${m.total_calls} enriched transcript(s) available`,
       `full audio downloaded: ${cs.full_audio_available != null ? cs.full_audio_available : '?'}/${m.total_calls} call audio file(s) available`,
@@ -7766,6 +7854,7 @@ module.exports = {
   formatActionCommitmentsBlockedSection,
   formatSystemHealthSection,
   buildOtterSpeakerEnrichmentHealth,
+  gradeOtterProcessingSeverity,
   computeTestsHealth,
   testsBlockedToBlocker,
   formatScheduleSection,
