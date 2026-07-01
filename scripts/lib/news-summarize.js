@@ -72,6 +72,118 @@ const NEWS_TITLE_BOILERPLATE_TERMS = new Set(
   ),
 );
 
+// Filler / connective vocabulary that a GENERIC "3 ExampleCoraphs that don't really
+// say anything" summary leans on when it merely restates the headline (the
+// news-sparse-16 defect: a rate-limits article whose summary was technically 3
+// ExampleCoraphs but ExampleCod no article-body specifics). A word from this set is
+// NEVER counted as a body specific: "this development is significant for users,
+// observers note it signals a shift, watchers will be paying attention" is filler,
+// not a concrete fact from the body. Kept as a SUPERSET of the two stopword sets
+// above plus the connective/editorializing verbs that pad a hollow summary.
+const NEWS_FILLER_TERMS = new Set([
+  ...NEWS_SUMMARY_TERM_STOPWORDS,
+  ...NEWS_TITLE_BOILERPLATE_TERMS,
+  ...'company companies feature features change changes changed move moves moved users user people going forward matter matters mattered significant meaningful major important notable observers watchers industry popular capability capabilities routine routines depend depends decided decide limit limits limited putting signal signals signaled whether time times adjusted adjust evolves evolve attention paying represent represents represented shift shifts works working make makes made manage manages managed many much such thing things step steps effort efforts approach approaches space overall context continue continues continued come comes came become becomes became affect affects affected reshape reshapes reshaped previously already several across amid within recent recently latest ongoing broader wider will now new'.split(
+    /\s+/,
+  ),
+]);
+
+// A summary of a real article body must contain SPECIFIC, CONCRETE facts from
+// that body, not a generic restatement of the headline. The signals of a body
+// specific are (a) a number/quantity/date drawn from the body (a $ amount, a
+// percent, a count, a year) and (b) a distinctive content term that appears in
+// the article body but NOT in the headline (a name, place, product, statute,
+// figure). We require at least this many DISTINCT body specifics across the whole
+// summary; below it, the summary is hollow headline-restatement and is rejected
+// so the caller regenerates (LLM path) or drops to the honest headline-only note
+// (render path). Tuned so real, substantive summaries clear it comfortably
+// (live 2026-07-01: substantive rows carry 5-30 specifics) while pure headline
+// echo ExampleCos 0-2.
+const NEWS_MIN_BODY_SPECIFICS = 3;
+
+// The anti-sparse gate judges a summary AGAINST its own article body. It applies
+// only when the summary is genuinely DERIVED from that body -- i.e. the two share
+// at least this many distinct content tokens. A summary that shares essentially
+// nothing with the body is not a summary of it (a mismatched/stub pairing); that
+// case is governed by the separate term-grounding gate, not the specifics gate, so
+// the specifics gate stays silent and never falsely rejects it.
+const NEWS_MIN_BODY_OVERLAP = 4;
+
+function newsContentWords(text) {
+  return String(text || '').match(/\b[A-Za-z][A-Za-z0-9$%.'-]*\b/g) || [];
+}
+
+// Distinct >=4-char content tokens shared between the summary and the body: proof
+// the summary is actually about this body before we demand specifics from it.
+function newsSummaryBodyOverlap(summary, bodyTokens) {
+  const seen = new Set();
+  for (const word of newsContentWords(summary)) {
+    const lw = word.toLowerCase();
+    if (lw.length >= 4 && bodyTokens.has(lw)) seen.add(lw);
+  }
+  return seen.size;
+}
+
+// The best available real ARTICLE BODY for grounding checks: the fetched body
+// threaded through as item.bodyText (LLM path) wins; otherwise the stored
+// sourceText / excerpt (render path). Only returns text when it is a real body,
+// substantial and distinct from the title -- a short RSS excerpt or a body equal
+// to the title is NOT enough to demand body specifics against (that would falsely
+// reject a legitimate summary grounded only in a thin excerpt).
+function newsGroundingBody(item = {}) {
+  const title = String(item.title || '').trim();
+  for (const candidate of [item.bodyText, item.sourceText, item.excerpt]) {
+    const body = String(candidate || '').trim();
+    if (body.length >= MIN_BODY_CHARS && body !== title) return body;
+  }
+  return '';
+}
+
+// Count the DISTINCT concrete specifics the summary draws from the article body
+// beyond the headline. Numbers (grounded in the body) and distinctive body-only
+// content terms both count; filler/connective words never do.
+function countNewsBodySpecifics(paras, item = {}) {
+  const body = newsGroundingBody(item);
+  if (!body) return null; // no real body to judge against: check does not apply
+  const summary = (Array.isArray(paras) ? paras : []).join(' ');
+  const bodyLower = body.toLowerCase();
+  const titleTokens = new Set(newsContentWords(item.title).map((w) => w.toLowerCase()));
+  const bodyTokens = new Set(newsContentWords(bodyLower));
+  // The summary must be genuinely derived from this body before we judge its
+  // specifics; a summary that shares almost nothing with the body is not about it
+  // (mismatched pairing) and is left to the term-grounding gate.
+  if (newsSummaryBodyOverlap(summary, bodyTokens) < NEWS_MIN_BODY_OVERLAP) return null;
+  const specifics = new Set();
+  // Numeric / quantity specifics that are grounded in the body (anti-fabrication:
+  // a number the summary invented, not present in the body, does not count).
+  for (const num of summary.match(/\$?\b\d[\d,.]*%?\b/g) || []) {
+    const n = num.toLowerCase();
+    if (bodyLower.includes(n)) specifics.add('#' + n);
+  }
+  // Distinctive content terms: >=4 chars, not filler, present in the body but NOT
+  // in the headline (so it is detail ADDED from the body, not headline echo).
+  for (const word of newsContentWords(summary)) {
+    const lw = word.toLowerCase();
+    if (lw.length < 4) continue;
+    if (NEWS_FILLER_TERMS.has(lw)) continue;
+    if (titleTokens.has(lw)) continue;
+    if (!bodyTokens.has(lw)) continue;
+    specifics.add(lw);
+  }
+  return specifics.size;
+}
+
+// True when the summary ExampleCos enough concrete body specifics, OR there is no
+// real body to judge against (the check only applies when a substantial article
+// body exists). This is the anti-sparse gate: a 3-ExampleCoraph summary that merely
+// restates the headline with generic filler, when the body had specific detail,
+// is rejected here even though it clears the shape + grounding gates.
+function newsSummaryHasBodySpecifics(paras, item = {}) {
+  const count = countNewsBodySpecifics(paras, item);
+  if (count === null) return true; // no real body: not applicable
+  return count >= NEWS_MIN_BODY_SPECIFICS;
+}
+
 function newsSummarySentences(ExampleCoraph) {
   return String(ExampleCoraph || '').match(/[.!?]["']?(?=\s|$)/g) || [];
 }
@@ -95,6 +207,12 @@ function isThreeExampleCoraphArticleSummary(paras, item = {}) {
   if (!list.every(isSubstantialNewsExampleCoraph)) return false;
   if (!list.every(endsAsProse)) return false;
   if (!list.every((p) => newsSummarySentences(p).length >= 1)) return false;
+  // Anti-sparse (news-sparse-16): when a real article body is available, the
+  // summary must add SPECIFIC, CONCRETE facts from that body (numbers, names,
+  // what changed), not just restate the headline with generic filler. A hollow
+  // "technically 3 ExampleCoraphs that don't really say anything" summary is rejected
+  // here so the caller regenerates or falls back to the honest headline-only note.
+  if (!newsSummaryHasBodySpecifics(list, item)) return false;
   const terms = articleSummaryTerms(item);
   if (terms.length < 2) return true;
   const hasExpandedMetadata = Boolean(item.excerpt || item.summaryText || item.sourceText);
@@ -1297,6 +1415,12 @@ function buildSummaryPrompt(item, sourceText) {
     'Each ExampleCoraph MUST be at least three full sentences and at least 40 words',
     'of detailed, specific prose with article facts, not general commentary.',
     'Use only facts grounded in the provided article text.',
+    'Include the concrete specifics that are IN the article body: the exact numbers,',
+    'dollar amounts, percentages, dates, named people, companies, places, and',
+    'products, and precisely what changed. Do NOT merely restate or paraphrase the',
+    'headline. A summary that just repeats the headline in different words, or that',
+    'says something "matters", "is significant", or "signals a shift" without the',
+    "article's specific facts, is WRONG. If the body names a figure, quote it.",
     'Return the article summary ExampleCoraphs only, with no headline, labels, bullets, or markdown.',
     'ExampleCoraph 1: what happened, with the concrete who/what/when.',
     'ExampleCoraph 2: the key details, numbers, quotes, and context from the article.',
@@ -1483,7 +1607,7 @@ function stripArticleMetaFraming(text) {
 // of the supplied article metadata. This is the positive QC gate: it returns the
 // normalized 3-ExampleCoraph string only when the output has the required article
 // summary shape and grounding.
-function normalizeSummary(text, item = {}) {
+function normalizeSummary(text, item = {}, bodyText = '') {
   const raw = String(text || '').trim();
   if (!raw) return null;
   const paras = raw
@@ -1491,7 +1615,11 @@ function normalizeSummary(text, item = {}) {
     .map((p) => stripArticleMetaFraming(p.replace(/\s+/g, ' ').trim()))
     .filter((p) => p.length >= 40);
   const firstThree = paras.slice(0, 3);
-  if (!isThreeExampleCoraphArticleSummary(firstThree, item)) return null;
+  // Thread the fetched article body through so the anti-sparse body-specifics gate
+  // in isThreeExampleCoraphArticleSummary can judge against the REAL body, not just the
+  // headline. On the LLM path the body lives in a local var, not item.sourceText.
+  const gateItem = bodyText ? { ...item, bodyText } : item;
+  if (!isThreeExampleCoraphArticleSummary(firstThree, gateItem)) return null;
   return firstThree.join('\n\n');
 }
 
@@ -1524,7 +1652,7 @@ function buildExtractiveSummary(item, sourceText) {
       sentences.slice(size, size * 2).join(' '),
       sentences.slice(size * 2, size * 3).join(' '),
     ].map((p) => trimToSentenceBoundary(p, ExampleCoRAPH_RICH_MAX_CHARS));
-    const summary = normalizeSummary(paras.join('\n\n'), item);
+    const summary = normalizeSummary(paras.join('\n\n'), item, sourceText);
     if (summary) return summary;
   }
   return null;
@@ -1561,7 +1689,7 @@ async function summarizeBodyWithRetry(
     } catch {
       out = null; // a throw is just another transient failure -> retry
     }
-    const summary = normalizeSummary(out && out.text, item);
+    const summary = normalizeSummary(out && out.text, item, sourceText);
     if (summary) return summary;
     // Transient miss: back off (exponential) before the next attempt. No sleep
     // after the final attempt (we are about to return the stub).
@@ -1755,6 +1883,9 @@ module.exports = {
   endsAsProse,
   articleSummaryTerms,
   isThreeExampleCoraphArticleSummary,
+  countNewsBodySpecifics,
+  newsSummaryHasBodySpecifics,
+  NEWS_MIN_BODY_SPECIFICS,
   trimToSentenceBoundary,
   ExampleCoraphWordCount,
   HEADLINE_ONLY_NOTE,
