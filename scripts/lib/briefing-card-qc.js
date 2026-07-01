@@ -56,6 +56,19 @@ function isSystemHealthCardTitle(title) {
   return /^SYSTEM HEALTH\b/i.test(String(title || '').trim());
 }
 
+// SELF-HEAL HEALTH is Amy's OWN authoritative honest repair-outcome renderer
+// (scripts/self-heal/self-heal-health-card.js). Its whole job is to report what the
+// auto-repair attempted, cleared, and escalated, so its body legitimately says things
+// like "the auto-repair ... could not fix it" and "N escalated". Those exact phrases
+// are in SELF_NARRATION_BAN (the ban exists to stop Amy narrating an EXCUSE instead of
+// fixing a card), but on THIS card they are factual status, not self-talk. Without an
+// exemption the self-narration gate flagged the card, the cloud seam replaced it with
+// the L4 "artifact unusable" block, and the final QC marked the briefing not-clean
+// (live 2026-07-01 red card). This predicate scopes the exemption to this ONE card.
+function isSelfHealHealthCardTitle(title) {
+  return /^SELF-HEAL HEALTH\b/i.test(String(title || '').trim());
+}
+
 // Cards that legitimately name soft vendor/process/plan words as their OWN
 // content and must NOT be collapsed by the operational scrub: the token-usage /
 // LLM-subscription card and the SYSTEM HEALTH internal-infra roster. News cards
@@ -135,7 +148,11 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
   const executive = assertExecutiveText(operationalScope, { surface: `${surface}:${id}` });
   failures.push(...executive.failures);
 
-  const selfNarration = findSelfNarration(text);
+  // The SELF-HEAL HEALTH card is exempt from the self-narration TEXT gate: its
+  // factual repair-outcome language ("the auto-repair ... could not fix it", "N
+  // escalated") is a genuine report of what self-heal did, not an Amy excuse. Every
+  // OTHER card is still checked verbatim, so real self-talk elsewhere is still caught.
+  const selfNarration = isSelfHealHealthCardTitle(title) ? [] : findSelfNarration(text);
   if (selfNarration.length) failures.push(`${surface}:${id}: self narration: ${selfNarration[0]}`);
 
   if (containsRawOperationalLeak(operationalScope))
@@ -332,5 +349,6 @@ module.exports = {
   isNewsCardTitle,
   isTokenUsageCardTitle,
   isSystemHealthCardTitle,
+  isSelfHealHealthCardTitle,
   isSoftTermNeutralizedCardTitle,
 };

@@ -9,14 +9,12 @@ const { spawnSync } = childProcess;
 
 const { buildBriefingDashboardUrl } = require('./lib/briefing-auth.js');
 const { notifyWithFallback } = require('./lib/notify-with-fallback.js');
-const {
-  fallbackExpiresAt,
-  isFallbackExpired,
-} = require('./lib/briefing-fallback-expiry.js');
+const { fallbackExpiresAt, isFallbackExpired } = require('./lib/briefing-fallback-expiry.js');
 const {
   qcBriefingMarkdown,
   repairBriefingMarkdown,
   splitMarkdownCards,
+  isSelfHealHealthCardTitle,
 } = require('./lib/briefing-card-qc.js');
 const {
   cardOutputQc,
@@ -506,14 +504,7 @@ const NEWS_HARD_BLOCK_MARKER = /(?:\bhard[\s-]?blocker\b|\bblocker\s*:)/i;
 
 function newsItemExampleCosHardBlockMarker(item = {}) {
   return NEWS_HARD_BLOCK_MARKER.test(
-    [
-      item.title,
-      item.summary,
-      item.excerpt,
-      item.sourceText,
-      item.source,
-      item._search,
-    ]
+    [item.title, item.summary, item.excerpt, item.sourceText, item.source, item._search]
       .filter(Boolean)
       .join(' '),
   );
@@ -820,7 +811,9 @@ function renderQcBlockers(dashQc) {
 
 function hasOnlyBlockersAccountingDefects(dashQc) {
   if (!dashQc || dashQc.ok !== false) return false;
-  const rawDefects = (dashQc.defects || []).map((defect) => String(defect || '').trim()).filter(Boolean);
+  const rawDefects = (dashQc.defects || [])
+    .map((defect) => String(defect || '').trim())
+    .filter(Boolean);
   return (
     rawDefects.length > 0 &&
     rawDefects.every((defect) => /^BLOCKERS-(?:FLOOR|COUNT):/i.test(defect))
@@ -834,7 +827,9 @@ function isBlockersFeedbackDefect(defect) {
 function blockersNamedCardIds(defects) {
   const ids = new Set();
   for (const defect of defects || []) {
-    const m = String(defect || '').trim().match(/^BLOCKERS-NAMED-CARD:\s*([a-z0-9_]+)\b/i);
+    const m = String(defect || '')
+      .trim()
+      .match(/^BLOCKERS-NAMED-CARD:\s*([a-z0-9_]+)\b/i);
     if (m && m[1]) ids.add(m[1]);
   }
   return ids;
@@ -842,13 +837,17 @@ function blockersNamedCardIds(defects) {
 
 function hasOnlyBlockersFeedbackDefects(dashQc) {
   if (!dashQc || dashQc.ok !== false) return false;
-  const rawDefects = (dashQc.defects || []).map((defect) => String(defect || '').trim()).filter(Boolean);
+  const rawDefects = (dashQc.defects || [])
+    .map((defect) => String(defect || '').trim())
+    .filter(Boolean);
   if (!rawDefects.length || !rawDefects.every(isBlockersFeedbackDefect)) return false;
   const namedCardIds = blockersNamedCardIds(rawDefects);
   if (!namedCardIds.size) return true;
   for (const status of dashQc.cardStatuses || []) {
     if (!status || !namedCardIds.has(status.id)) continue;
-    const concreteDefects = (status.defects || []).filter((defect) => !isBlockersFeedbackDefect(defect));
+    const concreteDefects = (status.defects || []).filter(
+      (defect) => !isBlockersFeedbackDefect(defect),
+    );
     if (concreteDefects.length) return false;
   }
   return true;
@@ -1316,6 +1315,18 @@ function qcSeamSections(sections) {
       const cards = splitMarkdownCards(section);
       const card = cards[0];
       if (!card) return section; // not a parseable legacy card -> leave as-is
+      // EXEMPTION: the SELF-HEAL HEALTH card is the ONE authoritative honest
+      // repair-outcome renderer ExampleCo ordered. Its factual status language
+      // ("N attempted / cleared / escalated", "the auto-repair ... could not fix
+      // it") is a genuine report of what self-heal did, NOT Amy self-narration.
+      // That phrase is in SELF_NARRATION_BAN, so the text seam used to flag this
+      // card "dirty" and replace it with the L4 "artifact unusable" block (the
+      // live 2026-07-01 regen red card). Skip the self-talk text gate for THIS
+      // card only; every other card is still scrubbed. Same predicate the shared
+      // qcCard self-narration gate uses, so the seam and final QC never disagree.
+      if (isSelfHealHealthCardTitle(card.title)) {
+        return section; // authoritative honest renderer: pass through unchanged
+      }
       const body = String(card.body || '');
       // TEXT-mode application of the clean contract: a legacy card is dirty when
       // its body narrates Amy self-talk (the SELF_NARRATION_BAN that cardOutputQc
@@ -1681,7 +1692,9 @@ function extractProjectBacklog(raw) {
   const lines = [];
   rows.forEach((item, idx) => {
     const score = Math.max(0, Math.round(item.score || 0));
-    lines.push(`  ${idx + 1}. [${score}] ${item.name}${item.category ? ` (${item.category})` : ''}.`);
+    lines.push(
+      `  ${idx + 1}. [${score}] ${item.name}${item.category ? ` (${item.category})` : ''}.`,
+    );
     lines.push(`     :: What: ${item.description}`);
     lines.push(`     :: Why it matters: ${backlogHistoryLine(item.raw)}`);
     lines.push(`     :: Proposal: ${backlogProposal(item.raw, item.name)}`);
@@ -1710,7 +1723,9 @@ function executiveBacklogName(item) {
   if (colon > 0) {
     const beforeColon = rawTitle.slice(0, colon).trim();
     const afterColon = rawTitle.slice(colon + 1).trim();
-    const tailHasJargon = /\.(md|js|ts|py|json)\b|\/|baseline-revert|predictions\b/i.test(afterColon);
+    const tailHasJargon = /\.(md|js|ts|py|json)\b|\/|baseline-revert|predictions\b/i.test(
+      afterColon,
+    );
     if (beforeColon.includes(' ') && tailHasJargon) head = beforeColon;
   }
   const cleaned = head
@@ -1760,16 +1775,22 @@ function backlogHistoryLine(item) {
   const meaningful = history.filter((h) => h && (h.reason || h.delta));
   if (meaningful.length) {
     const painCount = meaningful.filter((h) => /^pain:/i.test(String(h.reason || ''))).length;
-    const researchCount = meaningful.filter((h) => /^research:/i.test(String(h.reason || ''))).length;
+    const researchCount = meaningful.filter((h) =>
+      /^research:/i.test(String(h.reason || '')),
+    ).length;
     const parts = [];
-    if (researchCount) parts.push(`${researchCount} research confirmation${researchCount === 1 ? '' : 's'}`);
+    if (researchCount)
+      parts.push(`${researchCount} research confirmation${researchCount === 1 ? '' : 's'}`);
     if (painCount) parts.push(`${painCount} real pain event${painCount === 1 ? '' : 's'}`);
     const led = parts.length
       ? `Priority built from ${parts.join(' and ')}.`
       : `Priority tracked across ${meaningful.length} scoring event${meaningful.length === 1 ? '' : 's'}.`;
     const breakdown = meaningful
       .slice(-3)
-      .map((h) => `${h.delta > 0 ? '+' : ''}${h.delta} ${cleanExecutiveFragment(h.reason, { max: 80 })}`)
+      .map(
+        (h) =>
+          `${h.delta > 0 ? '+' : ''}${h.delta} ${cleanExecutiveFragment(h.reason, { max: 80 })}`,
+      )
       .filter(Boolean)
       .join(', ');
     return `${led} Score breakdown: ${breakdown || 'seed entry'}.`;
@@ -1803,8 +1824,12 @@ function backlogProposal(item, name) {
 // judged: yes (default -- runs in the EC2/cloud runtime like the rest of Amy)
 // unless the item's own text names a desktop-only or local-only dependency.
 function backlogCloudLine(item) {
-  const text = `${item && item.title} ${item && item.description} ${item && item.problem_statement} ${item && item.implementation_plan}`.toLowerCase();
-  const localOnly = /\b(electron|desktop app|renderer|screenshot the dashboard|local file system only|windows-only|appdata)\b/.test(text);
+  const text =
+    `${item && item.title} ${item && item.description} ${item && item.problem_statement} ${item && item.implementation_plan}`.toLowerCase();
+  const localOnly =
+    /\b(electron|desktop app|renderer|screenshot the dashboard|local file system only|windows-only|appdata)\b/.test(
+      text,
+    );
   if (localOnly) {
     return '[Can this be 100% cloud enabled? no, it names a desktop or Electron-only dependency that must be re-hosted on the EC2 runtime first]';
   }
@@ -1930,7 +1955,14 @@ function readContentHeal(dataDir, date) {
   return latest ? readJson(latest.file, null) : null;
 }
 
-const FIXED_TARGET_NEWS_HEAL_KEYS = new Set(['aitech', 'us', 'world', 'immigration', 'mortgage', 'covid']);
+const FIXED_TARGET_NEWS_HEAL_KEYS = new Set([
+  'aitech',
+  'us',
+  'world',
+  'immigration',
+  'mortgage',
+  'covid',
+]);
 const NEWS_CARD_STATE_IDS = {
   aitech: 'ai_tech_news',
   us: 'us_news',
@@ -2040,7 +2072,10 @@ function stripLeadingNewsCategoryLabels(text) {
 function stripTrailingNewsPublisherSuffix(text) {
   let s = String(text || '').trim();
   for (let i = 0; i < 3; i += 1) {
-    const next = s.replace(/\s+-\s+Breaking News$/i, '').replace(NEWS_TRAILING_PUBLISHER_RE, '').trim();
+    const next = s
+      .replace(/\s+-\s+Breaking News$/i, '')
+      .replace(NEWS_TRAILING_PUBLISHER_RE, '')
+      .trim();
     if (next === s) break;
     s = next;
   }
@@ -2064,19 +2099,55 @@ function newsTitleLooksLikeBodyFragment(title) {
   const s = stripNewsDateline(decodeHtmlEntities(stripHtml(title))).trim();
   if (!s) return true;
   if (/^[a-z]/.test(s)) return true;
-  if (/^(?:The|This)\s+(?:article|story|report|author|reporter|piece|column|op-?ed|analysis)\b/i.test(s)) return true;
+  if (
+    /^(?:The|This)\s+(?:article|story|report|author|reporter|piece|column|op-?ed|analysis)\b/i.test(
+      s,
+    )
+  )
+    return true;
   if (/^(?:You|We|I|They|It)\s+\w+/i.test(s) && s.length > 75) return true;
   if (NEWS_ARTICLE_META_PROSE_RE.test(s)) return true;
   if (/\b(?:line|quote)\s+was\b/i.test(s)) return true;
   if (/^(?:f|ut|nd)\s+\w/i.test(s)) return true;
-  if (/^[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4}\s+(?:Journal|News|Times|Blog|Post|Review)$/i.test(s)) return true;
-  if (/^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|January|February|March|April|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\b/i.test(s)) return true;
-  if (/\b(?:sponsored article|Founder Summit|Early Bird rates|save up to \$?\d+|Why you can trust ZDNET|If you buy through our links|Listen Listen|share-nodes|Click here to share)\b/i.test(s)) return true;
-  if (/\b(?:CBS News Sunday Morning|broadcast on (?:the )?CBS|streams on (?:the )?CBS|watch CBS News)\b/i.test(s)) return true;
-  if (/^(?:Image|Photo|Photograph|Image source|Image caption|Published|Read more|Overview)\b/i.test(s)) return true;
+  if (
+    /^[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4}\s+(?:Journal|News|Times|Blog|Post|Review)$/i.test(s)
+  )
+    return true;
+  if (
+    /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|January|February|March|April|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\b/i.test(
+      s,
+    )
+  )
+    return true;
+  if (
+    /\b(?:sponsored article|Founder Summit|Early Bird rates|save up to \$?\d+|Why you can trust ZDNET|If you buy through our links|Listen Listen|share-nodes|Click here to share)\b/i.test(
+      s,
+    )
+  )
+    return true;
+  if (
+    /\b(?:CBS News Sunday Morning|broadcast on (?:the )?CBS|streams on (?:the )?CBS|watch CBS News)\b/i.test(
+      s,
+    )
+  )
+    return true;
+  if (
+    /^(?:Image|Photo|Photograph|Image source|Image caption|Published|Read more|Overview)\b/i.test(s)
+  )
+    return true;
   if (/^Updated\b/i.test(s) && !/^Updated\s+\d{4}[-\s]\d{4}\s+COVID/i.test(s)) return true;
-  if (/\b(?:AP Photo|Getty Images|Heard on\s+[A-Z][A-Za-z]+|\[deltaMinutes\]|more coverage)\b/i.test(s)) return true;
-  if (/\b(?:Download it here|Jane Pauley hosts|LISTEN\s*&\s*FOLLOW|Audio will be available|By The Associated Press)\b/i.test(s)) return true;
+  if (
+    /\b(?:AP Photo|Getty Images|Heard on\s+[A-Z][A-Za-z]+|\[deltaMinutes\]|more coverage)\b/i.test(
+      s,
+    )
+  )
+    return true;
+  if (
+    /\b(?:Download it here|Jane Pauley hosts|LISTEN\s*&\s*FOLLOW|Audio will be available|By The Associated Press)\b/i.test(
+      s,
+    )
+  )
+    return true;
   const weird = (s.match(/[^A-Za-z0-9\s.,'"():;$%&/-]/g) || []).length;
   if (s.length > 40 && weird / s.length > 0.08) return true;
   return false;
@@ -2111,19 +2182,10 @@ function crispNewsRenderTitle(titleCandidate, ...fallbackTexts) {
 }
 
 function isCovidNewsTopical(item) {
-  const primaryText = [
-    item && item.title,
-    item && item.excerpt,
-    item && item.summary,
-  ]
+  const primaryText = [item && item.title, item && item.excerpt, item && item.summary]
     .filter(Boolean)
     .join(' ');
-  const visibleText = [
-    primaryText,
-    item && item.sourceText,
-  ]
-    .filter(Boolean)
-    .join(' ');
+  const visibleText = [primaryText, item && item.sourceText].filter(Boolean).join(' ');
   if (!COVID_NEWS_TOPIC_RE.test(primaryText)) return false;
   if (!COVID_NEWS_HEALTH_RE.test(primaryText)) return false;
   if (COVID_NEWS_OFF_TOPIC_RE.test(primaryText)) return false;
@@ -2142,28 +2204,19 @@ function isCovidNewsTopical(item) {
 }
 
 function isImmigrationNewsTopical(item) {
-  const primaryText = [
-    item && item.title,
-    item && item.excerpt,
-    item && item.summary,
-  ]
+  const primaryText = [item && item.title, item && item.excerpt, item && item.summary]
     .filter(Boolean)
     .join(' ');
   if (IMMIGRATION_NEWS_STATIC_PAGE_RE.test(primaryText)) return false;
   if (!IMMIGRATION_NEWS_TOPIC_RE.test(primaryText)) return false;
-  const visibleText = [
-    primaryText,
-    item && item.sourceText,
-  ]
-    .filter(Boolean)
-    .join(' ');
+  const visibleText = [primaryText, item && item.sourceText].filter(Boolean).join(' ');
   return (
     !IMMIGRATION_NEWS_STATIC_PAGE_RE.test(visibleText) &&
     (IMMIGRATION_NEWS_TOPIC_RE.test(primaryText) ||
-    (/\b(?:dhs|homeland security)\b/i.test(primaryText) &&
-    /\b(?:immigration|ice|cbp|asylum|temporary protected status|tps|visa|miExampleCo|deport(?:ation|ed|ing)?|uscis)\b/i.test(
-      visibleText,
-      )))
+      (/\b(?:dhs|homeland security)\b/i.test(primaryText) &&
+        /\b(?:immigration|ice|cbp|asylum|temporary protected status|tps|visa|miExampleCo|deport(?:ation|ed|ing)?|uscis)\b/i.test(
+          visibleText,
+        )))
   );
 }
 
@@ -2227,7 +2280,10 @@ function covidArtifactNewsItems(dataDir, date, { requireSummary = true, summaryC
   const rawMinimum = Number(raw && raw.minimum);
   const artifactRows = normalizeArtifactArray(raw, ['articles', 'items', 'news']);
   const artifactMetTarget =
-    Number.isFinite(rawMinimum) && rawMinimum > 0 && artifactRows.length >= rawMinimum && !(raw && raw.wall);
+    Number.isFinite(rawMinimum) &&
+    rawMinimum > 0 &&
+    artifactRows.length >= rawMinimum &&
+    !(raw && raw.wall);
   return artifactRows
     .map(normalizeCovidArticle)
     .filter((item) => item.title)
@@ -2239,10 +2295,12 @@ function covidArtifactNewsItems(dataDir, date, { requireSummary = true, summaryC
       const cachedSummary = item.url && summaryCache[item.url] && summaryCache[item.url].summary;
       const cachedSummaryUsable = Boolean(
         cachedSummary &&
-          newsTitleSummaryCoherent(cachedSummary, item) &&
-          buildRenderableNewsSummaryParas(cachedSummary, item),
+        newsTitleSummaryCoherent(cachedSummary, item) &&
+        buildRenderableNewsSummaryParas(cachedSummary, item),
       );
-      const recentSummaryFailure = Boolean(item.url && isRecentNewsSummaryFailure(summaryCache[item.url]));
+      const recentSummaryFailure = Boolean(
+        item.url && isRecentNewsSummaryFailure(summaryCache[item.url]),
+      );
       return { item, extractiveSummary, cachedSummaryUsable, recentSummaryFailure };
     })
     .filter(({ item, extractiveSummary, cachedSummaryUsable, recentSummaryFailure }) => {
@@ -2354,7 +2412,11 @@ function healedNewsItems(dataDir, date, cardKey) {
   // its real excerpt / honest headline note, never fabricated prose.
   items = items.map((it) => {
     const c = it.url && summaryCache[it.url];
-    if (c && newsTitleSummaryCoherent(c.summary, it) && buildRenderableNewsSummaryParas(c.summary, it)) {
+    if (
+      c &&
+      newsTitleSummaryCoherent(c.summary, it) &&
+      buildRenderableNewsSummaryParas(c.summary, it)
+    ) {
       return { ...it, summary: c.summary };
     }
     if (isRecentNewsSummaryFailure(c)) return { ...it, _summaryFailureRecent: true };
@@ -2387,11 +2449,7 @@ function healedNewsItems(dataDir, date, cardKey) {
       const aGoogle = /news\.google\.com/i.test(a.it.url || '') ? 1 : 0;
       const bGoogle = /news\.google\.com/i.test(b.it.url || '') ? 1 : 0;
       return (
-        aSummary - bSummary ||
-        aFailed - bFailed ||
-        aTier - bTier ||
-        aGoogle - bGoogle ||
-        a.i - b.i
+        aSummary - bSummary || aFailed - bFailed || aTier - bTier || aGoogle - bGoogle || a.i - b.i
       );
     })
     .map(({ it }) => it);
@@ -2619,7 +2677,14 @@ async function summarizeCloudNews({
           polishSourceBackfills &&
           items
             .slice(0, limit)
-            .some((it) => it && it.url && !attemptedUrls.has(it.url) && !cache.get(it.url, it) && buildSourceBackfillNewsSummaryParas(it));
+            .some(
+              (it) =>
+                it &&
+                it.url &&
+                !attemptedUrls.has(it.url) &&
+                !cache.get(it.url, it) &&
+                buildSourceBackfillNewsSummaryParas(it),
+            );
         if (currentStubCount <= selfHealStopStubCount && !sourceBackfillNeedsPolish) break;
         const candidatePool = items
           .slice(0, limit)
@@ -2744,22 +2809,18 @@ function sanitizeNewsExampleCoraph(p) {
     .replace(/&#x27;/gi, "'")
     .replace(/&#(\d+);/g, (_m, n) => {
       const code = Number(n);
-      return Number.isFinite(code) && code >= 32 && code <= 126
-        ? String.fromCharCode(code)
-        : ' ';
+      return Number.isFinite(code) && code >= 32 && code <= 126 ? String.fromCharCode(code) : ' ';
     })
     .replace(/&#x([0-9a-f]+);/gi, (_m, n) => {
       const code = parseInt(n, 16);
-      return Number.isFinite(code) && code >= 32 && code <= 126
-        ? String.fromCharCode(code)
-        : ' ';
+      return Number.isFinite(code) && code >= 32 && code <= 126 ? String.fromCharCode(code) : ' ';
     });
   return stripLeadingNewsChromeText(
     stripPublisherChrome(
-    decoded
-      .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '') // drop non-printable control chars
-      .replace(/\s+/g, ' ')
-      .trim(),
+      decoded
+        .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '') // drop non-printable control chars
+        .replace(/\s+/g, ' ')
+        .trim(),
     ),
   ).trim();
 }
@@ -2782,7 +2843,9 @@ function buildFullNewsSummaryParas(summary, item = {}) {
 
 function rendererCleanNewsExampleCoraphText(text) {
   const out = stripLeadingNewsChromeText(
-    stripPublisherChrome(String(text || '')).replace(/\r/g, '').replace(/\s+/g, ' '),
+    stripPublisherChrome(String(text || ''))
+      .replace(/\r/g, '')
+      .replace(/\s+/g, ' '),
   );
   if (!out) return '';
   if (/^\*{0,2}TLDR\*{0,2}:?/i.test(out)) return '';
@@ -2957,7 +3020,12 @@ function newsRenderTitleLooksJumbled(title) {
   const s = String(title || '');
   if (/^Updated\s+\d{4}[-\s]\d{4}\s+COVID/i.test(s)) return false;
   if (NEWS_RENDER_TITLE_CHROME_RE.test(s)) return true;
-  if (/^(?:The|This)\s+(?:article|story|report|author|reporter|piece|column|op-?ed|analysis)\b/i.test(s.trim())) return true;
+  if (
+    /^(?:The|This)\s+(?:article|story|report|author|reporter|piece|column|op-?ed|analysis)\b/i.test(
+      s.trim(),
+    )
+  )
+    return true;
   if (/^(?:You|We|I|They|It)\s+\w+/i.test(s.trim()) && s.trim().length > 75) return true;
   if (NEWS_ARTICLE_META_PROSE_RE.test(s)) return true;
   if (/\b(?:line|quote)\s+was\b/i.test(s)) return true;
@@ -2990,7 +3058,9 @@ function trimNewsDisplayTitle(text, max = 112) {
 }
 
 function firstSentenceForDisplayTitle(text) {
-  const s = stripPublisherChrome(decodeHtmlEntities(stripHtml(text))).replace(/\s+/g, ' ').trim();
+  const s = stripPublisherChrome(decodeHtmlEntities(stripHtml(text)))
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!s) return '';
   const m = s.match(/^(.{36,180}?[.!?])(?:\s|$)/);
   return trimNewsDisplayTitle(m ? m[1] : s, 112);
@@ -3040,7 +3110,9 @@ function newsItemCanRenderAsNewsRow(item = {}) {
     newsTitleLooksLikeBodyFragment(item.title) || newsRenderTitleLooksJumbled(item.title);
   if (
     rawTitleBad &&
-    NEWS_ARTICLE_META_PROSE_RE.test([item.summary, item.sourceText, item.excerpt].filter(Boolean).join(' '))
+    NEWS_ARTICLE_META_PROSE_RE.test(
+      [item.summary, item.sourceText, item.excerpt].filter(Boolean).join(' '),
+    )
   ) {
     return false;
   }
@@ -3055,7 +3127,10 @@ function newsItemCanRenderAsNewsRow(item = {}) {
   if (newsEvidenceLooksLikePublisherChrome(bodyText)) return false;
   if (!renderNewsDisplayTitle(item)) return false;
   if (item._summaryParas) return true;
-  if (buildRenderableNewsSummaryParas(item.summary, item) || buildSourceBackfillNewsSummaryParas(item)) {
+  if (
+    buildRenderableNewsSummaryParas(item.summary, item) ||
+    buildSourceBackfillNewsSummaryParas(item)
+  ) {
     return true;
   }
   return item._requiresInaccessibleProof ? item._summaryFailureRecent === true : true;
@@ -3069,7 +3144,9 @@ function dedupeNewsRenderRows(rows) {
   for (const row of rows || []) {
     const displayTitle = renderNewsDisplayTitle(row);
     const titleKey = normalizedNewsRenderTitleKey(displayTitle);
-    const urlKey = String((row && row.url) || '').trim().toLowerCase();
+    const urlKey = String((row && row.url) || '')
+      .trim()
+      .toLowerCase();
     if (!titleKey || newsRenderTitleLooksJumbled(displayTitle)) continue;
     const titleTokens = newsRenderTitleTokenSet(titleKey);
     if (
@@ -3088,7 +3165,12 @@ function dedupeNewsRenderRows(rows) {
 
 function newsRenderRowTitleAllowed(row) {
   const title = String((row && row.title) || '');
-  return Boolean(title && title.length <= 112 && !NEWS_RENDER_HARD_BAD_TITLE_RE.test(title) && !newsRenderTitleLooksJumbled(title));
+  return Boolean(
+    title &&
+    title.length <= 112 &&
+    !NEWS_RENDER_HARD_BAD_TITLE_RE.test(title) &&
+    !newsRenderTitleLooksJumbled(title),
+  );
 }
 
 function cleanNewsWallText(text) {
@@ -3106,7 +3188,8 @@ function formatHealedNewsSection(dataDir, date, cardKey, label) {
   const renderCandidates = healed.items.map((item) => ({
     ...item,
     _summaryParas:
-      buildRenderableNewsSummaryParas(item.summary, item) || buildSourceBackfillNewsSummaryParas(item),
+      buildRenderableNewsSummaryParas(item.summary, item) ||
+      buildSourceBackfillNewsSummaryParas(item),
   }));
   const sourceLinkedRows = renderCandidates.filter(newsItemCanRenderAsNewsRow);
   const dedupedRows = dedupeNewsRenderRows(sourceLinkedRows).filter(newsRenderRowTitleAllowed);
@@ -3520,7 +3603,10 @@ function videoIsAbandonedNoArtifactStub(video) {
     return true;
   }
   const idTitle = `${video.id || ''} ${video.title || ''}`.toLowerCase();
-  return /\bspec_stub_|no_music_video|\bstub\b/.test(idTitle) && /missing|history|blind|source/.test(evidence);
+  return (
+    /\bspec_stub_|no_music_video|\bstub\b/.test(idTitle) &&
+    /missing|history|blind|source/.test(evidence)
+  );
 }
 
 function videoIsAbandonedDeadLetterStub(video) {
@@ -4335,8 +4421,7 @@ function contentHealCardsForRefreshTargets(targets) {
     .map((target) => normalizeRefreshTarget(target))
     .filter(Boolean);
   const set = new Set(orderedTargets);
-  const allNews =
-    set.has('news_cards') || set.has('all_news_cards') || set.has('news_content');
+  const allNews = set.has('news_cards') || set.has('all_news_cards') || set.has('news_content');
   const mapping = {
     ai_tech_news: 'aitech',
     us_news: 'us',
@@ -4457,8 +4542,8 @@ function cloudSelfHealScriptRunsForRefreshTargets(targets, opts = {}) {
             ? ['--write']
             : scriptName === 'otter-processing-coverage-probe.js' ||
                 scriptName === 'otter-speaker-pareto-report.js'
-            ? []
-            : ['--write'],
+              ? []
+              : ['--write'],
         timeout: 240000,
       });
     }
@@ -4588,12 +4673,9 @@ function maybeRunCloudSelfHeal({
       ? newsTargets.join(',')
       : 'aitech,us,world,covid,immigration,mortgage,viral';
     attempts.push(
-      runNodeHealer(
-        'content-heal.js',
-        ['--date', date, '--cards', cards],
-        dataDir,
-        { timeout: 300000 },
-      ),
+      runNodeHealer('content-heal.js', ['--date', date, '--cards', cards], dataDir, {
+        timeout: 300000,
+      }),
     );
   }
   if (
@@ -4635,10 +4717,7 @@ function maybeRunCloudSelfHeal({
       }),
     );
   }
-  if (
-    targeted('viral_tech_clips', 'viral_news') &&
-    !(stateById.get('viral-tech-clips') || {}).ok
-  ) {
+  if (targeted('viral_tech_clips', 'viral_news') && !(stateById.get('viral-tech-clips') || {}).ok) {
     attempts.push(
       runDatedArtifactHealer({
         dataDir,
@@ -4797,9 +4876,7 @@ function extractScheduleLines(dataDir, date) {
     .filter((event) => {
       const key = ctDateKeyFromStart(scheduleStartValue(event));
       return (
-        key >= date &&
-        key <= addIsoDays(date, 7) &&
-        !/cancelled/i.test(String(event.status || ''))
+        key >= date && key <= addIsoDays(date, 7) && !/cancelled/i.test(String(event.status || ''))
       );
     })
     .map((event) => ({
@@ -4812,14 +4889,17 @@ function extractScheduleLines(dataDir, date) {
     }))
     .filter((event) => event.title && !isRoutineScheduleItem(event.title))
     .sort((a, b) => String(a.day).localeCompare(String(b.day)) || a.start.localeCompare(b.start))
-    .map((event) =>
-      `- ${[event.day, scheduleDayLabel(event.day, date), event.time, event.title]
-        .filter(Boolean)
-        .join(' | ')}`,
+    .map(
+      (event) =>
+        `- ${[event.day, scheduleDayLabel(event.day, date), event.time, event.title]
+          .filter(Boolean)
+          .join(' | ')}`,
     )
     .filter(Boolean);
   if (!events.length)
-    return ['- No non-routine calendar items found today or next 7 days in the cloud schedule feed.'];
+    return [
+      '- No non-routine calendar items found today or next 7 days in the cloud schedule feed.',
+    ];
   return uniqueNonEmpty(events, 14);
 }
 
@@ -5523,8 +5603,7 @@ function buildOtterSpeakerEnrichmentHealth({
     };
   }
 
-  const verdictFn =
-    computeVerdict || require('./otter-processing-coverage-probe').computeVerdict;
+  const verdictFn = computeVerdict || require('./otter-processing-coverage-probe').computeVerdict;
   const v = verdictFn(artifacts || {});
   let oldest = null;
   for (const a of present) {
@@ -5546,13 +5625,15 @@ function buildOtterSpeakerEnrichmentHealth({
   const last7 = textAudio.last_7_days || {};
   const recentMissingAudio = Array.isArray(textAudio.missing_audio)
     ? textAudio.missing_audio.filter((row) => {
-        const d = String(row && row.date || '');
+        const d = String((row && row.date) || '');
         return d && d >= String(last7.start_date || '') && d <= String(last7.end_date || '');
       })
     : [];
   const recentMissingAudioSample = recentMissingAudio
     .slice(0, 8)
-    .map((row) => `${row.date || 'ExampleCo date'} ${row.id || row.otid || '?'} ${row.title || ''}`.trim())
+    .map((row) =>
+      `${row.date || 'ExampleCo date'} ${row.id || row.otid || '?'} ${row.title || ''}`.trim(),
+    )
     .join('; ');
   const lockStale = /STALE/.test(lockState);
   // Grade the subsystem RED/YELLOW/GREEN by what the shortfall ACTUALLY is. The
@@ -5680,10 +5761,7 @@ function maybeRegenLifeArchiveHealth(dataDir) {
 function maybeRegenSpeakerPareto(dataDir) {
   if (!runningOnEc2(dataDir)) return;
   if (
-    !speakerParetoRegenAllowedForRefreshTargets(
-      selfHealRefreshTargets(),
-      isSelfHealRefreshMode(),
-    )
+    !speakerParetoRegenAllowedForRefreshTargets(selfHealRefreshTargets(), isSelfHealRefreshMode())
   )
     return;
   try {
@@ -5841,7 +5919,9 @@ function buildFullLifeBackupCard(dataDir) {
   // When a source still has a backfill blocker, state the repair
   // directly. This keeps the card honest without leaking non-action self-talk.
   if (anyBlocker) {
-    lines.push('Repair: finish the named backfills, refresh the backup health snapshot, and keep the card non-green until the blockers clear.');
+    lines.push(
+      'Repair: finish the named backfills, refresh the backup health snapshot, and keep the card non-green until the blockers clear.',
+    );
   }
   return { title: 'FULL-LIFE DATA BACKUP', body: lines.join('\n'), real: true };
 }
@@ -6623,7 +6703,12 @@ function awsArtifactBreakdownHasRequiredDetail(lines) {
       mode = '';
       continue;
     }
-    if (mode === 'accounts' && /^\s{4,}.+?\s+\((?:[\d]+|account id unavailable|account unavailable|ExampleCo)\)\s+(?:\$[\d.]+|cost ExampleCo\s*--)/i.test(line)) {
+    if (
+      mode === 'accounts' &&
+      /^\s{4,}.+?\s+\((?:[\d]+|account id unavailable|account unavailable|ExampleCo)\)\s+(?:\$[\d.]+|cost ExampleCo\s*--)/i.test(
+        line,
+      )
+    ) {
       counts.accounts += 1;
     } else if (mode === 'apps' && /^\s{4,}.+?\s+(?:\$[\d.]+|cost ExampleCo\s*--)/i.test(line)) {
       counts.apps += 1;
@@ -6652,7 +6737,10 @@ function buildSynthesizedAwsBreakdownLines(total, services) {
   }
   const remainder = total - shown;
   if (remainder > 0.005) {
-    byApp.set('Unattributed AWS services', (byApp.get('Unattributed AWS services') || 0) + remainder);
+    byApp.set(
+      'Unattributed AWS services',
+      (byApp.get('Unattributed AWS services') || 0) + remainder,
+    );
   }
   if (byApp.size === 0) byApp.set('Unattributed AWS services', total);
   for (const [app, amount] of [...byApp.entries()].sort((a, b) => b[1] - a[1])) {
@@ -6663,11 +6751,15 @@ function buildSynthesizedAwsBreakdownLines(total, services) {
   const topServices = services.filter((row) => Number(row.amount || 0) >= 0.5).slice(0, 8);
   if (topServices.length === 0) {
     lines.push(`    ${`$${total.toFixed(2)}`.padStart(8)}  Unattributed AWS services`);
-    lines.push('              -> Cost Explorer returned a total but no service groups above the display floor.');
+    lines.push(
+      '              -> Cost Explorer returned a total but no service groups above the display floor.',
+    );
   } else {
     for (const row of topServices) {
       lines.push(`    ${`$${Number(row.amount).toFixed(2)}`.padStart(8)}  ${row.service}`);
-      lines.push(`              -> ${inferAwsCostCenterFromService(row.service)} cost attribution from Cost Explorer service grouping.`);
+      lines.push(
+        `              -> ${inferAwsCostCenterFromService(row.service)} cost attribution from Cost Explorer service grouping.`,
+      );
     }
   }
   return lines;
@@ -6781,10 +6873,7 @@ function buildAwsCostsCard(dataDir, date) {
   }
   const total =
     (text.match(/^Total:\s*([^\r\n]+)/m) || [])[1] ||
-    (text.match(/^AWS COSTS\b[^\n]*\(\s*[^$]*\$([\d,.]+)\s+total/i) || [])[1]?.replace(
-      /^/,
-      '$',
-    ) ||
+    (text.match(/^AWS COSTS\b[^\n]*\(\s*[^$]*\$([\d,.]+)\s+total/i) || [])[1]?.replace(/^/, '$') ||
     'ExampleCo';
   const services = extractAwsArtifactServices(text);
   const lines = [
@@ -7068,9 +7157,24 @@ function refreshTokenUsageArtifacts(
   // (floorSpawnEnabled true) runs every collector unchanged.
   if (!floorSpawnEnabled() && !forceSpawn) return;
   const collectors = [
-    { script: 'collect-claude-plan-usage.js', args: [], timeout: 30000, label: 'claude plan-usage' },
-    { script: 'collect-bedrock-budget-usage.js', args: [], timeout: 30000, label: 'bedrock budget' },
-    { script: 'collect-codex-token-usage.js', args: [], timeout: 30000, label: 'codex token-usage' },
+    {
+      script: 'collect-claude-plan-usage.js',
+      args: [],
+      timeout: 30000,
+      label: 'claude plan-usage',
+    },
+    {
+      script: 'collect-bedrock-budget-usage.js',
+      args: [],
+      timeout: 30000,
+      label: 'bedrock budget',
+    },
+    {
+      script: 'collect-codex-token-usage.js',
+      args: [],
+      timeout: 30000,
+      label: 'codex token-usage',
+    },
     {
       script: 'collect-daily-token-usage.js',
       args: ['--date', previousIsoDate(date)],
@@ -7274,7 +7378,10 @@ function buildCloudMorningBriefing({
         callSummaries: (() => {
           try {
             return JSON.parse(
-              fs.readFileSync(path.join(dataDir, 'agent', 'otter-call-exec-summaries.json'), 'utf8'),
+              fs.readFileSync(
+                path.join(dataDir, 'agent', 'otter-call-exec-summaries.json'),
+                'utf8',
+              ),
             );
           } catch {
             return null;
@@ -7449,7 +7556,13 @@ function buildCloudMorningBriefing({
     self_heal_health: (() => {
       try {
         return generateSelfHealHealthCard({ dataDir, date }).section;
-      } catch {
+      } catch (e) {
+        // NEVER swallow silently: a hidden throw here is exactly what let the
+        // useless "artifact unusable" fallback render for days. Log the real
+        // cause so a regressed generator surfaces instead of vanishing to null.
+        console.error(
+          `[cloud-morning-briefing] self_heal_health generator threw: ${String((e && e.stack) || e).slice(0, 400)}`,
+        );
         return null;
       }
     })(),
@@ -7532,7 +7645,7 @@ function buildCloudMorningBriefing({
       if (!block) throw new Error(`${injectorName} returned empty`);
       realById[id] = block;
     } catch (e) {
-    realById[id] = legacySection(
+      realById[id] = legacySection(
         title,
         [
           'Status: not synced to cloud yet.',
