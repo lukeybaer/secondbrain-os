@@ -65,6 +65,86 @@ function normalize(s) {
     .trim();
 }
 
+// Curated Otter quotes arrive as ~300-char mid-word run-on fragments (they are
+// truncated by the profile distiller). Dumping one raw makes the card an ugly
+// wall of broken text. crispQuote returns a clean, readable VERBATIM subspan:
+// it starts at the first real clause and ends at the last sentence or clause
+// boundary within `max` chars, never cutting a word in half. The result is still
+// a verbatim subspan of the source, so the anti-fabrication guard keeps passing.
+function crispQuote(text, max = 160) {
+  const clean = String(text || '')
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(new RegExp(DASH_CLASS, 'g'), ', ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!clean) return '';
+  // Drop leading conversational filler so the snippet opens on substance while
+  // staying a verbatim subspan (we only trim from the front, never rewrite).
+  // Iterate because transcripts stack filler ("so, so", "yeah, in general").
+  const FILLER =
+    /^(?:okay|ok|so|and|but|well|yeah|yep|um|uh|like|i mean|you know|in general|generally|anyway|basically)[,\s]+/i;
+  let body = clean;
+  for (let i = 0; i < 4; i += 1) {
+    const next = body.replace(FILLER, '');
+    if (next === body || !next) break;
+    body = next;
+  }
+  if (!body) body = clean;
+  if (body.length <= max) return body;
+  const window = body.slice(0, max + 1);
+  // Prefer a sentence end, then a clause boundary, then a word boundary.
+  const sentenceEnd = Math.max(
+    window.lastIndexOf('. '),
+    window.lastIndexOf('? '),
+    window.lastIndexOf('! '),
+  );
+  if (sentenceEnd >= max * 0.5) return body.slice(0, sentenceEnd + 1).trim();
+  const clauseEnd = Math.max(window.lastIndexOf(', '), window.lastIndexOf('; '));
+  if (clauseEnd >= max * 0.5) return body.slice(0, clauseEnd).trim();
+  const wordEnd = body.slice(0, max).lastIndexOf(' ');
+  return (wordEnd > 0 ? body.slice(0, wordEnd) : body.slice(0, max)).trim();
+}
+
+// Relevance score of a quote to a topic keyword set. Used to pair each
+// deterministic coaching point with a quote that actually supports it (the old
+// fallback grabbed quotes[0..3] blindly, so "Names the why" got a delinquency
+// quote). Cleaner + shorter quotes are preferred when relevance ties, because a
+// tight quote reads far better on the card than a 300-char run-on.
+function scoreQuoteForKeywords(text, keywords) {
+  const hay = normalize(text);
+  let score = 0;
+  for (const kw of keywords || []) {
+    if (hay.includes(normalize(kw))) score += 1;
+  }
+  return score;
+}
+
+// Pick the best UNUSED quote for a coaching topic and return a crisp verbatim
+// subspan of it. Falls back to any unused quote so the card is never thin, and
+// only reuses a quote if nothing unused remains. Returns { id, quote } or null.
+function pickCrispQuoteFor({ quotes, keywords, usedIds, max = 160 }) {
+  const pool = Array.isArray(quotes) ? quotes : [];
+  if (!pool.length) return null;
+  const used = usedIds instanceof Set ? usedIds : new Set(usedIds || []);
+  const ranked = pool
+    .map((q, i) => ({
+      q,
+      i,
+      score: scoreQuoteForKeywords(q.text, keywords),
+      len: String(q.text || '').length,
+    }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.len !== b.len) return a.len - b.len; // tighter quote reads better
+      return a.i - b.i; // stable, newest-first (pool is date-sorted)
+    });
+  const firstUnused = ranked.find((r) => !used.has(String(r.q.id)));
+  const chosen = firstUnused || ranked[0];
+  if (!chosen) return null;
+  return { id: chosen.q.id, quote: crispQuote(chosen.q.text, max) };
+}
+
 // Parse the allowed literature citation keys from the grounding markdown. A key
 // is the text before the first " - " on each bullet in the vetted-literature
 // section, markdown emphasis stripped. e.g. "Proverbs 15:1",
@@ -217,6 +297,9 @@ module.exports = {
   stripFences,
   sanitize,
   normalize,
+  crispQuote,
+  scoreQuoteForKeywords,
+  pickCrispQuoteFor,
   parseLiteratureKeys,
   buildPrompt,
   validateItem,
