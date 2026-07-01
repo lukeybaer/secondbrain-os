@@ -39,7 +39,6 @@ function isTokenUsageCardTitle(title) {
   return /^(?:TOKEN USAGE|LLM SUBSCRIPTION)/i.test(String(title || '').trim());
 }
 
-
 // The otter speaker-pareto card mixes Amy's status preamble (As of / Freshness /
 // Repair / No ExampleCo action required) with THIRD-PARTY call exec-summary prose. The
 // preamble ends where the call-history / lifetime content begins: lines from the
@@ -47,9 +46,7 @@ function isTokenUsageCardTitle(title) {
 // content, not Amy status. Only the preamble can declare a real card blocker.
 function otterStatusPreamble(body) {
   const lines = String(body || '').split('\n');
-  const idx = lines.findIndex((l) =>
-    /^\s*(?:Past 24 Hours|Day Before|Lifetime stats)\b/i.test(l),
-  );
+  const idx = lines.findIndex((l) => /^\s*(?:Past 24 Hours|Day Before|Lifetime stats)\b/i.test(l));
   return (idx === -1 ? lines : lines.slice(0, idx)).join('\n');
 }
 
@@ -104,7 +101,7 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
     ? [title, neutralizeNewsSoftTerms(body)].filter(Boolean).join('\n')
     : isTokenUsage
       ? neutralizeNewsSoftTerms(text)
-    : text;
+      : text;
 
   const executive = assertExecutiveText(operationalScope, { surface: `${surface}:${id}` });
   failures.push(...executive.failures);
@@ -122,9 +119,22 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
   // real card blocker. A fresh roster then never false-blocks publish, while a
   // real "Freshness: BLOCKER:" preamble line still requires the recognized escape
   // or a concrete step. 2026-06-28 EC2 publish abort.
-  const blockerScopeText = /OTTER SPEAKER PARETO/i.test(title)
-    ? [title, otterStatusPreamble(body)].filter(Boolean).join('\n')
-    : text;
+  //
+  // STATUS cards (SYSTEM HEALTH, SELF-HEAL HEALTH) are exempt entirely: they
+  // DISPLAY subsystem state, and every non-green row is separately mirrored into
+  // the BLOCKERS card by deriveNonGreenSubsystemBlockers with a real repair step,
+  // so an incidental "blocker"/"action required" substring in their status prose
+  // (a self-heal "escalated and surfaced as blockers" line, a "✗ ... action
+  // required to retry" row) is not a ExampleCo ask and must not wedge publish. This was
+  // the recurring, self-heal-unfixable defect "live render qc system-health on
+  // system_health ... escalated" (2026-07-01). The BLOCKERS card and every genuine
+  // action card are still fully held to the contract below.
+  const isStatusCard = /^(?:SYSTEM HEALTH|SELF-HEAL HEALTH)\b/i.test(title);
+  const blockerScopeText = isStatusCard
+    ? ''
+    : /OTTER SPEAKER PARETO/i.test(title)
+      ? [title, otterStatusPreamble(body)].filter(Boolean).join('\n')
+      : text;
   if (/\bblocker|need from ExampleCo|action required\b/i.test(blockerScopeText)) {
     const actionableLines = body
       .split('\n')
