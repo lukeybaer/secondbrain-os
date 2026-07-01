@@ -46,6 +46,11 @@ const regenFeedback = require('./lib/regen-feedback-directives.js');
 // Plan: ~/.claude/plans/distributed-questing-wilkinson.md
 const { loadNiche } = require('./lib/niche-loader.js');
 const { stampNicheOntoSpec } = require('./lib/niche-to-legacy-spec.js');
+// video-delete-17: a DELETE (reject-without-regen) marks a video terminally
+// deleted + regen_suppressed. isRegenCandidate is the single predicate that
+// keeps a deleted video out of this loop, even if a stray write re-flips a
+// needs_regen flag.
+const { isRegenCandidate } = require('./lib/video-delete-state.js');
 const PLAN_VIDEO_BUILD_CLI = path.join(__dirname, 'lib', 'plan-video-build-cli.js');
 const BUILD_FROM_PLAN_PY = path.join(__dirname, 'build-from-plan.py');
 
@@ -1204,16 +1209,17 @@ function main() {
       return true;
     }
     const idTitle = `${v.id || ''} ${v.title || ''}`.toLowerCase();
-    return /\bspec_stub_|no_music_video|\bstub\b/.test(idTitle) && /missing|history|blind|source/.test(evidence);
+    return (
+      /\bspec_stub_|no_music_video|\bstub\b/.test(idTitle) &&
+      /missing|history|blind|source/.test(evidence)
+    );
   };
   // Honesty contract: pick up BOTH video and thumbnail rejections. The
   // legacy filter only matched video_needs_regen, so thumbnail rejections
   // were silently ignored and the video sat in pending_approval forever
   // with the same bad thumbnail. (Gap 2026-04-26.)
   let candidates = (manifest.videos || []).filter(
-    (v) =>
-      !isAbandonedNoArtifactStub(v) &&
-      (v.video_needs_regen === true || v.thumbnail_needs_regen === true),
+    (v) => !isAbandonedNoArtifactStub(v) && isRegenCandidate(v),
   );
   if (!force) {
     candidates = candidates.filter(

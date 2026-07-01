@@ -16,7 +16,8 @@ export interface PendingVideo {
     | 'video_rejected'
     | 'thumbnail_rejected'
     | 'regen_queued'
-    | 'trashed';
+    | 'trashed'
+    | 'deleted';
   generated_date: string;
   video_path?: string;
   thumbnail_path?: string;
@@ -583,10 +584,12 @@ function VideoCard({
   video,
   onApprove,
   onReject,
+  onDelete,
 }: {
   video: PendingVideo;
   onApprove: (id: string) => void;
   onReject: (id: string, target: RejectTarget | 'both', note: string) => void;
+  onDelete: (id: string) => void | Promise<void>;
 }) {
   const [rejectTarget, setRejectTarget] = useState<RejectTarget | null>(null);
   const [busy, setBusy] = useState(false);
@@ -600,11 +603,13 @@ function VideoCard({
   // Cross-video entries are also dropped if cross_video_skipped is set
   // by auto-regen-rejected-videos.js.
   const rawFeedbackHistory = Array.isArray(video.feedback_history) ? video.feedback_history : [];
-  const feedbackHistory = rawFeedbackHistory.filter((round: { video_id?: string; cross_video_skipped?: boolean }) => {
-    if (round && round.cross_video_skipped) return false;
-    if (round && round.video_id && round.video_id !== video.id) return false;
-    return true;
-  });
+  const feedbackHistory = rawFeedbackHistory.filter(
+    (round: { video_id?: string; cross_video_skipped?: boolean }) => {
+      if (round && round.cross_video_skipped) return false;
+      if (round && round.video_id && round.video_id !== video.id) return false;
+      return true;
+    },
+  );
   const previousFeedback = noteText(video.previous_feedback, '');
   const fixSummary = noteText(video.fix_summary, '');
   const buildNotes = noteText(video.build_notes, '');
@@ -840,6 +845,26 @@ function VideoCard({
         >
           Trash Both
         </button>
+        {/* Delete = reject-and-do-NOT-regenerate. Terminal, no rebuild. */}
+        <button
+          style={{
+            ...s.btnSmall,
+            opacity: busy ? 0.5 : 1,
+            background: '#1a1a1a',
+            color: '#f87171',
+            borderColor: '#7f1d1d',
+            fontSize: 11,
+          }}
+          disabled={busy}
+          title="Delete this video. Marks it rejected and does NOT regenerate."
+          onClick={async () => {
+            setBusy(true);
+            await onDelete(video.id);
+            setBusy(false);
+          }}
+        >
+          Delete (no regen)
+        </button>
       </div>
 
       {/* 2026-05-06 ExampleCo: full rejection history, not just the latest.
@@ -890,7 +915,14 @@ function VideoCard({
                     {roundTarget ? ` · ${roundTarget}` : ''}
                     {rejectedAt ? ` · ${rejectedAt}` : ''}
                   </div>
-                  <div style={{ fontSize: 12, color: '#fbbf24', marginBottom: 6, whiteSpace: 'pre-wrap' }}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: '#fbbf24',
+                      marginBottom: 6,
+                      whiteSpace: 'pre-wrap',
+                    }}
+                  >
                     {noteText(round.note)}
                   </div>
                   {roundFixSummary && (
@@ -2002,9 +2034,7 @@ function YouTubeVideosTab() {
   async function load() {
     try {
       const result = (await ipcInvoke('empire:getPendingVideos')) as
-        | PendingVideo[]
-        | null
-        | undefined;
+        PendingVideo[] | null | undefined;
       if (result && Array.isArray(result) && result.length > 0) {
         setVideos(result);
         setUsingDemo(false);
@@ -2095,6 +2125,21 @@ function YouTubeVideosTab() {
       );
     }
     // Auto-advance after reject
+    setActiveIndex((i) => {
+      const newPending = videos.filter((v) => v.status === 'pending_approval' && v.id !== id);
+      return Math.min(i, Math.max(0, newPending.length - 1));
+    });
+  }
+
+  // Delete = reject-and-do-NOT-regenerate. Terminal state; the video leaves
+  // the queue and never gets re-queued for a rebuild.
+  async function handleDelete(id: string) {
+    try {
+      await ipcInvoke('empire:deleteVideo', id);
+    } catch {
+      /* IPC not wired yet, update local state only */
+    }
+    setVideos((prev) => prev.filter((v) => v.id !== id));
     setActiveIndex((i) => {
       const newPending = videos.filter((v) => v.status === 'pending_approval' && v.id !== id);
       return Math.min(i, Math.max(0, newPending.length - 1));
@@ -2220,6 +2265,7 @@ function YouTubeVideosTab() {
             video={activeVideo}
             onApprove={handleApprove}
             onReject={(id, target, note) => handleReject(id, target, note)}
+            onDelete={handleDelete}
           />
         )}
       </div>

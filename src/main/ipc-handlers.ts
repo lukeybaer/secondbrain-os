@@ -597,7 +597,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // so approval flows straight into the 9am/1pm/5pm scheduler. Before
   // 2026-04-20, approval only wrote the local JSON, so videos sat forever
   // waiting on a second manual click that ExampleCo never made (18+ day stall).
-  async function pushVideoToEc2(id: string): Promise<{ success: boolean; error?: string; position?: number }> {
+  async function pushVideoToEc2(
+    id: string,
+  ): Promise<{ success: boolean; error?: string; position?: number }> {
     const { execSync } = require('child_process');
     const queuePath = path.join(contentRoot, 'content-review', 'upload-queue.json');
     const pendingDir = path.join(contentRoot, 'content-review', 'pending');
@@ -673,7 +675,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       // Do not fail approval if the push fails -- self-heal will retry.
       try {
         const pushResult = await pushVideoToEc2(id);
-        console.log(`[approve] ${id} auto-pushed to EC2: ${pushResult.success ? 'ok' : 'deferred (' + pushResult.error + ')'}`);
+        console.log(
+          `[approve] ${id} auto-pushed to EC2: ${pushResult.success ? 'ok' : 'deferred (' + pushResult.error + ')'}`,
+        );
       } catch (pushErr) {
         console.warn(`[approve] auto-push ${id} failed:`, pushErr);
       }
@@ -815,7 +819,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
             if (!pythonExe || !_fs.existsSync(pythonExe)) {
               for (const v of ['314', '313', '312', '311', '310']) {
                 const c = `C:\\Python${v}\\python.exe`;
-                if (_fs.existsSync(c)) { pythonExe = c; break; }
+                if (_fs.existsSync(c)) {
+                  pythonExe = c;
+                  break;
+                }
               }
             }
             const childEnv: Record<string, string> = {
@@ -849,21 +856,31 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         try {
           const { spawn } = require('child_process');
           const dispatchScript = path.join(
-            contentRoot, 'scripts', 'dispatch-feedback-to-claude.js',
+            contentRoot,
+            'scripts',
+            'dispatch-feedback-to-claude.js',
           );
           if (fs.existsSync(dispatchScript)) {
-            const proc = spawn('node', [
-              dispatchScript,
-              '--kind', 'video-rejection',
-              '--id', id,
-              '--target', target,
-              '--note', note,
-            ], {
-              cwd: contentRoot,
-              detached: true,
-              stdio: 'ignore',
-              windowsHide: true,
-            });
+            const proc = spawn(
+              'node',
+              [
+                dispatchScript,
+                '--kind',
+                'video-rejection',
+                '--id',
+                id,
+                '--target',
+                target,
+                '--note',
+                note,
+              ],
+              {
+                cwd: contentRoot,
+                detached: true,
+                stdio: 'ignore',
+                windowsHide: true,
+              },
+            );
             proc.unref();
             console.log(`[reject] spawned claude-code dispatch for ${id} (pid ${proc.pid})`);
           }
@@ -922,6 +939,48 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       }
     },
   );
+
+  // Delete a video (reject-and-do-NOT-regenerate). Distinct from rejectVideo,
+  // which sets a needs_regen flag and re-queues the video for rebuild. Delete
+  // marks the video terminally 'deleted' + regen_suppressed so the auto-regen
+  // loop (scripts/auto-regen-rejected-videos.js -> isRegenCandidate) never
+  // picks it up again. video-delete-17.
+  ipcMain.handle('empire:deleteVideo', (_e, id: string) => {
+    const pendingDir = path.join(contentRoot, 'content-review', 'pending');
+    const manifestPath = path.join(pendingDir, 'manifest.json');
+    const queuePath = path.join(contentRoot, 'content-review', 'upload-queue.json');
+    try {
+      const { applyVideoDelete } = require(
+        path.join(contentRoot, 'scripts', 'lib', 'video-delete-state.js'),
+      );
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      const videos = Array.isArray(manifest.videos) ? manifest.videos : manifest;
+      const video = videos.find((v: Record<string, ExampleCo>) => v.id === id);
+      if (!video) return { success: false, error: 'Video not found' };
+      applyVideoDelete(video);
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+      // If the video was already sitting in the upload queue, pull it out so a
+      // deleted video can never be uploaded.
+      if (fs.existsSync(queuePath)) {
+        try {
+          const queue = JSON.parse(fs.readFileSync(queuePath, 'utf8'));
+          if (Array.isArray(queue)) {
+            const next = queue.filter((v: Record<string, ExampleCo>) => v.id !== id);
+            if (next.length !== queue.length) {
+              fs.writeFileSync(queuePath, JSON.stringify(next, null, 2));
+            }
+          }
+        } catch {
+          /* best-effort: queue cleanup never blocks the delete */
+        }
+      }
+
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
 
   // Regen: find all videos marked video_needs_regen/thumbnail_needs_regen and rebuild them
   ipcMain.handle('empire:regenRejected', async () => {
@@ -1139,7 +1198,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
           console.log(`[reject-uploaded] spawned auto-regen for ${id} (pid ${proc.pid})`);
         }
       } catch (regenErr: ExampleCo) {
-        console.warn('[reject-uploaded] auto-regen spawn failed:', regenErr instanceof Error ? regenErr.message : String(regenErr));
+        console.warn(
+          '[reject-uploaded] auto-regen spawn failed:',
+          regenErr instanceof Error ? regenErr.message : String(regenErr),
+        );
       }
 
       return { success: true };
