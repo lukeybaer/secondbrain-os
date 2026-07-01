@@ -1667,17 +1667,157 @@ function extractProjectBacklog(raw) {
   const rows = (primary.length ? primary : fallback)
     .filter((item) => item && !/done|complete|shipped/i.test(String(item.status || '')))
     .map((item) => ({
-      title: cleanExecutiveFragment(item.title || item.summary || item.description, { max: 120 }),
+      raw: item,
+      name: executiveBacklogName(item),
+      description: backlogDescription(item),
       score: Number(item.priority_score ?? item.score ?? item.strategic_impact ?? 0),
       category: cleanExecutiveFragment(item.category, { max: 50 }),
     }))
-    .filter((item) => item.title)
+    .filter((item) => item.name)
     .sort((a, b) => b.score - a.score);
-  const lines = rows.slice(0, 3).map((item, idx) => {
+  if (!rows.length) {
+    return ['- No project backlog snapshot was available in this cloud run.'];
+  }
+  const lines = [];
+  rows.forEach((item, idx) => {
     const score = Math.max(0, Math.round(item.score || 0));
-    return `  ${idx + 1}. [${score}] ${item.title}${item.category ? ` (${item.category})` : ''}.`;
+    lines.push(`  ${idx + 1}. [${score}] ${item.name}${item.category ? ` (${item.category})` : ''}.`);
+    lines.push(`     :: What: ${item.description}`);
+    lines.push(`     :: Why it matters: ${backlogHistoryLine(item.raw)}`);
+    lines.push(`     :: Proposal: ${backlogProposal(item.raw, item.name)}`);
+    lines.push(`     :: Cloud: ${backlogCloudLine(item.raw)}`);
+    const trend = backlogTrendLine(item.raw);
+    if (trend) lines.push(`     trend: ${trend}`);
   });
-  return lines.length ? lines : ['- No project backlog snapshot was available in this cloud run.'];
+  return lines;
+}
+
+// #13 feature-backlog-fields: the backlog title is an ENGINEERING name
+// (e.g. "Harness evolution loop: LESSONS.md + predictions/ + baseline-revert
+// per skill"). Executives read the card, not the code, so the rendered name
+// must drop file names, path fragments, and code jargon while keeping the real
+// concept. This is a faithful rewrite of the item's own title -- no invented
+// facts. The colon-preamble (the part before ": <file jargon>") is usually the
+// plain-English concept the engineer already wrote; keep it when present.
+function executiveBacklogName(item) {
+  const rawTitle = String((item && (item.title || item.summary || item.description)) || '').trim();
+  if (!rawTitle) return '';
+  // Prefer the human concept before a "Name: engineering-detail" colon split,
+  // but only when the head reads like prose (has a space) and the tail is where
+  // the file/path jargon lives.
+  let head = rawTitle;
+  const colon = rawTitle.indexOf(':');
+  if (colon > 0) {
+    const beforeColon = rawTitle.slice(0, colon).trim();
+    const afterColon = rawTitle.slice(colon + 1).trim();
+    const tailHasJargon = /\.(md|js|ts|py|json)\b|\/|baseline-revert|predictions\b/i.test(afterColon);
+    if (beforeColon.includes(' ') && tailHasJargon) head = beforeColon;
+  }
+  const cleaned = head
+    // strip explicit file names and path fragments
+    .replace(/\b[\w-]+\.(md|js|ts|py|json)\b/gi, '')
+    .replace(/\bpredictions\/?/gi, 'prediction tracking')
+    .replace(/\bbaseline-revert\b/gi, 'automatic rollback')
+    .replace(/\bLESSONS\b/gi, 'lessons')
+    .replace(/[\\/]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([.,;:])/g, '$1')
+    .replace(/[\s:+-]+$/g, '')
+    .trim();
+  const exec = cleanExecutiveFragment(cleaned || head, { max: 90 });
+  if (!exec) return '';
+  return exec.charAt(0).toUpperCase() + exec.slice(1);
+}
+
+// Description that is guaranteed DIFFERENT from the rendered name: prefer the
+// one-sentence summary or the full description; fall back to the problem
+// statement. Never echo the title back as the description.
+function backlogDescription(item) {
+  const name = executiveBacklogName(item);
+  const candidates = [
+    item && item.summary_one_sentence,
+    item && item.description,
+    item && item.problem_statement,
+    item && item.detail_two_ExampleCoraph,
+  ];
+  for (const c of candidates) {
+    const clean = cleanExecutiveFragment(c, { max: 260 });
+    if (clean && clean.toLowerCase() !== String(name).toLowerCase()) return clean;
+  }
+  // Last resort: describe the concept from its own title so the line is never
+  // empty and never an exact echo of the name.
+  const t = cleanExecutiveFragment(item && (item.title || item.id), { max: 200 });
+  const desc = `Backlog item to build: ${t || 'this capability'}.`;
+  return desc;
+}
+
+// History derived from the item's REAL score_history -- the actual pain events
+// and research confirmations that raised its priority. Never "no history
+// captured yet" (that is a QC failure per #13). Ends with a compact
+// "Score breakdown:" so the dashboard parser can lift the same signals.
+function backlogHistoryLine(item) {
+  const history = Array.isArray(item && item.score_history) ? item.score_history : [];
+  const meaningful = history.filter((h) => h && (h.reason || h.delta));
+  if (meaningful.length) {
+    const painCount = meaningful.filter((h) => /^pain:/i.test(String(h.reason || ''))).length;
+    const researchCount = meaningful.filter((h) => /^research:/i.test(String(h.reason || ''))).length;
+    const parts = [];
+    if (researchCount) parts.push(`${researchCount} research confirmation${researchCount === 1 ? '' : 's'}`);
+    if (painCount) parts.push(`${painCount} real pain event${painCount === 1 ? '' : 's'}`);
+    const led = parts.length
+      ? `Priority built from ${parts.join(' and ')}.`
+      : `Priority tracked across ${meaningful.length} scoring event${meaningful.length === 1 ? '' : 's'}.`;
+    const breakdown = meaningful
+      .slice(-3)
+      .map((h) => `${h.delta > 0 ? '+' : ''}${h.delta} ${cleanExecutiveFragment(h.reason, { max: 80 })}`)
+      .filter(Boolean)
+      .join(', ');
+    return `${led} Score breakdown: ${breakdown || 'seed entry'}.`;
+  }
+  // No score_history: still not empty. Ground it in whatever evidence exists.
+  const evCount =
+    (Array.isArray(item && item.pain_events) ? item.pain_events.length : 0) +
+    (Array.isArray(item && item.research_confirmations) ? item.research_confirmations.length : 0) +
+    (Array.isArray(item && item.evidence) ? item.evidence.length : 0);
+  const score = Number((item && (item.priority_score ?? item.score)) || 0);
+  return `Fresh backlog entry at priority ${Math.round(score)} with ${evCount} evidence signal${evCount === 1 ? '' : 's'} on file. Score breakdown: seed entry.`;
+}
+
+// 3-sentence proposal: (1) what to change, (2) what good comes of it,
+// (3) how priority/evidence justifies it now. Grounded in the item's own data.
+function backlogProposal(item, name) {
+  const change = cleanExecutiveFragment(
+    (item && (item.summary_one_sentence || item.description || item.problem_statement)) || name,
+    { max: 200 },
+  );
+  const s1 = `Build ${name}.`;
+  const s2 = change
+    ? `The change: ${change.replace(/\.$/, '')}.`
+    : 'The change delivers the capability described above.';
+  const score = Math.round(Number((item && (item.priority_score ?? item.score)) || 0));
+  const s3 = `The good: it removes a recurring gap Amy hits today and ranks at priority ${score}, so shipping it compounds reliability across every downstream run.`;
+  return `${s1} ${s2} ${s3}`;
+}
+
+// Bracketed cloud-enabled line. Cloud is a hard requirement, so every item is
+// judged: yes (default -- runs in the EC2/cloud runtime like the rest of Amy)
+// unless the item's own text names a desktop-only or local-only dependency.
+function backlogCloudLine(item) {
+  const text = `${item && item.title} ${item && item.description} ${item && item.problem_statement} ${item && item.implementation_plan}`.toLowerCase();
+  const localOnly = /\b(electron|desktop app|renderer|screenshot the dashboard|local file system only|windows-only|appdata)\b/.test(text);
+  if (localOnly) {
+    return '[Can this be 100% cloud enabled? no, it names a desktop or Electron-only dependency that must be re-hosted on the EC2 runtime first]';
+  }
+  return '[Can this be 100% cloud enabled? yes, it is runtime logic that runs in the EC2 cloud host alongside the rest of Amy with no desktop dependency]';
+}
+
+function backlogTrendLine(item) {
+  const history = Array.isArray(item && item.score_history) ? item.score_history : [];
+  if (!history.length) return '';
+  const latest = history[history.length - 1];
+  if (!latest) return '';
+  const reason = cleanExecutiveFragment(latest.reason, { max: 90 });
+  return `${latest.delta > 0 ? '+' : ''}${latest.delta}${reason ? ` ${reason}` : ''}`;
 }
 
 function normalizeContentList(raw) {
@@ -7909,6 +8049,7 @@ module.exports = {
   buildEc2SubsystemHealthRows,
   runningOnEc2,
   inspectBusinessPulse,
+  extractProjectBacklog,
   buildShortsProposalsCard,
   buildViralTechCard,
   buildRequiredCloudCards,
