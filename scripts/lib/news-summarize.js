@@ -653,10 +653,32 @@ const NEWS_PUBLISHER_CHROME_LABELS = [
 // case-INSENSITIVELY by the detector (the detector regex ExampleCos the 'i' flag);
 // the stripper rules that cover them stay case-sensitive + clause-anchored, which
 // is a strict subset, so anything the stripper removes the detector also flags.
+//
+// The dateline + NPR-credit patterns must encode the chrome SHAPE, never a bare
+// "<verb> N" count or a lowercase legal verb (live NEWS-CHROME false positive on
+// US NEWS item 1 + US IMMIGRATION NEWS item 2, 2026-06-30). After Google-News
+// URLs began resolving to the real publisher, full BODIES reached the summaries
+// and the old loose `\bPublished \d+\b` / `\bUpdated \d+\b` / "Heard on <Cap>"
+// flagged ordinary fresh prose -- "the rule was published 30 days before...", "the
+// agency published 12 documents", "the policy was updated 3 times", "the bill was
+// heard on Capitol Hill / heard on Tuesday". Because the detector compiles with
+// the 'i' flag, case cannot be relied on: the SHAPE is the discriminator. A real
+// publisher dateline is "Published|Updated" immediately followed by a DATE
+// (day + month name) or a RELATIVE timestamp ("N minutes/hours/days ago") -- never
+// a bare count that continues into ordinary words. (A bare "Published HH:MM" clock
+// time with no date is deliberately NOT flagged: the stripper's dateline rules only
+// remove the day+month and relative-"ago" forms, so flagging a clock-only shape the
+// stripper leaves would reopen a detector/stripper gap. A real dateline that shows
+// a time shows it WITH a date -- "Published 29 June 2026, 04:34 BST" -- which the
+// month branch already flags.) A real NPR credit is "Heard on <named show>", not
+// the lowercase "heard on <weekday/place>" legal/legislative sense. This keeps the
+// stripper (which already only removes these dateline/credit SHAPES, case-
+// sensitively + clause-anchored) and the detector reconciled: everything the
+// tightened detector flags is still removed by the stripper, and the ordinary-prose
+// false positives are gone.
 const NEWS_PUBLISHER_CHROME_PATTERNS = [
-  String.raw`\bPublished \d+\b`,
-  String.raw`\bUpdated \d+\b`,
-  String.raw`\bHeard on\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*\b`,
+  String.raw`\b(?:Published|Updated)\s+(?:\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b|\d{1,2}\s+(?:minutes?|hours?|days?)\s+ago\b)`,
+  String.raw`\bHeard on\s+(?:All Things Considered|Weekend All Things Considered|Morning Edition|Weekend Edition(?:\s+(?:Saturday|Sunday))?|Fresh Air|All Songs Considered|Here and Now|On Point|The Takeaway|Marketplace)\b`,
   String.raw`\bbroadcast on (?:the )?CBS\b`,
   String.raw`\bstreams on (?:the )?CBS\b`,
   String.raw`\bwatch CBS News\b`,
