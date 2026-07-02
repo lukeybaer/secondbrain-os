@@ -5589,6 +5589,100 @@ function formatSystemHealthSection({
   return lines.join('\n');
 }
 
+// Signal-0 pid-liveness probe. process.kill(pid, 0) throws when the pid does not
+// exist (ESRCH); it succeeds when the pid exists (even for a foreign owner ->
+// EPERM is still "alive"). Pure + injectable for tests.
+function otterVoiceLockPidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (e) {
+    // EPERM means the pid exists but we lack permission to signal it (still alive).
+    return e && e.code === 'EPERM';
+  }
+}
+
+// Classify the Otter voice-intelligence processing lock into a SAFE health
+// verdict. The lock is a mkdir dir on EFS holding owner.json ({run_id, pid,
+// started_at}). The 2026-07-01 red was an ORPHANED lock: the run that held it
+// died and was reparented to init, so owner.json recorded pid 1 with a stale
+// started_at, and the old age-only read presented it as "held >90m (STALE --
+// likely orphaned, blocks all processing)" -> a permanent hard red.
+//
+// A lock is ORPHANED/CLEARABLE (not a permanent red) when its owner is provably
+// not a live voice-intelligence run:
+//   - owner pid does not exist (dead), OR
+//   - owner pid is 1/init (a voice run can never legitimately BE pid 1; that
+//     only happens after the real owner died and the child reparented to init), OR
+//   - owner.json is missing/unreadable AND the lock dir is past a sane TTL.
+// A clearable lock reports lockState 'free' (the caller auto-reclaims it) so it
+// never forces RED. A lock held by a LIVE, non-init process that is merely old
+// still reports the STALE string -> red (a genuinely wedged process a human must
+// look at). A fresh live lock is 'held Nm'. Pure + injectable for tests.
+//
+// staleMinutes (default 90) matches the health-read STALE threshold; ttlMs
+// (default 3h) is the "unreadable owner, definitely abandoned" cutoff. These are
+// generous so a real live run is never mistaken for an orphan.
+function classifyOtterVoiceLock({
+  owner = null,
+  present = owner != null,
+  nowMs = Date.now(),
+  lockAgeMs = null,
+  isPidAlive = otterVoiceLockPidAlive,
+  staleMinutes = 90,
+  ttlMs = 3 * 60 * 60 * 1000,
+} = {}) {
+  if (!present) {
+    return { lockState: 'free', orphaned: false, clearable: false };
+  }
+  const startedMs = owner && owner.started_at ? Date.parse(owner.started_at) : NaN;
+  const ageMin = Number.isFinite(startedMs)
+    ? Math.round((nowMs - startedMs) / 60000)
+    : lockAgeMs != null
+      ? Math.round(lockAgeMs / 60000)
+      : null;
+  const pid = owner ? Number(owner.pid) : NaN;
+  // pid 1/init means the real owner died and the child reparented to init.
+  const reparentedToInit = pid === 1;
+  const ownerReadable = owner != null && Number.isInteger(pid) && pid > 0;
+  const ownerDead = ownerReadable && !reparentedToInit && !isPidAlive(pid);
+  // No readable owner: only an abandonment signal once the dir is past the TTL,
+  // so a lock captured mid-write (owner.json not yet flushed) is not stolen.
+  const effAgeMs = Number.isFinite(startedMs)
+    ? nowMs - startedMs
+    : lockAgeMs != null
+      ? lockAgeMs
+      : null;
+  const unreadableAndAbandoned =
+    !ownerReadable && !reparentedToInit && effAgeMs != null && effAgeMs > ttlMs;
+
+  const orphaned = reparentedToInit || ownerDead || unreadableAndAbandoned;
+  if (orphaned) {
+    // Report free: the caller reclaims the dir and the subsystem is not red on
+    // account of a dead owner's lock.
+    return {
+      lockState: 'free',
+      orphaned: true,
+      clearable: true,
+      reason: reparentedToInit
+        ? 'owner reparented to init (pid 1); dead run, auto-reclaimed'
+        : ownerDead
+          ? `owner pid ${pid} not alive; auto-reclaimed`
+          : 'lock owner unreadable and past TTL; auto-reclaimed',
+    };
+  }
+  // Live owner (or unreadable-but-not-yet-past-TTL). Report held/held Nm/STALE.
+  if (ageMin == null) return { lockState: 'held', orphaned: false, clearable: false };
+  const stale = ageMin > staleMinutes;
+  return {
+    lockState: `held ${ageMin}m${stale ? ' (STALE -- likely orphaned, blocks all processing)' : ''}`,
+    orphaned: false,
+    clearable: false,
+  };
+}
+
 // Red/yellow/green severity for the Otter speaker-enrichment subsystem. Mirrors
 // the voice_confirmation grader (commit 94496eba) so the SYSTEM HEALTH row and
 // the otter_speaker_pareto blocker grade a shortfall by what it ACTUALLY is,
@@ -7472,24 +7566,47 @@ function buildCloudMorningBriefing({
         })(),
       };
       // EFS processing-lock liveness. An orphaned lock (held with no live task)
-      // is what silently stalled all processing on 2026-06-24; surface it.
+      // is what silently stalled all processing on 2026-06-24 and again reds the
+      // card 2026-07-01 (owner reparented to init -> pid 1). classifyOtterVoiceLock
+      // treats a lock whose owner is provably dead/init as CLEARABLE (reports
+      // 'free'); we then AUTO-RECLAIM the dir so a dead run can never wedge
+      // processing forever. Only a LIVE-but-old holder still reports STALE -> red.
       let lockState = 'free';
       try {
         const lockDir =
           process.env.OTTER_VOICE_EFS_LOCK_DIR || '/mnt/sbvoice/life-archive/voiceprints';
         const lp = path.join(lockDir, 'otter-post-ingest-voice-intelligence.lock');
         if (fs.existsSync(lp)) {
-          let st = null;
+          let owner = null;
           try {
-            st = JSON.parse(fs.readFileSync(path.join(lp, 'owner.json'), 'utf8')).started_at;
+            owner = JSON.parse(fs.readFileSync(path.join(lp, 'owner.json'), 'utf8'));
+          } catch {
+            /* unreadable owner: classifier falls back to dir age */
+          }
+          let lockAgeMs = null;
+          try {
+            lockAgeMs = Date.now() - fs.statSync(lp).mtimeMs;
           } catch {
             /* ignore */
           }
-          const ageMin = st ? Math.round((Date.now() - Date.parse(st)) / 60000) : null;
-          lockState =
-            ageMin != null
-              ? `held ${ageMin}m${ageMin > 90 ? ' (STALE -- likely orphaned, blocks all processing)' : ''}`
-              : 'held';
+          const cls = classifyOtterVoiceLock({ owner, present: true, lockAgeMs });
+          lockState = cls.lockState;
+          if (cls.clearable) {
+            // Reclaim the orphaned lock: rename-aside (needs write only on the
+            // 0777 PARENT, so a root-owned lock is still moved) then best-effort
+            // remove. Never blocks the build; lockState already reads 'free'.
+            try {
+              const aside = `${lp}.reclaimed-${Date.now().toString(36)}`;
+              fs.renameSync(lp, aside);
+              try {
+                fs.rmSync(aside, { recursive: true, force: true });
+              } catch {
+                /* best effort: a root-owned aside is out of the lock path already */
+              }
+            } catch {
+              /* another racer already reclaimed it, or it vanished */
+            }
+          }
         }
       } catch {
         /* lock read best-effort */
@@ -8330,6 +8447,8 @@ module.exports = {
   formatSystemHealthSection,
   buildOtterSpeakerEnrichmentHealth,
   gradeOtterProcessingSeverity,
+  classifyOtterVoiceLock,
+  otterVoiceLockPidAlive,
   computeTestsHealth,
   testsBlockedToBlocker,
   formatScheduleSection,
