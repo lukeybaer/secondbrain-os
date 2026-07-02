@@ -37,6 +37,7 @@ const { probeDevOpsHealth } = require('./lib/devops-health.js');
 // directly), so this only needs the shared drift-summary formatter.
 const { formatDeployParityRow } = require('./lib/deploy-parity-row.js');
 const { computeSpeakerFreshness } = require('./lib/speaker-freshness.js');
+const { resolveDataArtifact } = require('./lib/data-root.js');
 // Same non-green SYSTEM HEALTH parser the publish validator uses, so the named
 // blocker we emit per non-green row covers EXACTLY the set the QC counts.
 const { nonGreenSubsystems } = require('./lib/system-health-nongreen.js');
@@ -3873,9 +3874,24 @@ function runPeopleAndMemorySnapshot(dataDir) {
 // "the memory and people snapshot did not run on the cloud build". Mirrors the
 // SECONDBRAIN_DATA_DIR-aware candidate list ec2-server.js snapshotCandidatePaths
 // uses for the HTML dashboard, so both render surfaces read the same file.
+//
+// C6 one-data-root contract: when an explicit dataDir is given, the REPO-vs-
+// dataDir pick delegates to the shared resolveDataArtifact (scripts/lib/
+// data-root.js), which reads BOTH the REPO copy and the dataDir copy and
+// returns whichever ExampleCos more real substance (tie-break: freshness). Since
+// these snapshots are not repo-tracked (data/agent/*-snapshot.json is
+// generated/gitignored), the REPO candidate is normally absent, so the
+// dataDir copy -- the exact dir the spawned generator was just told to write
+// to -- wins in practice; a stale REPO stub can never shadow it if one ever
+// reappears. The env var / hardcoded /opt/secondbrain/data / REPO fallbacks
+// remain for callers that omit dataDir.
 function readSnapshotForMarkdown(dataDir, basename) {
+  const rel = path.posix.join('agent', basename);
+  if (dataDir) {
+    const resolved = resolveDataArtifact(rel, { repo: REPO_ROOT, dataDir });
+    if (resolved.json) return resolved.json;
+  }
   const candidates = [];
-  if (dataDir) candidates.push(path.join(dataDir, 'agent', basename));
   if (process.env.SECONDBRAIN_DATA_DIR)
     candidates.push(path.join(process.env.SECONDBRAIN_DATA_DIR, 'agent', basename));
   candidates.push('/opt/secondbrain/data/agent/' + basename);
