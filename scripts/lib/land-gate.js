@@ -28,7 +28,14 @@ const path = require('path');
 // EVERY land regardless of what changed. These never touch the network or the
 // live briefing data, so they can't be the flaky "unrelated red" that freezes
 // everyone -- yet they still catch structural regressions (dead probes, etc).
-const CORE_GUARDS = ['scripts/__tests__/no-dead-probes.test.js', 'scripts/__tests__/core.test.js'];
+const CORE_GUARDS = [
+  'scripts/__tests__/no-dead-probes.test.js',
+  'scripts/__tests__/core.test.js',
+  // Tier-1 byte cap: memory/MEMORY.md maps to no sibling test, so without this
+  // entry every land of a memory-index edit skipped the cap entirely (that is
+  // how the index grew 22.7KB -> 27.2KB across 17 lands, 2026-06-20..06-30).
+  'scripts/__tests__/memory-md-size.test.js',
+];
 const DEVOPS_RELEASE_TEST = 'scripts/__tests__/devops-release-core.test.js';
 const PII_SCREEN_TEST = 'tests/pii-screen.spec.ts';
 

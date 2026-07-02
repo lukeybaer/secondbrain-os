@@ -163,15 +163,19 @@ function runScopedTests(scope) {
   log('running scoped tests:');
   for (const f of scope) log('  -', f);
 
+  const root = repoRoot();
+
   // Only pass test paths that actually exist on disk to vitest; a non-existent
   // sibling (source has no test yet) should not be a hard "no tests found" red.
-  const existing = scope.filter((f) => fs.existsSync(path.join(process.cwd(), f)));
+  // Resolve against the repo root, not cwd: vitest runs with cwd=root below,
+  // and a lander invoked from a subdirectory must not silently filter out the
+  // core guards as "nonexistent".
+  const existing = scope.filter((f) => fs.existsSync(path.join(root, f)));
   if (existing.length === 0) {
     log('none of the scoped test files exist on disk; nothing to run, treating as green.');
     return true;
   }
 
-  const root = repoRoot();
   const nodeModuleDirs = dependencyNodeModules(root);
   const vitestEntry = resolveVitestEntry(root, nodeModuleDirs);
   const res = spawnSync(process.execPath, [vitestEntry, 'run', ...existing], {
