@@ -18,10 +18,12 @@ build-sessions-db-py.py first (and aws s3 sync s3://<bucket>/meta/
 """
 import argparse
 import json
+import math
 import os
 import re
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Windows console is cp1252 by default; transcripts contain arrows, em
@@ -36,8 +38,28 @@ except Exception:
 DB_PATH = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or "") / ".secondbrain" / "sessions.db"
 
 
+# Common English function words that carry no retrieval signal. #recall queries
+# are natural language ("what did we decide about the AWS quota"), and OR-joining
+# these into the FTS query pulls in sessions that merely contain "the"/"about",
+# diluting the bm25-ranked candidate pool. Dropping them sharpens the match.
+_STOPWORDS = frozenset(
+    {
+        "the", "a", "an", "and", "or", "but", "if", "then", "of", "to", "in", "on",
+        "for", "with", "is", "are", "was", "were", "be", "been", "being", "do",
+        "did", "does", "done", "we", "you", "it", "that", "this", "what", "which",
+        "who", "how", "when", "where", "why", "about", "as", "at", "by", "from",
+        "into", "out", "up", "so", "no", "not", "yes", "my", "our", "me", "us",
+        "he", "she", "they", "them", "his", "her", "their", "its", "have", "has",
+        "had", "can", "could", "would", "should", "will", "get", "got", "any",
+        "some", "all", "there", "here", "just", "did", "was",
+    }
+)
+
+
 def _sanitize(query: str) -> str:
-    """Turn free text into an FTS5 query: drop non-word chars, OR-join tokens."""
+    """Turn free text into an FTS5 query: drop non-word chars and stopwords,
+    OR-join the remaining content tokens. If every token is a stopword, fall
+    back to the cleaned tokens so an all-common-word query still searches."""
     tokens = [t for t in re.split(r"\s+", query) if t]
     cleaned = []
     for t in tokens:
@@ -46,7 +68,95 @@ def _sanitize(query: str) -> str:
             cleaned.append(c)
     if not cleaned:
         return ""
-    return " OR ".join(f'"{t}"' for t in cleaned)
+    content = [c for c in cleaned if c.lower() not in _STOPWORDS]
+    terms = content or cleaned
+    return " OR ".join(f'"{t}"' for t in terms)
+
+
+# --- Composite recall ranking ---------------------------------------------
+# Before: search returned the most *recent* FTS matches (ORDER BY started_at
+# DESC), so #recall surfaced whatever session most recently mentioned a word,
+# not the session that actually discussed the topic. This mirrors the app's
+# src/main/memory-multi-signal-fuse.ts composite fusion (relevance + recency +
+# engagement) so the standalone #recall path ranks the same way. Weights and
+# half-life are the CrewAI-style defaults, adapted to the signals we actually
+# store (bm25, started_at, message_count).
+RECALL_HALF_LIFE_DAYS = 30.0
+W_RELEVANCE = 0.5
+W_RECENCY = 0.3
+W_ENGAGEMENT = 0.2
+# Fetch a wider bm25-ordered pool than the caller asked for, then re-rank the
+# pool by the composite score and return the top N.
+CANDIDATE_POOL_MULT = 5
+CANDIDATE_POOL_MIN = 50
+
+
+def _parse_ts(ts: str):
+    """Parse an ISO8601 timestamp to an aware UTC datetime, or None."""
+    if not ts:
+        return None
+    s = ts.strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        # Fall back to the date prefix (YYYY-MM-DD) if the full stamp is odd.
+        try:
+            dt = datetime.fromisoformat(s[:10])
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _minmax(values):
+    """Return a normalizer mapping each value into [0,1]; neutral 0.5 when the
+    pool is degenerate (all equal), so a single signal never dominates."""
+    lo, hi = min(values), max(values)
+    span = hi - lo
+    if span <= 0:
+        return lambda _v: 0.5
+    return lambda v: (v - lo) / span
+
+
+def composite_rank(rows, now=None, limit=10, half_life_days=RECALL_HALF_LIFE_DAYS):
+    """Re-rank FTS candidate rows by relevance + recency + engagement.
+
+    rows: list of dicts, each with keys started_at, message_count, relevance
+          (raw bm25 value; more negative = better match), plus any passthrough
+          fields. Returns the top `limit` rows sorted by descending composite
+          score, each annotated with a rounded `score`.
+
+    Category, not a single query: relevance dominates, recency breaks near-ties,
+    engagement is a mild tiebreaker; all three normalized within the pool.
+    """
+    if not rows:
+        return []
+    if now is None:
+        now = datetime.now(timezone.utc)
+    # bm25 is more negative for better matches, so relevance strength = -bm25.
+    rel_strength = [-float(r.get("relevance") or 0.0) for r in rows]
+    engagement = [math.log1p(max(0, int(r.get("message_count") or 0))) for r in rows]
+    rel_norm = _minmax(rel_strength)
+    eng_norm = _minmax(engagement)
+    scored = []
+    for r, rel, eng in zip(rows, rel_strength, engagement):
+        dt = _parse_ts(r.get("started_at") or "")
+        if dt is None:
+            recency = 0.0
+        else:
+            age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+            recency = 0.5 ** (age_days / half_life_days)
+        score = (
+            W_RELEVANCE * rel_norm(rel)
+            + W_RECENCY * recency
+            + W_ENGAGEMENT * eng_norm(eng)
+        )
+        out = dict(r)
+        out["score"] = round(score, 4)
+        scored.append(out)
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:limit]
 
 
 def _open_ro() -> sqlite3.Connection:
@@ -63,47 +173,54 @@ def cmd_search(args):
         print("query has no usable terms", file=sys.stderr)
         return 1
     con = _open_ro()
-    rows = con.execute(
+    # Pull a wider bm25-ranked candidate pool, then re-rank by the composite
+    # score (relevance + recency + engagement) and keep the top args.limit.
+    pool = max(args.limit * CANDIDATE_POOL_MULT, CANDIDATE_POOL_MIN)
+    raw = con.execute(
         """
         SELECT s.session_id, s.repo, s.started_at, s.topic_guess,
                substr(s.first_prompt, 1, 240) AS first_prompt_short,
                substr(s.last_response, 1, 240) AS last_response_short,
-               s.message_count
+               s.message_count, bm25(sessions_fts) AS relevance
         FROM sessions_fts
         JOIN sessions s ON s.rowid = sessions_fts.rowid
         WHERE sessions_fts MATCH ?
-        ORDER BY s.started_at DESC
+        ORDER BY relevance
         LIMIT ?
         """,
-        (q, args.limit),
+        (q, pool),
     ).fetchall()
+    candidates = [
+        {
+            "session_id": r[0],
+            "repo": r[1],
+            "started_at": r[2],
+            "topic_guess": r[3],
+            "first_prompt": r[4],
+            "last_response": r[5],
+            "message_count": r[6],
+            "relevance": r[7],
+        }
+        for r in raw
+    ]
+    rows = composite_rank(candidates, limit=args.limit)
     if args.json:
-        out = [
-            {
-                "session_id": r[0],
-                "repo": r[1],
-                "started_at": r[2],
-                "topic_guess": r[3],
-                "first_prompt": r[4],
-                "last_response": r[5],
-                "message_count": r[6],
-            }
-            for r in rows
-        ]
+        # Drop the internal bm25 value from the public payload; keep `score`.
+        out = [{k: v for k, v in r.items() if k != "relevance"} for r in rows]
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
     if not rows:
         print(f"no matches for: {args.query}")
         return 0
     for r in rows:
-        sid_short = (r[0] or "")[:8]
-        date = (r[2] or "")[:10]
-        print(f"\n[{date}] {r[1]} {sid_short} (msgs={r[6]})")
-        print(f"  topic: {(r[3] or '').strip()[:140]}")
-        if r[4]:
-            print(f"  user : {r[4].strip()[:200]}")
-        if r[5]:
-            print(f"  amy  : {r[5].strip()[:200]}")
+        sid_short = (r["session_id"] or "")[:8]
+        date = (r["started_at"] or "")[:10]
+        print(f"\n[{date}] {r['repo']} {sid_short} (msgs={r['message_count']}, score={r['score']})")
+        print(f"  topic: {(r['topic_guess'] or '').strip()[:140]}")
+        if r["first_prompt"]:
+            print(f"  user : {r['first_prompt'].strip()[:200]}")
+        if r["last_response"]:
+            print(f"  amy  : {r['last_response'].strip()[:200]}")
     return 0
 
 
