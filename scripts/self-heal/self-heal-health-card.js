@@ -61,6 +61,13 @@ function readRunLogRows(opts = {}) {
   return out;
 }
 
+// The stage name the orchestrator writes at the START and END of every pass
+// (scripts/overnight-self-heal-orchestrator.js: CHECKPOINT_STAGE), regardless of
+// whether the pass found any blockers. Its presence is the proof the executor process
+// actually launched and ran this window; its absence is the ONLY honest reason to say
+// "ExampleCo".
+const CHECKPOINT_STAGE = 'self-heal-checkpoint';
+
 // The single executor-health row. Preference order:
 //   1. an explicitly injected built row (opts.executorRow) -- tests + a live caller
 //      that already built it from the live preflight,
@@ -68,8 +75,11 @@ function readRunLogRows(opts = {}) {
 //   3. the newest executor row persisted in the run log (the orchestrator logs a
 //      stage:'system-health-row' source:'executor-health' row on auth failure and a
 //      stage:'self-heal-health' row that ExampleCos executorHealthRow on red),
-//   4. when nothing is recorded, treat the executor as healthy ONLY if a green
-//      self-heal-health checkpoint exists; otherwise ExampleCo (no false green).
+//   4. the newest COMPLETED self-heal-checkpoint row (written at the end of every
+//      pass, success or failure, ROOT FIX self-heal-why-report 2026-07-02): green ->
+//      healthy, red -> cannot run with the checkpoint's own plain-English crash reason.
+//   5. when nothing at all is recorded, "ExampleCo" is now honest: the process itself
+//      never wrote a start-of-pass checkpoint, so it genuinely never ran.
 function resolveExecutorRow(rows, opts = {}) {
   if (opts.executorRow && opts.executorRow.label && opts.executorRow.status) {
     return opts.executorRow;
@@ -86,7 +96,23 @@ function resolveExecutorRow(rows, opts = {}) {
       return { label: r.label, status: r.status, detail: r.detail || '', runbook: r.runbook || '' };
     }
   }
-  // no executor row recorded: infer from the newest self-heal-health checkpoint
+  // newest COMPLETED checkpoint the orchestrator wrote for a pass (any outcome).
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const r = rows[i];
+    if (r && r.stage === CHECKPOINT_STAGE && r.phase === 'completed') {
+      if (String(r.status || '').toLowerCase() === 'red') {
+        return {
+          label: 'Self-Heal Executor',
+          status: 'red',
+          detail: clamp(r.crash || 'the last pass ended in a crash with no reason recorded.', 240),
+          runbook:
+            'Runbook: read the crash reason above, fix it, then re-run the overnight self-heal orchestrator.',
+        };
+      }
+      return executorHealthRow({}); // a green/completed checkpoint proves the pass ran -> healthy
+    }
+  }
+  // legacy fallback: an older self-heal-health row with no checkpoint (pre-fix log data).
   let checkpoint = null;
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     if (rows[i] && rows[i].stage === 'self-heal-health') {
@@ -100,9 +126,9 @@ function resolveExecutorRow(rows, opts = {}) {
   return {
     label: 'Self-Heal Executor',
     status: 'ExampleCo',
-    detail: 'no executor health checkpoint recorded for this window.',
+    detail: 'the self-heal process has not recorded a run this window.',
     runbook:
-      'Runbook: run the overnight self-heal orchestrator so its pre-spawn auth preflight records one executor-health row.',
+      'Runbook: run the overnight self-heal orchestrator so it records a start-of-pass checkpoint.',
   };
 }
 
@@ -255,13 +281,63 @@ function cardNameFromDefectKey(defectKey) {
     .replace(/\b\w/g, (ch) => ch.toUpperCase());
 }
 
+// WHY IT FAILED (self-heal-why-report, 2026-07-02): the ledger's `reflection` field is
+// the healer's own internal shorthand (heal-executor.js's watchdog / contract-miss
+// reasons), never ExampleCo-facing English on its own. This translates the known reflection
+// shapes into a plain clause; an unrecognized reflection still degrades to a short,
+// honest paraphrase instead of leaking the raw jargon string verbatim.
+function reflectionToPlainEnglish(reflection) {
+  const text = String(reflection == null ? '' : reflection).trim();
+  if (!text) return 'no reason was recorded for the failure';
+  // "<executor> exceeded budget <n>s" (heal-executor.js DEFAULT_BUDGET_MS timeout)
+  let m = text.match(/exceeded budget\s+(\d+)s/i);
+  if (m) {
+    const minutes = Math.round(Number(m[1]) / 60);
+    return `it ran out of its ${minutes}-minute time window before finishing`;
+  }
+  // "<executor> produced no output for <n>s (hang)" / "... (idle hang)"
+  m = text.match(/no output for\s+(\d+)s.*hang/i);
+  if (m) return 'the repair worker stopped responding and had to be stopped';
+  // "<executor> CLI exited with code <n>"
+  if (/CLI exited with code/i.test(text)) return 'the repair worker crashed before finishing';
+  // "<executor> started a nested background task ..." (worker-guard block)
+  if (/nested background task/i.test(text)) {
+    return 'the repair worker tried a disallowed background step and was blocked';
+  }
+  // "no JSON status block in output" / "empty CLI output" / "no result block ..."
+  if (/no JSON status block|empty CLI output|no result block/i.test(text)) {
+    return 'the repair worker finished without reporting a clear result';
+  }
+  // "tactic exhausted: ... not repeating the same move."
+  if (/tactic exhausted/i.test(text)) {
+    return 'every approach it knew to try has already failed once, so it stopped repeating itself';
+  }
+  // session self-reported escalation reasons (needs ExampleCo, credential, approval, etc.)
+  if (/\b(ExampleCo|credential|password|api[\s-]?key|approve|approval|decision|decide)\b/i.test(text)) {
+    return `it needs a decision only ExampleCo can make (${clamp(text, 140)})`;
+  }
+  // spawn-level failure
+  if (/spawn threw/i.test(text)) return 'the repair worker could not be started';
+  // fallback: no known shape, but never leak raw jargon unexplained. Paraphrase honestly.
+  return `it tried and failed, with this note from the run: ${clamp(text, 140)}`;
+}
+
 // One plain-English drilldown line per still-open defect: which card the auto-repair
-// could not fix, how many times it tried this pass, and what happens next. No jargon.
+// could not fix, WHAT it tried, WHY that failed, and what would unblock it. No jargon.
 function execOpenDefectLine(index, defect) {
   const name = cardNameFromDefectKey(defect.defect);
   const tries = Number(defect.attempts) || 1;
   const timesWord = tries === 1 ? 'once' : `${tries} times`;
-  return `${index}. ${name} card: the auto-repair tried ${timesWord} this pass and could not fix it. It stays flagged and will be retried on the next run.`;
+  const reflection = defect.lastReflection || '';
+  const why = reflectionToPlainEnglish(reflection);
+  // The ledger's own "tactic exhausted" reflection is a signal no untried move remains
+  // for this defect (briefing-repair-ledger.tacticExhaustedReason); every other reason
+  // (timeout, hang, crash, missing decision) leaves room to try again next pass.
+  const exhausted = /tactic exhausted/i.test(reflection);
+  const unblock = exhausted
+    ? 'it has run out of approaches to try on its own and needs ExampleCo to look at it'
+    : 'it will try a different approach on the next run';
+  return `${index}. ${name} card: the auto-repair tried ${timesWord} this pass, but ${why}. It stays flagged; ${unblock}.`;
 }
 
 // EXPLAIN THE COLOR (ExampleCo, 2026-07-01): never show a color without a reason. This
@@ -304,6 +380,28 @@ function severityReason({
     return `Red: ${escalated} ${issues} are open but the auto-repair did not run against them this window, so nothing was attempted.`;
   }
   return 'Red: the auto-repair is genuinely stuck and cannot make progress.';
+}
+
+// THE "Auto-repair engine:" LINE (self-heal-why-report, 2026-07-02, fix 3): plain
+// English only, one of exactly three shapes, never the raw status token + jargon
+// detail ExampleCo flagged ("ExampleCo: no executor health checkpoint recorded for this
+// window"). Green states how many repairs it ran; red states it crashed with the
+// plain-English reason already produced by resolveExecutorRow; ExampleCo honestly says
+// the process never recorded a run, which after the checkpoint fix only happens when
+// the healer genuinely did not launch this window.
+function executorPlainEnglishLine(card) {
+  const status = card.executor && card.executor.status;
+  const attempted = Number(card.attempted || 0);
+  if (status === 'green') {
+    return attempted > 0
+      ? `healthy, ran ${attempted} repair${attempted === 1 ? '' : 's'} this pass.`
+      : 'healthy, checked for issues and found none this pass.';
+  }
+  if (status === 'red') {
+    const detail = clamp(card.executor.detail, 200);
+    return `crashed: ${detail || 'no reason was recorded.'}`;
+  }
+  return 'did not run this window: no start-of-pass record exists, so nothing was attempted.';
 }
 
 // Build the structured card record. Pure; no side effects.
@@ -442,12 +540,7 @@ function renderSelfHealHealthSection(opts = {}) {
   lines.push(`Attempted: ${card.attempted}`);
   lines.push(`Cleared: ${card.cleared}`);
   lines.push(`Escalated: ${card.escalated}`);
-  lines.push(
-    `Executor: ${card.executor.status} -- ${card.executor.detail || 'no detail'}`.replace(
-      / -- /g,
-      ': ',
-    ),
-  );
+  lines.push(`Executor: ${executorPlainEnglishLine(card)}`);
   if (card.executor.runbook) lines.push(`Executor next step: ${card.executor.runbook}`);
   lines.push(
     card.freshness.ageHours == null
@@ -497,6 +590,7 @@ function generateSelfHealHealthCard(opts = {}) {
 module.exports = {
   SELF_HEAL_HEALTH_TITLE,
   FRESHNESS_MAX_AGE_HOURS,
+  CHECKPOINT_STAGE,
   runLogPath,
   readRunLogRows,
   resolveExecutorRow,
@@ -506,7 +600,9 @@ module.exports = {
   severityVerdict,
   severityReason,
   cardNameFromDefectKey,
+  reflectionToPlainEnglish,
   execOpenDefectLine,
+  executorPlainEnglishLine,
   buildSelfHealHealthCard,
   renderSelfHealHealthSection,
   generateSelfHealHealthCard,

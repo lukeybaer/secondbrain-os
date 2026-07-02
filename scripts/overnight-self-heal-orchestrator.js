@@ -190,7 +190,10 @@ function renderQcDefectGroupKey(defect) {
   if (type === 'CARD-ORDER' || type === 'NEWS-LAST' || type.startsWith('MILESTONE-')) {
     return 'dashboard:DASHBOARD-LAYOUT';
   }
-  if (id === 'video_approval_queue' && (type === 'BLOCKED-TILE' || type === 'VIDEO-MANIFEST-DRIFT')) {
+  if (
+    id === 'video_approval_queue' &&
+    (type === 'BLOCKED-TILE' || type === 'VIDEO-MANIFEST-DRIFT')
+  ) {
     return 'video_approval_queue:VIDEO-APPROVAL-QUALITY';
   }
   if (id === 'system_health' && type === 'BLOCKED-TILE') return 'system_health:SYSTEM-HEALTH';
@@ -414,7 +417,11 @@ function novelDefectGroups(priorEntries = [], currentEntry = {}) {
     }
   }
   const currentGroups = [
-    ...new Set((Array.isArray(currentEntry && currentEntry.groups) ? currentEntry.groups : []).map(String).filter(Boolean)),
+    ...new Set(
+      (Array.isArray(currentEntry && currentEntry.groups) ? currentEntry.groups : [])
+        .map(String)
+        .filter(Boolean),
+    ),
   ];
   if (!priorGroups.size || !currentGroups.length) return [];
   return currentGroups.filter((group) => !priorGroups.has(group));
@@ -612,9 +619,7 @@ function summarizeRepairLoopExhaustion(history = [], currentEntry = {}, opts = {
   const priorExactSeen = recent
     .slice(0, -1)
     .some((entry) => entry.exactSignature === current.exactSignature);
-  const bestPriorRawDefects = Math.min(
-    ...recent.slice(0, -1).map((entry) => entry.rawDefects),
-  );
+  const bestPriorRawDefects = Math.min(...recent.slice(0, -1).map((entry) => entry.rawDefects));
   const noNetProgress = current.rawDefects >= bestPriorRawDefects;
   if (sameSurface && priorExactSeen && noNetProgress) {
     return {
@@ -660,7 +665,11 @@ function newDefectGroups(beforeDefects = [], afterDefects = []) {
 }
 
 function defectCardIdSet(defects = []) {
-  return new Set(groupedDefectSummaries(defects).map((group) => group.cardId).filter(Boolean));
+  return new Set(
+    groupedDefectSummaries(defects)
+      .map((group) => group.cardId)
+      .filter(Boolean),
+  );
 }
 
 function newCardDefectGroups(beforeDefects = [], newGroups = []) {
@@ -680,7 +689,11 @@ function blockersFloorCount(defect) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-function isBlockersFloorRefinement({ beforeDefects = [], afterDefects = [], newCardGroups = [] } = {}) {
+function isBlockersFloorRefinement({
+  beforeDefects = [],
+  afterDefects = [],
+  newCardGroups = [],
+} = {}) {
   if (!beforeDefects.length || !afterDefects.length) return false;
   const beforeRows = beforeDefects.map((defect) => String(defect || '').trim()).filter(Boolean);
   if (!beforeRows.length || beforeRows.some((defect) => !/^BLOCKERS-FLOOR:/i.test(defect))) {
@@ -712,7 +725,11 @@ function isBlockersNamedCardMaterialized({ beforeDefects = [], afterDefects = []
   });
 }
 
-function isPostRepairDefectSwap({ beforeDefects = [], afterDefects = [], newCardGroups = [] } = {}) {
+function isPostRepairDefectSwap({
+  beforeDefects = [],
+  afterDefects = [],
+  newCardGroups = [],
+} = {}) {
   if (!beforeDefects.length || !afterDefects.length) return false;
   if (isBlockersFloorRefinement({ beforeDefects, afterDefects, newCardGroups })) return true;
   if (isBlockersNamedCardMaterialized({ beforeDefects, afterDefects })) return true;
@@ -772,7 +789,9 @@ function isPostRepairRegression({
   postRepairDefectSwap = false,
 } = {}) {
   if (isOnlyLiveQcRetryDefects(beforeDefects)) return false;
-  return newCardGroups.length > 0 && afterDefects.length >= beforeDefects.length && !postRepairDefectSwap;
+  return (
+    newCardGroups.length > 0 && afterDefects.length >= beforeDefects.length && !postRepairDefectSwap
+  );
 }
 
 function clearedWorkerSurvivedGroups(blockers = [], results = [], postRepairDefects = []) {
@@ -892,13 +911,7 @@ function newsRenderRows(blocker) {
 }
 
 function cardIdsFromRenderRows(rows = []) {
-  return [
-    ...new Set(
-      rows
-        .map((row) => renderQcCardId(row))
-        .filter(Boolean),
-    ),
-  ];
+  return [...new Set(rows.map((row) => renderQcCardId(row)).filter(Boolean))];
 }
 
 function bundleRelatedRepairBlockers(blockers = []) {
@@ -931,7 +944,9 @@ function bundleRelatedRepairBlockers(blockers = []) {
     rawDefectCount: rows.length,
     rawDefects: rows,
     bundledCards: cards,
-    bundledDefectTypes: [...new Set(rows.map((row) => (row.match(/^([A-Z0-9-]+):/) || [])[1]).filter(Boolean))],
+    bundledDefectTypes: [
+      ...new Set(rows.map((row) => (row.match(/^([A-Z0-9-]+):/) || [])[1]).filter(Boolean)),
+    ],
   };
   out.splice(newsInsertAt, 0, bundle);
   return out.map((blocker, index) => ({ ...blocker, index: index + 1 }));
@@ -971,8 +986,12 @@ function selfHealFalseClearRepairBlocker({
     .filter((result) => result && result.status === 'cleared')
     .map((result) => {
       const title = String(result.blockerTitle || 'worker').slice(0, 90);
-      const reflection = String(result.reflection || '').replace(/\s+/g, ' ').slice(0, 180);
-      const verification = String(result.verification || '').replace(/\s+/g, ' ').slice(0, 140);
+      const reflection = String(result.reflection || '')
+        .replace(/\s+/g, ' ')
+        .slice(0, 180);
+      const verification = String(result.verification || '')
+        .replace(/\s+/g, ' ')
+        .slice(0, 140);
       return `${title}: verification=${verification || 'missing'}; reflection=${reflection || 'missing'}`;
     })
     .slice(0, 6);
@@ -997,7 +1016,9 @@ function selfHealFalseClearRepairBlocker({
     need: 'Nothing.',
     source: 'self-heal-health',
     rawDefectCount: 1,
-    rawDefects: ['SELF-HEAL-FALSE-CLEAR: cleared workers left the same authenticated live QC defects'],
+    rawDefects: [
+      'SELF-HEAL-FALSE-CLEAR: cleared workers left the same authenticated live QC defects',
+    ],
   };
 }
 
@@ -1033,10 +1054,7 @@ function annotateKnownFalseClearPreflightBlockers(blockers = [], knownCards = []
 }
 
 function shouldBypassDeterministicPreflights(blocker) {
-  return !!(
-    blocker &&
-    (blocker.skipDeterministicPreflights || blocker.knownFalseClearPreflight)
-  );
+  return !!(blocker && (blocker.skipDeterministicPreflights || blocker.knownFalseClearPreflight));
 }
 
 function isFalseClearSelfHealBlocker(blocker) {
@@ -1056,7 +1074,9 @@ function falseClearGroupsFromBlockers(blockers = []) {
   for (const blocker of blockers || []) {
     if (!isFalseClearSelfHealBlocker(blocker)) continue;
     const evidence = String((blocker && blocker.evidence) || '');
-    const survived = evidence.match(/survived live QC:\s*([\s\S]*?)(?:\.\s*Live QC|\.\s*Recent|\.\s*Worker|$)/i);
+    const survived = evidence.match(
+      /survived live QC:\s*([\s\S]*?)(?:\.\s*Live QC|\.\s*Recent|\.\s*Worker|$)/i,
+    );
     const text = survived ? survived[1] : evidence;
     for (const match of text.matchAll(/Live render QC [A-Z0-9-]+ on [a-z0-9_]+/gi)) {
       groups.push(match[0]);
@@ -1113,9 +1133,15 @@ function selfHealWorkerContractRepairBlocker({
     evidence: [
       `SELF-HEAL-WORKER-CONTRACT: live QC still reports ${postRepairDefects.length} defect(s) after worker execution.`,
       `Worker health: ${hardKills} hard watchdog kill(s), ${workerKills} total watchdog kill(s), ${contractMisses} contract miss(es).`,
-      repeatedContractMissWave ? 'All worker lanes missed the JSON contract and live QC did not change.' : '',
-      excessiveKillGroups.length ? `Excessive-kill group(s): ${excessiveKillGroups.join(', ')}.` : '',
-      excessiveTimeGroups.length ? `Excessive-time group(s): ${excessiveTimeGroups.join(', ')}.` : '',
+      repeatedContractMissWave
+        ? 'All worker lanes missed the JSON contract and live QC did not change.'
+        : '',
+      excessiveKillGroups.length
+        ? `Excessive-kill group(s): ${excessiveKillGroups.join(', ')}.`
+        : '',
+      excessiveTimeGroups.length
+        ? `Excessive-time group(s): ${excessiveTimeGroups.join(', ')}.`
+        : '',
       samples.length ? `Escalated worker samples: ${samples.join(' | ')}` : '',
     ]
       .filter(Boolean)
@@ -1126,7 +1152,9 @@ function selfHealWorkerContractRepairBlocker({
     need: 'Nothing.',
     source: 'self-heal-health',
     rawDefectCount: 1,
-    rawDefects: ['SELF-HEAL-WORKER-CONTRACT: worker watchdog or output contract failure survived live QC'],
+    rawDefects: [
+      'SELF-HEAL-WORKER-CONTRACT: worker watchdog or output contract failure survived live QC',
+    ],
   };
 }
 
@@ -1145,7 +1173,9 @@ function selfHealLandingConflictRepairBlocker({
       ),
     )
     .map((result) => {
-      const title = String(result.blockerTitle || 'worker').replace(/\s+/g, ' ').slice(0, 90);
+      const title = String(result.blockerTitle || 'worker')
+        .replace(/\s+/g, ' ')
+        .slice(0, 90);
       const sha = String(result.commit_sha || result.commitSha || '').slice(0, 12);
       const reason = String(result.escalationReason || result.escalation_reason || '')
         .replace(/\s+/g, ' ')
@@ -1191,9 +1221,12 @@ function defaultClaudeAuthProbe(opts = {}) {
   // without a real CLI spawn.
   const platform = opts.platform || process.platform;
   const spawn = opts.spawnSync || spawnSync;
-  const claudeBin = platform === 'win32'
-    ? (process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'claude.cmd') : 'claude.cmd')
-    : 'claude';
+  const claudeBin =
+    platform === 'win32'
+      ? process.env.APPDATA
+        ? path.join(process.env.APPDATA, 'npm', 'claude.cmd')
+        : 'claude.cmd'
+      : 'claude';
   const probeArgs = ['--print', '--setting-sources', '', '-p', 'ping'];
   // On win32 a .cmd shim must be routed through cmd.exe /c with shell:false, or
   // spawnSync sets res.error and a healthy run falsely reports auth-failed. Non-win
@@ -1211,17 +1244,26 @@ function defaultClaudeAuthProbe(opts = {}) {
     });
     const out = ((res.stdout || '') + '\n' + (res.stderr || '')).trim();
     if (res.error) {
-      return { ok: false, detail: 'claude probe spawn error: ' + String(res.error.message || res.error).slice(0, 200) };
+      return {
+        ok: false,
+        detail: 'claude probe spawn error: ' + String(res.error.message || res.error).slice(0, 200),
+      };
     }
     if (res.status !== 0) {
       return { ok: false, detail: 'claude probe exited ' + res.status + ': ' + out.slice(0, 200) };
     }
     if (!out || isCliFailureOutput(out)) {
-      return { ok: false, detail: 'claude probe returned an auth/quota failure: ' + out.slice(0, 200) };
+      return {
+        ok: false,
+        detail: 'claude probe returned an auth/quota failure: ' + out.slice(0, 200),
+      };
     }
     return { ok: true, detail: 'claude auth probe ok' };
   } catch (e) {
-    return { ok: false, detail: 'claude probe threw: ' + String((e && e.message) || e).slice(0, 200) };
+    return {
+      ok: false,
+      detail: 'claude probe threw: ' + String((e && e.message) || e).slice(0, 200),
+    };
   }
 }
 
@@ -1256,7 +1298,9 @@ function selfHealAuthFailedRepairBlocker({ probeDetail = '', refreshDetail = '' 
     need: 'Run claude /login to re-seed the Claude Max credential; the refresh token itself has expired and only ExampleCo can re-authenticate.',
     source: 'self-heal-health',
     rawDefectCount: 1,
-    rawDefects: ['SELF-HEAL-AUTH-FAILED: pre-spawn Claude auth probe and forced refresh both failed'],
+    rawDefects: [
+      'SELF-HEAL-AUTH-FAILED: pre-spawn Claude auth probe and forced refresh both failed',
+    ],
   };
 }
 
@@ -1265,20 +1309,45 @@ function selfHealAuthFailedRepairBlocker({ probeDetail = '', refreshDetail = '' 
 async function preflightHealAuth(opts = {}) {
   const probe = opts.authProbe || defaultClaudeAuthProbe;
   const refresh = opts.tokenRefresh || defaultTokenRefresh;
-  const first = await Promise.resolve(probe({ repoRoot: opts.repoRoot, tokenPath: opts.tokenPath }));
+  const first = await Promise.resolve(
+    probe({ repoRoot: opts.repoRoot, tokenPath: opts.tokenPath }),
+  );
   if (first && first.ok) return { ok: true, probe: 'first', detail: first.detail || '' };
   const refreshResult = await Promise.resolve(refresh());
-  const second = await Promise.resolve(probe({ repoRoot: opts.repoRoot, tokenPath: opts.tokenPath }));
+  const second = await Promise.resolve(
+    probe({ repoRoot: opts.repoRoot, tokenPath: opts.tokenPath }),
+  );
   if (second && second.ok) {
-    return { ok: true, probe: 'after-refresh', detail: second.detail || '', refreshed: !!(refreshResult && refreshResult.refreshed) };
+    return {
+      ok: true,
+      probe: 'after-refresh',
+      detail: second.detail || '',
+      refreshed: !!(refreshResult && refreshResult.refreshed),
+    };
   }
   return {
     ok: false,
     probeDetail: (second && second.detail) || (first && first.detail) || 'auth probe failed',
-    refreshDetail: (refreshResult && (refreshResult.detail || (refreshResult.ok ? (refreshResult.refreshed ? 'refreshed but probe still failed' : 'refresh skipped') : 'refresh failed'))) || '',
+    refreshDetail:
+      (refreshResult &&
+        (refreshResult.detail ||
+          (refreshResult.ok
+            ? refreshResult.refreshed
+              ? 'refreshed but probe still failed'
+              : 'refresh skipped'
+            : 'refresh failed'))) ||
+      '',
     blocker: selfHealAuthFailedRepairBlocker({
       probeDetail: (second && second.detail) || (first && first.detail) || '',
-      refreshDetail: (refreshResult && (refreshResult.detail || (refreshResult.ok ? (refreshResult.refreshed ? 'refreshed' : 'refresh skipped') : 'refresh failed'))) || '',
+      refreshDetail:
+        (refreshResult &&
+          (refreshResult.detail ||
+            (refreshResult.ok
+              ? refreshResult.refreshed
+                ? 'refreshed'
+                : 'refresh skipped'
+              : 'refresh failed'))) ||
+        '',
     }),
   };
 }
@@ -1674,6 +1743,27 @@ function appendRunLog(row, logPath = RUNS_LOG_PATH) {
   fs.appendFileSync(logPath, JSON.stringify({ ts: new Date().toISOString(), ...row }) + '\n');
 }
 
+// EXECUTOR-HEALTH CHECKPOINT (self-heal-why-report, 2026-07-02): the SELF-HEAL HEALTH
+// card can only say "executor healthy" / "executor cannot run" when SOMETHING durable
+// proves the executor actually ran this window. Before this fix, a clean pass with no
+// blockers, an unreadable briefing, or a missing briefing all `return`ed before ever
+// writing a self-heal-health row, so the card fell through to "ExampleCo: no executor
+// health checkpoint recorded" -- indistinguishable from a healer that never ran at all.
+// This ONE stage name (`self-heal-checkpoint`) is written at the START of every pass
+// (status:'running', proves the process launched) and at every EXIT (status:'green'
+// when nothing blew up, 'red' with a plain-English `crash` reason on a genuine crash),
+// so self-heal-health-card.js's resolveExecutorRow can trust "no checkpoint this
+// window" to mean the healer genuinely never ran, not merely "nothing to report".
+const CHECKPOINT_STAGE = 'self-heal-checkpoint';
+
+function logExecutorCheckpoint(logRun, phase, extra = {}) {
+  logRun({ stage: CHECKPOINT_STAGE, phase, ...extra });
+}
+
+function clampCheckpointDetail(text, n = 200) {
+  return String(text == null ? '' : text).slice(0, n);
+}
+
 function pidIsAlive(pid) {
   const n = Number(pid);
   if (!Number.isInteger(n) || n <= 0) return false;
@@ -1756,7 +1846,9 @@ function gitBranchSummary(repoRoot) {
 }
 
 function safeDeployRelPath(file) {
-  const rel = String(file || '').replace(/\\/g, '/').trim();
+  const rel = String(file || '')
+    .replace(/\\/g, '/')
+    .trim();
   if (!rel || rel.startsWith('/') || rel.includes('\0')) return '';
   const normalized = path.posix.normalize(rel);
   if (!normalized || normalized === '.' || normalized.startsWith('../') || normalized === '..') {
@@ -1809,7 +1901,9 @@ const RUNTIME_CORE_SYNC_RELS = [
 ];
 
 function safeRuntimeCoreRelPath(file) {
-  const normalized = String(file || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const normalized = String(file || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '');
   if (!RUNTIME_CORE_SYNC_RELS.includes(normalized)) return '';
   if (!normalized || normalized.includes('..') || path.isAbsolute(normalized)) return '';
   return normalized;
@@ -1978,9 +2072,7 @@ function refreshCardsFromHealResults(results = []) {
   const broadNewsTargets = new Set(['news_cards', 'all_news_cards', 'news_content']);
   for (const result of results || []) {
     const title = String((result && (result.blockerTitle || result.title)) || '');
-    const rawRows = Array.isArray(result && result.rawDefects)
-      ? result.rawDefects.map(String)
-      : [];
+    const rawRows = Array.isArray(result && result.rawDefects) ? result.rawDefects.map(String) : [];
     const evidence = String((result && result.evidence) || '');
     const escalation = [
       result && result.escalationReason,
@@ -2000,13 +2092,19 @@ function refreshCardsFromHealResults(results = []) {
     for (const card of systemHealthActionCardsFromRows(clueRows)) cards.add(card);
     for (const card of rawCards) cards.add(card);
     const explicit = String((result && (result.blockerId || result.blocker_id)) || '');
-    if (/^[a-z][a-z0-9_]*$/.test(explicit) && !(rawCards.length && broadNewsTargets.has(explicit))) {
+    if (
+      /^[a-z][a-z0-9_]*$/.test(explicit) &&
+      !(rawCards.length && broadNewsTargets.has(explicit))
+    ) {
       cards.add(explicit);
     }
     for (const card of contentReadinessCardsFromSystemHealthRows(clueRows)) cards.add(card);
     const titleCard = (title.match(/\bon\s+([a-z0-9_]+)\b/i) || [])[1] || '';
     if (titleCard && !(rawCards.length && broadNewsTargets.has(titleCard))) cards.add(titleCard);
-    if (/NEWS-(?:CONTENT|READINESS|STUB|PROSE)|news_cards|all_news_cards/i.test(title) && !rawCards.length) {
+    if (
+      /NEWS-(?:CONTENT|READINESS|STUB|PROSE)|news_cards|all_news_cards/i.test(title) &&
+      !rawCards.length
+    ) {
       cards.add('news_cards');
     }
   }
@@ -2138,7 +2236,9 @@ function deployChangedFilesFromWorktree({
   const fromRoot = path.resolve(worktree);
   const toRoot = path.resolve(appRoot);
   if (fromRoot === toRoot) return { skipped: true, reason: 'app root is worker root' };
-  const status = String(git(['diff-tree', '--no-commit-id', '--name-status', '-r', commitSha]) || '')
+  const status = String(
+    git(['diff-tree', '--no-commit-id', '--name-status', '-r', commitSha]) || '',
+  )
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
@@ -2382,9 +2482,8 @@ function spawnSession(blocker, opts = {}) {
 }
 
 function summarizeSelfHealHealth(blockers = [], results = [], opts = {}) {
-  const refreshOnlyResults = (Array.isArray(opts.refreshOnlyResults)
-    ? opts.refreshOnlyResults
-    : []
+  const refreshOnlyResults = (
+    Array.isArray(opts.refreshOnlyResults) ? opts.refreshOnlyResults : []
   ).map((result) => ({
     ...result,
     status: result && result.status ? result.status : 'cleared',
@@ -2395,10 +2494,9 @@ function summarizeSelfHealHealth(blockers = [], results = [], opts = {}) {
     const rows = Array.isArray(result && result.rawDefects) ? result.rawDefects.length : 0;
     return sum + (rows || 1);
   }, 0);
-  const rawDefects = refreshOnlyRawDefects + blockers.reduce(
-    (sum, b) => sum + Number(b && b.rawDefectCount ? b.rawDefectCount : 1),
-    0,
-  );
+  const rawDefects =
+    refreshOnlyRawDefects +
+    blockers.reduce((sum, b) => sum + Number(b && b.rawDefectCount ? b.rawDefectCount : 1), 0);
   const postRepairDefects = opts.postRepairDefects || opts.postRepairLiveDefects || [];
   const preRepairDefects = Array.isArray(opts.preRepairDefects) ? opts.preRepairDefects : [];
   const newPostRepairDefectGroupDetails = preRepairDefects.length
@@ -2750,8 +2848,8 @@ function rebuildVideoManifestFromPendingArtifacts(repoRoot, opts = {}) {
   const existingVideos = Array.isArray(manifest.videos) ? manifest.videos : [];
   const referenced = new Set();
   for (const video of existingVideos) {
-    const id = String(video && video.id || '').trim();
-    const file = String(video && video.video_file || '').trim();
+    const id = String((video && video.id) || '').trim();
+    const file = String((video && video.video_file) || '').trim();
     if (id) referenced.add(`${id}.mp4`.toLowerCase());
     if (file) referenced.add(path.basename(file).toLowerCase());
   }
@@ -2828,7 +2926,12 @@ function rebuildVideoManifestFromPendingArtifacts(repoRoot, opts = {}) {
 // move exhausted entries out of the active videos array and log them.
 function tryVideoApprovalQueueRepair(blocker, opts = {}) {
   const text = videoApprovalBlockerText(blocker).toLowerCase();
-  if (!/video[_\s-]?approval|video[_\s-]?manifest[_\s-]?drift|pending video files|content-review manifest/i.test(text)) return null;
+  if (
+    !/video[_\s-]?approval|video[_\s-]?manifest[_\s-]?drift|pending video files|content-review manifest/i.test(
+      text,
+    )
+  )
+    return null;
 
   const repoRoot = opts.repoRoot || REPO;
   const manifestRepair = rebuildVideoManifestFromPendingArtifacts(repoRoot, opts);
@@ -2851,13 +2954,19 @@ function tryVideoApprovalQueueRepair(blocker, opts = {}) {
   const deadLettered = [];
   const surviving = [];
   for (const v of videos) {
-    if (!v.rejection_note) { surviving.push(v); continue; }
+    if (!v.rejection_note) {
+      surviving.push(v);
+      continue;
+    }
     let maxed = false;
     const note = String(v.rejection_note);
     let m;
     EXHAUSTED_RE.lastIndex = 0;
     while ((m = EXHAUSTED_RE.exec(note))) {
-      if (parseInt(m[1], 10) >= parseInt(m[2], 10)) { maxed = true; break; }
+      if (parseInt(m[1], 10) >= parseInt(m[2], 10)) {
+        maxed = true;
+        break;
+      }
     }
     // Also dead-letter if script is empty (nothing to rebuild from)
     if (!maxed && !v.script) maxed = true;
@@ -2874,16 +2983,20 @@ function tryVideoApprovalQueueRepair(blocker, opts = {}) {
   const failLogPath = path.join(repoRoot, 'data', 'agent', 'regen-failures.jsonl');
   try {
     for (const v of deadLettered) {
-      fs.appendFileSync(failLogPath,
+      fs.appendFileSync(
+        failLogPath,
         JSON.stringify({
           ts: new Date().toISOString(),
           videoId: v.id,
           reason: 'exhausted-retries-dead-letter',
           rejection_note: String(v.rejection_note || '').slice(0, 500),
           source: 'video-approval-queue-preflight',
-        }) + '\n');
+        }) + '\n',
+      );
     }
-  } catch { /* best effort */ }
+  } catch {
+    /* best effort */
+  }
 
   // Update the queue
   queue.videos = surviving;
@@ -2954,9 +3067,7 @@ function tryActionItemsRepair(blocker, opts = {}) {
   if (!/action[_\s-]?items?|action.item|gmail.action/i.test(text)) return null;
 
   const repoRoot = opts.repoRoot || REPO;
-  const date =
-    opts.date ||
-    new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+  const date = opts.date || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
   const scriptPath = path.join(repoRoot, 'scripts', 'regenerate-action-items.js');
   if (!fs.existsSync(scriptPath)) {
     return {
@@ -2981,7 +3092,9 @@ function tryActionItemsRepair(blocker, opts = {}) {
     return {
       repaired: 0,
       cleared: false,
-      actions: [{ error: 'regenerate-action-items.js failed: ' + String(e.message || e).slice(0, 200) }],
+      actions: [
+        { error: 'regenerate-action-items.js failed: ' + String(e.message || e).slice(0, 200) },
+      ],
     };
   }
 
@@ -3008,7 +3121,9 @@ function tryActionItemsRepair(blocker, opts = {}) {
         source: 'action-items-preflight',
       }) + '\n',
     );
-  } catch { /* best effort */ }
+  } catch {
+    /* best effort */
+  }
 
   // Verify the same proof the renderer needs before the action_items tile can
   // stop being held. Fresh-but-unverified artifacts are still blockers.
@@ -3018,21 +3133,25 @@ function tryActionItemsRepair(blocker, opts = {}) {
       fs.readFileSync(path.join(repoRoot, 'data', 'briefing-action-items.json'), 'utf8'),
     );
     proof = actionArtifactRepairProof(artifact);
-  } catch { /* verification failed */ }
+  } catch {
+    /* verification failed */
+  }
   const cleared = proof.fresh && proof.replyVerified && !proof.integrityIssue;
 
   return {
     repaired: cleared ? 1 : 0,
     cleared,
-    actions: [{
-      action: 'ran regenerate-action-items.js',
-      source: result.source || 'ExampleCo',
-      fetched: result.fetchedMessages,
-      written: result.writtenItems,
-      fresh: proof.fresh,
-      replyVerified: proof.replyVerified,
-      integrityIssue: proof.integrityIssue || undefined,
-    }],
+    actions: [
+      {
+        action: 'ran regenerate-action-items.js',
+        source: result.source || 'ExampleCo',
+        fetched: result.fetchedMessages,
+        written: result.writtenItems,
+        fresh: proof.fresh,
+        replyVerified: proof.replyVerified,
+        integrityIssue: proof.integrityIssue || undefined,
+      },
+    ],
   };
 }
 
@@ -3174,6 +3293,10 @@ async function runOrchestrator(opts = {}) {
   const logRun = (row) => appendRunLog({ date, ...row }, runLogPath);
   const passNumber = Number(opts.passNumber || 1);
   const mode = opts.mode || parseRunMode(opts);
+  // Checkpoint the START of this pass BEFORE any early return can skip it, so "no
+  // checkpoint recorded" can only mean the process itself never launched (crashed
+  // before this line, or was never invoked), never "it ran but had nothing to report".
+  logExecutorCheckpoint(logRun, 'started', { pass: passNumber });
   const repairLoopHistoryLimit = Math.max(
     DEFAULT_NO_LIVE_REDUCTION_ATTEMPT_LIMIT,
     DEFAULT_NO_FRUIT_ATTEMPT_LIMIT,
@@ -3190,7 +3313,9 @@ async function runOrchestrator(opts = {}) {
   const briefingsDir = opts.briefingsDir || path.join(REPO, 'data', 'briefings');
   const inheritedRepairBlockers = Array.isArray(opts.extraBlockers) ? opts.extraBlockers : [];
   const inheritedFalseClearSelfHeal = inheritedRepairBlockers.some(isFalseClearSelfHealBlocker);
-  const inheritedLandingConflictSelfHeal = inheritedRepairBlockers.some(isLandingConflictSelfHealBlocker);
+  const inheritedLandingConflictSelfHeal = inheritedRepairBlockers.some(
+    isLandingConflictSelfHealBlocker,
+  );
   const preRepairWatchdogBlockers = [];
   let briefingPath = opts.briefingPath;
   if (!briefingPath) {
@@ -3260,6 +3385,11 @@ async function runOrchestrator(opts = {}) {
       stage: 'startup',
       error: 'no briefing found within 36h of ' + date + ' in ' + briefingsDir,
     });
+    logExecutorCheckpoint(logRun, 'completed', {
+      pass: passNumber,
+      status: 'red',
+      crash: 'no briefing file was found to read, so the pass stopped before it could run',
+    });
     return { ok: false, cleared: 0, escalated: 0, error: 'briefing-not-found' };
   }
   let md = '';
@@ -3269,21 +3399,33 @@ async function runOrchestrator(opts = {}) {
     } catch (e) {
       if (!(liveRenderQc.blockers || []).length) {
         logRun({ stage: 'startup', error: 'briefing not readable at ' + briefingPath });
+        logExecutorCheckpoint(logRun, 'completed', {
+          pass: passNumber,
+          status: 'red',
+          crash:
+            'the briefing file on disk could not be read, so the pass stopped before it could run',
+        });
         return { ok: false, cleared: 0, escalated: 0, error: 'briefing-not-readable' };
       }
-      logRun({ stage: 'startup', warning: 'briefing not readable, using live render QC blockers', briefingPath });
+      logRun({
+        stage: 'startup',
+        warning: 'briefing not readable, using live render QC blockers',
+        briefingPath,
+      });
     }
   }
   logRun({ stage: 'startup', briefingPath });
   const parsedBlockerCandidates = parseBlockersFromMarkdown(md);
   const suppressParsedFalseClearSelfHeal = !!opts.suppressParsedFalseClearSelfHeal;
   const parsedFalseClearSelfHeal =
-    !suppressParsedFalseClearSelfHeal &&
-    parsedBlockerCandidates.some(isFalseClearSelfHealBlocker);
+    !suppressParsedFalseClearSelfHeal && parsedBlockerCandidates.some(isFalseClearSelfHealBlocker);
   const activeFalseClearSelfHeal = inheritedFalseClearSelfHeal || parsedFalseClearSelfHeal;
-  const parsedLandingConflictSelfHeal = parsedBlockerCandidates.some(isLandingConflictSelfHealBlocker);
+  const parsedLandingConflictSelfHeal = parsedBlockerCandidates.some(
+    isLandingConflictSelfHealBlocker,
+  );
   const activeLandingConflictSelfHeal =
-    inheritedLandingConflictSelfHeal || (!activeFalseClearSelfHeal && parsedLandingConflictSelfHeal);
+    inheritedLandingConflictSelfHeal ||
+    (!activeFalseClearSelfHeal && parsedLandingConflictSelfHeal);
   const activeSelfHealMechanism = activeFalseClearSelfHeal || activeLandingConflictSelfHeal;
   // Phase 1 DELETE: the markdown BLOCKERS card is no longer a DEFECT SOURCE for this
   // loop. parseBlockersFromMarkdown is still parsed, but only its self-heal-MECHANISM
@@ -3331,6 +3473,15 @@ async function runOrchestrator(opts = {}) {
   const blockers = bundleRelatedRepairBlockers(rawBlockers);
   if (rawBlockers.length === 0) {
     logRun({ stage: 'startup', note: 'no blockers in briefing, nothing to heal' });
+    // The healer DID run this pass, it just found nothing to fix. That is a healthy,
+    // clean checkpoint, not "ExampleCo" -- a genuinely idle pass proves the executor works.
+    logExecutorCheckpoint(logRun, 'completed', {
+      pass: passNumber,
+      status: 'green',
+      attempted: 0,
+      cleared: 0,
+      escalated: 0,
+    });
     return { ok: true, cleared: 0, escalated: 0 };
   }
   const maxPasses = resolveMaxPasses(opts);
@@ -3479,7 +3630,12 @@ async function runOrchestrator(opts = {}) {
         repairGroups: blockers.length,
       };
     }
-    logRun({ stage: 'mode-equivalence-preflight', pass: passNumber, ok: true, stages: equivalence.stages.length });
+    logRun({
+      stage: 'mode-equivalence-preflight',
+      pass: passNumber,
+      ok: true,
+      stages: equivalence.stages.length,
+    });
   }
   // midday mode has no fixed deadline (run to completion); overnight keeps it.
   const deadlineMs = mode.midday
@@ -3577,9 +3733,13 @@ async function runOrchestrator(opts = {}) {
     if (!mode.observe && !isSelfHealMechanismBlocker && !bypassDeterministicPreflights) {
       const actionPreflight = actionItemsRepair(blocker, { repoRoot: REPO });
       if (actionPreflight && actionPreflight.cleared) {
-        const actionPreflightRawDefects = Array.isArray(blocker.rawDefects) ? blocker.rawDefects : [];
+        const actionPreflightRawDefects = Array.isArray(blocker.rawDefects)
+          ? blocker.rawDefects
+          : [];
         const actionPreflightEvidence = blocker.evidence || '';
-        const actionPreflightClue = [...actionPreflightRawDefects, actionPreflightEvidence].join(' ');
+        const actionPreflightClue = [...actionPreflightRawDefects, actionPreflightEvidence].join(
+          ' ',
+        );
         const actionPreflightBlockerId = /\bBLOCKED-TILE:\s*system_health\b/i.test(
           actionPreflightClue,
         )
@@ -3777,7 +3937,9 @@ async function runOrchestrator(opts = {}) {
         pass: passNumber,
         source: 'self-heal-health',
         defectType: 'SELF-HEAL-AUTH-FAILED',
-        title: (authPreflight.blocker && authPreflight.blocker.title) || 'Self-Heal Executor: auth failed',
+        title:
+          (authPreflight.blocker && authPreflight.blocker.title) ||
+          'Self-Heal Executor: auth failed',
         owner: (authPreflight.blocker && authPreflight.blocker.owner) || 'ExampleCo',
         evidence: (authPreflight.blocker && authPreflight.blocker.evidence) || '',
         repair: (authPreflight.blocker && authPreflight.blocker.repair) || '',
@@ -3792,6 +3954,16 @@ async function runOrchestrator(opts = {}) {
         reason: 'self-heal-executor-auth-failed',
         plannedSessions: survivors.length,
         mode: modeLabel(mode),
+      });
+      logExecutorCheckpoint(logRun, 'completed', {
+        pass: passNumber,
+        status: 'red',
+        crash: `the executor's own pre-spawn auth check failed (${clampCheckpointDetail(
+          authPreflight.probeDetail || 'auth probe failed',
+        )}), so no repair workers were started`,
+        attempted: 0,
+        cleared,
+        escalated: escalated + survivors.length,
       });
       logRun({
         stage: 'orchestrator-complete',
@@ -3842,7 +4014,8 @@ async function runOrchestrator(opts = {}) {
     const result = await runSession(blocker, {
       repoRoot: gitRepo,
       dependencyRoot: REPO,
-      afterPush: opts.afterPush || ((info) => deployChangedFilesFromWorktree({ ...info, appRoot: REPO })),
+      afterPush:
+        opts.afterPush || ((info) => deployChangedFilesFromWorktree({ ...info, appRoot: REPO })),
       deadlineIso,
       branchSummary,
       budgetMs: deadlineMs
@@ -4099,15 +4272,11 @@ async function runOrchestrator(opts = {}) {
     postRepairLiveRenderQc.defects || [],
     passNumber,
   );
-  const repairLoopExhaustion = summarizeRepairLoopExhaustion(
-    repairLoopHistory,
-    repairLoopEntry,
-    {
-      windowSize: opts.repairLoopExhaustionWindow,
-      noFruitAttemptLimit: opts.repairLoopNoFruitAttemptLimit,
-      noLiveReductionAttemptLimit: opts.repairLoopNoLiveReductionAttemptLimit,
-    },
-  );
+  const repairLoopExhaustion = summarizeRepairLoopExhaustion(repairLoopHistory, repairLoopEntry, {
+    windowSize: opts.repairLoopExhaustionWindow,
+    noFruitAttemptLimit: opts.repairLoopNoFruitAttemptLimit,
+    noLiveReductionAttemptLimit: opts.repairLoopNoLiveReductionAttemptLimit,
+  });
   const postRepairNewDefectGroups = newDefectGroups(
     preWorkerLiveDefects,
     postRepairLiveRenderQc.defects || [],
@@ -4193,13 +4362,12 @@ async function runOrchestrator(opts = {}) {
   // still red after that, retry the underlying rendered card lanes with
   // preflight bypassed instead of camping on proof-contract repairs.
   const falseClearSelfHealAttempted =
-    activeFalseClearSelfHeal &&
-    postRepairRawDefects > 0 &&
-    !shouldEscalateFalseClearToSelfHeal;
+    activeFalseClearSelfHeal && postRepairRawDefects > 0 && !shouldEscalateFalseClearToSelfHeal;
   // liveRenderQc is reassigned after a pre-repair refresh, so this compares the
   // post-worker page to the defects the workers actually received.
   const unchangedAfterWorkerWave =
-    defectSignature(postRepairLiveRenderQc.defects || []) === defectSignature(liveRenderQc.defects || []);
+    defectSignature(postRepairLiveRenderQc.defects || []) ===
+    defectSignature(liveRenderQc.defects || []);
   const repeatedContractMissWave =
     pushedResults.length === 0 &&
     results.length > 0 &&
@@ -4262,6 +4430,18 @@ async function runOrchestrator(opts = {}) {
   // escalation), ok is false and escalated flags the open count. ok:true only
   // when every blocker cleared.
   const anyEscalated = escalated > 0 || postRepairRawDefects > 0;
+  // The pass reached the end of its normal repair loop, so the executor DID run this
+  // window regardless of how many defects it cleared. status:'red' here means the run
+  // itself hit an internal defect (worker kills, contract misses, landing conflicts),
+  // never "we don't know if it ran" -- the checkpoint proves it ran either way.
+  logExecutorCheckpoint(logRun, 'completed', {
+    pass: passNumber,
+    status: selfHealHealth.status === 'red' ? 'red' : 'green',
+    crash: selfHealHealth.status === 'red' ? clampCheckpointDetail(selfHealHealth.detail) : '',
+    attempted: blockers.length,
+    cleared,
+    escalated,
+  });
   logRun({
     stage: 'orchestrator-complete',
     pass: passNumber,
@@ -4311,7 +4491,8 @@ async function runOrchestrator(opts = {}) {
     logRun({
       stage: 'midday-rerun-suppressed',
       pass: passNumber,
-      reason: 'post-repair live QC introduced new defect groups without reducing the raw blocker count',
+      reason:
+        'post-repair live QC introduced new defect groups without reducing the raw blocker count',
       preRepairRawDefects: preWorkerLiveDefects.length,
       postRepairRawDefects,
       newPostRepairDefectGroups: postRepairNewDefectGroups.map(
@@ -4362,12 +4543,7 @@ async function runOrchestrator(opts = {}) {
     deadlineMs,
     perSessionBudgetMs,
   });
-  if (
-    anyEscalated &&
-    !mode.observe &&
-    postRepairRawDefects > 0 &&
-    !repairLoopDecision.continue
-  ) {
+  if (anyEscalated && !mode.observe && postRepairRawDefects > 0 && !repairLoopDecision.continue) {
     logRun({
       stage: 'repair-loop-stopped',
       pass: passNumber,
@@ -4444,11 +4620,10 @@ async function runOrchestrator(opts = {}) {
       maxPasses,
       extraBlockers: nextExtraBlockers,
       suppressParsedFalseClearSelfHeal:
-        opts.suppressParsedFalseClearSelfHeal ||
-        falseClearSelfHealAttempted,
+        opts.suppressParsedFalseClearSelfHeal || falseClearSelfHealAttempted,
       knownFalseClearPreflightCards: [
         ...new Set([
-          ...((opts.knownFalseClearPreflightCards || []).map(String).filter(Boolean)),
+          ...(opts.knownFalseClearPreflightCards || []).map(String).filter(Boolean),
           ...falseClearPreflightCards,
         ]),
       ],
@@ -4475,6 +4650,8 @@ async function runOrchestrator(opts = {}) {
 }
 
 module.exports = {
+  CHECKPOINT_STAGE,
+  logExecutorCheckpoint,
   parseBlockersFromMarkdown,
   rawDefectCountForBlockers,
   bundleRelatedRepairBlockers,
@@ -4563,7 +4740,16 @@ if (require.main === module) {
     })
     .catch((e) => {
       console.error('[orchestrator] threw:', e && e.message ? e.message : e);
-      appendRunLog({ stage: 'fatal', error: String(e && e.message ? e.message : e).slice(0, 400) });
+      const detail = String(e && e.message ? e.message : e).slice(0, 400);
+      appendRunLog({ stage: 'fatal', error: detail });
+      // The orchestrator process itself crashed before completing a normal pass. This is
+      // the genuine "the healer broke" case: a plain-English crash reason, not "ExampleCo".
+      appendRunLog({
+        stage: CHECKPOINT_STAGE,
+        phase: 'completed',
+        status: 'red',
+        crash: `the self-heal process crashed unexpectedly: ${clampCheckpointDetail(detail)}`,
+      });
       process.exit(1);
     });
 }
