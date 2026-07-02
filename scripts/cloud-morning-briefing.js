@@ -32,6 +32,10 @@ const {
 const { formatUncommittedParkedWorkSection } = require('./lib/git-hygiene-briefing.js');
 const { generateSelfHealHealthCard } = require('./self-heal/self-heal-health-card.js');
 const { probeDevOpsHealth } = require('./lib/devops-health.js');
+// Deploy-parity row (Codex amendment 3, item W3a): the artifact is written by
+// scripts/verify-deploy-parity.js, a separate probe process (not required
+// directly), so this only needs the shared drift-summary formatter.
+const { formatDeployParityRow } = require('./lib/deploy-parity-row.js');
 const { computeSpeakerFreshness } = require('./lib/speaker-freshness.js');
 // Same non-green SYSTEM HEALTH parser the publish validator uses, so the named
 // blocker we emit per non-green row covers EXACTLY the set the QC counts.
@@ -5385,6 +5389,19 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
   // the BLOCKERS entry below come from the SAME verdict (no divergence).
   const devopsVerdict = computeDevOpsHealthVerdict(dataDir);
   push(devopsVerdict.status === 'green' ? OK : BAD, `Dev Ops: ${devopsVerdict.detail}.`);
+
+  // Deploy parity (Codex amendment 3, item W3a): reads the artifact
+  // scripts/verify-deploy-parity.js writes. Green names the match, red names
+  // the exact stale files, and a missing/stale (>26h) artifact reads as an
+  // honest ExampleCo ("the probe did not run") rather than a false green -- this
+  // is the ONE non-green/ExampleCo row in this function that is not forced to
+  // OK/BAD, matching the manifest's ExampleCo convention for "did not run".
+  try {
+    const row = formatDeployParityRow({ dataDir });
+    rows.push(row);
+  } catch {
+    push(ExampleCo, 'Deploy parity: probe artifact could not be read on this host.');
+  }
 
   return rows;
 }

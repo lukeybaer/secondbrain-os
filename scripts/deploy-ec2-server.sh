@@ -66,10 +66,28 @@ LIVE_DEPS=(
   # requires the model playback guard directly so a flaky build-path git-pull cannot
   # leave EC2 importing a missing module on PM2 restart.
   "scripts/lib/news-reader-model-playback.js"
+  # C4 deploy-parity SYSTEM HEALTH row (Codex amendment 3, item W3a, 2026-07-02).
+  # cloud-morning-briefing.js requires this row formatter directly, so it must
+  # ship to /opt like every other required module -- the probe binary itself
+  # (verify-deploy-parity.js) and its pure-logic libs run from the build-path
+  # git checkout, not /opt, so they are intentionally NOT listed here.
+  "scripts/lib/deploy-parity-row.js"
 )
 
 echo "[deploy] syntax-checking repo ec2-server.js"
 node -c "$SRC"
+
+# C4 deploy-parity false-red mitigation (Codex amendment 3, item W3a): create a
+# lock file on the EC2 host for the duration of this deploy so
+# verify-deploy-parity.js suppresses drift during the mid-deploy window instead
+# of reporting a false red while files are momentarily out of sync. Removed via
+# a trap so it clears even if this script fails or is interrupted partway.
+DEPLOY_LOCK="/tmp/secondbrain-deploy.lock"
+ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "echo \$(date -u +%FT%TZ) > $DEPLOY_LOCK" || true
+cleanup_deploy_lock() {
+  ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "rm -f $DEPLOY_LOCK" 2>/dev/null || true
+}
+trap cleanup_deploy_lock EXIT
 
 # Normalize CRLF -> LF so the deployed file is clean on Linux.
 tr -d '\r' < "$SRC" > "$LF"
