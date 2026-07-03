@@ -92,7 +92,16 @@ if [ -f "$ROOT/scripts/verify-deploy-parity.js" ]; then
   PARITY_OUT="$(cd "$ROOT" && SECONDBRAIN_DATA_DIR="$DATA_DIR" "$NODE_BIN" scripts/verify-deploy-parity.js --json 2>&1)"
   PARITY_STATUS=$?
   if [ "$PARITY_STATUS" = "0" ]; then
-    pass "deploy-parity probe reports ok (see $DATA_DIR/agent/deploy-parity-latest.json)"
+    # An exit-0 report can ALSO mean the probe suppressed real drift because a
+    # deploy was in progress (deploy-lock window) -- that is not the same
+    # thing as proven parity, so surface it distinctly rather than a bare
+    # PASS (Codex review 2026-07-02: the canary must not claim parity is
+    # proven when it was actually suppressed).
+    if printf '%s' "$PARITY_OUT" | grep -q '"suppressed":[[:space:]]*true'; then
+      pass "deploy-parity probe suppressed (a deploy was in progress; parity NOT proven this run -- re-run after the deploy finishes)"
+    else
+      pass "deploy-parity probe reports ok (see $DATA_DIR/agent/deploy-parity-latest.json)"
+    fi
   else
     fail "deploy-parity probe reports drift or an error (exit $PARITY_STATUS): $(printf '%s' "$PARITY_OUT" | tail -5)"
   fi

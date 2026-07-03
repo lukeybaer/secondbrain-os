@@ -132,14 +132,18 @@ function runChecksOnce({ buildPathRoot, liveRoot, pm2ProcessName }) {
 
   const liveDeps = readLiveDeps(REPO_ROOT);
   const fileList = ['ec2-server.js', ...liveDeps];
+  // Track the NEWEST mtime across every deployed file (not just server.js):
+  // a LIVE_DEPS module deployed after PM2 started, while server.js itself
+  // stays untouched, would otherwise pass file-hash checks while PM2 still
+  // serves the cached old dependency code (Codex review 2026-07-02).
+  let newestFileMtimeMs = null;
+  let newestFile = null;
   for (const rel of fileList) {
     const repoPath = path.join(REPO_ROOT, rel);
     // ec2-server.js deploys to server.js on the live host (PM2 entrypoint);
     // every other LIVE_DEPS entry keeps its own repo-relative path under /opt.
     const livePath =
-      rel === 'ec2-server.js'
-        ? path.join(liveRoot, 'server.js')
-        : path.join(liveRoot, rel);
+      rel === 'ec2-server.js' ? path.join(liveRoot, 'server.js') : path.join(liveRoot, rel);
     checks.push(
       checkFileParity({
         file: rel,
@@ -147,11 +151,17 @@ function runChecksOnce({ buildPathRoot, liveRoot, pm2ProcessName }) {
         liveContent: safeReadFile(livePath),
       }),
     );
+    const mtime = safeMtimeMs(livePath);
+    if (Number.isFinite(mtime) && (newestFileMtimeMs == null || mtime > newestFileMtimeMs)) {
+      newestFileMtimeMs = mtime;
+      newestFile = rel;
+    }
   }
 
   checks.push(
     checkActiveProcessParity({
-      serverMtimeMs: safeMtimeMs(path.join(liveRoot, 'server.js')),
+      newestFileMtimeMs,
+      newestFile,
       pm2StartMs: pm2ProcessStartMs(pm2ProcessName),
     }),
   );
@@ -172,11 +182,22 @@ function sleep(ms) {
  */
 async function runParityProbe(opts = {}) {
   const buildPathRoot =
-    opts.buildPathRoot || process.env.SECONDBRAIN_BUILD_PATH_ROOT || '/home/ec2-user/secondbrain-current';
+    opts.buildPathRoot ||
+    process.env.SECONDBRAIN_BUILD_PATH_ROOT ||
+    '/home/ec2-user/secondbrain-current';
   const liveRoot = opts.liveRoot || process.env.SECONDBRAIN_LIVE_ROOT || '/opt/secondbrain';
   const pm2ProcessName = opts.pm2ProcessName || 'secondbrain-backend';
   const lockPath = opts.lockPath || DEPLOY_LOCK_PATH;
-  const doubleReadDelayMs = opts.doubleReadDelayMs != null ? opts.doubleReadDelayMs : DOUBLE_READ_DELAY_MS;
+  const doubleReadDelayMs =
+    opts.doubleReadDelayMs != null ? opts.doubleReadDelayMs : DOUBLE_READ_DELAY_MS;
+
+  // Sample the deploy lock BEFORE the checks too (not just after): a probe
+  // that starts while a deploy is mid-flight can read transient drift on
+  // both passes, then the deploy finishes and removes the lock before a
+  // lock check taken only at the end would see it -- that raced false-red
+  // (Codex review 2026-07-02). Suppression fires if the lock was held at
+  // ANY point during this run, start or end.
+  const lockExistedAtStart = fs.existsSync(lockPath);
 
   const firstPass = runChecksOnce({ buildPathRoot, liveRoot, pm2ProcessName });
   const drifted = firstPass.filter((c) => !c.ok);
@@ -196,7 +217,8 @@ async function runParityProbe(opts = {}) {
     });
   }
 
-  const lockExists = fs.existsSync(lockPath);
+  const lockExistedAtEnd = fs.existsSync(lockPath);
+  const lockExists = lockExistedAtStart || lockExistedAtEnd;
   const report = buildParityReport(confirmedChecks, { lockExists });
   return {
     ...report,
@@ -238,7 +260,9 @@ async function main() {
   if (process.argv.includes('--json')) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
-    console.log(`Deploy parity: ${report.ok ? 'OK' : 'DRIFT'}${report.suppressed ? ' (suppressed: deploy in progress)' : ''}`);
+    console.log(
+      `Deploy parity: ${report.ok ? 'OK' : 'DRIFT'}${report.suppressed ? ' (suppressed: deploy in progress)' : ''}`,
+    );
     for (const d of report.drift || []) {
       console.log(`  DRIFT [${d.kind}] ${d.file}: ${d.detail}`);
     }

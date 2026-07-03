@@ -91,37 +91,45 @@ function checkFileParity({ file, repoContent, liveContent }) {
 }
 
 /**
- * ACTIVE-PROCESS parity: a live server.js mtime newer than the PM2 process
- * start time means the file was deployed but the process was never
+ * ACTIVE-PROCESS parity: a live deployed file mtime newer than the PM2
+ * process start time means that file was deployed but the process was never
  * restarted, so PM2 is still serving stale in-memory code even though the
  * on-disk file now matches the repo. This is reported as its own drift kind
  * (never merged into file-content) because a clean file-hash match can still
  * be paired with a stale running process.
- * @param {{serverMtimeMs:number|null, pm2StartMs:number|null}} args
+ *
+ * Codex review 2026-07-02: checking ONLY server.js's mtime missed the case
+ * where a LIVE_DEPS module (e.g. a lib file server.js requires) is deployed
+ * after PM2 started while server.js itself stays untouched -- hashes would
+ * pass while PM2 still served the cached old dependency code. The caller
+ * passes the MAX mtime across every deployed file (server.js + every
+ * LIVE_DEPS copy), so any one of them being newer than the process start is
+ * caught.
+ * @param {{newestFileMtimeMs:number|null, newestFile?:string, pm2StartMs:number|null}} args
  * @returns {{ok:boolean, kind:'active-process', drift?:object}}
  */
-function checkActiveProcessParity({ serverMtimeMs, pm2StartMs }) {
-  if (!Number.isFinite(serverMtimeMs) || !Number.isFinite(pm2StartMs)) {
+function checkActiveProcessParity({ newestFileMtimeMs, newestFile, pm2StartMs }) {
+  if (!Number.isFinite(newestFileMtimeMs) || !Number.isFinite(pm2StartMs)) {
     return {
       ok: false,
       kind: 'active-process',
       drift: {
         file: 'secondbrain-backend (PM2)',
         kind: 'active-process',
-        detail: 'could not read server.js mtime or PM2 process start time',
+        detail: 'could not read deployed file mtimes or PM2 process start time',
       },
     };
   }
-  if (serverMtimeMs <= pm2StartMs) return { ok: true, kind: 'active-process' };
+  if (newestFileMtimeMs <= pm2StartMs) return { ok: true, kind: 'active-process' };
   return {
     ok: false,
     kind: 'active-process',
     drift: {
       file: 'secondbrain-backend (PM2)',
       kind: 'active-process',
-      detail:
-        'server.js on disk is newer than the running PM2 process start time -- deployed but not restarted',
-      serverMtimeMs,
+      detail: `${newestFile || 'a deployed file'} on disk is newer than the running PM2 process start time -- deployed but not restarted`,
+      newestFile: newestFile || null,
+      newestFileMtimeMs,
       pm2StartMs,
     },
   };

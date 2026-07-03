@@ -82,10 +82,21 @@ node -c "$SRC"
 # verify-deploy-parity.js suppresses drift during the mid-deploy window instead
 # of reporting a false red while files are momentarily out of sync. Removed via
 # a trap so it clears even if this script fails or is interrupted partway.
+#
+# TOKEN-OWNED (Codex review 2026-07-02): the lock content is a unique token for
+# THIS deploy run, and cleanup only removes the file if it still holds that
+# exact token. Two overlapping deploys therefore cannot clobber each other's
+# lock: whichever one finishes first leaves the lock in place for the other,
+# and only the deploy that actually still owns the file clears it.
 DEPLOY_LOCK="/tmp/secondbrain-deploy.lock"
-ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "echo \$(date -u +%FT%TZ) > $DEPLOY_LOCK" || true
+DEPLOY_LOCK_TOKEN="deploy-$(date +%s)-$$"
+if ! ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "echo $DEPLOY_LOCK_TOKEN > $DEPLOY_LOCK"; then
+  echo "[deploy] WARNING: could not create deploy-parity lock ($DEPLOY_LOCK) -- the parity probe may false-red during this deploy window."
+fi
 cleanup_deploy_lock() {
-  ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "rm -f $DEPLOY_LOCK" 2>/dev/null || true
+  ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+    "[ \"\$(cat $DEPLOY_LOCK 2>/dev/null)\" = \"$DEPLOY_LOCK_TOKEN\" ] && rm -f $DEPLOY_LOCK" \
+    2>/dev/null || true
 }
 trap cleanup_deploy_lock EXIT
 
