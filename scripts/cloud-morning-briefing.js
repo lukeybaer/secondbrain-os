@@ -6605,6 +6605,35 @@ function recentAmyProjectRows(
     .map(({ row }) => row);
 }
 
+// True when the EC2 spine store shows SOME activity in the last 24h (proof the
+// cloud intake pipeline is alive -- Otter/Gmail passive ingest tasks keep
+// landing, or an internal automation task ran) even though none of it is
+// user-originated. This is the signal that distinguishes "Amy genuinely had
+// nothing to do" from "ExampleCo is working interactive PC sessions the cloud host
+// cannot see": interactive Claude Code/Codex sessions self-register into the
+// DESKTOP spine store (%APPDATA%\secondbrain\data\tasks), which never syncs to
+// EC2, so the cloud renderer has no durable signal for that work at all.
+// Rather than let a stale dispatch-queue/telegram ledger plus an empty
+// user-originated spine slice read as "Amy did nothing," name the real gap.
+// Category: recency of ANY non-user-originated spine task, not a literal
+// source name -- the note wording below must stay generic to whatever that
+// activity actually is (ingest, internal automation, etc), never assert a
+// specific source the code did not check for (Codex peer review 2026-07-03:
+// the note previously said "passive ingest only" while this predicate also
+// matches non-ingest internal/automation tasks, which would have been a
+// fabricated source claim for that mixed case).
+function hasRecentCloudSpineActivity(taskRows, nowMs) {
+  const cutoff = nowMs - 24 * 3600 * 1000;
+  return (taskRows || []).some((task) => {
+    if (isUserOriginatedSpineTask(task)) return false;
+    const ts = spineTaskTimestampMs(task);
+    return Number.isFinite(ts) && ts >= cutoff;
+  });
+}
+
+const DESKTOP_SESSIONS_NOT_SYNCED_LINE =
+  'Note: desktop sessions are not synced to the cloud store, so interactive Claude Code/Codex work on the PC does not appear here even while active; the cloud spine only shows non-user-originated activity (passive ingest or internal automation) here.';
+
 function formatAmyProjectsSection(service, opts = {}) {
   const recentRows = recentAmyProjectRows(
     opts.dispatchRows,
@@ -6612,6 +6641,10 @@ function formatAmyProjectsSection(service, opts = {}) {
     opts.taskRows,
     opts.nowMs,
   );
+  const desktopInvisibleNote =
+    !recentRows.length && hasRecentCloudSpineActivity(opts.taskRows, opts.nowMs ?? Date.now())
+      ? DESKTOP_SESSIONS_NOT_SYNCED_LINE
+      : null;
   if (recentRows.length) {
     const lines = [
       `Status: ${recentRows.length} recent user-originated Amy task/session item${recentRows.length === 1 ? '' : 's'} surfaced in the cloud snapshot.`,
@@ -6650,7 +6683,20 @@ function formatAmyProjectsSection(service, opts = {}) {
         '- Item detail was not in the cloud snapshot; the count comes from the live queue/task store.',
       );
     }
+    if (desktopInvisibleNote) {
+      lines.push('', desktopInvisibleNote);
+    }
     return lines.join('\n');
+  }
+  if (desktopInvisibleNote) {
+    // Recent cloud spine activity exists (passive ingest keeps landing) but
+    // none of it is user-originated: this is NOT the same as Amy being idle.
+    // Say so honestly instead of falling to the generic "nothing active" line,
+    // which reads as "Amy did nothing" when ExampleCo may be mid-session on the PC.
+    return [
+      'Status: no cloud-visible dispatch, session, or spine task in the last 24h.',
+      desktopInvisibleNote,
+    ].join('\n');
   }
   return [
     'Status: no old Telegram, phone, or spine dispatch is active after the cleanup sweep.',
