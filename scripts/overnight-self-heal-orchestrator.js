@@ -36,6 +36,10 @@ const repairLedger = require('./self-heal/briefing-repair-ledger.js');
 const { executorHealthRow } = require('./lib/executor-health-row.js');
 const { assertModeEquivalence, loadRunGraph } = require('./lib/briefing-heal-run-graph.js');
 const { createBudget, phaseExhausted, budgetExhaustedRed } = require('./lib/heal-error-budget.js');
+// ITEM W2a: the C1 mechanical-first heal tier (defect-class -> mechanical
+// action, run BEFORE any LLM worker) + the 3-day recurrence masking guard.
+const mechanicalRunbook = require('./self-heal/mechanical-runbook.js');
+const mechanicalRecurrence = require('./self-heal/mechanical-recurrence.js');
 
 const REPO = path.resolve(__dirname, '..');
 
@@ -2698,6 +2702,102 @@ function tryMechanicalRepair(blocker, opts = {}) {
   }
 }
 
+// ITEM W2a: MECHANICAL-FIRST HEAL TIER. Runs scripts/self-heal/mechanical-
+// runbook.js against every raw defect this blocker ExampleCos, BEFORE the LLM
+// worker (spawnSession) ever sees it. Distinct from tryMechanicalRepair above
+// (which is a narrow tests-blocked.json fixup): this is the general defect-
+// class -> mechanical-action registry (manifest heal entry > _domains.json
+// healLadder first rung > generic class action), with the same-reader
+// postcondition and the no-repeat-tactic guard baked into
+// mechanicalRunbook.runMechanicalAction itself. Returns { cleared, repaired,
+// actions, escalateMasking } or null when the blocker ExampleCos no raw defects
+// (nothing for the runbook to resolve against).
+//
+// rerunCardQc (Codex review 2026-07-03): runMechanicalAction FAILS CLOSED for
+// any artifact-backed action when no card-level re-QC callback is injected
+// (a generator exiting 0 with a still-bad artifact must never silently
+// clear). This orchestrator does not yet wire the live dashboard render-QC
+// per card here -- scripts/verify-dashboard-cards-live.js has no per-card
+// filter today, and running the full authenticated live-QC pass once per
+// defect inside the mechanical preflight would be expensive and duplicate
+// the loop's own liveRenderQc pass. Until that per-card QC hook exists,
+// artifact-backed mechanical actions correctly stay 'failed' here and fall
+// through to the LLM worker; only actions with NO declared artifactPath
+// (lock-reclaim, an artifact-free callable rung) can clear through this
+// preflight. opts.mechanicalRunbookOptions.rerunCardQc lets a future change
+// (or a test) inject the real per-card check without touching this loop.
+//
+// escalateMasking is set true when the 3-day recurrence guard fires for one
+// of this blocker's defects even though the mechanical tier cleared it again
+// today -- the caller still counts it cleared today, but must also surface it
+// on the SELF-HEAL card so a human looks at the recurring root cause.
+async function tryMechanicalRunbookRepair(blocker, opts = {}) {
+  const rawDefectRows = Array.isArray(blocker && blocker.rawDefects) ? blocker.rawDefects : [];
+  if (!rawDefectRows.length) return null;
+  const defects = buildCanonicalDefects(rawDefectRows);
+  if (!defects.length) return null;
+
+  const runAction = opts.runMechanicalAction || mechanicalRunbook.runMechanicalAction;
+  const date = opts.date || new Date().toISOString().slice(0, 10);
+  const readHistory = opts.readMechanicalHistory || mechanicalRecurrence.readHistory;
+  const recordDaily = opts.recordMechanicalDaily || mechanicalRecurrence.recordDailyOutcome;
+  const recurrenceOpts = opts.mechanicalRecurrenceOpts || {};
+
+  const actions = [];
+  let clearedCount = 0;
+  let escalateMasking = false;
+  for (const defect of defects) {
+    const result = await runAction(defect, {
+      ...(opts.mechanicalRunbookOptions || {}),
+      date,
+      context: opts.mechanicalContext || {},
+    });
+    actions.push({
+      defect: defect.key,
+      status: result.status,
+      reason: result.reason,
+      source: result.action && result.action.source,
+    });
+    if (result.status === 'cleared') {
+      clearedCount += 1;
+      if (opts.recordMechanicalDaily !== false) {
+        try {
+          recordDaily(
+            { date, defect: defect.key, clearedByMechanicalTactic: true },
+            recurrenceOpts,
+          );
+          const history = readHistory(recurrenceOpts);
+          const recurrence = mechanicalRecurrence.recurrenceEscalation(defect.key, history, {
+            asOfDate: date,
+          });
+          if (recurrence.escalate) {
+            escalateMasking = true;
+            actions.push({
+              defect: defect.key,
+              status: 'masking-guard-escalation',
+              reason: recurrence.reason,
+            });
+          }
+        } catch (e) {
+          // Recurrence bookkeeping is best-effort; never let it break the clear.
+          actions.push({
+            defect: defect.key,
+            status: 'masking-guard-record-error',
+            reason: String((e && e.message) || e).slice(0, 200),
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    repaired: clearedCount,
+    cleared: clearedCount === defects.length,
+    actions,
+    escalateMasking,
+  };
+}
+
 // Video blocker preflight: re-probe the manifest to check if "Stuck videos"
 // blockers are still live. The briefing snapshot can be hours old; if a prior
 // session cleaned the manifest the blocker is stale and burning an LLM session
@@ -3861,6 +3961,40 @@ async function runOrchestrator(opts = {}) {
           actions: preflight.actions.slice(0, 5),
           status: 'partial',
         });
+      }
+      // ITEM W2a: the mechanical-runbook tier runs AFTER the narrow
+      // tests-blocked preflight above but still BEFORE any LLM worker. It
+      // resolves and runs a deterministic action per raw defect this blocker
+      // ExampleCos (manifest heal entry > _domains.json healLadder first rung >
+      // generic class action), verified by the same-reader postcondition
+      // inside runMechanicalAction itself -- exit 0 is never trusted on its
+      // own. Every card defect must clear for the whole blocker to drop from
+      // the wave (a partial clear still needs the LLM session for the rest).
+      const runbookRepair = await (opts.mechanicalRunbookRepair || tryMechanicalRunbookRepair)(
+        blocker,
+        { ...opts, date },
+      );
+      if (runbookRepair) {
+        logRun({
+          stage: 'mechanical-runbook',
+          blocker: blocker.title,
+          repaired: runbookRepair.repaired,
+          actions: runbookRepair.actions.slice(0, 10),
+          escalateMasking: !!runbookRepair.escalateMasking,
+          status: runbookRepair.cleared ? 'cleared' : 'partial',
+        });
+        if (runbookRepair.escalateMasking) {
+          logRun({
+            stage: 'mechanical-runbook-masking-guard',
+            blocker: blocker.title,
+            detail:
+              "defect mechanically cleared 3+ consecutive days; escalating to the interactive session on the SELF-HEAL card even though today's mechanical pass cleared it",
+          });
+        }
+        if (runbookRepair.cleared) {
+          cleared++;
+          continue;
+        }
       }
     }
     survivors.push(blocker);

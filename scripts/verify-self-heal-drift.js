@@ -51,6 +51,11 @@ const KEY_FILES = [
   'scripts/lib/briefing-heal-run-graph.json',
   'scripts/lib/briefing-heal-run-graph.js',
   'scripts/lib/heal-error-budget.js',
+  // ITEM W2a (C1 mechanical-first heal tier): the defect-class -> mechanical-
+  // action registry + the 3-day recurrence masking guard.
+  'scripts/self-heal/mechanical-runbook.js',
+  'scripts/self-heal/mechanical-recurrence.js',
+  'scripts/self-heal/self-heal-health-card.js',
 ];
 
 // Runtime artifacts: present on a live box / generated per run, not asserted
@@ -113,6 +118,31 @@ const MUST_CONTAIN = [
     'function assertModeEquivalence',
     'doc 4d (Phase 4a): mode-equivalence preflight -- overnight and attended paths must read the same run graph before any spawn',
   ],
+  [
+    'scripts/self-heal/mechanical-runbook.js',
+    'function resolveMechanicalAction',
+    'doc 4e (ITEM W2a): the defect-class -> mechanical-action registry, resolved manifest heal entry > _domains.json healLadder first rung > generic class action, BEFORE any LLM worker',
+  ],
+  [
+    'scripts/self-heal/mechanical-runbook.js',
+    'same-reader postcondition',
+    'doc 4e (ITEM W2a): a mechanical action exit code is never trusted alone -- the card artifact is re-resolved through the same reader path and must show a changed sha or in-window freshness, then pass a card-level re-QC, before counting as cleared',
+  ],
+  [
+    'scripts/overnight-self-heal-orchestrator.js',
+    'function tryMechanicalRunbookRepair',
+    'doc 4e (ITEM W2a): the orchestrator phase-1 loop runs the mechanical-runbook tier per raw defect BEFORE a blocker survives to the LLM worker wave',
+  ],
+  [
+    'scripts/self-heal/mechanical-recurrence.js',
+    'function recurrenceEscalation',
+    'doc 4e (ITEM W2a): the masking guard -- a defect mechanically cleared 3 consecutive days still escalates to the interactive SELF-HEAL card session',
+  ],
+  [
+    'scripts/self-heal/self-heal-health-card.js',
+    'function maskingGuardDefects',
+    'doc 4e (ITEM W2a): the SELF-HEAL card itself surfaces the masking-guard recurrence, not just an orchestrator log row',
+  ],
 ];
 
 // [file, token, why] -- the token must be ABSENT (a design boundary the
@@ -172,7 +202,8 @@ function checkDrift(repoRoot) {
     if (!exists(rel)) failures.push(`missing load-bearing file: ${rel}`);
   }
   for (const [rel, note] of RUNTIME_FILES) {
-    if (!exists(rel)) warnings.push(`runtime artifact absent (ok pre-first-run): ${rel} -- ${note}`);
+    if (!exists(rel))
+      warnings.push(`runtime artifact absent (ok pre-first-run): ${rel} -- ${note}`);
   }
   for (const [rel, token, why] of MUST_CONTAIN) {
     const src = read(rel);
@@ -189,7 +220,8 @@ function checkDrift(repoRoot) {
       );
   }
   for (const rel of MUST_NOT_EXIST) {
-    if (exists(rel)) failures.push(`file was removed for a documented reason but has returned: ${rel}`);
+    if (exists(rel))
+      failures.push(`file was removed for a documented reason but has returned: ${rel}`);
   }
 
   // Doc content checks: the load-bearing rules the doc must keep stating so
@@ -249,4 +281,11 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { checkDrift, KEY_FILES, RUNTIME_FILES, MUST_CONTAIN, MUST_NOT_CONTAIN, MUST_NOT_EXIST };
+module.exports = {
+  checkDrift,
+  KEY_FILES,
+  RUNTIME_FILES,
+  MUST_CONTAIN,
+  MUST_NOT_CONTAIN,
+  MUST_NOT_EXIST,
+};

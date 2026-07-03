@@ -215,6 +215,34 @@ function thrashingDefects(date, opts = {}) {
   return thrashing;
 }
 
+// MASKING GUARD (ITEM W2a, 2026-07-03): a defect the MECHANICAL tier keeps
+// clearing every single day is not the same as a healthy subsystem -- it can
+// mean the same root cause keeps recurring and getting silently papered over.
+// scripts/self-heal/mechanical-recurrence.js records one row per (date,
+// defect) with clearedByMechanicalTactic; recurrenceEscalation flags a defect
+// mechanically cleared 3+ CONSECUTIVE days through `date`. This card is the
+// SELF-HEAL card the ITEM W2a spec names as where that escalation must
+// surface, so a human sees the recurring pattern even though the mechanical
+// tier "worked" again today. Pure + injectable (opts.mechanicalRecurrence,
+// opts.mechanicalRecurrenceOpts) so tests never touch the real recurrence log.
+function maskingGuardDefects(date, opts = {}) {
+  const recurrence = opts.mechanicalRecurrence || require('./mechanical-recurrence.js');
+  let history;
+  try {
+    history = recurrence.readHistory(opts.mechanicalRecurrenceOpts || {});
+  } catch {
+    return []; // a missing/corrupt recurrence log must never break the health card
+  }
+  const defectKeys = [...new Set(history.map((r) => r && r.defect).filter(Boolean))];
+  const out = [];
+  for (const key of defectKeys) {
+    const result = recurrence.recurrenceEscalation(key, history, { asOfDate: date });
+    if (result.escalate)
+      out.push({ defect: key, consecutiveDays: result.consecutiveDays, reason: result.reason });
+  }
+  return out;
+}
+
 // AUTHORITATIVE RED / YELLOW / GREEN VERDICT (ExampleCo, 2026-06-30).
 //
 // Red is reserved for GENUINELY broken/blocked/stuck. A self-heal that actually ran,
@@ -235,15 +263,26 @@ function thrashingDefects(date, opts = {}) {
 //            (attempted > 0, escalated > 0) AND the run is otherwise healthy (ledger
 //            fresh, executor not red, no thrash). "executor status ExampleCo" alone,
 //            when attempts were recorded and the ledger is fresh, is YELLOW: it ran.
+//            A masking-guard hit (a defect mechanically cleared 3+ consecutive days)
+//            is ALSO yellow when nothing else is red: the mechanical fix genuinely
+//            worked again today, but the recurrence is worth a human look, not a
+//            "broken" verdict.
 //
 // Inputs are already-computed primitives so the verdict is pure and unit-testable.
-function severityVerdict({ attempted, escalated, ledgerStale, executorRed, thrashing }) {
+function severityVerdict({
+  attempted,
+  escalated,
+  ledgerStale,
+  executorRed,
+  thrashing,
+  maskingGuard,
+}) {
   // RED first: any genuinely-stuck condition wins regardless of escalated count.
   if (ledgerStale) return 'red'; // no run recorded, or signal older than the floor
   if (executorRed) return 'red'; // executor crashed / cannot run
   if (thrashing) return 'red'; // same move, no changed input -> stuck loop
-  // GREEN: nothing still escalated and no stuck condition above.
-  if (escalated <= 0) return 'green';
+  // GREEN: nothing still escalated, no masking-guard hit, and no stuck condition above.
+  if (escalated <= 0) return maskingGuard ? 'yellow' : 'green';
   // From here escalated > 0 and the run is otherwise healthy (fresh ledger, executor
   // not red, no thrash). If attempts were recorded, the run executed and honestly
   // escalated -> degraded, not broken.
@@ -353,6 +392,7 @@ function severityReason({
   ledgerAgeHours,
   executorRed,
   thrashing,
+  maskingGuard,
 }) {
   if (severity === 'green') {
     return escalated > 0 || attempted > 0
@@ -360,6 +400,11 @@ function severityReason({
       : 'Green: the auto-repair is clean, with no issues open and a fresh run on record.';
   }
   if (severity === 'yellow') {
+    if (escalated <= 0 && maskingGuard && maskingGuard.length) {
+      const n = maskingGuard.length;
+      const issues = n === 1 ? 'issue' : 'issues';
+      return `Yellow: the same-day mechanical fix cleared ${n} recurring ${issues} again today, but it has now recurred 3+ days in a row. Nothing is broken right now; the repeating pattern is worth ExampleCo looking at the root cause.`;
+    }
     const issues = escalated === 1 ? 'issue' : 'issues';
     return `Yellow: the auto-repair ran and honestly escalated ${escalated} ${issues} it could not fix in its time budget this pass. It is working, not stuck; these carry to the next run.`;
   }
@@ -424,6 +469,9 @@ function buildSelfHealHealthCard(opts = {}) {
   const executorRed = executorRow.status === 'red';
   const thrashing = thrashingDefects(date, opts);
   const isThrashing = thrashing.length > 0;
+  // ITEM W2a masking guard: a defect the mechanical tier keeps clearing 3+
+  // consecutive days is worth a human look even though today's pass is clean.
+  const maskingGuard = maskingGuardDefects(date, opts);
 
   // AUTHORITATIVE SEVERITY (ExampleCo, 2026-06-30): red = genuinely broken/blocked/stuck,
   // yellow = ran + honestly escalated (degraded but working), green = clean. See
@@ -435,6 +483,7 @@ function buildSelfHealHealthCard(opts = {}) {
     ledgerStale,
     executorRed,
     thrashing: isThrashing,
+    maskingGuard: maskingGuard.length > 0,
   });
   const defect = severity !== 'green';
 
@@ -461,6 +510,7 @@ function buildSelfHealHealthCard(opts = {}) {
     ledgerAgeHours: fresh.ageHours,
     executorRed,
     thrashing: isThrashing,
+    maskingGuard,
   });
 
   // Drilldown rows: one per still-open/escalated defect, in PLAIN EXECUTIVE ENGLISH.
@@ -497,6 +547,7 @@ function buildSelfHealHealthCard(opts = {}) {
       stale: ledgerStale,
     },
     thrashing,
+    maskingGuard,
     severity,
     reason,
     defect,
@@ -530,6 +581,7 @@ function renderSelfHealHealthSection(opts = {}) {
       ledgerAgeHours: card.freshness ? card.freshness.ageHours : null,
       executorRed: card.executor && card.executor.status === 'red',
       thrashing: !!(card.thrashing && card.thrashing.length),
+      maskingGuard: card.maskingGuard,
     });
   const lines = [];
   lines.push(`${glyph} ${card.face}`);
@@ -552,6 +604,11 @@ function renderSelfHealHealthSection(opts = {}) {
   if (card.thrashing && card.thrashing.length) {
     lines.push(
       `Stuck loop: ${card.thrashing.length} issue(s) had the same failed repair repeated with no change.`,
+    );
+  }
+  if (card.maskingGuard && card.maskingGuard.length) {
+    lines.push(
+      `Recurring pattern: ${card.maskingGuard.length} issue(s) mechanically fixed again today but recurring 3+ days in a row. Worth ExampleCo looking at the root cause.`,
     );
   }
   if (card.openDefects.length) {
@@ -597,6 +654,7 @@ module.exports = {
   signalFreshness,
   defectCounts,
   thrashingDefects,
+  maskingGuardDefects,
   severityVerdict,
   severityReason,
   cardNameFromDefectKey,

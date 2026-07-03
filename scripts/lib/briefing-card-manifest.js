@@ -59,6 +59,22 @@ const SPOUSE_FIRST = OPERATOR.spouse.firstName;
  *                 `forbidMetric`. Catches sentinel-vs-body contradictions
  *                 (e.g. metric "$0"/"unavailable" while the body shows a real
  *                 dollar figure).
+ *     heal:      OPTIONAL { command, prerequisites, timeoutMs, artifactPath,
+ *                 freshnessWindowMs }. Names the mechanical generator that
+ *                 refreshes THIS card's data, so scripts/self-heal/mechanical-
+ *                 runbook.js can re-run it BEFORE spawning an LLM heal worker
+ *                 (ITEM W2a). command is [bin, ...args] (spawnSync argv, no
+ *                 shell). prerequisites is an array of dot-paths into the
+ *                 runbook's injected context that must be present or the
+ *                 action reports a named wall instead of running. artifactPath
+ *                 is the data/-relative path (resolved through
+ *                 scripts/lib/data-root.js resolveDataArtifact -- the SAME
+ *                 reader a live card uses) the runbook re-checks after running
+ *                 the command: the action only counts as cleared when that
+ *                 artifact's sha changed or its freshness is within
+ *                 freshnessWindowMs (ms, default 6h). Absent `heal` is normal
+ *                 -- the runbook falls back to a dev-plans/_domains.json
+ *                 healLadder entry, then a generic class action.
  *   }
  *
  * The ALWAYS set below is intentionally conservative: a card is `always` only
