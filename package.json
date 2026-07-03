@@ -13,6 +13,7 @@
     "test:e2e": "playwright test",
     "verify:foundation": "vitest run src/main/__tests__/tier1-discipline.test.ts",
     "audit:wiring": "tsx scripts/audit-wiring.ts",
+    "preinstall": "node scripts/guard-npm-shared-install.js",
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "verify:amy-e2e": "node scripts/verify-amy-e2e-test-manifest.js",
     "verify:briefing-cards": "node scripts/verify-dashboard-cards-live.js",

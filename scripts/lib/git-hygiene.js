@@ -241,6 +241,26 @@ function classifyGitState(opts = {}) {
     masterAhead = m[1] || 0;
   }
 
+  // Drift alarm (W3d item 2): commits that landed on the SHARED checkout's
+  // local master but never reached origin/master are invisible until
+  // something asks for them by name. masterAhead above already ExampleCos the
+  // count; sharedMasterAheadOfOrigin additionally names each commit (sha +
+  // subject) so the briefing consumer can render "N commits stranded on the
+  // shared checkout, never landed: <subjects>" instead of a bare number. This
+  // is the detector that let 4 commits sit invisible on the shared checkout
+  // since Jun 30 -- the count existed in master.ahead, but nothing surfaced it
+  // as a named, actionable defect.
+  const strandedRaw = gitSafe(['log', '--format=%h\t%s', 'origin/master..master'], repoRoot, '');
+  const sharedMasterAheadCommits = strandedRaw
+    ? strandedRaw
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [sha, ...rest] = line.split('\t');
+          return { sha, subject: rest.join('\t') };
+        })
+    : [];
+
   // uncommitted edits in the main working tree
   const statusRaw = gitSafe(['status', '--porcelain'], repoRoot, '');
   const uncommittedEdits = statusRaw
@@ -350,6 +370,10 @@ function classifyGitState(opts = {}) {
     currentBranch,
     today,
     master: { ahead: masterAhead, behind: masterBehind, clean: uncommittedEdits.length === 0 },
+    sharedMasterAheadOfOrigin: {
+      count: sharedMasterAheadCommits.length,
+      commits: sharedMasterAheadCommits,
+    },
     counts: {
       branches: branches.length,
       worktrees: worktrees.length,

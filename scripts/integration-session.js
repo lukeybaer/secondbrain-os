@@ -8,6 +8,7 @@ const {
   createIntegrationSession,
   clearIntegrationSession,
   validateIntegrationSession,
+  checkLeaseCloseout,
 } = require('./lib/integration-session.js');
 
 function usage() {
@@ -16,11 +17,20 @@ function usage() {
     '  node scripts/integration-session.js --reason "why" -- <command>',
     '  node scripts/integration-session.js --status',
     '  node scripts/integration-session.js --clear',
+    '  node scripts/integration-session.js --closeout [--lock <path>]',
   ].join('\n');
 }
 
 function parseArgs(argv) {
-  const out = { reason: '', ttlMs: DEFAULT_TTL_MS, status: false, clear: false, command: [] };
+  const out = {
+    reason: '',
+    ttlMs: DEFAULT_TTL_MS,
+    status: false,
+    clear: false,
+    closeout: false,
+    lockPath: null,
+    command: [],
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') {
@@ -35,6 +45,10 @@ function parseArgs(argv) {
       out.status = true;
     } else if (a === '--clear') {
       out.clear = true;
+    } else if (a === '--closeout') {
+      out.closeout = true;
+    } else if (a === '--lock') {
+      out.lockPath = argv[++i] || null;
     } else if (a === '--help' || a === '-h') {
       out.help = true;
     }
@@ -61,6 +75,18 @@ function main(argv = process.argv.slice(2)) {
     const result = clearIntegrationSession({ mainRoot });
     console.log(JSON.stringify(result, null, 2));
     return 0;
+  }
+  if (args.closeout) {
+    // Do NOT pass cwd here: checkLeaseCloseout prefers the LEASE's own
+    // recorded cwd/mainRoot over process.cwd() so `--closeout` reports on the
+    // repo the lease actually opened against, regardless of where this CLI
+    // command happens to be invoked from (Codex review finding, 2026-07-02).
+    const result = checkLeaseCloseout({
+      lockPath: args.lockPath,
+      mainRoot,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return result.count > 0 ? 1 : 0;
   }
   if (!args.command.length) {
     console.error(usage());

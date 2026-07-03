@@ -53,7 +53,9 @@ function assertFreshSnapshot(payload, snapshotMaxAgeMs, nowMs) {
   if (!snapshotMaxAgeMs) return;
   const generatedAt =
     (payload && (payload.generatedAt || payload.generated_at || payload.createdAt)) ||
-    (payload && payload.snapshot && (payload.snapshot.generatedAt || payload.snapshot.generated_at));
+    (payload &&
+      payload.snapshot &&
+      (payload.snapshot.generatedAt || payload.snapshot.generated_at));
   if (!generatedAt) throw new Error('git hygiene snapshot missing generatedAt');
   const generatedMs = Date.parse(generatedAt);
   if (!Number.isFinite(generatedMs)) {
@@ -145,6 +147,32 @@ function decisionAdvice(kind, label) {
   return `Advice: choose Land if this belongs in the product now, Park if it is still valuable but blocked, or Drop if it no longer fits ExampleCo's priorities. Summary: ${label}.`;
 }
 
+// Named, RED defect row for commits stranded on the shared checkout's local
+// master (never reached origin). This is the drift alarm (W3d item 2): the
+// count already existed in master.ahead, but nothing named the commits or
+// flagged them as a defect, so 4 commits sat invisible since Jun 30. Returns
+// '' when there is nothing stranded so the caller can omit the line cleanly.
+function strandedCommitsLine(snapshot, maxSubjects = 5) {
+  const stranded =
+    (snapshot && snapshot.sharedMasterAheadOfOrigin) ||
+    (snapshot && snapshot.master && { count: 0, commits: [] }) ||
+    null;
+  const count = Number(stranded && stranded.count) || 0;
+  if (count <= 0) return '';
+  const commits = asArray(stranded && stranded.commits);
+  const subjects = commits
+    .slice(0, maxSubjects)
+    .map((c) => clean(c && c.subject, 90))
+    .filter(Boolean);
+  const suffix = count > subjects.length ? `, +${count - subjects.length} more` : '';
+  return (
+    `DEFECT (red): ${plural(count, 'commit')} stranded on the shared checkout, never landed: ` +
+    `${subjects.join('; ')}${suffix}. ` +
+    'Repair: run scripts/land.js from an integration session (node scripts/integration-session.js ' +
+    '--reason "land stranded commits" -- node scripts/land.js --apply).'
+  );
+}
+
 function renderGitHygieneSnapshot(snapshot, opts = {}) {
   const maxRows = opts.maxRows || 8;
   const buckets = (snapshot && snapshot.buckets) || {};
@@ -171,8 +199,10 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   const verdictLead = anyWork
     ? `${plural(parkedRecords.length, 'parked item')}: ${plural(strayItems, 'stray item')} needing a decision, ${plural(safeBranches.length, 'landed leftover')} safe to clear, ${plural(protectedBranches.length, 'protected rescue snapshot')}.`
     : 'Clean: no parked work, no stray branches, nothing to decide.';
+  const strandedLine = strandedCommitsLine(snapshot);
   const lines = [
     verdictLead,
+    ...(strandedLine ? [strandedLine] : []),
     'Actions: [Land] merge/push the work now; [Park] protect it with a reason and review date; [Drop] discard it only when it is clearly obsolete.',
     'Legend: STRAY needs a decision; PARKED is protected; LANDED already reached origin/master; PROTECTED is a rescue snapshot and never auto-cleans.',
     'Janitor timing: Claude Code Stop hook runs `git-janitor --apply --cap=5`; health self-heal also dry-runs/applies it. If a LANDED branch survives the next stop or 03:00 CT heal block, that is a health-check defect.',
@@ -252,9 +282,7 @@ function formatUncommittedParkedWorkSection({
   try {
     const snapshot =
       state ||
-      (snapshotPath
-        ? readGitHygieneSnapshot(snapshotPath, { snapshotMaxAgeMs, nowMs })
-        : null) ||
+      (snapshotPath ? readGitHygieneSnapshot(snapshotPath, { snapshotMaxAgeMs, nowMs }) : null) ||
       (classifier
         ? classifier({ cwd, today })
         : require('./git-hygiene.js').classifyGitState({ cwd, today }));
@@ -302,4 +330,5 @@ module.exports = {
   formatUncommittedParkedWorkSection,
   readGitHygieneSnapshot,
   renderGitHygieneSnapshot,
+  strandedCommitsLine,
 };
