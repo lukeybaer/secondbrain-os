@@ -391,6 +391,22 @@ const CARDS = [...CARD_DEFINITIONS].sort((a, b) => {
 const ALWAYS_IDS = CARDS.filter((c) => c.always).map((c) => c.id);
 const CONDITIONAL_IDS = CARDS.filter((c) => !c.always).map((c) => c.id);
 
+// ALWAYS_HONEST_BLOCKER: manifest card ids that are INTENTIONALLY never wired
+// to a cloud builder (scripts/cloud-morning-briefing.js realById). These cards
+// legitimately have no cloud-side generator (e.g. desktop-only surfaces) and
+// are expected to render as a permanent honest blocker on the cloud build. The
+// C5 completeness lint (scripts/__tests__/manifest-cards-all-wired.test.js)
+// treats every manifest card id as required-wired UNLESS it is listed here, so
+// a card silently falling off cloud-morning-briefing.js (the comm-coaching /
+// memory-people-files defect class) fails CI instead of surfacing as a
+// days-long silent honest-blocker. Add an entry ONLY when the gap is a real,
+// permanent design decision -- never to silence a lint failure for a card that
+// should be wired. Each entry needs a comment naming why.
+const ALWAYS_HONEST_BLOCKER = [
+  // (none today -- every manifest card as of 2026-07-02 has a live cloud
+  // builder assignment in cloud-morning-briefing.js realById.)
+];
+
 function getCardById(id) {
   return CARDS.find((c) => c.id === id) || null;
 }
@@ -417,6 +433,7 @@ module.exports = {
   CARDS,
   ALWAYS_IDS,
   CONDITIONAL_IDS,
+  ALWAYS_HONEST_BLOCKER,
   getCardById,
   getNewsTarget,
   getNewsMinimum,
