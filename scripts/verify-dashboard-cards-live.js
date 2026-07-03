@@ -2023,6 +2023,7 @@ function verifyDashboard(html, runDate, options = {}) {
       present: [],
       advisories: [],
       bodyLooksReal: htmlBodyLooksReal(html),
+      isSignInPage: isBriefingSignInPage(html),
     };
   }
 
@@ -2208,6 +2209,23 @@ function htmlBodyLooksReal(html) {
   return /<section|data-section=|class="tile|<main\b|id="briefing"|Daily Briefing/i.test(s);
 }
 
+// A fetched page is the auth SIGN-IN shell (scripts/lib/briefing-auth.js
+// buildBriefingSignInNeeded / the /briefing route's login form), not the
+// briefing dashboard. This is a REAL page body -- htmlBodyLooksReal() correctly
+// returns true for it (it is well over 2000 bytes with plenty of markup) -- so
+// without a distinct check a stale/expired token silently classified as
+// "render markup changed: parsed 0 tiles", the exact HARD-defect message a
+// genuinely broken tile parser produces. That collapses two different failures
+// (auth broke vs. markup broke) into one message and sends whoever is
+// triaging chasing the parser regex when the real problem is the token/EC2
+// process. Named markers only (the login form's own title/class contract),
+// so an actual dashboard tile that happens to mention "sign in" prose is
+// never misclassified.
+function isBriefingSignInPage(html) {
+  const s = String(html || '');
+  return /Amy Briefing Sign In|class="signin"|Sign in to view the briefing/i.test(s);
+}
+
 // ---------------------------------------------------------------------------
 // Fetch layer (kept thin and side-effecting; the verifier above is pure).
 // ---------------------------------------------------------------------------
@@ -2302,6 +2320,24 @@ function main() {
   const result = verifyDashboard(html, opts.date);
 
   if (result.status === 'parse-failed') {
+    // AUTH FAILED is checked FIRST and named distinctly. The briefing auth
+    // sign-in shell (scripts/lib/briefing-auth.js) is a real, well-formed page
+    // -- bodyLooksReal is also true for it -- so without this check a stale
+    // token / expired trusted-device cookie / an unconfigured SB_BRIEFING_TOKEN
+    // on the serving process collapsed into the SAME "render markup changed:
+    // parsed 0 tiles" hard-defect message a genuinely broken tile parser
+    // produces (2026-07-03: an orphaned node process squatting on :3001 with no
+    // .env loaded served the sign-in shell to every fetch and was misdiagnosed
+    // as a markup break). Auth failure is a RETRY condition for the caller
+    // (self-heals once the token/process issue is fixed), but it must name
+    // itself so it is never silently retried as a generic "dashboard
+    // unreachable" or wrongly escalated as a parser HARD defect.
+    if (result.isSignInPage) {
+      console.error(
+        `CANNOT VERIFY (retry, AUTH FAILED): fetched the briefing sign-in page from ${source} instead of the dashboard -- the token did not authenticate (stale SB_BRIEFING_TOKEN, unconfigured on the serving process, or expired trusted-device session). This is NOT a markup/parser break.`,
+      );
+      process.exit(EXIT_UNREACHABLE);
+    }
     // Silent-failure fix: a 0-tile parse is only a retry when the page body was
     // trivial (truly unreachable/empty). If the HTTP fetch returned a REAL page
     // body but the parser still found nothing, the markup contract changed and
@@ -2357,6 +2393,7 @@ module.exports = {
   isNamedInBlockers,
   nameTokens,
   htmlBodyLooksReal,
+  isBriefingSignInPage,
   readTokenFromEnvFile,
   resolveToken,
   denylistHits,
