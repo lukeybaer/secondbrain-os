@@ -83,4 +83,36 @@ else
   log "secondbrain memory not found at $SB/memory (clone step may have failed)"
 fi
 
-log "bootstrap complete (v1: read-only AWS + memory; EC2 shell and full hooks are phase 2)"
+# --- 3. Amy hooks (verified path-portable subset) -------------------------
+# Only hooks confirmed to resolve via $HOME and free of Windows-isms are wired:
+#   #learn (learn-and-usage.js) and the em-dash guard (em-dash-guard.mjs).
+# The Windows-specific hooks (spine-session, session-coordination,
+# archive-to-s3, session-start-inject.sh, and guards with C:\ paths) are NOT
+# ported yet and are intentionally omitted until tested in a live sandbox.
+H="$SB/scripts/claude-hooks"
+if [ -d "$H" ] && command -v node >/dev/null 2>&1; then
+  mkdir -p "$HOME/.claude"
+  cat > "$HOME/.claude/settings.json" <<EOF
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "echo '{\"systemMessage\":\"You are Amy. READ FIRST: ~/.claude/memory/MEMORY.md, then AMY.md, AMY_REQUIREMENTS.md, AMY_FOUNDATION_REFLECTION.md before acting.\"}'" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": "#learn", "hooks": [ { "type": "command", "command": "node $H/learn-and-usage.js" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash|Edit|Write|NotebookEdit", "hooks": [ { "type": "command", "command": "node $H/em-dash-guard.mjs" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "node $H/em-dash-guard.mjs" } ] }
+    ]
+  }
+}
+EOF
+  log "hooks wired: #learn + em-dash guard + Tier-1 session inject (portable subset)"
+else
+  log "hooks not wired (node or hook dir missing); memory still available for manual #learn"
+fi
+
+log "bootstrap complete (v1: read-only AWS + memory + #learn; EC2 shell and full hook port are phase 2)"
