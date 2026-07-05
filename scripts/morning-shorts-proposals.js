@@ -624,6 +624,31 @@ function buildWall(count, { floors, maxAttempts, llm } = {}) {
   return `sources-exhausted: only ${count}/10 X posts cleared the viral engagement bar (${f.views} views / ${f.likes} likes / ${f.replies} replies) after ${maxAttempts} attempts; not padding with weak entries`;
 }
 
+// Honest artifact for a morning where zero X candidates clear the engagement
+// gate (dead/blocked source, e.g. the r.jina.ai reader returning 401 or DDG
+// rate-limiting to empty). Emitted INSTEAD of a bare throw so the shorts card
+// always has a file to render and the runner never stalls with no artifact.
+// signals_count.x stays 0 so the validator's "not grounded in X trend research"
+// tripwire still fires -- degrade gracefully, never silence the alarm. The wall
+// is deterministically sources-exhausted (generation never ran, so this is a
+// sourcing failure, not an LLM outage). Pure + exported for unit testing.
+function emptySourceState(date, hnLen, labLen) {
+  const wall = buildWall(0, {
+    floors: engagementFloors(),
+    maxAttempts: 0,
+    llm: { attempts: 0, unavailable: 0 },
+  });
+  return {
+    date,
+    generated_at: new Date().toISOString(),
+    signals_count: { hn: hnLen, x: 0, lab: labLen },
+    research_contract:
+      'X/trending-grounded: every proposal source_url must be an X post or thread, and the trend_hook must explain why it is hot now.',
+    wall,
+    proposals: [],
+  };
+}
+
 function slugify(text) {
   return (
     String(text || '')
@@ -920,9 +945,19 @@ async function main() {
     x = await pullXTrendingAI({ expand: true });
     signals = { x: x.slice(0, 30), date };
     if (signals.x.length === 0) {
-      throw new Error(
-        'X trend research returned 0 engagement-qualified posts even after expanded query set',
-      );
+      // ExampleCo 2026-06-09: a dead/blocked X source must NOT throw with no file.
+      // A silent throw leaves the briefing with "shorts proposal JSON missing"
+      // (and, run under manual-briefing-v3, contributed to a stalled runner with
+      // no artifact to fall back on). Write an honest sources-exhausted wall
+      // artifact instead: the card publishes a truthful 0/10 shortfall and the
+      // validator's signals_count.x === 0 tripwire STILL surfaces the dead source
+      // (this fix degrades gracefully, it does not silence the alarm). Category,
+      // not literal trigger: ANY morning where zero X candidates clear the gate
+      // writes a walled file, never a bare throw.
+      const state = emptySourceState(date, hn.length, lab.length);
+      fs.writeFileSync(out, JSON.stringify(state, null, 2));
+      console.log(renderBriefingSection(date, [], state.wall));
+      return;
     }
   }
   // Honor video rejection feedback (ExampleCo 2026-05-18): pull every video ExampleCo
@@ -942,7 +977,7 @@ async function main() {
   );
   const byProposal = new Map();
   let expandedAlready = false;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS && byProposal.size < 10; ) {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS && byProposal.size < 10;) {
     const batchStart = attempt;
     const batchEnd = Math.min(MAX_ATTEMPTS, batchStart + PARALLEL_ATTEMPTS - 1);
     const usedTitles = [...byProposal.values()].map((p) => p.title);
@@ -1043,6 +1078,7 @@ module.exports = {
   renderBriefingSection,
   generateProposalsWithClaude,
   buildWall,
+  emptySourceState,
   llmFailureTally,
   validateProposals,
   parseEngagementCount,
