@@ -66,6 +66,9 @@ LIVE_DEPS=(
   # requires the model playback guard directly so a flaky build-path git-pull cannot
   # leave EC2 importing a missing module on PM2 restart.
   "scripts/lib/news-reader-model-playback.js"
+  # Deploy-source freshness gate (2026-07-05): health-self-heal.js requires this
+  # module, and the EC2 copy of the healer must not break on a missing require.
+  "scripts/lib/deploy-source-freshness.js"
   # C4 deploy-parity SYSTEM HEALTH row (Codex amendment 3, item W3a, 2026-07-02).
   # cloud-morning-briefing.js requires this row formatter directly, so it must
   # ship to /opt like every other required module -- the probe binary itself
