@@ -177,5 +177,25 @@ Watch-Task 'SecondBrain-GmailAmyScanWatch' 'scripts\gmail-amy-scan.js' '--watch'
 Skill-Task 'SecondBrain-WarmthAudit'       'weekly-warmth-audit'        '00:00' -Day 'MON'
 Skill-Task 'SecondBrain-BackupHealthCheck' 'weekly-backup-health-check' '04:17' -Day 'FRI'
 
+# ── Night wake for the overnight healer ──────────────────────────────────────
+# The hourly Claude token pusher above only runs while the laptop is awake, and
+# the Max-plan access token expires ~8h after its last refresh. With the laptop
+# asleep overnight, the EC2 copy expired by the 2:45 AM self-heal, the executor
+# auth probe 401ed, and the LLM worker fan-out was suppressed every night
+# (2026-07-05 root cause). This task WAKES the machine at 2:15 AM, runs one
+# refresh+push through the same hidden launcher, and lets it sleep again,
+# covering the 2:45 self-heal and the 5:30 briefing. Single-credential-authority
+# stays on the PC (an EC2 refresher would rotate the shared refresh-token chain
+# and clobber the interactive login). WakeToRun needs schtasks-XML-level
+# settings, so this one uses the ScheduledTasks cmdlets instead of schtasks.
+# Requires AC power; a powered-off laptop still walls honestly via the executor
+# auth probe runbook.
+$nightWakeAction = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "`"$launcher`" `"$root\scripts\claude-token-refresh.bat`""
+$nightWakeTrigger = New-ScheduledTaskTrigger -Daily -At '2:15AM'
+$nightWakeSettings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+try { Unregister-ScheduledTask -TaskName 'SecondBrain-ClaudeTokenNightWake' -Confirm:$false -ErrorAction Stop } catch {}
+Register-ScheduledTask -TaskName 'SecondBrain-ClaudeTokenNightWake' -Action $nightWakeAction -Trigger $nightWakeTrigger -Settings $nightWakeSettings -Description 'Wakes the laptop at 2:15 AM to refresh the Claude token and push it to EC2 so the 2:45 self-heal and 5:30 briefing never 401.' | Out-Null
+Write-Host 'OK  SecondBrain-ClaudeTokenNightWake  (02:15, WakeToRun)'
+
 Write-Host ''
 Write-Host 'Done.'
