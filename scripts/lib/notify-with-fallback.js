@@ -26,7 +26,7 @@ const FAILED_PATH = path.join(REPO, 'data', 'agent', 'telegram-failed-deliveries
 const CODEX_DISPATCH_PATH = path.join(REPO, 'data', 'agent', 'codex-fallback-dispatches.jsonl');
 const SUPPRESSED_PATH = path.join(REPO, 'data', 'agent', 'telegram-suppressed.jsonl');
 
-function loadDotEnvIfPresent(filePath = path.join(REPO, '.env')) {
+function loadDotEnvIfPresent(filePath = path.join(REPO, '.env'), env = process.env) {
   try {
     const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
     for (const line of lines) {
@@ -42,7 +42,7 @@ function loadDotEnvIfPresent(filePath = path.join(REPO, '.env')) {
       ) {
         value = value.slice(1, -1);
       }
-      if (!process.env[key]) process.env[key] = value;
+      if (!env[key]) env[key] = value;
     }
   } catch {
     /* .env is optional */
@@ -59,9 +59,12 @@ loadDotEnvIfPresent();
 //   2. This kind allowlist enforces the Telegram channel policy
 //      (memory/feedback_telegram_policy.md): Telegram is reactive replies
 //      only when explicitly marked reactive, plus PII/security/reputation risk,
-//      video-ready, and voice follow-up. Approval prompts, briefing links, auth
-//      reminders, service status, health summaries, scan-complete, briefing
-//      summaries, and activity logs are suppressed and logged internally only.
+//      video-ready, voice follow-up, and the once-daily briefing LINK
+//      (2026-07-03: ExampleCo never received the 5:30 link because 'briefing-link'
+//      was missing here; his 2026-06-09 rule is "Links are ok but briefing
+//      summaries and 404s no"). Approval prompts, auth reminders, service
+//      status, health summaries, scan-complete, briefing SUMMARIES, and
+//      activity logs are suppressed and logged internally only.
 // Every Telegram sender in scripts/ must route through notifyWithFallback so
 // both guards apply. A regression test greps for direct api.telegram.org calls.
 const REACTIVE_KINDS = new Set([
@@ -74,6 +77,10 @@ const ALLOWED_KINDS = new Set([
   'reputation-risk',
   'video-ready', // upload confirmed complete, link available
   'voice-followup', // post-call Amy follow-up, one message
+  // The once-daily briefing dashboard LINK (never a summary). The sender
+  // (scripts/lib/briefing-notify.js) dedupes one message per publish state per
+  // day via a marker file, so this cannot become morning spam.
+  'briefing-link',
 ]);
 
 function telegramKindAllowed(kind, { reactive = false } = {}) {
@@ -236,4 +243,10 @@ async function notifyWithFallback({
   };
 }
 
-module.exports = { notifyWithFallback, sendTelegramOnce, telegramKindAllowed, ALLOWED_KINDS };
+module.exports = {
+  notifyWithFallback,
+  sendTelegramOnce,
+  telegramKindAllowed,
+  ALLOWED_KINDS,
+  loadDotEnvIfPresent,
+};

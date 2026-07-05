@@ -8,7 +8,10 @@ set -uo pipefail
 
 CRON_COMMENT='# Fully-cloud morning briefing publisher (Codex-approved 2026-06-22).'
 PUB='--pub''lish'   # split literal so a content-QC bash-scan never trips on it
-CRON_LINE="5 5 * * * cd /home/ec2-user/secondbrain-current && flock -n /tmp/cloud-morning-briefing.lock bash -c \"set -a && . /opt/secondbrain/.env && set +a && SECONDBRAIN_DATA_DIR=/opt/secondbrain/data EC2_HOST_HTTP=http://localhost:3001 node scripts/cloud-morning-briefing.js ${PUB} --data-dir /opt/secondbrain/data\" >> /opt/secondbrain/logs/cloud-morning-briefing.log 2>&1"
+# --notify: deliver the Telegram briefing link on publish (2026-07-03 fix);
+# scripts/lib/briefing-notify.js dedupes one message per publish state per day,
+# so this and the 05:30 runner can never double-send the same link.
+CRON_LINE="5 5 * * * cd /home/ec2-user/secondbrain-current && flock -n /tmp/cloud-morning-briefing.lock bash -c \"set -a && . /opt/secondbrain/.env && set +a && SECONDBRAIN_DATA_DIR=/opt/secondbrain/data EC2_HOST_HTTP=http://localhost:3001 node scripts/cloud-morning-briefing.js ${PUB} --notify --data-dir /opt/secondbrain/data\" >> /opt/secondbrain/logs/cloud-morning-briefing.log 2>&1"
 
 if crontab -l 2>/dev/null | grep -q "cloud-morning-briefing.js ${PUB}"; then
   echo "cron already present, skipping"

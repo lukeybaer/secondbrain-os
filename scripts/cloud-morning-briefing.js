@@ -9,6 +9,7 @@ const { spawnSync } = childProcess;
 
 const { buildBriefingDashboardUrl } = require('./lib/briefing-auth.js');
 const { notifyWithFallback } = require('./lib/notify-with-fallback.js');
+const { notifyBriefingPublished, loadBriefingNotifyEnv } = require('./lib/briefing-notify.js');
 const { fallbackExpiresAt, isFallbackExpired } = require('./lib/briefing-fallback-expiry.js');
 const {
   qcBriefingMarkdown,
@@ -8213,6 +8214,11 @@ async function runCloudBriefing({
   // The render-QC gate (publish-then-label). Injectable so tests drive a red /
   // green render with no network. Defaults to the real in-process render-QC.
   dashboardRenderQc = runDashboardRenderQc,
+  // Telegram transport for the briefing-link notify step. Injectable so tests
+  // stub the send; outside test it defaults to the central notify chokepoint.
+  // Under test with no injected transport the notify step is inert, so no
+  // test can ever hit the network or write fallback-queue entries by accident.
+  briefingNotifier = null,
 } = {}) {
   const scheduleFleet = await maybeRunScheduledTaskPreflight({
     dataDir,
@@ -8376,17 +8382,33 @@ async function runCloudBriefing({
       finalOk && previousReceipt && previousReceipt.notifiedAt ? previousReceipt.notifiedAt : null,
   };
 
-  if (finalOk && publish && notify && !receipt.notifiedAt) {
-    const url = buildBriefingDashboardUrl(baseUrl, token);
-    const text = ["Good morning, ExampleCo. Today's briefing is live:", url].filter(Boolean).join('\n');
-    const notifyResult = await notifyWithFallback({
-      text,
-      kind: 'briefing-link',
-      source: 'cloud-morning-briefing',
-      priority: 'normal',
+  // Telegram briefing-link delivery (2026-07-03). Fires on EVERY publish,
+  // clean OR blocked, because ExampleCo wants the link each morning regardless of
+  // blocker status. Dedupe (one message per publish state per day, with a
+  // blocked -> clean re-notify) and failure honesty (a failed send never
+  // fails the publish; the marker + receipt record notify status) live in
+  // scripts/lib/briefing-notify.js.
+  const underTest = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+  const briefingNotifySend = briefingNotifier || (underTest ? null : notifyWithFallback);
+  if (publish && notify && briefingNotifySend) {
+    // The 5:30 cron has a minimal env: backfill TELEGRAM_* / SB_BRIEFING_TOKEN
+    // from the .env next to the data dir before building the tokenized URL.
+    loadBriefingNotifyEnv(dataDir);
+    const capToken = token || process.env.SB_BRIEFING_TOKEN || '';
+    const url = buildBriefingDashboardUrl(baseUrl, capToken);
+    const blockerCount = finalOk ? 0 : ((finalQc && finalQc.failures) || []).length;
+    const notifyResult = await notifyBriefingPublished({
+      dataDir,
+      date,
+      clean: finalOk,
+      blockerCount,
+      url,
+      send: briefingNotifySend,
     });
-    if (notifyResult && notifyResult.ok && !notifyResult.suppressed) {
-      receipt.notifiedAt = new Date().toISOString();
+    if (notifyResult.status === 'sent') {
+      receipt.notifiedAt = notifyResult.sentAt;
+    } else if (notifyResult.status === 'skipped-duplicate' && notifyResult.sentAt) {
+      receipt.notifiedAt = receipt.notifiedAt || notifyResult.sentAt;
     }
     receipt.notifyResult = notifyResult;
   }

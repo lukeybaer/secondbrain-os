@@ -60,7 +60,10 @@ fi
 export HOME
 
 # Build the exact command once so the dry-run print and the real spawn cannot drift.
-CMD=("$NODE_BIN" scripts/cloud-morning-briefing.js --date "$DATE" --publish)
+# --notify: deliver the Telegram briefing link on publish (clean OR blocked).
+# Without it ExampleCo never gets the 5:30 link (root cause of 2026-07-03 fix);
+# scripts/lib/briefing-notify.js dedupes one message per publish state per day.
+CMD=("$NODE_BIN" scripts/cloud-morning-briefing.js --date "$DATE" --publish --notify)
 
 # Mechanical-pass command, built once for the same reason. `--mechanical-only` is
 # W2a's flag on the orchestrator (coordinated, landing on another branch); this
