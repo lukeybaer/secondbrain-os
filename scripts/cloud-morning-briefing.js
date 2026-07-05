@@ -1785,6 +1785,8 @@ function extractProjectBacklog(raw) {
     );
     lines.push(`     :: What: ${item.description}`);
     lines.push(`     :: Why it matters: ${backlogHistoryLine(item.raw)}`);
+    lines.push(`     :: How it works: ${backlogHowItWorks(item.raw, item.name)}`);
+    lines.push(`     :: Why better: ${backlogWhyBetter(item.raw, item.name)}`);
     lines.push(`     :: Proposal: ${backlogProposal(item.raw, item.name)}`);
     lines.push(`     :: Cloud: ${backlogCloudLine(item.raw)}`);
     const trend = backlogTrendLine(item.raw);
@@ -1890,6 +1892,95 @@ function backlogHistoryLine(item) {
     (Array.isArray(item && item.evidence) ? item.evidence.length : 0);
   const score = Number((item && (item.priority_score ?? item.score)) || 0);
   return `Fresh backlog entry at priority ${Math.round(score)} with ${evCount} evidence signal${evCount === 1 ? '' : 's'} on file. Score breakdown: seed entry.`;
+}
+
+// Pull real "research: <source> -- <detail>" entries out of score_history.
+// Never invents a source name; only lifts what the item's own history cites.
+function backlogResearchSources(item) {
+  const history = Array.isArray(item && item.score_history) ? item.score_history : [];
+  return history
+    .filter((h) => h && /^research:/i.test(String(h.reason || '')))
+    .map((h) =>
+      cleanExecutiveFragment(String(h.reason).replace(/^research:\s*/i, ''), { max: 160 }),
+    )
+    .filter(Boolean);
+}
+
+// Pull real "pain: <incident>" entries out of score_history, plus any
+// pain_events array on the item. Never invents an incident.
+//
+// Codex adversarial review (2026-07-05, backlog-how-why-ExampleCoraphs): a
+// score_history entry can carry `dim: 'pain'` without the reason TEXT
+// starting with the literal "pain:" prefix. Matching on the prefix alone
+// silently dropped real pain evidence and pushed the caller into the
+// no-evidence fallback. Match on EITHER the reason prefix OR dim === 'pain'.
+function backlogPainIncidents(item) {
+  const history = Array.isArray(item && item.score_history) ? item.score_history : [];
+  const fromHistory = history
+    .filter(
+      (h) =>
+        h &&
+        (/^pain:/i.test(String(h.reason || '')) || String(h.dim || '').toLowerCase() === 'pain'),
+    )
+    .map((h) =>
+      cleanExecutiveFragment(String(h.reason || '').replace(/^pain:\s*/i, ''), { max: 160 }),
+    );
+  const fromEvents = (Array.isArray(item && item.pain_events) ? item.pain_events : [])
+    .map((e) =>
+      cleanExecutiveFragment((e && (e.summary || e.description || e.reason)) || '', { max: 160 }),
+    )
+    .filter(Boolean);
+  return [...fromHistory, ...fromEvents].filter(Boolean);
+}
+
+// #backlog-how-why-ExampleCoraphs: "How it works" -- a 3-5 sentence mechanism
+// ExampleCoraph. Derived from the item's own description plus any real research
+// source titles cited in score_history. Where the description is thin and no
+// research is on file, say so honestly instead of inventing a mechanism.
+function backlogHowItWorks(item, name) {
+  const description = cleanExecutiveFragment(
+    (item && (item.detail_two_ExampleCoraph || item.implementation_plan || item.description)) || '',
+    { max: 260 },
+  );
+  const sources = backlogResearchSources(item);
+  const s1 = description
+    ? `The mechanism: ${description.replace(/\.$/, '')}.`
+    : `The concrete mechanism for ${name} is not yet fully specified in the backlog entry.`;
+  const s2 = sources.length
+    ? `This is grounded in research on file: ${sources.slice(0, 2).join('; ')}.`
+    : 'No research source is on file yet for this item, so the design detail below is provisional.';
+  const s3 = description
+    ? `Once built, the relevant runtime path picks up this behavior automatically instead of relying on manual intervention or a one-off fix.`
+    : `The design work that remains is turning this into a concrete implementation plan before it moves to the build queue.`;
+  return `${s1} ${s2} ${s3}`;
+}
+
+// #backlog-how-why-ExampleCoraphs: "Why better" -- a 3-5 sentence ExampleCoraph
+// naming the current pain (from real pain events / score_history) and the
+// concrete benefit of shipping this. Grounded in the item's own evidence;
+// never fabricates an incident that isn't on file.
+//
+// Codex adversarial review (2026-07-05): the prior no-evidence fallback said
+// the gap "keeps recurring untouched" / "resurfaces" / "recurring failure
+// mode" -- claims of repetition and frequency this function has no evidence
+// for when zero pain incidents are on file. The no-pain branch below now
+// states only what is true (not built yet, no incident recorded) and never
+// asserts recurrence.
+function backlogWhyBetter(item, name) {
+  const pains = backlogPainIncidents(item);
+  const score = Math.round(Number((item && (item.priority_score ?? item.score)) || 0));
+  const s1 = pains.length
+    ? `Today's pain: ${pains[0]}.`
+    : `Today's gap: ${name} is not built yet, and no specific pain incident is recorded for it yet.`;
+  const s2 = pains.length
+    ? pains.length > 1
+      ? `This has recurred: ${pains.slice(1, 3).join('; ')}.`
+      : 'That is a real, on-file incident, not a hypothetical.'
+    : 'The case for building it rests on its priority score and the value described above rather than a documented incident.';
+  const s3 = pains.length
+    ? `Shipping this removes that failure mode at the source, which is why it ranks at priority ${score} instead of sitting as a nice-to-have.`
+    : `Shipping this is worth doing at priority ${score} once a concrete incident or research signal raises it, rather than being pursued on assumption alone.`;
+  return `${s1} ${s2} ${s3}`;
 }
 
 // 3-sentence proposal: (1) what to change, (2) what good comes of it,
