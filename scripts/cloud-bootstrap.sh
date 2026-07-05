@@ -4,13 +4,27 @@
 # Runs at the start of every Claude Code web/mobile cloud session so a phone
 # session behaves like Amy: read-only AWS access and secondbrain memory + #learn.
 #
-# Wired via the claude.ai/code environment "setup script" field (the ONLY copy
-# of this pointer; all real logic lives here in the repo so one edit updates
-# every surface):
+# Platform reality (discovered, not assumed): the claude.ai cloud sandbox's
+# pre-session "setup script" phase has NO environment variables and NO git
+# auth available yet (the git credential proxy is not up at that point), so a
+# setup script referencing GH_TOKEN or AMY_BOOTSTRAP_* here would silently do
+# nothing. Inside the live session itself, env vars ARE available and, for
+# secondbrain sessions specifically, the repo is already checked out at the
+# session's working directory.
 #
-#     git clone https://github.com/ExampleCoyExampleCo/SecondBrain "$HOME/secondbrain" 2>/dev/null || \
-#       git -C "$HOME/secondbrain" pull --ff-only
-#     bash "$HOME/secondbrain/scripts/cloud-bootstrap.sh"
+# Supported wiring, secondbrain sessions: the repo-level SessionStart hook in
+# .claude/settings.json runs scripts/cloud-bootstrap-autorun.sh on every
+# session start. That autorun script gates on being inside the Linux root
+# sandbox (uname -s = Linux, id -un = root, HOME = /root) and, only when true,
+# runs this script automatically. Desktop and EC2 sessions no-op.
+#
+# Supported wiring, sessions on OTHER repos (not secondbrain): there is no
+# autorun hook there, so the first message of that session should manually
+# run (requires a GH_TOKEN env var with Contents read-write on the
+# SecondBrain repo):
+#
+#     git clone https://x-access-token:${GH_TOKEN}@github.com/ExampleCoyExampleCo/SecondBrain "$HOME/secondbrain" && \
+#       bash "$HOME/secondbrain/scripts/cloud-bootstrap.sh"
 #
 # Required environment variables (set in the claude.ai environment config):
 #   AMY_BOOTSTRAP_AWS_ACCESS_KEY_ID      key for the assume-only IAM user
