@@ -899,6 +899,7 @@ function valueSanityDefects(card, tile, builderCounts = {}) {
 function statusDefects(card, tile) {
   if (!tile || card.id === 'blockers') return [];
   if (tile.status === 'red') {
+    if (awsCostsIsCleanThresholdAlert(card, tile)) return [];
     const detail =
       card.id === 'system_health'
         ? systemHealthBlockedTileDetail(tile.body || tile.face || '')
@@ -1017,6 +1018,61 @@ function awsCostsDetailDefects(card, tile) {
     );
   }
   return defects;
+}
+
+// Must track ec2-server.js AWS_COST_RED_THRESHOLD. Duplicated as a read-only
+// verification floor (this script never sets card status, only checks it), so
+// a drift here can only make the QC exemption MORE conservative, never less --
+// if the real threshold ever moves, the worst case is this guard temporarily
+// requires a slightly-wrong total before exempting, which still fails safe
+// (a real red card with no exemption still just reports BLOCKED-TILE, it is
+// never silently swallowed).
+const AWS_COST_RED_THRESHOLD_FLOOR = 1000;
+
+// AWS COSTS renders RED once verified live spend crosses AWS_COST_RED_THRESHOLD
+// (ec2-server.js). That is a real, correctly-surfaced business fact (ExampleCo's own
+// $800/$1000 watch/act band), not a rendering bug -- there is no "repair tactic"
+// that fixes real AWS spend, and looping self-heal on it forever
+// (feedback_briefing_clean_or_blocked_contract.md: "blocked" means ExampleCo owns the
+// next action, not "Amy should retry") just wastes cycles. The builder
+// (scripts/cloud-morning-briefing.js buildAwsCostsSection) only emits the
+// "Threshold band:" line on the REAL, live, fully-populated path -- the
+// stale/denied/blocked path returns a different `detail` with no threshold band
+// and no Per account/Per app/Top services sections. So "Threshold band:" present
+// AND all three required sections ACTUALLY PRESENT WITH REAL CONTENT AND a
+// verified total that genuinely crosses the red floor means this red tile is a
+// genuine, honestly self-documented cost alert, not a broken or stale card. It
+// still counts as blocked for Blockers-card accounting via BLOCKERS-NAMED-CARD
+// (it is legitimately named on the Blockers card as an owner decision); it just
+// is not a false "render QC defect" that tells the self-healer to keep
+// retrying.
+//
+// Codex review 2026-07-06: the original version only checked
+// awsCostsDetailDefects (which treats a MISSING heading as clean -- it only
+// flags a heading that exists but is short), so a malformed card missing a
+// required section entirely, or a red tile below the real dollar threshold
+// with stray "Threshold band:" text, could have slipped through. Both gaps are
+// closed below: every required heading must be PRESENT (not just non-empty
+// when present), and the parsed total must actually exceed the red floor.
+function awsCostsIsCleanThresholdAlert(card, tile) {
+  if (card.id !== 'aws_costs') return false;
+  const body = tile.body || '';
+  const inner = tile.inner || '';
+  if (!/\bThreshold band:/i.test(body)) return false;
+  if (awsCostsDetailDefects(card, tile).length) return false;
+  const requiredHeadings = ['Per account', 'Per app', 'Top services'];
+  const allHeadingsPresent = requiredHeadings.every(
+    (heading) => detailSectionAfterHeading(inner, heading) !== null,
+  );
+  if (!allHeadingsPresent) return false;
+  // The builder always titles the tile "AWS COSTS ($X total)" on the real, live
+  // path (scripts/cloud-morning-briefing.js), so tile.name ExampleCos the total
+  // reliably; the drilldown body restates the dollar figure in prose but does
+  // not always pair it with the literal word "total" next to the digits.
+  const totalMatch = String(tile.name || '').match(/\$([\d,]+(?:\.\d+)?)\s+total/i);
+  const total = totalMatch ? parseFloat(totalMatch[1].replace(/,/g, '')) : NaN;
+  if (!Number.isFinite(total) || total <= AWS_COST_RED_THRESHOLD_FLOOR) return false;
+  return true;
 }
 
 function detailSectionAfterHeading(html, heading) {
