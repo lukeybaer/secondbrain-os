@@ -411,6 +411,31 @@ async function runMechanicalAction(defect, opts = {}) {
     };
   }
 
+  // PRE-RUN STALENESS GATE (opt-in via opts.staleGate === true; default OFF so
+  // the existing same-reader-postcondition contract for the full overnight/
+  // midday run is byte-for-byte unchanged -- see mechanical-runbook.test.js
+  // "rejects an artifact that was ALREADY fresh before this run", which still
+  // asserts the command RUNS and then correctly fails the postcondition).
+  // The mechanical-only bounded pass (item W2b) turns this on: if the
+  // artifact-backed action's target is already fresh within its window
+  // BEFORE we do anything, running the generator again is pure waste inside a
+  // 10-minute cap (and duplicates cloud-morning-briefing.js's own staleness-
+  // gated in-process rebuild, commit ea30cba0) -- skip it outright rather
+  // than spending a subprocess to re-derive an artifact that is already good.
+  if (opts.staleGate === true && action.artifactPath) {
+    const preCheck = (opts.readCardArtifact || readCardArtifact)(action.artifactPath, opts);
+    if (isFreshWithin(preCheck.freshnessMs, action.freshnessWindowMs, opts.nowMs)) {
+      return {
+        status: 'skipped',
+        reason: `mechanical action '${action.label}' skipped: artifact '${action.artifactPath}' is already fresh within its ${action.freshnessWindowMs}ms window`,
+        action,
+        artifactSha: preCheck.sha,
+        readerFresh: true,
+        wall: null,
+      };
+    }
+  }
+
   // No-repeat-tactic guard: reuse the SAME briefing-repair-ledger the LLM
   // tier uses, so a mechanical tactic that already failed with the same
   // input is not blindly re-run. The input hash includes the BEFORE-state

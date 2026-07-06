@@ -106,6 +106,17 @@ const DEFAULT_PUBLISH_REFRESH_BUDGET_MS = 10 * 60 * 1000;
 const DEFAULT_NO_FRUIT_ATTEMPT_LIMIT = 10;
 const DEFAULT_NO_LIVE_REDUCTION_ATTEMPT_LIMIT = 20;
 const DEFAULT_DEADLINE_CT = '05:15';
+// --mechanical-only (item W2b, the pre-briefing bounded pass invoked by
+// scripts/ec2-morning-briefing-run.sh): the WHOLE pass runs under an external
+// 10-minute `timeout --kill-after` wrapper in the shell runner. Every mechanical
+// action inside this process must fit comfortably under that cap with room to
+// log and exit cleanly, so a single slow blocker never eats the entire budget
+// and starves the rest. 3 minutes per blocker leaves >=3 blockers a fair shot
+// inside the 10-minute wrapper even in the worst case, and is a hard ceiling
+// mechanical-only imposes on the underlying repair calls (opts.repairOptions /
+// opts.mechanicalRunbookOptions timeoutMs) -- it does NOT change the timeouts
+// those same functions use in the full overnight/midday run.
+const MECHANICAL_ONLY_PER_BLOCKER_TIMEOUT_MS = 3 * 60 * 1000;
 const PEER_AGENT_NEED_RE =
   /\b(credential|password|api[\s-]?key|aws|2fa|mfa|approve|approval|decide|decision|choose|external|wire transfer|payment|legal|insurance|sign|signature|consent|interview|in[\s-]?person|notar)\b/i;
 // Negation patterns: when the blocker explicitly declares ExampleCo is NOT in the
@@ -3341,8 +3352,14 @@ function tryScheduledTaskRepair(blocker, opts = {}) {
 // Run-mode flags. observe = report the heal plan, act on nothing. parallel = fan
 // out heal sessions concurrently (safe now that session isolation landed; the git
 // landing serializes). midday = no fixed deadline, run to completion (the attended
-// mid-day heal, vs the deadline-bounded overnight run). Defaults preserve the legacy
-// behavior (sequential, overnight deadline, acting) so an unflagged run is unchanged.
+// mid-day heal, vs the deadline-bounded overnight run). mechanicalOnly = the C3
+// pre-briefing bounded pass (scripts/ec2-morning-briefing-run.sh, item W2b): run
+// ONLY the deterministic mechanical-tier preflights against live-render-qc
+// defects, never spawn an LLM session, never re-run the full publish-refresh
+// regen, and never own scheduled-task fleet catch-up (that belongs to the
+// deadline-bounded overnight/midday run, not a 10-minute bounded pass). See
+// runMechanicalOnlyPass. Defaults preserve the legacy behavior (sequential,
+// overnight deadline, acting) so an unflagged run is unchanged.
 function parseRunMode(opts = {}) {
   const argv = Array.isArray(opts.argv) ? opts.argv : process.argv.slice(2);
   const env = opts.env || process.env;
@@ -3351,9 +3368,11 @@ function parseRunMode(opts = {}) {
     !!opts.observe || has('--observe') || has('--dry-run') || env.SELFHEAL_OBSERVE === '1';
   const parallel = !!opts.parallel || has('--parallel') || env.SELFHEAL_PARALLEL === '1';
   const midday = !!opts.midday || has('--midday') || env.SELFHEAL_MIDDAY === '1';
+  const mechanicalOnly =
+    !!opts.mechanicalOnly || has('--mechanical-only') || env.SELFHEAL_MECHANICAL_ONLY === '1';
   let concurrency = Number(opts.concurrency || env.SELFHEAL_CONCURRENCY || DEFAULT_CONCURRENCY);
   if (!Number.isFinite(concurrency) || concurrency < 1) concurrency = DEFAULT_CONCURRENCY;
-  return { observe, parallel, midday, concurrency };
+  return { observe, parallel, midday, mechanicalOnly, concurrency };
 }
 
 function modeLabel(mode) {
@@ -3361,7 +3380,10 @@ function modeLabel(mode) {
     mode.parallel ? `parallel(x${mode.concurrency})` : 'sequential',
     mode.midday ? 'midday(no-deadline)' : 'overnight(deadline)',
     mode.observe ? 'OBSERVE(no-act)' : 'ACT',
-  ].join(' / ');
+    mode.mechanicalOnly ? 'MECHANICAL-ONLY(bounded)' : null,
+  ]
+    .filter(Boolean)
+    .join(' / ');
 }
 
 // The fix-the-fix guard (2026-06-15): the orchestrator announces its ACTUAL mode at
@@ -3386,6 +3408,354 @@ function announceMode(mode, logRun, blockerCount) {
   }
 }
 
+// Race a promise against a hard wall-clock timeout. Used for the async
+// mechanical-runbook tier inside the mechanical-only pass -- the underlying
+// command/callable-rung already self-bounds via its own timeoutMs (runCommand's
+// spawnSync timeout, or the caller's own budget), but a callable rung or
+// lock-reclaim has no subprocess for spawnSync to bound, so this is the
+// backstop that guarantees the mechanical-only loop moves on to the next
+// blocker rather than hanging the whole 10-minute pass on one stuck action.
+// The timed-out call is abandoned (Node cannot forcibly kill an in-flight
+// Promise), not retried, and is logged as a named timeout, not a silent skip.
+function withWallClockTimeout(promiseFactory, timeoutMs, label) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ timedOut: true, label, timeoutMs });
+    }, timeoutMs);
+    Promise.resolve()
+      .then(promiseFactory)
+      .then((value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ timedOut: false, value });
+      })
+      .catch((err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ timedOut: false, error: err });
+      });
+  });
+}
+
+// --mechanical-only (item W2b): the bounded pre-briefing pass. Runs ONLY the
+// deterministic, cheap mechanical-tier preflights against live-render-qc
+// defects -- never spawns an LLM worker session, never re-runs the full
+// publish-refresh regen (DEFAULT_PUBLISH_REFRESH_BUDGET_MS is 10 minutes on
+// its own -- that single call could eat the entire mechanical-only cap by
+// itself and duplicates the staleness-gated in-process rebuild
+// cloud-morning-briefing.js already does itself, commit ea30cba0), never runs
+// the scheduled-task fleet catch-up (tryScheduledTaskRepair/healScheduledSkills
+// can re-run the WHOLE cloud-scheduled fleet -- including daily-otter-sweep's
+// per-file ffprobe + roster rebuild chain -- under its own 2-hour ceiling;
+// that belongs to the deadline-bounded overnight/midday run, never a
+// 10-minute bounded pass).
+//
+// Per blocker: mechanicalRepair (tests-blocked fixup) then mechanicalRunbook
+// (manifest heal / domains healLadder / generic class action), same
+// same-reader postcondition + no-repeat guard as the full run. Each blocker
+// gets its own wall-clock budget (MECHANICAL_ONLY_PER_BLOCKER_TIMEOUT_MS) so
+// one slow/stuck blocker cannot starve the rest within the external 10-minute
+// wrapper; a per-blocker/per-action timing line is logged either way so a
+// timed-out run's log still shows where the time went. Blockers are attempted
+// most-defects-first (a cheap severity proxy) so a partial pass clears the
+// highest-impact cards before the external cap kills it.
+async function runMechanicalOnlyPass(opts = {}) {
+  const runLogPath = opts.runLogPath || RUNS_LOG_PATH;
+  const argv = Array.isArray(opts.argv) ? opts.argv : process.argv.slice(2);
+  const date = opts.date || parseDateArg(argv) || new Date().toISOString().slice(0, 10);
+  const logRun = (row) => appendRunLog({ date, ...row }, runLogPath);
+  const passNumber = Number(opts.passNumber || 1);
+  const mode = opts.mode || parseRunMode(opts);
+  logExecutorCheckpoint(logRun, 'started', { pass: passNumber, mechanicalOnly: true });
+
+  const liveRenderQc = collectLiveRenderQcBlockers({ ...opts, date, repoRoot: REPO });
+  const rawBlockers = mergeBlockers([
+    ...annotateKnownFalseClearPreflightBlockers(
+      (liveRenderQc && liveRenderQc.blockers) || [],
+      opts.knownFalseClearPreflightCards || [],
+    ),
+    ...(Array.isArray(opts.extraBlockers) ? opts.extraBlockers : []),
+  ]);
+  const blockers = bundleRelatedRepairBlockers(rawBlockers)
+    // Priority by defect severity: most raw defects rolled up first, so a
+    // partial pass (killed by the external cap) clears the highest-impact
+    // cards, not whichever happened to sort first.
+    .slice()
+    .sort((a, b) => Number(b.rawDefectCount || 0) - Number(a.rawDefectCount || 0));
+
+  logRun({
+    stage: 'mechanical-only-live-render-qc',
+    pass: passNumber,
+    rawDefects: (liveRenderQc.defects || []).length,
+    blockerGroups: blockers.length,
+  });
+  announceMode(mode, logRun, blockers.length);
+
+  if (!blockers.length) {
+    logExecutorCheckpoint(logRun, 'completed', {
+      pass: passNumber,
+      status: 'green',
+      attempted: 0,
+      cleared: 0,
+      mechanicalOnly: true,
+    });
+    return { ok: true, cleared: 0, attempted: 0, mechanicalOnly: true };
+  }
+
+  // --mechanical-only --observe: report the heal plan (which blockers would be
+  // attempted, in what order) and act on nothing, matching the full run's
+  // observe contract. Zero side effects; safe to run any time to see exactly
+  // what the bounded pass would do.
+  if (mode.observe) {
+    logRun({
+      stage: 'mechanical-only-observe-plan',
+      pass: passNumber,
+      mode: modeLabel(mode),
+      plannedBlockers: blockers.map((b) => ({
+        title: b.title,
+        rawDefectCount: Number(b.rawDefectCount || 0),
+      })),
+    });
+    logExecutorCheckpoint(logRun, 'completed', {
+      pass: passNumber,
+      status: 'green',
+      attempted: 0,
+      cleared: 0,
+      mechanicalOnly: true,
+      observe: true,
+    });
+    return {
+      ok: true,
+      cleared: 0,
+      attempted: 0,
+      mechanicalOnly: true,
+      observe: true,
+      plannedBlockers: blockers.length,
+    };
+  }
+
+  const mechanicalRepair = opts.mechanicalRepair || tryMechanicalRepair;
+  const runbookRepair = opts.mechanicalRunbookRepair || tryMechanicalRunbookRepair;
+  const perBlockerTimeoutMs =
+    Number(opts.mechanicalOnlyPerBlockerTimeoutMs) || MECHANICAL_ONLY_PER_BLOCKER_TIMEOUT_MS;
+
+  // Codex review 2026-07-06: runMechanicalAction's DEFAULT_LOCK is a MODULE-
+  // LEVEL mutex shared by every caller in the process that does not inject its
+  // own lock. withWallClockTimeout abandons a hung action's promise (Node
+  // cannot cancel an in-flight Promise), but an abandoned promise still holds
+  // whatever lock chain it acquired -- if it were serialized through the
+  // shared DEFAULT_LOCK, every subsequent blocker's mechanical-runbook attempt
+  // (in THIS pass, and in any later pass in the same long-lived process) would
+  // queue behind it forever: "moving on to the next blocker" would be a lie,
+  // the next blocker's action would never actually start, it would just sit
+  // waiting on the lock until ITS OWN timeout fires. This loop is already
+  // strictly SEQUENTIAL (a plain `for` + `await`, never Promise.all), so the
+  // lock's entire reason to exist -- serializing genuinely CONCURRENT
+  // mechanical actions on the OOM-prone box -- does not apply here. A no-op
+  // passthrough lock (never DEFAULT_LOCK, never a shared instance across
+  // blockers) means an abandoned hang can only ever strand itself, never wedge
+  // any other blocker's attempt behind it.
+  const noopLock = { withLock: (fn) => fn() };
+
+  let cleared = 0;
+  let timedOutCount = 0;
+  const blockerResults = [];
+
+  for (const blocker of blockers) {
+    const blockerStartedMs = Date.now();
+    let blockerCleared = false;
+    let blockerTimedOut = false;
+    let stage = 'mechanical-repair';
+
+    // tests-blocked preflight: self-reported as bounded (90s inside
+    // heal-tests-repair.js), but Codex review 2026-07-06 flagged that a
+    // regression/hang in that path was NOT actually inside the per-blocker
+    // wall-clock budget -- it ran before the race even started, so a stuck
+    // implementation (or a future change that removes its internal timeout)
+    // could still eat the whole mechanical-only pass. Wrapped in the SAME
+    // withWallClockTimeout as the runbook tier below so every action this
+    // loop runs is genuinely bounded by perBlockerTimeoutMs, not just by
+    // internal self-discipline in the callee.
+    stage = 'mechanical-repair';
+    const mechRemainingMs = Math.max(5000, perBlockerTimeoutMs - (Date.now() - blockerStartedMs));
+    const mechStart = Date.now();
+    const mechRaced = await withWallClockTimeout(
+      () => mechanicalRepair(blocker, opts.mechanicalRepairOptions || {}),
+      mechRemainingMs,
+      `mechanical-repair:${blocker.title}`,
+    );
+    const mechDurationMs = Date.now() - mechStart;
+    if (mechRaced.timedOut) {
+      blockerTimedOut = true;
+      timedOutCount += 1;
+      logRun({
+        stage: 'mechanical-only-action-timing',
+        pass: passNumber,
+        blocker: blocker.title,
+        action: 'mechanical-repair',
+        durationMs: mechDurationMs,
+        timedOut: true,
+        budgetMs: mechRemainingMs,
+      });
+    } else if (mechRaced.error) {
+      // Codex review 2026-07-06: a thrown mechanical-repair call must not be
+      // silently treated as "did nothing" -- log the error explicitly so the
+      // morning log names the failure instead of looking like an ordinary
+      // no-op partial.
+      logRun({
+        stage: 'mechanical-only-action-timing',
+        pass: passNumber,
+        blocker: blocker.title,
+        action: 'mechanical-repair',
+        durationMs: mechDurationMs,
+        threw: true,
+        error: String((mechRaced.error && mechRaced.error.message) || mechRaced.error).slice(
+          0,
+          300,
+        ),
+        cleared: false,
+      });
+    } else {
+      const preflight = mechRaced.value;
+      logRun({
+        stage: 'mechanical-only-action-timing',
+        pass: passNumber,
+        blocker: blocker.title,
+        action: 'mechanical-repair',
+        durationMs: mechDurationMs,
+        cleared: !!(preflight && preflight.cleared),
+      });
+      if (preflight && preflight.cleared) {
+        blockerCleared = true;
+      }
+    }
+
+    // Mechanical-runbook tier: staleness-gated + same-reader postcondition
+    // inside runMechanicalAction itself. Wrapped in the per-blocker wall-clock
+    // timeout so a stuck callable rung or lock-reclaim (no subprocess for
+    // spawnSync to bound) cannot stall the whole pass. staleGate defaults ON
+    // here (mechanical-only tier only -- see mechanical-runbook.js's opt-in
+    // gate): the pass must not spend its bounded budget re-deriving an
+    // artifact that is already fresh.
+    if (!blockerCleared && !blockerTimedOut) {
+      stage = 'mechanical-runbook';
+      const remainingMs = Math.max(5000, perBlockerTimeoutMs - (Date.now() - blockerStartedMs));
+      const runbookStart = Date.now();
+      const raced = await withWallClockTimeout(
+        () =>
+          runbookRepair(blocker, {
+            ...opts,
+            date,
+            mechanicalRunbookOptions: {
+              staleGate: true,
+              lock: noopLock,
+              ...(opts.mechanicalRunbookOptions || {}),
+            },
+          }),
+        remainingMs,
+        `mechanical-runbook:${blocker.title}`,
+      );
+      const runbookDurationMs = Date.now() - runbookStart;
+      if (raced.timedOut) {
+        blockerTimedOut = true;
+        timedOutCount += 1;
+        logRun({
+          stage: 'mechanical-only-action-timing',
+          pass: passNumber,
+          blocker: blocker.title,
+          action: 'mechanical-runbook',
+          durationMs: runbookDurationMs,
+          timedOut: true,
+          budgetMs: remainingMs,
+        });
+      } else if (raced.error) {
+        // Codex review 2026-07-06: do not let a thrown runbook error look like
+        // an ordinary "nothing to clear" partial -- name it.
+        logRun({
+          stage: 'mechanical-only-action-timing',
+          pass: passNumber,
+          blocker: blocker.title,
+          action: 'mechanical-runbook',
+          durationMs: runbookDurationMs,
+          threw: true,
+          error: String((raced.error && raced.error.message) || raced.error).slice(0, 300),
+          cleared: false,
+        });
+      } else {
+        const runbookResult = raced.value;
+        logRun({
+          stage: 'mechanical-only-action-timing',
+          pass: passNumber,
+          blocker: blocker.title,
+          action: 'mechanical-runbook',
+          durationMs: runbookDurationMs,
+          cleared: !!(runbookResult && runbookResult.cleared),
+        });
+        if (runbookResult) {
+          logRun({
+            stage: 'mechanical-runbook',
+            blocker: blocker.title,
+            repaired: runbookResult.repaired,
+            actions: (runbookResult.actions || []).slice(0, 10),
+            escalateMasking: !!runbookResult.escalateMasking,
+            status: runbookResult.cleared ? 'cleared' : 'partial',
+            pass: passNumber,
+          });
+          if (runbookResult.cleared) blockerCleared = true;
+        }
+      }
+    }
+
+    if (blockerCleared) cleared += 1;
+    blockerResults.push({
+      title: blocker.title,
+      cleared: blockerCleared,
+      timedOut: blockerTimedOut,
+      stage,
+      durationMs: Date.now() - blockerStartedMs,
+    });
+    logRun({
+      stage: 'mechanical-only-blocker-timing',
+      pass: passNumber,
+      blocker: blocker.title,
+      cleared: blockerCleared,
+      timedOut: blockerTimedOut,
+      durationMs: Date.now() - blockerStartedMs,
+    });
+  }
+
+  logExecutorCheckpoint(logRun, 'completed', {
+    pass: passNumber,
+    status: cleared === blockers.length ? 'green' : 'yellow',
+    attempted: blockers.length,
+    cleared,
+    timedOut: timedOutCount,
+    mechanicalOnly: true,
+  });
+  logRun({
+    stage: 'orchestrator-complete',
+    pass: passNumber,
+    cleared,
+    attempted: blockers.length,
+    timedOut: timedOutCount,
+    mechanicalOnly: true,
+    blockers: blockerResults,
+  });
+  return {
+    ok: true,
+    cleared,
+    attempted: blockers.length,
+    timedOut: timedOutCount,
+    mechanicalOnly: true,
+    blockers: blockerResults,
+  };
+}
+
 async function runOrchestrator(opts = {}) {
   const runLogPath = opts.runLogPath || RUNS_LOG_PATH;
   const argv = Array.isArray(opts.argv) ? opts.argv : process.argv.slice(2);
@@ -3393,6 +3763,15 @@ async function runOrchestrator(opts = {}) {
   const logRun = (row) => appendRunLog({ date, ...row }, runLogPath);
   const passNumber = Number(opts.passNumber || 1);
   const mode = opts.mode || parseRunMode(opts);
+  // --mechanical-only (item W2b): branch to the lean bounded pass BEFORE any of
+  // the heavy full-pipeline machinery below (publish-refresh regen, auth
+  // preflight, mode-equivalence, repair-loop-exhaustion bookkeeping, LLM
+  // session spawn) ever runs. This is the fix for the mechanical tier
+  // overrunning its 10-minute cap: today, calling the orchestrator with an
+  // unrecognized flag just ran the ENTIRE overnight pipeline anyway.
+  if (mode.mechanicalOnly) {
+    return runMechanicalOnlyPass({ ...opts, runLogPath, date, passNumber, mode });
+  }
   // Checkpoint the START of this pass BEFORE any early return can skip it, so "no
   // checkpoint recorded" can only mean the process itself never launched (crashed
   // before this line, or was never invoked), never "it ran but had nothing to report".
@@ -4839,6 +5218,10 @@ module.exports = {
   mergeBlockers,
   modeLabel,
   announceMode,
+  // --mechanical-only (item W2b): the bounded pre-briefing pass + its helpers.
+  runMechanicalOnlyPass,
+  withWallClockTimeout,
+  MECHANICAL_ONLY_PER_BLOCKER_TIMEOUT_MS,
   // Phase 4a desired-state reconciler seams (re-exported so callers/tests reach the
   // same implementations the orchestrator wires in).
   repairLedger,
