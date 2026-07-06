@@ -8689,6 +8689,20 @@ module.exports = {
   runDashboardRenderQc,
   writeDashboardQcArtifact,
   renderQcBlockers,
+  // Exported for scripts/refresh-card.js (single-card refresh tool): the
+  // never-drop assembly chokepoint that walks the canonical manifest and
+  // resolves each card to its real section or an honest blocker. Exporting
+  // this adds NO new behavior to the full build -- buildCloudMorningBriefing
+  // still calls it internally exactly as before; regression coverage in
+  // scripts/__tests__/cloud-morning-briefing-assemble-export.test.js asserts
+  // the full build's markdown is unchanged by this export-only refactor.
+  assembleManifestSections,
+  MANIFEST_CARD_RENDER,
+  OMIT_MANIFEST_SECTION,
+  honestBlockerSection,
+  legacySection,
+  writeTextAtomic,
+  DEFAULT_DATA_DIR,
   hasOnlyBlockersAccountingDefects,
   hasOnlyBlockersFeedbackDefects,
   shouldRepaintBlockersFeedbackOnly,
