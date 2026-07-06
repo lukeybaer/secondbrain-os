@@ -214,6 +214,15 @@ function checkWiredIntoPublish(repoRoot) {
   return { failures };
 }
 
+// THE canonical defect-count library (ExampleCo 2026-07-06 shared-paradigm fix):
+// scripts/lib/live-board-truth.js must exist and be required by BOTH the
+// dashboard tile renderer (ec2-server.js) and the markdown builder
+// (cloud-morning-briefing.js), so the tile badge/headline and the markdown
+// reconciliation line can never drift onto two different derivations of the
+// defect count.
+const CANONICAL_COUNT_LIB = 'scripts/lib/live-board-truth.js';
+const CANONICAL_COUNT_CONSUMERS = ['ec2-server.js', 'cloud-morning-briefing.js'];
+
 // 3. The design doc exists and names the render-QC as THE one QC.
 function checkDesignDoc(repoRoot) {
   const docPath = path.join(repoRoot, DESIGN_DOC);
@@ -230,6 +239,60 @@ function checkDesignDoc(repoRoot) {
       `design doc ${DESIGN_DOC} does not name ${RENDER_QC} as the one render-QC. The doc and the code must agree on the single QC.`,
     );
   }
+  if (!src.includes(CANONICAL_COUNT_LIB)) {
+    failures.push(
+      `design doc ${DESIGN_DOC} does not name ${CANONICAL_COUNT_LIB} as the canonical defect-count library (ExampleCo 2026-07-06 shared-paradigm fix).`,
+    );
+  }
+  return { failures };
+}
+
+// 4. Every canonical-count consumer requires live-board-truth.js in real code.
+// Uses the same comment-stripped, real-code wiring check as
+// checkWiredIntoPublish (a doc-comment naming the file does not count).
+function hasRealLiveBoardTruthWiring(src) {
+  const code = stripComments(src);
+  return /require\(\s*['"`][^'"`]*live-board-truth(?:\.js)?['"`]/.test(code);
+}
+
+function checkCanonicalCountLib(repoRoot) {
+  const failures = [];
+  const libPath = path.join(repoRoot, 'scripts', 'lib', 'live-board-truth.js');
+  const libSrc = readFileSafe(libPath);
+  if (!libSrc) {
+    failures.push(
+      `the canonical defect-count library ${CANONICAL_COUNT_LIB} is missing. It is the ONE schema + reader every count consumer (dashboard tile, markdown, chat, self-heal) must read through.`,
+    );
+    return { failures };
+  }
+  for (const required of [
+    'defectiveCardCount',
+    'buildLiveBoardArtifact',
+    'readLiveBoardArtifact',
+    'isStale',
+  ]) {
+    if (!libSrc.includes(required)) {
+      failures.push(
+        `${CANONICAL_COUNT_LIB} no longer exports ${required}; consumers depend on this exact function name.`,
+      );
+    }
+  }
+  for (const consumerRel of CANONICAL_COUNT_CONSUMERS) {
+    const consumerPath =
+      consumerRel === 'ec2-server.js'
+        ? path.join(repoRoot, consumerRel)
+        : path.join(repoRoot, 'scripts', consumerRel);
+    const consumerSrc = readFileSafe(consumerPath);
+    if (!consumerSrc) {
+      failures.push(`canonical-count consumer ${consumerRel} is missing or unreadable.`);
+      continue;
+    }
+    if (!hasRealLiveBoardTruthWiring(consumerSrc)) {
+      failures.push(
+        `${consumerRel} does not require ${CANONICAL_COUNT_LIB} in real code (no require/import; a comment mentioning the filename does not count). Every consumer must read the SAME artifact through the SAME library, never recompute the defect count independently.`,
+      );
+    }
+  }
   return { failures };
 }
 
@@ -239,6 +302,7 @@ function runDrift(repoRoot = REPO_ROOT) {
   failures.push(...single.failures);
   failures.push(...checkWiredIntoPublish(repoRoot).failures);
   failures.push(...checkDesignDoc(repoRoot).failures);
+  failures.push(...checkCanonicalCountLib(repoRoot).failures);
   return { ok: failures.length === 0, failures, renderQcFound: single.found };
 }
 
@@ -261,11 +325,15 @@ module.exports = {
   checkSingleRenderQc,
   checkWiredIntoPublish,
   checkDesignDoc,
+  checkCanonicalCountLib,
+  hasRealLiveBoardTruthWiring,
   stripComments,
   hasRealRenderQcWiring,
   RENDER_QC,
   DESIGN_DOC,
   PUBLISH_PATHS,
+  CANONICAL_COUNT_LIB,
+  CANONICAL_COUNT_CONSUMERS,
 };
 
 if (require.main === module) main();

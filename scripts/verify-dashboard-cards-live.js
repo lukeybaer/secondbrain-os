@@ -2093,6 +2093,12 @@ function verifyDashboard(html, runDate, options = {}) {
   // Every manifest card gets an entry; a card with zero defects is clean.
   const defectsByCard = new Map();
   manifest.CARDS.forEach((c) => defectsByCard.set(c.id, []));
+  // The real rendered tile title per card id, so the durable QC artifact
+  // (scripts/lib/live-board-truth.js) can show ExampleCo the actual tile name
+  // instead of the bare manifest id. Populated whenever a tile is matched;
+  // a card that never rendered (MISSING) has no entry and the artifact
+  // builder falls back to the id.
+  const cardTitleById = new Map();
   const recordCard = (id, list) => {
     if (!list || !list.length) return;
     const bucket = defectsByCard.get(id) || [];
@@ -2104,6 +2110,7 @@ function verifyDashboard(html, runDate, options = {}) {
   for (const card of manifest.CARDS) {
     const matches = findTiles(tiles, card);
     const tile = matches[0] || null;
+    if (tile && tile.name) cardTitleById.set(card.id, tile.name);
     if (matches.length > 1) {
       const duplicateDefects = [
         `CARD-DUPLICATE: ${card.id} (${cardLabel(card)}) rendered ${matches.length} matching tiles; duplicate cards make the status ambiguous and must be collapsed before the briefing can be clean`,
@@ -2229,10 +2236,14 @@ function verifyDashboard(html, runDate, options = {}) {
   defects.push(...blockersUnderReportDefects(tiles));
 
   // One status per manifest card: 'clean' when it has zero defects, else 'defect'.
+  // `title` ExampleCos the real rendered tile name (when the card rendered a
+  // tile at all) so downstream consumers (scripts/lib/live-board-truth.js)
+  // can show ExampleCo the actual tile name, not the bare manifest id.
   const cardStatuses = manifest.CARDS.map((c) => {
     const cardDefects = defectsByCard.get(c.id) || [];
     return {
       id: c.id,
+      title: cardTitleById.get(c.id) || c.id,
       status: cardDefects.length === 0 ? 'clean' : 'defect',
       defects: cardDefects,
     };
@@ -2245,6 +2256,7 @@ function verifyDashboard(html, runDate, options = {}) {
     defects,
     advisories,
     cardStatuses,
+    cardTitleById: Object.fromEntries(cardTitleById),
   };
 }
 

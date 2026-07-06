@@ -61,6 +61,12 @@ const {
 } = require('./lib/standing-reminders.js');
 const { loadOwnerProfile } = require('./lib/owner-profile.js');
 const { isAmySubprocessPrompt } = require('./lib/amy-subprocess-prompt.js');
+const {
+  buildLiveBoardArtifact,
+  classifyDefectKind,
+  defectiveCardCount: liveBoardDefectiveCardCount,
+  readLiveBoardArtifact,
+} = require('./lib/live-board-truth.js');
 
 // Owner identity (name, owned emails, employer + scan token, reputation targets)
 // is loaded dynamically from scripts/lib/owner-profile.js (env -> private
@@ -750,21 +756,24 @@ function runDashboardRenderQc({ date, verifier = null, htmlFetcher = null } = {}
 // heal loop, the briefing, and ExampleCo read to know each card's published status.
 // Best-effort: a write failure logs but never aborts the build (publishing has
 // already happened; the artifact is a receipt, not a gate).
-function writeDashboardQcArtifact(dataDir, dashQc, date) {
-  const defectStatuses = (dashQc.cardStatuses || []).filter((c) => c.status === 'defect');
+//
+// THE CANONICAL COUNT (ExampleCo 2026-07-06, feedback_live_board_is_the_only_count.md):
+// this artifact is the ONE source every consumer -- the dashboard tile, the
+// markdown At-a-glance line, chat reports, and self-heal -- must read the
+// defect count from. `buildLiveBoardArtifact` (scripts/lib/live-board-truth.js)
+// derives the canonical `defectiveCardCount` (distinct DEFECTIVE CARDS, never
+// the raw defect-string count) and per-card `status`/`defectKinds`/`title`.
+// Legacy fields (`defectCount`, top-level `defects`, and the old flat
+// `cards[].status` shape without defectKinds) are kept alongside for any
+// existing archaeology/log-reading, but no new consumer should read them --
+// read `defectiveCardCount` and `cards[].status` from the canonical shape.
+function writeDashboardQcArtifact(dataDir, dashQc, date, cardTitles = {}) {
+  const canonical = buildLiveBoardArtifact({ dashQc, date, cardTitles });
   const artifact = {
-    ts: new Date().toISOString(),
-    date,
-    ran: !!dashQc.ran,
-    ok: dashQc.ran ? dashQc.ok !== false : null,
-    retry: !!dashQc.retry,
+    ...canonical,
+    // Legacy fields, retained for backward compatibility only.
     defectCount: dashQc.ran && dashQc.ok === false ? (dashQc.defects || []).length : 0,
     defects: (dashQc.defects || []).slice(0, 200),
-    cards: (dashQc.cardStatuses || []).map((c) => ({
-      id: c.id,
-      status: c.status,
-      defects: (c.defects || []).slice(0, 20),
-    })),
   };
   try {
     writeJsonAtomic(path.join(dataDir, 'agent', 'dashboard-qc-result.json'), artifact);
@@ -783,17 +792,12 @@ function renderQcDefectTitle(defect, idx) {
   return `Render QC defect ${idx + 1}`;
 }
 
+// Delegates to scripts/lib/live-board-truth.js classifyDefectKind -- the ONE
+// category mapping, shared by the artifact writer and this Blockers-card
+// category rollup, so the two can never drift into different labels for the
+// same defect (ExampleCo 2026-07-06 shared-paradigm fix).
 function renderQcDefectCategory(defect) {
-  const text = String(defect || '');
-  if (/^NEWS-(?:PROSE|STUB):/i.test(text)) return 'content/prose';
-  if (/^BUILDER-COUNT:|^RENDER-COUNT:/i.test(text)) return 'count/render';
-  if (/^BLOCKERS-NAMED-CARD:/i.test(text)) return 'blocked card';
-  if (/^BLOCKED-CARD:/i.test(text)) return 'blocked card';
-  if (/^MISSING:|^CARD-DUPLICATE:/i.test(text)) return 'card presence';
-  if (/^STALE-|stale|older event date/i.test(text)) return 'stale data';
-  if (/^BLOCKERS-COUNT:/i.test(text)) return 'blocker accounting';
-  if (/^BLOCKED-TILE:/i.test(text)) return 'system/data health';
-  return 'render quality';
+  return classifyDefectKind(defect);
 }
 
 // Derive Blockers-card entries from underlying render-QC defects. Blockers-card
@@ -1444,12 +1448,47 @@ function qcSeamSections(sections) {
   });
 }
 
-function renderBlockersSection(blockers) {
+// Reconciliation line against the ONE canonical live-board artifact (ExampleCo
+// 2026-07-06 shared-paradigm fix): when a fresh dashboard-qc-result.json
+// exists for THIS build's dataDir, name its defectiveCardCount explicitly so
+// the markdown can never silently show a different number than the live
+// dashboard tile without the discrepancy being visible. Returns '' when there
+// is no artifact yet (the first pass of a fresh build, before any render-QC
+// has run against this run's published page) or it is stale -- an absent/
+// stale artifact is not itself an error here, just nothing to reconcile
+// against yet.
+function blockersReconciliationLine(dataDir, blockersCount) {
+  let read;
+  try {
+    read = readLiveBoardArtifact({ dataDir });
+  } catch {
+    return '';
+  }
+  const { artifact, stale } = read || {};
+  if (!artifact) return '';
+  const canonicalCount = liveBoardDefectiveCardCount(artifact);
+  if (canonicalCount === null) return '';
+  if (stale) {
+    return `Live dashboard count: stale (last verified ${artifact.ts || 'ExampleCo time'}, older than one briefing cycle) -- do not treat this markdown's count as current.`;
+  }
+  const agrees = canonicalCount === blockersCount;
+  const line = `Live dashboard count: ${canonicalCount} defective card(s) as of ${artifact.ts} (source: dashboard-qc-result.json).`;
+  return agrees
+    ? line
+    : `${line} This section currently lists ${blockersCount}; the live artifact is the canonical count -- a mismatch here means this markdown predates the artifact's last publish cycle.`;
+}
+
+function renderBlockersSection(blockers, opts = {}) {
+  const dataDir = opts && opts.dataDir;
+  const reconciliation = dataDir ? blockersReconciliationLine(dataDir, blockers.length) : '';
   if (!blockers.length) {
-    return legacySection(
-      'BLOCKERS - briefing quality gates',
+    const body = [
       'Clean? yes. Live dashboard QC reports 0 survived defects for this briefing.',
-    );
+      reconciliation,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    return legacySection('BLOCKERS - briefing quality gates', body);
   }
   const lines = [];
   const categoryCounts = new Map();
@@ -1470,6 +1509,7 @@ function renderBlockersSection(blockers) {
     if (item.need) lines.push(`Need from ExampleCo: ${item.need}`);
     lines.push('');
   });
+  if (reconciliation) lines.push(reconciliation, '');
   return legacySection('BLOCKERS - briefing quality gates', lines.join('\n').trim());
 }
 
@@ -7945,7 +7985,7 @@ function buildCloudMorningBriefing({
   if (buildTargeted('token_usage'))
     refreshTokenUsageArtifacts(dataDir, date, forceTokenArtifactRefresh);
   const realById = {
-    blockers: renderBlockersSection(blockers),
+    blockers: renderBlockersSection(blockers, { dataDir }),
     token_usage: legacySection(
       'TOKEN USAGE YESTERDAY (Claude Max plan, free)',
       formatTokenUsageSection(dataDir, date),
@@ -8140,7 +8180,7 @@ function buildCloudMorningBriefing({
   // tripped the gate. deriveNonGreenSubsystemBlockers names every non-green
   // subsystem (incl Life:* backup rows) not already named, satisfying the gate.
   deriveNonGreenSubsystemBlockers(realById.system_health, blockers, realById.full_life_backup);
-  realById.blockers = renderBlockersSection(blockers);
+  realById.blockers = renderBlockersSection(blockers, { dataDir });
 
   // ---- NEVER-DROP CHOKEPOINT: assemble from the canonical manifest ----
   // Walk the manifest in order; every card resolves to its real section or an

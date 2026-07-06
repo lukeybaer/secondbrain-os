@@ -51,6 +51,7 @@ const KEY_FILES = [
   'scripts/overnight-briefing-orchestrator.js',
   'scripts/BRIEFING_BABYSITTER_SKILL.md',
   'scripts/lib/briefing-clean-contract.js',
+  'scripts/lib/live-board-truth.js',
 ];
 
 // [file, token, why] -- the token must be present (an invariant the doc relies on).
@@ -110,6 +111,21 @@ const MUST_CONTAIN = [
     'scripts/refresh-briefing-generated-sections.js',
     'function renderHonestBlockSection',
     'an invalid off-cycle section is replaced with an honest hard-block, never silently retained verbatim',
+  ],
+  [
+    'ec2-server.js',
+    'cardDefectBadge',
+    'the per-card defect badge (ExampleCo 2026-07-06 shared-paradigm fix) reads its decision from the shared live-board-truth library, not a locally re-derived check',
+  ],
+  [
+    'scripts/cloud-morning-briefing.js',
+    'function writeDashboardQcArtifact',
+    'the canonical live-board artifact writer the doc names as the source every count consumer reads',
+  ],
+  [
+    'scripts/lib/live-board-truth.js',
+    'defectiveCardCount',
+    'the single accessor for the canonical defect count every consumer must call',
   ],
 ];
 
