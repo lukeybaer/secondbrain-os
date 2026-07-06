@@ -38,12 +38,22 @@ describe('auto-regen honesty contract', () => {
     // video_needs_regen so thumbnail rejections sat in pending_approval
     // forever or got falsely re-queued.
     expect(src).toMatch(/thumbnail_needs_regen/);
-    // The candidate-selection filter (the one that walks the manifest)
-    // must reference both flags.
-    const candidateFilter = src.match(
-      /\.filter\(\s*\([^)]*\)\s*=>\s*[^)]*video_needs_regen[^)]*thumbnail_needs_regen[^)]*\)/,
+    // 2026-07-01 (d8ded65d "video-delete-17 add DELETE to approval queue")
+    // extracted the inline video_needs_regen||thumbnail_needs_regen check
+    // into a single shared predicate, isRegenCandidate(v), imported from
+    // scripts/lib/video-delete-state.js so the DELETE (reject-without-regen)
+    // flow can reuse the same definition of "still a regen candidate".
+    // Assert the candidate-selection filter calls that shared predicate, and
+    // separately assert the predicate itself still checks both flags.
+    expect(src).toMatch(/isRegenCandidate\(v\)/);
+    const delegate = fs.readFileSync(
+      path.join(REPO_ROOT, 'scripts', 'lib', 'video-delete-state.js'),
+      'utf8',
     );
-    expect(candidateFilter).toBeTruthy();
+    expect(delegate).toMatch(/function isRegenCandidate/);
+    expect(delegate).toMatch(
+      /v\.video_needs_regen === true \|\| v\.thumbnail_needs_regen === true/,
+    );
   });
 
   it('auto-regen-rejected-videos.js verifies artifact mtime before marking complete', () => {

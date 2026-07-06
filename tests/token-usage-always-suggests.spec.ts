@@ -26,21 +26,21 @@ function extractParser() {
   return new Function(`${src.slice(start, next)}\n; return parseTokenUsageBody;`)();
 }
 
-describe("Token usage always emits a reduction suggestion (ExampleCo 2026-04-29 #learn C)", () => {
+describe('Token usage always emits a reduction suggestion (ExampleCo 2026-04-29 #learn C)', () => {
   it("renderTileContent for tokenUsage no longer renders 'No reduction suggestion available.'", () => {
     // The old fallback string is gone.
     const tokenBlock = src.slice(
       src.indexOf("if (d.kind === 'tokenUsage')"),
-      src.indexOf("if (d.kind === 'peopleFilesChange')")
+      src.indexOf("if (d.kind === 'peopleFilesChange')"),
     );
     expect(tokenBlock).not.toMatch(/'No reduction suggestion available/);
     expect(tokenBlock).not.toMatch(/'no suggestion available'/i);
   });
 
-  it("computes a fallback diagnostic chain when the suggester returns empty", () => {
+  it('computes a fallback diagnostic chain when the suggester returns empty', () => {
     const tokenBlock = src.slice(
       src.indexOf("if (d.kind === 'tokenUsage')"),
-      src.indexOf("if (d.kind === 'peopleFilesChange')")
+      src.indexOf("if (d.kind === 'peopleFilesChange')"),
     );
     expect(tokenBlock).toMatch(/computeFallbackSuggestion|fallback.*suggestion/i);
     // The fallback uses the data we DO have: top app, model mix,
@@ -49,10 +49,10 @@ describe("Token usage always emits a reduction suggestion (ExampleCo 2026-04-29 
     expect(tokenBlock).toMatch(/cache hit rate|Cache hit/);
   });
 
-  it("if no diagnostic levers exist, suggests adding instrumentation (never silent)", () => {
+  it('if no diagnostic levers exist, suggests adding instrumentation (never silent)', () => {
     const tokenBlock = src.slice(
       src.indexOf("if (d.kind === 'tokenUsage')"),
-      src.indexOf("if (d.kind === 'peopleFilesChange')")
+      src.indexOf("if (d.kind === 'peopleFilesChange')"),
     );
     // The "add instrumentation" branch must mention what to log.
     expect(tokenBlock).toMatch(/instrumentation|token-events\.jsonl|log.*\{.*project.*model/i);
@@ -90,7 +90,12 @@ describe("Token usage always emits a reduction suggestion (ExampleCo 2026-04-29 
     expect(tokenBlockStart).toBeGreaterThan(0);
     expect(peopleBlockStart).toBeGreaterThan(tokenBlockStart);
     const tokenBlock = src.slice(tokenBlockStart, peopleBlockStart);
-    expect(tokenBlock).toMatch(/Claude Code \(stale\)/);
+    // 2026-06-27 (40b6a2e5 "harden live QC and healer refresh") renamed the
+    // tile-level stale-burn label from 'Claude Code (stale)' to 'Claude Code
+    // live' (percent 'unavailable', detail ExampleCos the last-known reading +
+    // staleness); the drilldown detail heading was left unchanged. Assert the
+    // surviving current label instead of the pre-rename string.
+    expect(tokenBlock).toMatch(/Claude Code live/);
     expect(src).toMatch(/Claude Code Max live usage is stale/);
   });
 });

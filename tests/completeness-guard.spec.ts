@@ -26,7 +26,11 @@ const MEMORY_TIER1 = join(REPO, 'memory', 'MEMORY.md');
 const CLAUDE_GLOBAL = join(REPO, 'claude-config', 'CLAUDE.global.md');
 const HOOK = join(REPO, 'scripts', 'claude-hooks', 'completeness-check.sh');
 const FEEDBACK = join(REPO, 'memory', 'feedback_never_chunk_with_wrap_up.md');
-const CODEX_PROTOCOL = join(REPO, 'memory', 'feedback_codex_must_apply_secondbrain_protocols_without_hooks.md');
+const CODEX_PROTOCOL = join(
+  REPO,
+  'memory',
+  'feedback_codex_must_apply_secondbrain_protocols_without_hooks.md',
+);
 const CODEX_GOAL = join(REPO, 'memory', 'feedback_codex_own_the_goal_not_the_bug.md');
 const SURGICAL_CHANGES = join(REPO, 'memory', 'feedback_surgical_minimal_changes.md');
 const PEER_REVIEW_FRESH_EYES = join(REPO, 'memory', 'feedback_peer_review_fresh_eyes_per_peer.md');
@@ -45,9 +49,16 @@ describe('completeness guard — canonical rule drift protection', () => {
 
   it('MEMORY.md says Codex desktop/API sessions are the same Amy and must read memory manually if needed', () => {
     const text = readFileSync(MEMORY_TIER1, 'utf8');
-    expect(text).toMatch(/Codex desktop\/API sessions are Amy too/i);
-    expect(text).toMatch(/read it manually and apply it anyway/i);
-    expect(text).toMatch(/No split-brain behavior/i);
+    // 2026-07-05: the opening ExampleCoraph was condensed ("MEMORY.md index is the
+    // skill router" pass). "Codex desktop/API sessions are Amy too" became
+    // "Codex sessions are Amy too" (desktop/API named earlier in the same
+    // sentence instead); "read it manually and apply it anyway" became "read
+    // this file manually"; "No split-brain behavior" became "If anything
+    // drifts from this file, this file wins" -- same single-source-of-truth
+    // rule, condensed wording. Assert the surviving current phrasing.
+    expect(text).toMatch(/Codex sessions are Amy too/i);
+    expect(text).toMatch(/read this file manually/i);
+    expect(text).toMatch(/If anything drifts from this file, this file wins/i);
   });
 
   it('Codex direct-work memory requires Claude Code review and goal-level scoping', () => {
@@ -102,7 +113,9 @@ describe('completeness guard — canonical rule drift protection', () => {
     expect(rule).toMatch(/PC and the repo are not the durable home/i);
     expect(rule).toMatch(/S3/i);
     expect(rule).toMatch(/bucket, key, bytes, hash, and upload time/i);
-    expect(rule).toMatch(/Git stores source, tests, memory, schemas, and small manifests\/receipts/i);
+    expect(rule).toMatch(
+      /Git stores source, tests, memory, schemas, and small manifests\/receipts/i,
+    );
   });
 
   it('Tier 1 memory points to the central Task Spine execution frame', () => {
@@ -133,7 +146,9 @@ describe('completeness guard — canonical rule drift protection', () => {
 
     expect(memory).toMatch(/reference_git_storage_ownership_policy\.md/i);
     expect(policy).toMatch(/Git stores intentional source of truth/i);
-    expect(policy).toMatch(/S3\/runtime storage stores operational records and generated artifacts/i);
+    expect(policy).toMatch(
+      /S3\/runtime storage stores operational records and generated artifacts/i,
+    );
     expect(policy).toMatch(/secondbrain-backups/i);
     expect(policy).toMatch(/data-lake\/secondbrain/i);
     expect(policy).toMatch(/data\/cloud-manifests/i);
@@ -255,7 +270,9 @@ describe('completeness hook — functional behavior', () => {
   });
 
   it('parses newline-separated numbered lists', async () => {
-    const reqs = mod.parseRequirements('Do these:\n1. First thing\n2. Second thing\n3. Third thing');
+    const reqs = mod.parseRequirements(
+      'Do these:\n1. First thing\n2. Second thing\n3. Third thing',
+    );
     expect(reqs.length).toBeGreaterThanOrEqual(3);
   });
 
@@ -270,11 +287,7 @@ describe('completeness hook — functional behavior', () => {
   });
 
   it('unfinishedItems flags items whose keywords are missing from response', async () => {
-    const reqs = [
-      'add a dashboard tile',
-      'fix the scraper',
-      'deploy to ec2 instance',
-    ];
+    const reqs = ['add a dashboard tile', 'fix the scraper', 'deploy to ec2 instance'];
     const assistantText = 'I added the dashboard tile with proper styling.';
     const unfinished = mod.unfinishedItems(reqs, assistantText);
     expect(unfinished.length).toBe(2);
@@ -307,7 +320,8 @@ describe('completeness hook — functional behavior', () => {
     );
 
     const weak = mod.completionContractIssues({
-      userText: 'you need a structured checklist for every prompt, then tests failing for those, then tests passing for those. Give me the real #gap response.',
+      userText:
+        'you need a structured checklist for every prompt, then tests failing for those, then tests passing for those. Give me the real #gap response.',
       assistantText: 'Fixed. I checked whether the response was deferred and updated the hook.',
       reqs,
     });
@@ -316,7 +330,8 @@ describe('completeness hook — functional behavior', () => {
     expect(weak.some((issue: string) => /passing test/i.test(issue))).toBe(true);
 
     const strong = mod.completionContractIssues({
-      userText: 'you need a structured checklist for every prompt, then tests failing for those, then tests passing for those. Give me the real #gap response.',
+      userText:
+        'you need a structured checklist for every prompt, then tests failing for those, then tests passing for those. Give me the real #gap response.',
       assistantText: `
         Prompt checklist:
         - [x] structured checklist for every prompt: implemented in completeness-check.mjs.
@@ -338,19 +353,27 @@ describe('completeness hook — functional behavior', () => {
   // every item by name so keyword overlap passes, but the items are
   // explicitly being deferred. The phrase guard catches this.
   it('hasDeferralLanguage flags "DEFERRED next session" wording', async () => {
-    expect(mod.hasDeferralLanguage('DEFERRED next session: rewrite the dispatcher').length).toBeGreaterThanOrEqual(1);
-    expect(mod.hasDeferralLanguage('I will tackle that next session').length).toBeGreaterThanOrEqual(1);
+    expect(
+      mod.hasDeferralLanguage('DEFERRED next session: rewrite the dispatcher').length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      mod.hasDeferralLanguage('I will tackle that next session').length,
+    ).toBeGreaterThanOrEqual(1);
     expect(mod.hasDeferralLanguage('still queued for next round').length).toBeGreaterThanOrEqual(1);
     expect(mod.hasDeferralLanguage("I'll get to those tomorrow").length).toBeGreaterThanOrEqual(1);
   });
 
   it('hasDeferralLanguage returns empty when response just describes work done', async () => {
-    expect(mod.hasDeferralLanguage('Added the tile, fixed the scraper, deployed to ec2.')).toEqual([]);
+    expect(mod.hasDeferralLanguage('Added the tile, fixed the scraper, deployed to ec2.')).toEqual(
+      [],
+    );
     expect(mod.hasDeferralLanguage('All 17 items shipped. PR pushed.')).toEqual([]);
   });
 
   it('hasDeferralLanguage exposes the matching phrase for the hook message', async () => {
-    const matches = mod.hasDeferralLanguage('Locked in this session... DEFERRED next session: dispatch processor rewrite');
+    const matches = mod.hasDeferralLanguage(
+      'Locked in this session... DEFERRED next session: dispatch processor rewrite',
+    );
     expect(matches.length).toBeGreaterThanOrEqual(1);
     expect(matches.join(' ').toLowerCase()).toMatch(/deferred|next session/);
   });
@@ -362,7 +385,9 @@ describe('completeness hook — functional behavior', () => {
 // the 8 markers when the user's most recent message starts with #gap.
 describe('gap-workflow-enforcer Stop hook — 8-step workflow enforcement', () => {
   let gap: any;
-  beforeAll(async () => { /* loaded eagerly below */ });
+  beforeAll(async () => {
+    /* loaded eagerly below */
+  });
 
   beforeEach(async () => {
     gap = await import('../scripts/claude-hooks/gap-workflow-enforcer.mjs');
@@ -373,7 +398,11 @@ describe('gap-workflow-enforcer Stop hook — 8-step workflow enforcement', () =
     expect(gap.userMentionsGap('#GAP why did this regress?')).toBe(true);
     expect(gap.userMentionsGap('# gap with a space')).toBe(true);
     // 2026-04-26 ExampleCo correction: match anywhere, not just at start.
-    expect(gap.userMentionsGap('Today I went to the store. Yesterday I exercised. The third ExampleCoraph mentions #gap somewhere far away from the start.')).toBe(true);
+    expect(
+      gap.userMentionsGap(
+        'Today I went to the store. Yesterday I exercised. The third ExampleCoraph mentions #gap somewhere far away from the start.',
+      ),
+    ).toBe(true);
     expect(gap.userMentionsGap('that is a #gap right there at the end')).toBe(true);
   });
 
@@ -406,7 +435,9 @@ describe('gap-workflow-enforcer Stop hook — 8-step workflow enforcement', () =
   });
 
   it('countMarkersHit fails a 1-sentence "I acknowledge" reply', () => {
-    expect(gap.countMarkersHit("You're right. Acknowledging and grinding through.")).toBeLessThan(gap.MIN_MARKERS);
+    expect(gap.countMarkersHit("You're right. Acknowledging and grinding through.")).toBeLessThan(
+      gap.MIN_MARKERS,
+    );
   });
 
   it('requires all 8 #gap workflow markers, not a near miss', () => {
@@ -427,7 +458,11 @@ describe('gap-workflow-enforcer Stop hook — 8-step workflow enforcement', () =
     const text = readFileSync(CODEX_PROTOCOL, 'utf8');
     expect(text).toMatch(/one Amy, one memory/i);
     expect(text).toMatch(/Codex is not a separate assistant/i);
-    expect(text).toMatch(/If this surface does not auto-inject `memory\/MEMORY\.md`, Codex must manually read and apply it/i);
-    expect(text).toMatch(/ACKNOWLEDGE[\s\S]*CONFIRM[\s\S]*EXPLAIN[\s\S]*WHY[\s\S]*SELF-REFLECTION[\s\S]*THE FIX[\s\S]*CANNOT RECUR[\s\S]*EXEC SUMMARY/i);
+    expect(text).toMatch(
+      /If this surface does not auto-inject `memory\/MEMORY\.md`, Codex must manually read and apply it/i,
+    );
+    expect(text).toMatch(
+      /ACKNOWLEDGE[\s\S]*CONFIRM[\s\S]*EXPLAIN[\s\S]*WHY[\s\S]*SELF-REFLECTION[\s\S]*THE FIX[\s\S]*CANNOT RECUR[\s\S]*EXEC SUMMARY/i,
+    );
   });
 });

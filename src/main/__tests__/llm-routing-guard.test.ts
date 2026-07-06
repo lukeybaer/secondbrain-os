@@ -27,6 +27,18 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 const SCAN_DIRS = ['src', 'scripts', 'ec2-server.js', 'claude-proxy.js'];
 
+// 2026-07-0x fix: this test itself now commonly RUNS from inside a worktree
+// (isolated-worktree workflow, feedback_branch_cleanliness_isolated_worktrees.md),
+// so REPO_ROOT itself contains ".claude/worktrees/<id>" as a path segment.
+// IGNORE_PATTERNS used to be tested against the absolute path, so that
+// segment matched every single file under REPO_ROOT and silently zeroed out
+// the scan (walkSourceFiles filtered everything, "finds at least one source
+// file to scan" failed with files.length === 0). The intent was only to skip
+// a worktree accidentally NESTED inside the scanned tree (e.g.
+// REPO_ROOT/src/.claude/worktrees/foo), never to reject when the repo root
+// itself lives under a worktrees path. Fix: test patterns against the path
+// RELATIVE to REPO_ROOT, so a worktree segment that is part of the common
+// prefix (REPO_ROOT itself) never appears in the string being matched.
 const IGNORE_PATTERNS = [
   /node_modules/,
   /[\\/]\.claude[\\/]worktrees/,
@@ -39,6 +51,11 @@ const IGNORE_PATTERNS = [
   /\.d\.ts$/,
   /\.map$/,
 ];
+
+function isIgnored(absPath: string): boolean {
+  const rel = path.relative(REPO_ROOT, absPath);
+  return IGNORE_PATTERNS.some((p) => p.test(rel));
+}
 
 // Forbidden: chat/completion endpoints that have a free Claude Max equivalent.
 // ALLOWED (intentionally not in this list): audio transcription (Whisper),
@@ -73,7 +90,7 @@ function walkSourceFiles(dir: string, results: string[] = []): string[] {
   const stat = fs.statSync(dir);
   if (stat.isFile()) {
     if (/\.(ts|tsx|js|jsx|mjs|cjs|py)$/.test(dir)) {
-      if (!IGNORE_PATTERNS.some((p) => p.test(dir))) results.push(dir);
+      if (!isIgnored(dir)) results.push(dir);
     }
     return results;
   }
@@ -82,7 +99,7 @@ function walkSourceFiles(dir: string, results: string[] = []): string[] {
     const entries = fs.readdirSync(dir);
     for (const entry of entries) {
       const full = path.join(dir, entry);
-      if (IGNORE_PATTERNS.some((p) => p.test(full))) continue;
+      if (isIgnored(full)) continue;
       walkSourceFiles(full, results);
     }
   } catch {

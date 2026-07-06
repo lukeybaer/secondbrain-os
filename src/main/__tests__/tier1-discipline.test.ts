@@ -53,7 +53,15 @@ describe('MEMORY.md Tier 1 discipline', () => {
   });
 
   it('declares same brain as Claude Code', () => {
-    expect(src).toMatch(/same brain as Claude Code/i);
+    // 2026-07-05: the opening ExampleCoraph was condensed ("MEMORY.md index is
+    // the skill router" pass). "Same brain as Claude Code" (paired with a
+    // separate Codex-parity sentence) became "Same brain everywhere: Claude
+    // Code, Codex desktop/API, Telegram, Vapi, ..." -- Claude Code is still
+    // named as one of the shared-brain surfaces, just folded into the wider
+    // "everywhere" list instead of its own clause. Assert the surviving
+    // phrasing.
+    expect(src).toMatch(/Same brain everywhere/i);
+    expect(src).toMatch(/Claude Code/i);
   });
 
   it('lists the three non-negotiable simple needs', () => {

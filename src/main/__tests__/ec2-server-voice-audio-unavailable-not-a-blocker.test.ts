@@ -111,11 +111,18 @@ describe('genuine CARD-LEVEL hard blockers KEEP their marker (QC must still catc
   });
 
   it('the system_health Known-blocker banner still emits a hard-block marker', () => {
+    // 2026-07-0x: knownBlockerBanner's label became a variable (`${label}:`)
+    // instead of a hardcoded "Known blocker:" literal, so it can also render
+    // "Queue attention:" for the videoApprovals kind (see the genuine-marker
+    // suppression tests above). The systemHealth / other kinds still fall
+    // through to the "Known blocker" label -- assert the label variable
+    // still resolves to that string for non-videoApprovals kinds, and that
+    // the rendered template still ExampleCos the hard-block marker.
     const src = loadEc2Server();
-    // knownBlockerBanner renders "<strong>Known blocker:</strong>" for the
-    // system_health / video real card blockers. That marker must survive.
-    const m = src.match(/known-blocker-banner[\s\S]*?Known blocker:/);
+    const m = src.match(
+      /const label = d\.kind === 'videoApprovals' \? '[^']*' : 'Known blocker';\s*\n\s*return `<div class="tile-banner-warn known-blocker-banner"><strong>\$\{label\}:<\/strong>/,
+    );
     expect(m).toBeTruthy();
-    expect(HARD_BLOCKER_MARKER.test(m![0])).toBe(true);
+    expect(HARD_BLOCKER_MARKER.test('<strong>Known blocker:</strong>')).toBe(true);
   });
 });

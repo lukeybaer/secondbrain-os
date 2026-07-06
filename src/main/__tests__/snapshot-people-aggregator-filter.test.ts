@@ -24,40 +24,48 @@ const REPO = path.join(__dirname, '..', '..', '..');
 const SERVER = path.join(REPO, 'ec2-server.js');
 const SNAPSHOT_GEN = path.join(REPO, 'scripts', 'snapshot-people-and-memory-delta.js');
 
-describe("People-files aggregator filter is symmetric (ExampleCo 2026-04-29 #learn)", () => {
+describe('People-files aggregator filter is symmetric (ExampleCo 2026-04-29 #learn)', () => {
   const serverSrc = fs.readFileSync(SERVER, 'utf8');
   const snapshotSrc = fs.readFileSync(SNAPSHOT_GEN, 'utf8');
 
-  it("ec2-server.js exposes isAggregatorFile helper", () => {
+  it('ec2-server.js exposes isAggregatorFile helper', () => {
     expect(serverSrc).toMatch(/function isAggregatorFile\(/);
   });
 
-  it("snapshot generator also defines isAggregatorFile (no skew between paths)", () => {
+  it('snapshot generator also defines isAggregatorFile (no skew between paths)', () => {
     expect(snapshotSrc).toMatch(/function isAggregatorFile\(/);
   });
 
-  it("snapshot generator filters out _-prefixed files at write time", () => {
+  it('snapshot generator filters out _-prefixed files at write time', () => {
     expect(snapshotSrc).toMatch(/if \(isAggregatorFile\(file\)\) continue/);
   });
 
-  it("ec2-server.js snapshot fallback re-applies the filter at read time (defense in depth)", () => {
-    expect(serverSrc).toMatch(/snap\.allEntries\.filter\(\(e\) => !isAggregatorFile/);
+  it('ec2-server.js snapshot fallback re-applies the filter at read time (defense in depth)', () => {
+    // 2026-07-05: formatter reflowed this call so the `.filter((e) => ...)`
+    // callback body sits on its own line instead of one unbroken line (same
+    // rename covered in tests/briefing-people-memory-cards.spec.ts). Allow
+    // whitespace between `snap.allEntries =` and the chained `.filter(...)`.
+    expect(serverSrc).toMatch(
+      /snap\.allEntries\s*=\s*snap\.allEntries\s*\.filter\(\(e\)\s*=>\s*!isAggregatorFile/,
+    );
   });
 
-  it("snapshot generator includes allEntries (drilldown needs every contact)", () => {
+  it('snapshot generator includes allEntries (drilldown needs every contact)', () => {
     expect(snapshotSrc).toMatch(/allEntries:\s*entries/);
   });
 
-  it("snapshot generator extracts addedSample from real diff content", () => {
+  it('snapshot generator extracts addedSample from real diff content', () => {
     expect(snapshotSrc).toMatch(/historyEntries/);
     expect(snapshotSrc).toMatch(/bulletEntries/);
   });
 
-  it("people-files subject fallback is freshness-filtered on both snapshot and EC2 paths", () => {
+  it('people-files subject fallback is freshness-filtered on both snapshot and EC2 paths', () => {
     expect(snapshotSrc).toMatch(/function freshPeopleSubjectText\(/);
     expect(snapshotSrc).toMatch(/lastSubject:\s*freshPeopleSubjectText\(s\.lastSubject,\s*hours\)/);
     expect(serverSrc).toMatch(/function freshPeopleSubjectText\(/);
-    expect(serverSrc).toMatch(/lastSubject:\s*freshPeopleSubjectText\(e\.lastSubject,\s*snap\.hours \|\| hours\)/);
+    expect(serverSrc).toMatch(
+      /lastSubject:\s*freshPeopleSubjectText\(e\.lastSubject,\s*snap\.hours \|\| hours\)/,
+    );
     expect(serverSrc).toMatch(/lastSubject:\s*freshPeopleSubjectText\(s\.lastSubject,\s*hours\)/);
   });
 
@@ -65,7 +73,7 @@ describe("People-files aggregator filter is symmetric (ExampleCo 2026-04-29 #lea
   // crap into memory.md now???" The dashboard was misleading because it
   // showed the commit subject instead of the actual added lines. Lock the
   // real-diff render at the parser layer.
-  it("MEMORY.md card surfaces actual addedLines from the diff (not just commit subjects)", () => {
+  it('MEMORY.md card surfaces actual addedLines from the diff (not just commit subjects)', () => {
     expect(snapshotSrc).toMatch(/addedLines/);
     const ec2 = fs.readFileSync(SERVER, 'utf8');
     expect(ec2).toMatch(/addedLines/);
@@ -74,7 +82,7 @@ describe("People-files aggregator filter is symmetric (ExampleCo 2026-04-29 #lea
     expect(ec2).toMatch(/c\.addedLines && c\.addedLines\.length > 0/);
   });
 
-  it("on-disk snapshot (if present) does NOT contain aggregator files as biggest/smallest", () => {
+  it('on-disk snapshot (if present) does NOT contain aggregator files as biggest/smallest', () => {
     const snapPath = path.join(REPO, 'data', 'agent', 'people-files-snapshot.json');
     if (!fs.existsSync(snapPath)) return; // snapshot not yet generated
     const snap = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
