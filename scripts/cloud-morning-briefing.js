@@ -1805,6 +1805,13 @@ function extractProjectBacklog(raw) {
   const primary = Array.isArray(raw && raw.features) ? raw.features : [];
   const fallback = Array.isArray(raw && raw.items) ? raw.items : [];
   const rows = (primary.length ? primary : fallback)
+    // Approval stickiness (locked 2026-04-22 per call 019db811, documented in
+    // manual-briefing-v3.js): an approved item does not keep re-appearing in
+    // the numbered ask list. Callers that render a separate "APPROVED --
+    // awaiting implementation" trailer (e.g. renderFeatureBacklogSection)
+    // read approved_at themselves for that block; excluding it HERE too
+    // means an item can never render in both places at once.
+    .filter((item) => item && !item.approved_at)
     .filter((item) => item && !/done|complete|shipped/i.test(String(item.status || '')))
     .map((item) => ({
       raw: item,
