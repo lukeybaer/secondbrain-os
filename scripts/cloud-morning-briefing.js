@@ -5877,6 +5877,7 @@ function buildOtterSpeakerEnrichmentHealth({
   speakerFreshness,
   nowMs = Date.now(),
   computeVerdict,
+  artifactsRebuildFailure = null,
 } = {}) {
   const LABEL = 'Otter speaker enrichment';
   const freshDefect = Boolean(speakerFreshness && speakerFreshness.defect);
@@ -5887,19 +5888,33 @@ function buildOtterSpeakerEnrichmentHealth({
     : 'ExampleCo';
   const present = Object.values(artifacts || {}).filter(Boolean);
   if (!present.length) {
+    // Codex adversarial review: the earlier fix only appended
+    // artifactsRebuildFailure in the normal (post-verdict) return below, so a
+    // rebuild failure that leaves artifacts EMPTY (e.g. first-ever rebuild on
+    // a fresh host, or all three files missing) hit this early MISSING return
+    // and the rebuild failure was silently dropped -- exactly the scenario
+    // where naming it matters most. Surface it here too.
+    const rebuildFailureSuffix = artifactsRebuildFailure
+      ? ` Inline coverage-artifact rebuild also FAILED: ${artifactsRebuildFailure}`
+      : '';
     return {
       subsystemLabel: LABEL,
       glyph: 'ExampleCo',
       defect: true,
       probeStatus: 'MISSING',
-      detail: 'coverage artifacts unavailable; the recording pipeline cannot be verified.',
+      detail: `coverage artifacts unavailable; the recording pipeline cannot be verified.${rebuildFailureSuffix}`,
       probeRaw: [
         'coverage artifacts (call-completeness / text-audio / rosters / voiceprint-health) not found under life-archive/voiceprints',
+        ...(artifactsRebuildFailure
+          ? [`inline coverage-artifact rebuild FAILED: ${artifactsRebuildFailure}`]
+          : []),
         `voice processing lock: ${lockState}`,
         `speaker roster freshness: ${freshClause}`,
       ],
       blockerTitle: LABEL,
-      blockerEvidence: 'no otter coverage reports under life-archive/voiceprints.',
+      blockerEvidence: artifactsRebuildFailure
+        ? `no otter coverage reports under life-archive/voiceprints, and the inline rebuild failed: ${artifactsRebuildFailure}`
+        : 'no otter coverage reports under life-archive/voiceprints.',
       blockerNeed:
         'Repair: Amy must restore the otter coverage reports, rerun the voiceprint resolver and coverage reports, verify voice-lock freshness, then refresh the Otter speaker Pareto and System Health.',
     };
@@ -5970,14 +5985,26 @@ function buildOtterSpeakerEnrichmentHealth({
     severity === 'YELLOW'
       ? ' PRIVATE_NAME (surfaced, not a blocker): the only shortfall is naming coverage or recent-audio from purged-at-source missing audio, which is unrecoverable, so it is named here rather than promised as a repair.'
       : '';
+  // Codex finding 3 (silent swallow): a failed inline rebuild must be NAMED in
+  // the row detail, not silently absorbed while the row goes on to render
+  // whatever stale artifact happened to already be on disk. This never
+  // upgrades severity on its own (a stale-but-present artifact still grades
+  // by its own numbers) -- it just tells ExampleCo the numbers may be trailing and
+  // why, instead of presenting a rebuild failure as if the read were current.
+  const rebuildFailureNote = artifactsRebuildFailure
+    ? ` REBUILD FAILED (numbers may be trailing): ${artifactsRebuildFailure}`
+    : '';
   return {
     subsystemLabel: LABEL,
     glyph: defect ? 'bad' : 'ok',
     defect,
     severity,
     probeStatus: v.status,
-    detail: `${stale ? `coverage reports stale (${Math.round(ageH)}h old); ` : ''}${summary}.${ExampleCoNote}`,
+    detail: `${stale ? `coverage reports stale (${Math.round(ageH)}h old); ` : ''}${summary}.${ExampleCoNote}${rebuildFailureNote}`,
     probeRaw: [
+      ...(artifactsRebuildFailure
+        ? [`inline coverage-artifact rebuild FAILED: ${artifactsRebuildFailure}`]
+        : []),
       `transcripts downloaded: ${cs.enriched_transcript_available != null ? cs.enriched_transcript_available : '?'}/${m.total_calls} enriched transcript(s) available`,
       `full audio downloaded: ${cs.full_audio_available != null ? cs.full_audio_available : '?'}/${m.total_calls} call audio file(s) available`,
       `probe clips built: ${cs.total_substantive_speaker_tracks_with_probe_audio != null ? cs.total_substantive_speaker_tracks_with_probe_audio : '?'}/${cs.total_substantive_speaker_tracks != null ? cs.total_substantive_speaker_tracks : '?'} substantive speaker track(s) have probe clips`,
@@ -7707,8 +7734,25 @@ function buildCloudMorningBriefing({
   // matching blocker. EC2-only (artifacts + EFS lock live there); lazy require +
   // full try/catch so a probe error can never break the briefing build.
   let voiceCoverage = null;
+  let otterCoverageRebuildFailure = null;
   if (runningOnEc2(dataDir)) {
     try {
+      // Rebuild the three coverage artifacts inline BEFORE reading them if
+      // they are stale (Codex finding 2: this is the ONLY path that renders
+      // the real 5:30 AM briefing -- ec2-morning-briefing-run.sh calls this
+      // file directly, never refresh-briefing-generated-sections.js, so
+      // that file's rebuild-then-render ordering fix never reached this
+      // renderer). Bounded (each builder is single-digit seconds, in-process,
+      // no network) and gated on staleness so a fresh set of artifacts is
+      // never rebuilt for nothing. A failed rebuild is recorded, not
+      // swallowed, so the health row can say WHY it is still showing an old
+      // reading instead of silently rendering stale numbers as if current.
+      // ExampleCo 2026-07-05 otter-metric-mismatch #gap.
+      const { rebuildOtterCoverageArtifactsIfStale } = require('./lib/otter-coverage-rebuild.js');
+      const rebuildResult = rebuildOtterCoverageArtifactsIfStale(dataDir);
+      if (rebuildResult && rebuildResult.error) {
+        otterCoverageRebuildFailure = rebuildResult.error;
+      }
       const { computeVerdict } = require('./otter-processing-coverage-probe');
       const vpDir = path.join(dataDir, 'life-archive', 'voiceprints');
       const readJ = (f) => {
@@ -7787,9 +7831,33 @@ function buildCloudMorningBriefing({
         lockState,
         speakerFreshness,
         computeVerdict,
+        artifactsRebuildFailure: otterCoverageRebuildFailure,
       });
-    } catch {
-      voiceCoverage = null; // never break the build on a probe error
+    } catch (e) {
+      // Codex adversarial review finding 2: this catch used to silently null
+      // out voiceCoverage on ANY error in the block above -- including a
+      // failure to require the new otter-coverage-rebuild.js helper itself,
+      // or an unexpected throw inside buildOtterSpeakerEnrichmentHealth. That
+      // degrades to the freshness-only fallback row below (or no row at all)
+      // and HIDES the actual end-to-end coverage failure instead of naming
+      // it. Never let a probe error break the briefing build, but never let
+      // it disappear either: synthesize a visible RED/ExampleCo row carrying
+      // the exception text so ExampleCo can see WHY Otter processing health could
+      // not be computed this run.
+      const errorText = String((e && e.message) || e).slice(0, 300);
+      voiceCoverage = {
+        subsystemLabel: 'Otter speaker enrichment',
+        glyph: 'bad',
+        defect: true,
+        severity: 'RED',
+        probeStatus: 'ERROR',
+        detail: `Otter processing health probe threw an error and could not be computed: ${errorText}`,
+        probeRaw: [`probe error: ${errorText}`],
+        blockerTitle: 'Otter speaker enrichment',
+        blockerEvidence: `The Otter processing health probe threw an error this run: ${errorText}`,
+        blockerNeed:
+          'Repair: Amy must diagnose and fix the probe error (see the exception text above), then rerun the coverage reports and refresh System Health.',
+      };
     }
   }
   if (voiceCoverage && voiceCoverage.defect) {
