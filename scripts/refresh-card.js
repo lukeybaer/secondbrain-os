@@ -93,7 +93,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 // NOTE: assembleManifestSections/renderBlockersSection/blockedCardEntries/
 // deriveNonGreenSubsystemBlockers are NOT imported here even though the
@@ -297,12 +297,60 @@ function sectionsAt(sections, idx) {
 // regression test that fakes a held lock via a stub flock binary on PATH.
 // ---------------------------------------------------------------------------
 
-function withSharedBriefingLock(
+// The exact line the holder's held command prints to stdout the INSTANT it
+// starts running (i.e. the instant flock has actually acquired the lock --
+// flock never execs the held command until it acquires). Waiting for this
+// line, rather than a fixed settle timeout, is what makes acquisition
+// detection correct regardless of how long the real wait takes: a fixed
+// timeout cannot distinguish "still trying to acquire" (child alive, still
+// inside flock's own wait) from "acquired, now running the held command"
+// (child also alive) -- both look identical from process-liveness alone.
+const LOCK_ACQUIRED_MARKER = 'REFRESH_CARD_LOCK_ACQUIRED';
+
+// CORRECTNESS FIX (2026-07-06 Codex adversarial review, A2 NO-GO): an earlier
+// version of this function only PROBED flock (`flock -w N lockPath -c true`),
+// which acquires-and-immediately-releases before fn() ever runs, then relied
+// on a SEPARATE sibling marker file for the actual critical section. That
+// left a real window where the live cron build's own flock on the SAME
+// lockPath could acquire it and start writing WHILE this tool's fn() (read ->
+// build -> splice -> write -> receipt -> QC) was still in flight -- exactly
+// the race Codex amendment A2 exists to close. A second attempt (settle for a
+// fixed delay, then trust "child still alive" as proof of acquisition) was
+// ALSO wrong: a child still busy-waiting inside flock's own acquisition loop
+// is indistinguishable, by liveness alone, from a child that already
+// acquired and is now running the held command -- a regression test proving
+// two overlapping refreshes actually serialize caught this (the second
+// call's fn() started before the first's had returned). Fixed here with a
+// readiness SIGNAL instead of a timing guess: `flock -w waitSeconds lockPath
+// sh -c 'echo <marker>; exec cat'` -- flock only execs the sh command after
+// it has acquired, so the marker line on stdout is proof of real acquisition,
+// not a race-prone inference. We wait (bounded by waitSeconds plus a small
+// margin for process-spawn overhead) for either the marker or the holder
+// exiting first; then run fn() while the child holds the lock; then close
+// the child's stdin (cat sees EOF, exits, and the kernel releases the flock)
+// as the primary release path, with SIGTERM/SIGKILL as a bounded fallback if
+// it does not exit promptly.
+async function withSharedBriefingLock(
   fn,
   {
     lockPath = SHARED_LOCK_PATH,
     waitSeconds = LOCK_WAIT_SECONDS,
     platform = process.platform,
+    // Injectable ONLY for tests: the real CLI path always uses ['flock'] as
+    // the spawned command and ['sh', '-c', `echo ${marker}; exec cat`] as the
+    // held command it execs. Node's child_process.spawn on Windows cannot
+    // resolve a bare executable name to a same-directory .cmd shim without
+    // shell:true (a Windows-spawn quirk, unrelated to production, which only
+    // ever runs this branch on real Linux), so tests that want to exercise
+    // the ACTUAL holder-process serialization logic on a Windows dev box
+    // point flockCommand at ['node', '<stub-script>.js', ...] instead of
+    // fighting that platform quirk with shell:true (which would also change
+    // argument-quoting semantics versus production). heldCommand tests still
+    // MUST print LOCK_ACQUIRED_MARKER to stdout the instant they start and
+    // then block until stdin closes, to preserve the real readiness-signal
+    // contract this function depends on.
+    flockCommand = ['flock'],
+    heldCommand = ['sh', '-c', `echo ${LOCK_ACQUIRED_MARKER}; exec cat`],
   } = {},
 ) {
   if (platform !== 'linux') {
@@ -315,78 +363,119 @@ function withSharedBriefingLock(
     return fn();
   }
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  // flock -w N LOCKFILE -c "true" just to CHECK acquisition would race with
-  // releasing before fn() runs. Instead we run flock as the actual wrapper
-  // around a marker file exchange: spawn `flock -w N LOCKPATH node -e
-  // "fs.writeFileSync(marker, 'held')"` is awkward for a synchronous JS
-  // caller. Simpler and equally honest: use flock's own exit-code contract by
-  // wrapping OUR whole critical section in one flock invocation via a helper
-  // script executed with `true`-style pass-through is unnecessary complexity
-  // here -- Node's own advisory approach is to open the lock file with an
-  // exclusive flag AFTER confirming via the real flock binary that the lock
-  // is free within the wait window, then hold it by keeping that flock child
-  // alive for the duration via a small shell wrapper.
-  //
-  // Concretely: spawn `flock -w <waitSeconds> <lockPath> -c '<marker cmd>'`
-  // synchronously is what we want, but the critical section (read -> build ->
-  // splice -> write -> receipt -> QC) is pure JS running in THIS process, not
-  // a child shell command. flock's `-c` form execs a shell command and holds
-  // the lock only for that child's lifetime, so we cannot use it to bracket
-  // arbitrary JS in the parent. The standard bridge is: spawn a long-lived
-  // `flock -w N LOCKPATH sleep <bignum>` in the background, then kill it when
-  // done -- but that is fragile (kill timing, orphaned sleeps).
-  //
-  // The robust, dependency-free bridge used here: acquire via a SEPARATE
-  // short-lived `flock -n -w waitSeconds LOCKPATH -c true` PROBE first (fails
-  // fast if genuinely contended, honoring the wait window), then take Node's
-  // own exclusive-create lock on a SIBLING marker path
-  // (`<lockPath>.refresh-card`) for the duration of fn(). Because the real
-  // cron run (ec2-morning-briefing-run.sh) ALSO flocks the exact same
-  // lockPath with `-n` (no-wait) for its own run, and this probe uses the
-  // SAME lockPath, a live cron run in progress makes our probe fail exactly
-  // when theirs would have -- so this never runs concurrently with a real
-  // cron build. The sibling marker only protects two refresh-card.js
-  // invocations from colliding with EACH OTHER (a narrower, additional
-  // guarantee), and is cleaned up unconditionally.
-  const probe = spawnSync('flock', ['-w', String(waitSeconds), lockPath, '-c', 'true'], {
-    stdio: ['ignore', 'ignore', 'pipe'],
+
+  const [flockBin, ...flockLeadingArgs] = flockCommand;
+  const holder = spawn(
+    flockBin,
+    [...flockLeadingArgs, '-w', String(waitSeconds), lockPath, ...heldCommand],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+
+  let holderExited = false;
+  let holderExitInfo = null;
+  holder.once('exit', (code, signal) => {
+    holderExited = true;
+    holderExitInfo = { code, signal };
   });
-  if (probe.error) {
+  let holderSpawnError = null;
+  holder.once('error', (e) => {
+    holderSpawnError = e;
+  });
+
+  // Race: the marker line appears on stdout (real acquisition) vs. the
+  // holder exiting first (flock's wait expired, or the held command could
+  // not start) vs. a spawn error (e.g. the flock binary itself is missing --
+  // resolved IMMEDIATELY, not left to the hard timeout below, since a Node
+  // spawn failure fires ONLY an 'error' event with no matching 'exit') vs. a
+  // hard timeout bound (waitSeconds plus generous spawn-overhead margin) as a
+  // last-resort safety net so this can never hang forever even if flock's own
+  // -w contract were somehow violated.
+  const acquired = await new Promise((resolve) => {
+    let stdoutBuf = '';
+    const onStdout = (chunk) => {
+      stdoutBuf += chunk.toString('utf8');
+      if (stdoutBuf.includes(LOCK_ACQUIRED_MARKER)) {
+        holder.stdout.removeListener('data', onStdout);
+        resolve(true);
+      }
+    };
+    holder.stdout.on('data', onStdout);
+    holder.once('exit', () => resolve(false));
+    holder.once('error', () => resolve(false));
+    setTimeout(() => resolve(false), waitSeconds * 1000 + 5000).unref();
+  });
+
+  if (holderSpawnError) {
     throw new Error(
-      `ABORT: could not invoke flock to acquire the shared briefing lock (${lockPath}): ${probe.error.message}`,
+      `ABORT: could not invoke flock to acquire the shared briefing lock (${lockPath}): ${holderSpawnError.message}`,
     );
   }
-  if (probe.status !== 0) {
-    throw new Error(
-      `ABORT: the shared briefing lock (${lockPath}) is held by another run (flock exit ${probe.status} after waiting ${waitSeconds}s). Refusing to proceed -- retry once the other run finishes.`,
-    );
-  }
-  const markerPath = `${lockPath}.refresh-card`;
-  let fd;
-  try {
-    fd = fs.openSync(markerPath, 'wx');
-  } catch (e) {
-    if (e && e.code === 'EEXIST') {
-      throw new Error(
-        `ABORT: another refresh-card.js run holds ${markerPath}. Refusing to proceed concurrently -- retry once it finishes.`,
-      );
+  if (!acquired) {
+    // Either the holder exited before signaling acquisition (flock's own
+    // wait expired without acquiring -- another run, cron or another
+    // refresh-card.js, holds the lock), or the hard timeout fired without
+    // ever seeing the marker. Either way, we never proved acquisition --
+    // abort loudly, never proceed as if we had it. Clean up a still-alive
+    // but unconfirmed holder rather than leaking it.
+    if (!holderExited) {
+      try {
+        holder.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
     }
-    throw e;
+    const detail = holderExitInfo
+      ? `exit code=${holderExitInfo.code} signal=${holderExitInfo.signal}`
+      : 'never confirmed (hard timeout)';
+    throw new Error(
+      `ABORT: the shared briefing lock (${lockPath}) is held by another run (flock holder did not signal acquisition, ${detail}, after waiting up to ${waitSeconds}s). Refusing to proceed -- retry once the other run finishes.`,
+    );
   }
+
+  const releaseHolder = () =>
+    new Promise((resolve) => {
+      if (holderExited) {
+        resolve();
+        return;
+      }
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      holder.once('exit', done);
+      try {
+        holder.stdin.end(); // cat sees EOF and exits, releasing the flock.
+      } catch {
+        /* holder may already be gone */
+      }
+      // Bounded fallback: if closing stdin does not end the holder promptly
+      // (e.g. it is wedged), escalate to SIGTERM then SIGKILL rather than
+      // leaking a lock-holding process indefinitely.
+      setTimeout(() => {
+        if (settled) return;
+        try {
+          holder.kill('SIGTERM');
+        } catch {
+          /* already gone */
+        }
+      }, 2000).unref();
+      setTimeout(() => {
+        if (settled) return;
+        try {
+          holder.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+        done();
+      }, 5000).unref();
+    });
+
   try {
-    fs.writeSync(fd, String(process.pid));
-    return fn();
+    return await fn();
   } finally {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      /* already closed */
-    }
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {
-      /* best effort */
-    }
+    await releaseHolder();
   }
 }
 
@@ -639,7 +728,7 @@ async function refreshCard({
     return spliced;
   };
 
-  const spliced = withSharedBriefingLock(doRefresh);
+  const spliced = await withSharedBriefingLock(doRefresh);
   if (!spliced) return null;
 
   if (verify) {
@@ -738,4 +827,5 @@ module.exports = {
   SECTION_DELIMITER,
   SHARED_LOCK_PATH,
   DERIVED_CARD_IDS,
+  LOCK_ACQUIRED_MARKER,
 };
