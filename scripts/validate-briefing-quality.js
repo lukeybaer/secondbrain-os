@@ -1160,7 +1160,14 @@ function checkNewsSection(label, body, card, expectedCount) {
     if (paras.some((p) => p.length < 110 || ExampleCoraphWordCount(p) < 18)) {
       failures.push(`${label} item ${article.n} has a too-thin ExampleCoraph`);
     }
-    if (paras.some((p) => !/[.!?]["']?$/.test(p))) {
+    // A ExampleCoraph ends "as prose" when its last sentence closes with terminal
+    // punctuation, optionally followed by a closing quote. News summaries quote
+    // sources verbatim in NPR/AP style, so a sentence often ends on a quotation
+    // like `...a great injustice.”` -- the closing mark is a CURLY quote
+    // (U+201D / U+2019), not the ASCII `"`/`'`. Accept both, or well-formed
+    // quoted prose (16+ ExampleCoraphs on 2026-07-06) is falsely rejected and the
+    // internal healer burns its attempts on phantom failures.
+    if (paras.some((p) => !/[.!?]["'”’]?$/.test(p))) {
       failures.push(`${label} item ${article.n} has a ExampleCoraph that does not end as prose`);
     }
     if (paras.some((p) => newsArtifactRe().test(p))) {
