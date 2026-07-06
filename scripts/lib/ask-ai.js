@@ -94,6 +94,16 @@ function budgetWarning(budget) {
   return null;
 }
 
+// Estimate the USD cost of one OpenAI floor call from its usage block.
+// gpt-4o-mini pricing: ~$0.15 / 1M input tokens, ~$0.60 / 1M output tokens.
+// Pure and exported so the paid-floor cost accounting is unit-testable without
+// a live HTTPS call, and so the formula lives in exactly one place.
+function estimateOpenAiCostUsd(usage) {
+  const u = usage || {};
+  const est = ((u.prompt_tokens || 0) * 0.15 + (u.completion_tokens || 0) * 0.6) / 1e6;
+  return Math.round(est * 1e6) / 1e6;
+}
+
 // ---- built-in rung implementations -----------------------------------------
 
 function runCodexRung(question, opts) {
@@ -240,9 +250,22 @@ function runOpenAiApiRung(question, opts) {
             const parsed = JSON.parse(raw);
             const text = String(parsed.choices?.[0]?.message?.content || '').trim();
             // Rough cost estimate from usage (gpt-4o-mini: ~$0.15/M in, $0.60/M out)
-            const u = parsed.usage || {};
-            const est = ((u.prompt_tokens || 0) * 0.15 + (u.completion_tokens || 0) * 0.6) / 1e6;
+            const est = estimateOpenAiCostUsd(parsed.usage);
             const s = recordSpend(est);
+            // Attribute the estimated dollar cost to the calling surface so the
+            // ladder observability rollup can answer "which surface burned the
+            // paid floor, and for how much" -- not just the reliance rate. A
+            // dedicated cost line (kind:'cost') never counts as a terminal rung
+            // attempt; it only ExampleCos dollars.
+            if (est > 0) {
+              appendJsonl(ATTEMPT_LOG, {
+                ts: new Date().toISOString(),
+                surface: opts.surface || 'ExampleCo',
+                rung: 'openai-api',
+                kind: 'cost',
+                estUsd: est,
+              });
+            }
             const warn = budgetWarning({ spentUsd: s.spentUsd, capUsd: OPENAI_SOFT_CAP_USD });
             if (warn)
               appendJsonl(ATTEMPT_LOG, { ts: new Date().toISOString(), budgetWarning: warn });
@@ -366,6 +389,7 @@ module.exports = {
   BrainUnreachable,
   defaultRungOrder,
   budgetWarning,
+  estimateOpenAiCostUsd,
   readSpend,
   ATTEMPT_LOG,
   SPEND_FILE,
