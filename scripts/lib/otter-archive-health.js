@@ -53,11 +53,17 @@ function computeLast7DisplayStatus(last7) {
       Number(h.transcript_text_segments_total || 0);
   const timestampAnomalies = Number(h.timestamped_segments_outside_audio_duration || 0);
   const timestampedInAudioCalls = Number(h.timestamped_segments_in_audio_calls || 0);
+  // Segments whose audio duration the probe could not read were neither
+  // verified nor out of bounds (the 2026-07-06 ffprobe-PATH incident). A RED
+  // driven even partly by unverifiable segments is a probe repair the grade is
+  // naming honestly -- the rounding-tail downgrade must never soften it.
+  const unverifiable = Number(h.timestamped_segments_unverifiable_audio_duration || 0);
   const outOfBoundsRate =
     timestampedInAudioCalls > 0 ? timestampAnomalies / timestampedInAudioCalls : 0;
   const isSmallRoundingTail =
     timestampAnomalies > 0 &&
     timestampedInAudioCalls > 0 &&
+    unverifiable === 0 &&
     outOfBoundsRate <= OUT_OF_BOUNDS_RATE_CAP;
   const isRed = String(l7.status || '').toUpperCase() === 'RED';
   if (isRed && audioComplete && isSmallRoundingTail) return 'GREEN with timestamp warnings';

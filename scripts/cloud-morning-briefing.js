@@ -5849,18 +5849,31 @@ function gradeOtterProcessingSeverity({
   const enrichedShortfall =
     m.enriched_coverage_all != null && m.enriched_coverage_all < enrichedAllRed;
   // Recent-window recoverable defects, graded off the same last_7_days summary
-  // the reference grader uses: missing segment timestamps, or a real out-of-
-  // bounds wall below the 99.9% rounding tolerance. Purged-at-source MISSING
-  // AUDIO is deliberately excluded here -- it is unrecoverable, so it never
-  // forces RED.
+  // the reference grader uses: missing segment timestamps, a real out-of-bounds
+  // wall below the 99.9% rounding tolerance, or audio durations the probe could
+  // not read (a probe repair, per the 2026-07-06 ffprobe-PATH incident). The
+  // in-bounds ratio is judged over segments actually CHECKED (verified +
+  // out-of-bounds); unverifiable segments flag on their own axis instead of
+  // diluting the ratio. Purged-at-source MISSING AUDIO is deliberately excluded
+  // here -- it is unrecoverable, so it never forces RED.
   const s = (textAudio.last_7_days && textAudio.last_7_days.summary) || {};
   const totalSegments = Number(s.transcript_text_segments_total || 0);
   const timestampedSegments = Number(s.text_segments_with_start_end_timestamps || 0);
   const timestampsComplete = totalSegments === 0 || timestampedSegments >= totalSegments;
-  const inAudioTimestamped = Number(s.timestamped_segments_in_audio_calls || 0);
   const inBoundsVerified = Number(s.timestamped_segments_verified_within_audio_duration || 0);
-  const inBoundsClean = inAudioTimestamped === 0 || inBoundsVerified / inAudioTimestamped >= 0.999;
-  const recentRecoverableDefect = !timestampsComplete || !inBoundsClean;
+  const inBoundsOutside = Number(s.timestamped_segments_outside_audio_duration || 0);
+  const inBoundsChecked = inBoundsVerified + inBoundsOutside;
+  const inBoundsClean = inBoundsChecked === 0 || inBoundsVerified / inBoundsChecked >= 0.999;
+  // Unverifiable is the explicit field when present, and is ALSO derived from
+  // the gap between timestamped-in-audio and checked segments so a stale
+  // artifact from an older report version cannot read as verifiable-clean.
+  const inAudioTimestamped = Number(s.timestamped_segments_in_audio_calls || 0);
+  const unverifiable = Math.max(
+    Number(s.timestamped_segments_unverifiable_audio_duration || 0),
+    inAudioTimestamped - inBoundsChecked,
+  );
+  const durationsVerifiable = unverifiable <= 0;
+  const recentRecoverableDefect = !timestampsComplete || !inBoundsClean || !durationsVerifiable;
 
   const recoverableOrStale =
     stale || freshDefect || lockStale || enrichedShortfall || recentRecoverableDefect;
