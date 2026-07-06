@@ -128,6 +128,49 @@ for dep in "${LIVE_DEPS[@]}"; do
   fi
 done
 
+# 2026-07-06 deploy-outage fix: LIVE_DEPS is a hand-curated list of top-level
+# entrypoint scripts, and it drifts -- a land can add a new require() inside
+# ec2-server.js (or anything it transitively requires) without anyone
+# remembering to add the new file to this array. scripts/lib/ and
+# scripts/self-heal/ are pure library code (no entrypoints of their own, cheap
+# to ship in full), so instead of trying to keep every library file curated by
+# hand, ship the WHOLE directories every deploy. This kills the curated-list-
+# drift class for libs outright; LIVE_DEPS stays the curated list only for
+# top-level entrypoint scripts (callback-watchdog.js, cloud-morning-briefing.js,
+# etc.) that are not under scripts/lib/ or scripts/self-heal/.
+echo "[deploy] pushing scripts/lib/ + scripts/self-heal/ in full (kills curated-list drift for libs)"
+for libdir in "scripts/lib" "scripts/self-heal"; do
+  if [ -d "$ROOT/$libdir" ]; then
+    tmp_tar="/tmp/secondbrain-deploy-$(basename "$libdir").tar.gz"
+    tar -czf "$tmp_tar" -C "$ROOT" "$libdir"
+    scp -i "$KEY" -o StrictHostKeyChecking=no "$tmp_tar" "$HOST:$tmp_tar"
+    rm -f "$tmp_tar"
+    ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+      "sudo mkdir -p /opt/secondbrain/$libdir && sudo tar -xzf $tmp_tar -C /opt/secondbrain && sudo chown -R ec2-user:ec2-user /opt/secondbrain/$libdir && rm -f $tmp_tar"
+  fi
+done
+
+# Require-resolution gate (2026-07-06): BEFORE pm2 restart, statically walk the
+# relative-require closure of the just-deployed server.js on EC2 and abort if
+# anything is missing. `node -c` only syntax-checks; it never resolves
+# requires, so a missing module was previously invisible until PM2 actually
+# loaded it and crash-looped. This gate runs against the shipped
+# require-scan-check.js (scripts/lib/require-scan.js does the walking), so it
+# needs no repo checkout on EC2 -- only the files this same deploy just copied.
+echo "[deploy] pushing require-scan gate"
+scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/scripts/require-scan-check.js" "$HOST:/tmp/secondbrain-deploy-require-scan-check.js"
+ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  "sudo cp /tmp/secondbrain-deploy-require-scan-check.js /opt/secondbrain/scripts/require-scan-check.js && sudo chown ec2-user:ec2-user /opt/secondbrain/scripts/require-scan-check.js && rm -f /tmp/secondbrain-deploy-require-scan-check.js"
+
+echo "[deploy] require-scan gate: resolving server.js's require closure on EC2 (before restart)"
+if ! ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  'node /opt/secondbrain/scripts/require-scan-check.js --root /opt/secondbrain server.js'; then
+  echo "[deploy] REQUIRE-SCAN FAIL: server.js requires a module that is missing on EC2. Rolling back the on-disk file (PM2 was never restarted, so the old process was already still running; this just keeps the ON-DISK copy consistent with it too, so the deploy-parity probe and the nightly canary do not false-red against a half-deployed file). See MISSING lines above; add the module to LIVE_DEPS (or scripts/lib or scripts/self-heal, which ship in full) and redeploy."
+  ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+    'cp "$(ls -t /opt/secondbrain/server.js.bak-* | head -1)" /opt/secondbrain/server.js; cp "$(ls -t /opt/secondbrain/ec2-server.js.bak-* | head -1)" /opt/secondbrain/ec2-server.js'
+  exit 1
+fi
+
 echo "[deploy] syntax-check + restart + health on EC2"
 ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" '
   node -c /opt/secondbrain/server.js || { echo "[deploy] SYNTAX FAIL on EC2, rolling back"; cp "$(ls -t /opt/secondbrain/server.js.bak-* | head -1)" /opt/secondbrain/server.js; exit 1; }

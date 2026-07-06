@@ -17,7 +17,11 @@
 #   2. build-path HEAD == origin/master (the git side of deploy parity).
 #   3. the deploy-parity probe (scripts/verify-deploy-parity.js) reports ok.
 #   4. `node -c` syntax-checks the DEPLOYED server.js and cloud-morning-briefing.js.
-#   5. the briefing lock (/tmp/secondbrain-morning-briefing-run.lock) is free,
+#   5. the require-scan gate (scripts/require-scan-check.js) statically resolves
+#      the DEPLOYED server.js's relative-require closure under the live root --
+#      catches an incomplete deploy (a require added without shipping the file)
+#      overnight instead of as a morning PM2 crash. 2026-07-06 deploy-outage fix.
+#   6. the briefing lock (/tmp/secondbrain-morning-briefing-run.lock) is free,
 #      i.e. no stale/stuck briefing run is holding it.
 #
 # This is run MANUALLY after deploys (the orchestrator runs it once tonight
@@ -126,7 +130,21 @@ check_syntax() {
 check_syntax "deployed server.js" "$LIVE_ROOT/server.js"
 check_syntax "deployed cloud-morning-briefing.js" "$LIVE_ROOT/scripts/cloud-morning-briefing.js"
 
-# ---- Step 5: briefing lock is free ----
+# ---- Step 5: require-scan gate on the DEPLOYED server.js ----
+REQUIRE_SCAN="$LIVE_ROOT/scripts/require-scan-check.js"
+if [ -f "$REQUIRE_SCAN" ] && [ -f "$LIVE_ROOT/server.js" ]; then
+  REQUIRE_SCAN_OUT="$("$NODE_BIN" "$REQUIRE_SCAN" --root "$LIVE_ROOT" server.js 2>&1)"
+  REQUIRE_SCAN_STATUS=$?
+  if [ "$REQUIRE_SCAN_STATUS" = "0" ]; then
+    pass "require-scan: deployed server.js's require closure resolves cleanly under $LIVE_ROOT"
+  else
+    fail "require-scan: deployed server.js has an unresolved require under $LIVE_ROOT: $(printf '%s' "$REQUIRE_SCAN_OUT" | tail -5)"
+  fi
+else
+  fail "require-scan: gate script or deployed server.js missing ($REQUIRE_SCAN / $LIVE_ROOT/server.js)"
+fi
+
+# ---- Step 6: briefing lock is free ----
 if [ -e "$BRIEFING_LOCK" ]; then
   # A lock FILE existing is not itself a problem (flock releases on process
   # exit even if the file remains); the real test is whether it is currently
