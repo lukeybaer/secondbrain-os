@@ -35,12 +35,20 @@
 //      fallbacks, only the ONE section we asked for.
 //   3. Extract the target card's section from the targeted build's output by
 //      matching the manifest's own `match` regex against each section's
-//      title line (never a loose all-caps heading regex -- Codex amendment
-//      A1). Require EXACTLY ONE match in both the existing file and the
-//      targeted build's output; abort loudly on zero, on duplicates in the
-//      existing file (the covid double is live evidence this happens), or on
-//      a builder output that produced more than one TITLE-headed section for
-//      the id.
+//      title text AND its raw heading line (never a loose all-caps heading
+//      regex -- Codex amendment A1). Require EXACTLY ONE match in both the
+//      existing file and the targeted build's output; abort loudly on zero,
+//      on duplicates in the existing file (the covid double is live evidence
+//      this happens), or on a builder output that produced more than one
+//      TITLE-headed section for the id. When the target id has ZERO sections
+//      of its own but is half of a MUTUAL manifest merge pair
+//      (video_approval_queue <-> content_pipeline: the briefing renders
+//      exactly one of the two, and the cloud builder OMITs the other), the
+//      partner's single section resolves as the target's live surface --
+//      2026-07-06 live evidence: `refresh-card video_approval_queue` ZERO-
+//      aborted on both sides because the published file (and the fresh
+//      build) legitimately ExampleCod CONTENT PIPELINE instead. One-way merges
+//      (full_life_backup -> system_health) never swap.
 //   4. ALSO extract + replace the two DERIVED sections that must move with any
 //      target: BLOCKERS (renderBlockersSection / blockedCardEntries /
 //      deriveNonGreenSubsystemBlockers already ran inside the targeted build,
@@ -53,11 +61,21 @@
 //      preserving each replaced section's own trailing separator chrome
 //      (blank lines + `---` lines), so the published file's real separator
 //      shape survives the splice byte-for-byte outside the new content.
-//   6. Whole-document QC gate (Codex amendment A4): qcBriefingMarkdown() +
-//      the canonical validator (runCanonicalBriefingValidator, which runs
-//      checkHealthBlockersConsistency/reverse among everything else) against
-//      the SPLICED document. On failure: print failures, exit nonzero,
-//      NEVER write.
+//   6. Whole-document QC gate (Codex amendment A4, DIFFERENTIAL form as of
+//      2026-07-06): the SAME two whole-doc checks (qcBriefingMarkdown + the
+//      canonical validator) run against BOTH the existing published document
+//      (the BEFORE baseline) and the SPLICED document (AFTER). Publish iff
+//      the splice introduces NO NEW failures -- after subset-of before,
+//      compared on normalized failure keys (digit runs collapse so counts/
+//      dates/amounts never make an old failure look new). Absolute gating
+//      deadlocked incremental healing in production (six live refreshes were
+//      rejected by unrelated pre-existing failures in OTHER cards); the
+//      differential gate keeps A4's spirit -- the whole doc is QC'd and the
+//      splice may never make it worse -- while letting a no-worse splice
+//      publish. The two-way health/blockers consistency checks stay ABSOLUTE
+//      on the spliced doc (this tool re-derives those sections itself every
+//      run, so they must always hold). On a gate failure: print the NEW
+//      failures, exit nonzero, NEVER write.
 //   7. On QC pass: acquire the SAME shared briefing lock the full build uses
 //      (/tmp/secondbrain-morning-briefing-run.lock via flock -- Codex
 //      amendment A2), atomic-write via the existing writeTextAtomic, refresh
@@ -80,7 +98,10 @@
 //       pattern).
 //   A4. Publish gate is the WHOLE-markdown QC (qcBriefingMarkdown +
 //       checkHealthBlockersConsistency/reverse via the canonical validator)
-//       run against the SPLICED document, not just the new section.
+//       run against the SPLICED document, not just the new section. As of
+//       2026-07-06 the gate is DIFFERENTIAL (no NEW failures vs the
+//       pre-splice baseline; consistency checks stay absolute) -- see design
+//       item 6 for the live deadlock that forced this.
 //   A5. Never call notifyBriefingPublished from this tool; never touch the
 //       notify dedupe marker.
 //
@@ -110,10 +131,17 @@ const {
   writeTextAtomic,
   DEFAULT_DATA_DIR,
   runCanonicalBriefingValidator,
-  mergeCanonicalQc,
 } = require('./cloud-morning-briefing.js');
 const { qcBriefingMarkdown } = require('./lib/briefing-card-qc.js');
 const { CARDS, getCardById } = require('./lib/briefing-card-manifest.js');
+// The two-way health/blockers consistency checks stay an ABSOLUTE gate (they
+// concern the derived BLOCKERS + SYSTEM HEALTH sections this tool rebuilds
+// itself, so they must hold on every publish), while the rest of the
+// whole-doc QC is DIFFERENTIAL -- see the gate note in refreshCard.
+const {
+  checkHealthBlockersConsistency,
+  checkHealthBlockersReverseConsistency,
+} = require('./validate-briefing-quality.js');
 
 // The delimiter buildCloudMorningBriefing joins its own fresh output with
 // (`qcSections.join('\n\n---\n\n')`). Still exported for fixture-building,
@@ -241,34 +269,90 @@ function sectionTitleLine(section) {
   return (section && section.lines && section.lines[0]) || '';
 }
 
-// Find the sections whose extracted TITLE TEXT matches the manifest card's
-// own `match` regex (A1: manifest matcher, never a loose heading regex).
+// Find the sections whose heading matches the manifest card's own `match`
+// regex (A1: manifest matcher, never a loose heading regex). The regex is
+// tested against BOTH the extracted title text AND the RAW heading line
+// (colon and count/amount suffix included, e.g. "VIDEO APPROVAL QUEUE (43):"),
+// per the 2026-07-06 production hardening pass: every manifest matcher is a
+// ^-anchored prefix with no $ anchor (verified mechanically across all 33
+// cards), so raw-line testing can only ADD matches a stripped-title test
+// would miss (a header shape whose normalization diverges from what the
+// matchers were designed against), never lose one. The stripped title is
+// still tested first because markdown "## TITLE" headings carry a "## "
+// prefix the ^-anchored matchers would reject on the raw line.
 // Returns the matching indices.
 function findMatchingSectionIndices(sections, card) {
   const re = new RegExp(card.match.source, card.match.flags.includes('i') ? 'i' : '');
   const indices = [];
   sections.forEach((section, idx) => {
-    if (re.test(section.titleText)) indices.push(idx);
+    if (re.test(section.titleText) || re.test(sectionTitleLine(section))) indices.push(idx);
   });
   return indices;
 }
 
-// Abort loudly (never silently pick one) on zero or duplicate matches. Returns
+// The card's MUTUAL merge partners: manifest cards P where card.mergedInto
+// names P AND P.mergedInto names card back. A mutual pair (content_pipeline
+// <-> video_approval_queue) is an exclusive-or: the briefing renders exactly
+// ONE of the two sections depending on live data (the cloud builder emits
+// OMIT_MANIFEST_SECTION for video_approval_queue whenever the pending-video
+// manifest has items, and the published file then ExampleCos CONTENT PIPELINE
+// -- live evidence 2026-07-06). A ONE-WAY merge (full_life_backup ->
+// system_health) is an ABSORB, not an alternative: SYSTEM HEALTH always
+// renders as itself and merely inlines the other card's data, so swapping
+// would corrupt the document -- one-way merges are deliberately excluded.
+function mutualMergePartners(card) {
+  if (!card || !Array.isArray(card.mergedInto)) return [];
+  return card.mergedInto
+    .map((id) => getCardById(id))
+    .filter(
+      (partner) =>
+        partner && Array.isArray(partner.mergedInto) && partner.mergedInto.includes(card.id),
+    );
+}
+
+// Abort loudly (never silently pick one) on zero or duplicate matches. On
+// ZERO matches for the card's own matcher, fall back to its MUTUAL merge
+// partners (see mutualMergePartners): the pair renders as one section or the
+// other, so the partner's section IS the target card's live surface. Returns
 // the single matching index on success.
 function requireExactlyOneSection(sections, card, { where }) {
   const indices = findMatchingSectionIndices(sections, card);
-  if (indices.length === 0) {
-    throw new Error(
-      `ABORT: ${where} ExampleCos ZERO sections matching card '${card.id}' (expected header matching ${card.match}). Refusing to guess -- the section is missing or the manifest matcher is stale.`,
-    );
-  }
   if (indices.length > 1) {
     const titles = indices.map((i) => sectionTitleLine(sections[i])).join(' | ');
     throw new Error(
       `ABORT: ${where} ExampleCos ${indices.length} DUPLICATE sections matching card '${card.id}' (${titles}). Refusing to splice against an ambiguous document -- collapse the duplicate before retrying.`,
     );
   }
-  return indices[0];
+  if (indices.length === 1) return indices[0];
+
+  // Zero own-matches: resolve through the mutual merge pair (exclusive-or
+  // alternatives). The union across all partners must land on EXACTLY ONE
+  // section -- the same A1 discipline, widened to the pair.
+  const partners = mutualMergePartners(card);
+  const partnerHits = [];
+  for (const partner of partners) {
+    for (const idx of findMatchingSectionIndices(sections, partner)) {
+      partnerHits.push({ idx, partnerId: partner.id });
+    }
+  }
+  if (partnerHits.length === 1) {
+    console.log(
+      `[refresh-card] card '${card.id}' has no section of its own in ${where}; using its mutual merge partner '${partnerHits[0].partnerId}' (${sectionTitleLine(sections[partnerHits[0].idx]).trim()}) -- the pair renders as one or the other.`,
+    );
+    return partnerHits[0].idx;
+  }
+  if (partnerHits.length > 1) {
+    const titles = partnerHits.map((h) => sectionTitleLine(sections[h.idx])).join(' | ');
+    throw new Error(
+      `ABORT: ${where} ExampleCos ZERO sections matching card '${card.id}' and ${partnerHits.length} sections matching its merge partners (${titles}). Refusing to splice against an ambiguous document.`,
+    );
+  }
+  const partnerNote = partners.length
+    ? ` (also tried mutual merge partner(s): ${partners.map((p) => p.id).join(', ')})`
+    : '';
+  throw new Error(
+    `ABORT: ${where} ExampleCos ZERO sections matching card '${card.id}' (expected header matching ${card.match})${partnerNote}. Refusing to guess -- the section is missing or the manifest matcher is stale.`,
+  );
 }
 
 // Extract the section for `cardId` from a builder's fresh assembled markdown
@@ -506,6 +590,47 @@ function writeJsonAtomic(file, value) {
   fs.renameSync(tmp, file);
 }
 
+// ---------------------------------------------------------------------------
+// Differential QC gate helpers (pure; exported for tests).
+//
+// WHY DIFFERENTIAL (2026-07-06 production evidence): six live refreshes each
+// rebuilt their card successfully and were then rejected by the ABSOLUTE
+// whole-doc gate because of UNRELATED pre-existing failures in OTHER cards
+// ("US IMMIGRATION NEWS item 2 contains publisher chrome", "FEATURE BACKLOG
+// has no current scored approval asks", "TOKEN USAGE ... stale"). Absolute
+// gating deadlocks incremental healing: no card can be fixed until every
+// card is clean, which is exactly the situation this tool exists to dig out
+// of. The differential gate preserves Codex amendment A4's spirit -- the
+// WHOLE document is still QC'd, and the splice may never make it worse --
+// while allowing a strict improvement or a no-worse splice to publish:
+// compute the whole-doc failure set BEFORE the splice and AFTER it, and
+// publish iff AFTER introduces NO NEW failures (after subset-of before,
+// compared on normalized keys). The two-way health/blockers consistency
+// checks stay ABSOLUTE on the spliced doc (those sections are re-derived by
+// this tool itself on every run, so they must always hold).
+// ---------------------------------------------------------------------------
+
+// Normalize a failure message into a comparison key: digit runs collapse to
+// 'N' (counts, dates, times, dollar amounts all vary run-to-run without the
+// failure being NEW -- "has 2/5 articles" -> "has N/N articles") and
+// whitespace collapses, so the before/after comparison is on the failure
+// CATEGORY, never on a raw string that embeds a count or timestamp.
+function normalizeFailureKey(failure) {
+  return String(failure || '')
+    .replace(/\d+/g, 'N')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// The failures in `afterFailures` whose normalized key does not appear in
+// `beforeFailures` -- i.e. the failures the splice INTRODUCED. Empty array
+// means the splice is publishable (it reduced or merely ExampleCod the
+// pre-existing set).
+function newFailuresAfterSplice(beforeFailures, afterFailures) {
+  const beforeKeys = new Set((beforeFailures || []).map(normalizeFailureKey));
+  return (afterFailures || []).filter((f) => !beforeKeys.has(normalizeFailureKey(f)));
+}
+
 // Pure core: given the EXISTING markdown and a targeted rebuild's fresh
 // markdown, splice the target card + derived cards (blockers, system_health)
 // into the existing document. Returns { markdown, replacedIds } or throws on
@@ -600,12 +725,13 @@ async function refreshCard({
   // Injectable ONLY for tests, same pattern buildCloudMorningBriefing itself
   // already uses for its own `canonicalValidator` parameter. The real CLI
   // path always uses the default (the actual spawn to
-  // validate-briefing-quality.js). The real validator requires a COMPLETE
-  // (26+ card) briefing to pass -- a minimal synthetic fixture legitimately
-  // and correctly fails it (card-completeness is its job, proven by its own
-  // test suite), so orchestration tests that want to exercise the
-  // clean-publish path stub this out; tests that want to prove A4 (a real
-  // canonical QC failure blocks the write) use the real default.
+  // validate-briefing-quality.js). Called TWICE per run for the differential
+  // gate: once against the real published file (the BEFORE baseline) and
+  // once against the spliced probe file (AFTER); test stubs distinguish the
+  // two by markdownPath (the probe path contains '.refresh-card-probe.').
+  // With the differential gate, a minimal synthetic fixture that fails the
+  // real validator identically before and after publishes cleanly -- only
+  // NEW failures block.
   canonicalValidator = runCanonicalBriefingValidator,
 } = {}) {
   const card = getCardById(cardId);
@@ -629,6 +755,20 @@ async function refreshCard({
   const doRefresh = () => {
     const existingMarkdown = fs.readFileSync(markdownPath, 'utf8');
 
+    // BEFORE baseline for the DIFFERENTIAL whole-doc gate: the failure set of
+    // the document as it is published RIGHT NOW (presentation QC + the
+    // canonical validator against the real file), computed inside the lock so
+    // the baseline cannot drift between this read and our write. See the
+    // differential-gate note above newFailuresAfterSplice for why the gate is
+    // differential (2026-07-06 live deadlock: six single-card refreshes were
+    // rejected by unrelated pre-existing failures in OTHER cards).
+    const beforePresentation = qcBriefingMarkdown(existingMarkdown);
+    const beforeCanonical = canonicalValidator({ dataDir, date, markdownPath });
+    const beforeFailures = [
+      ...((beforePresentation && beforePresentation.failures) || []),
+      ...((beforeCanonical && beforeCanonical.failures) || []),
+    ];
+
     console.log(`[refresh-card] rebuilding card='${cardId}' date=${date} dataDir=${dataDir}`);
     const fresh = buildFn({ dataDir, date, now, cardId });
 
@@ -642,25 +782,34 @@ async function refreshCard({
     }
     console.log(`[refresh-card] spliced sections: ${spliced.replacedIds.join(', ')}`);
 
-    // Whole-document QC gate (Codex amendment A4): the SAME two checks the
-    // full build runs before writing -- presentation QC (qcBriefingMarkdown)
-    // and the canonical validator (which runs checkHealthBlockersConsistency
-    // + Reverse, among everything else) -- against the SPLICED document,
-    // never just the new section. On failure: print, exit nonzero, do not
-    // write.
-    const presentationQc = qcBriefingMarkdown(spliced.markdown);
-    if (!presentationQc.ok) {
-      console.error('[refresh-card] whole-document presentation QC FAILED. Not writing:');
-      for (const f of presentationQc.failures) console.error(`  - ${f}`);
+    // ABSOLUTE gate: the two-way health/blockers consistency checks must hold
+    // on the spliced document unconditionally -- BLOCKERS and SYSTEM HEALTH
+    // are re-derived by THIS tool on every run (DERIVED_CARD_IDS), so a
+    // violation here is always a defect this run introduced, never a
+    // pre-existing condition it should tolerate.
+    const consistencyFailures = [
+      ...checkHealthBlockersConsistency(spliced.markdown),
+      ...checkHealthBlockersReverseConsistency(spliced.markdown),
+    ];
+    if (consistencyFailures.length) {
+      console.error(
+        '[refresh-card] health/blockers consistency FAILED on the spliced document (absolute gate). Not writing:',
+      );
+      for (const f of consistencyFailures) console.error(`  - ${f}`);
       process.exitCode = 1;
       return null;
     }
 
+    // AFTER failure set (Codex amendment A4, differential form): the SAME two
+    // whole-document checks the full build runs -- presentation QC
+    // (qcBriefingMarkdown) and the canonical validator -- against the SPLICED
+    // document, never just the new section.
+    const afterPresentation = qcBriefingMarkdown(spliced.markdown);
     fs.mkdirSync(path.dirname(markdownPath), { recursive: true });
     // Write to a TEMP path first so the canonical validator (which reads the
     // markdown FILE, not a string) can check the spliced content before it
     // ever lands at the real markdownPath -- the file only moves to its real
-    // path after BOTH QC passes (A4: never write on QC failure).
+    // path after the gate passes (never write on a gate failure).
     const probePath = `${markdownPath}.refresh-card-probe.${process.pid}.md`;
     writeTextAtomic(probePath, spliced.markdown);
     let canonicalValidation;
@@ -677,12 +826,28 @@ async function refreshCard({
         /* best effort */
       }
     }
-    const finalQc = mergeCanonicalQc(presentationQc, canonicalValidation);
-    if (!finalQc.ok) {
-      console.error('[refresh-card] whole-document canonical QC FAILED. Not writing:');
-      for (const f of finalQc.failures) console.error(`  - ${f}`);
+    const afterFailures = [
+      ...((afterPresentation && afterPresentation.failures) || []),
+      ...((canonicalValidation && canonicalValidation.failures) || []),
+    ];
+
+    // DIFFERENTIAL gate: publish iff the splice introduces NO NEW failures
+    // (after subset-of before on normalized keys). A splice that reduces or
+    // merely ExampleCos the pre-existing failure set publishes -- incremental
+    // healing must never be deadlocked by unrelated pre-existing defects.
+    const newFailures = newFailuresAfterSplice(beforeFailures, afterFailures);
+    if (newFailures.length) {
+      console.error(
+        `[refresh-card] whole-document QC gate FAILED: the splice INTRODUCES ${newFailures.length} new failure(s) (${beforeFailures.length} pre-existing failures tolerated). Not writing:`,
+      );
+      for (const f of newFailures) console.error(`  - ${f}`);
       process.exitCode = 1;
       return null;
+    }
+    if (afterFailures.length) {
+      console.log(
+        `[refresh-card] differential gate PASS: ${afterFailures.length} pre-existing failure(s) remain (baseline ${beforeFailures.length}), none introduced by this splice.`,
+      );
     }
 
     writeTextAtomic(markdownPath, spliced.markdown);
@@ -701,8 +866,18 @@ async function refreshCard({
         generatedAt: now.toISOString(),
         generator: 'refresh-card',
         markdownPath,
-        publishState: finalQc.ok ? 'ready' : 'blocked',
-        qc: finalQc,
+        // The gate passed (we only reach the receipt after the write), so the
+        // publish state is ready. Pre-existing failures the differential gate
+        // tolerated are recorded honestly below, never hidden.
+        publishState: 'ready',
+        qc: {
+          ok: true,
+          gate: 'differential',
+          newFailures: [],
+          preExistingFailures: afterFailures.slice(0, 120),
+          preExistingFailureCount: afterFailures.length,
+          baselineFailureCount: beforeFailures.length,
+        },
         canonicalValidation: canonicalValidation
           ? {
               ok: canonicalValidation.ok,
@@ -716,7 +891,7 @@ async function refreshCard({
             }
           : previousReceipt.canonicalValidation || null,
         renderQcDefectCards: previousReceipt.renderQcDefectCards || [],
-        degradedNotice: finalQc.ok ? null : previousReceipt.degradedNotice || null,
+        degradedNotice: null,
         refreshedCard: cardId,
         refreshedSections: spliced.replacedIds,
       };
@@ -816,7 +991,10 @@ module.exports = {
   headingTitleText,
   sectionTitleLine,
   findMatchingSectionIndices,
+  mutualMergePartners,
   requireExactlyOneSection,
+  normalizeFailureKey,
+  newFailuresAfterSplice,
   spliceCard,
   buildTargetedRebuild,
   withSharedBriefingLock,
