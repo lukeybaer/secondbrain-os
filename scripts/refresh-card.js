@@ -12,8 +12,18 @@
 // single-card verification takes about 2 minutes instead.
 //
 // DESIGN (published-file-as-source-of-truth):
-//   1. Read the existing briefing-<date>.md. Split it into sections using the
-//      SAME delimiter the full build joins with (`\n\n---\n\n`).
+//   1. Read the existing briefing-<date>.md. Split it into sections at heading
+//      LINES using the SAME dual-heading detection the canonical QC parser
+//      uses (splitMarkdownCards in scripts/lib/briefing-card-qc.js): a
+//      markdown `## TITLE` line or a legacy `TITLE:` line
+//      (/^([A-Z]{2,}[^\n]{0,200}):\s*$/). The REAL published file is NOT
+//      joined with the builder's exact `\n\n---\n\n` delimiter (live evidence
+//      2026-07-06: sections separated by `\n\n---\n<HEADING>`, and the
+//      preamble runs straight into BLOCKERS with no separator at all), so
+//      delimiter-based splitting finds zero sections against production.
+//      Heading-based splitting is what QC itself uses on this same file, and
+//      this tool tracks exact line spans so untouched sections stay
+//      byte-identical through the splice.
 //   2. Run buildCloudMorningBriefing with selfHealRefresh + refreshTargets
 //      narrowed to the target card id (the SAME narrowing mechanism the
 //      self-heal refresh path already uses -- see refreshTargetAllows /
@@ -39,8 +49,10 @@
 //      (checkHealthBlockersConsistency + reverse) stays green after the
 //      splice.
 //   5. Splice: keep every OTHER existing section byte-for-byte; replace the
-//      target + derived sections with the freshly built ones. Rebuild the
-//      full markdown string with the exact same join the builder uses.
+//      target + derived sections' CONTENT with the freshly built ones while
+//      preserving each replaced section's own trailing separator chrome
+//      (blank lines + `---` lines), so the published file's real separator
+//      shape survives the splice byte-for-byte outside the new content.
 //   6. Whole-document QC gate (Codex amendment A4): qcBriefingMarkdown() +
 //      the canonical validator (runCanonicalBriefingValidator, which runs
 //      checkHealthBlockersConsistency/reverse among everything else) against
@@ -103,13 +115,36 @@ const {
 const { qcBriefingMarkdown } = require('./lib/briefing-card-qc.js');
 const { CARDS, getCardById } = require('./lib/briefing-card-manifest.js');
 
-// The exact delimiter buildCloudMorningBriefing joins sections with
-// (`qcSections.join('\n\n---\n\n')`). Splitting on this SAME string, rather
-// than re-deriving a heading regex, means the boundary between one card's
-// body and the next is defined by the builder's own join contract -- so a
-// card body that happens to contain a line looking like a heading can never
-// be mistaken for a section break.
+// The delimiter buildCloudMorningBriefing joins its own fresh output with
+// (`qcSections.join('\n\n---\n\n')`). Still exported for fixture-building,
+// but NOT used for splitting: the REAL published file does not carry this
+// exact join (see the DESIGN note above), so section boundaries are found by
+// heading lines instead -- the same dual detection splitMarkdownCards
+// (scripts/lib/briefing-card-qc.js) uses, which demonstrably parses the real
+// production file because the QC gate itself runs on it.
 const SECTION_DELIMITER = '\n\n---\n\n';
+
+// Dual heading detection, mirrored VERBATIM from splitMarkdownCards in
+// scripts/lib/briefing-card-qc.js (the canonical parser for this file
+// format): a markdown `## TITLE` line or a legacy `TITLE:` line. Kept as two
+// named regexes so a future change to the QC parser has one obvious place to
+// mirror into; the refresh-card test suite pins both shapes against a
+// real-format fixture.
+const MARKDOWN_HEADING_RE = /^##\s+(.+?)\s*$/;
+const LEGACY_HEADING_RE = /^([A-Z]{2,}[^\n]{0,200}):\s*$/;
+
+// Extract the normalized title text from a heading line ('' when the line is
+// not a heading). This is the SAME string shape the manifest matchers were
+// designed against (the manifest doc comment: "match: RegExp tested against
+// the rendered, HTML-decoded data-section" -- i.e. the bare title, no `## `
+// prefix, no trailing colon).
+function headingTitleText(line) {
+  const md = String(line || '').match(MARKDOWN_HEADING_RE);
+  if (md) return md[1].trim();
+  const legacy = String(line || '').match(LEGACY_HEADING_RE);
+  if (legacy) return legacy[1].trim();
+  return '';
+}
 
 // The shared briefing lock. SAME file the full build's cron wrapper
 // (ec2-morning-briefing-run.sh) flocks -- Codex amendment A2: one lock, never
@@ -150,52 +185,70 @@ function parseArgs(argv) {
 // keeps checkHealthBlockersConsistency / Reverse green after the splice.
 const DERIVED_CARD_IDS = ['blockers', 'system_health'];
 
-// Split a full briefing markdown into { preamble, sections: [{raw, titleLine}] }
-// using the EXACT join delimiter the builder uses. `raw` sections start at the
-// TITLE line (the "TITLE:\n\n..." legacy shape); `preamble` is everything
-// before the first section (the "# Daily Briefing - ..." header block), which
-// this tool never touches.
+// Split a full briefing markdown into { preambleLines, sections } where each
+// section is { lines, titleText }. Boundaries are heading LINES (dual
+// detection above), and every original line lands in exactly one span, so
+// [...preambleLines, ...sections.flatMap((s) => s.lines)].join('\n')
+// reproduces the input byte-for-byte -- the property the splice relies on to
+// keep untouched sections byte-identical. `preambleLines` is everything
+// before the first heading (the "# Daily Briefing - ..." block; a `# ` line
+// is NOT a section heading), which this tool never touches. Separator chrome
+// between sections (`---` lines, blank lines) belongs to the PRECEDING
+// section's span.
 function splitDocument(markdown) {
-  const parts = String(markdown || '').split(SECTION_DELIMITER);
-  if (parts.length === 0) return { preamble: '', sections: [] };
-  // parts[0] is "<preamble>\n\n<first section>" (joined with a plain '\n\n',
-  // not the '---' delimiter -- see the builder's markdown array literal). Find
-  // the first section's title line inside parts[0]: the first non-blank line
-  // that looks like a legacy "TITLE:" heading (a line ending in ':' with no
-  // other trailing content), scanning from the top. The builder's own
-  // preamble lines never end in a bare ':', so this is unambiguous.
-  const firstPartLines = parts[0].split('\n');
-  let firstTitleIdx = -1;
-  for (let i = 0; i < firstPartLines.length; i += 1) {
-    if (/^[A-Z0-9][^\n]*:\s*$/.test(firstPartLines[i])) {
-      firstTitleIdx = i;
-      break;
+  const lines = String(markdown || '').split('\n');
+  const preambleLines = [];
+  const sections = [];
+  let current = null;
+  for (const line of lines) {
+    const titleText = headingTitleText(line);
+    if (titleText) {
+      current = { lines: [line], titleText };
+      sections.push(current);
+      continue;
     }
+    if (current) current.lines.push(line);
+    else preambleLines.push(line);
   }
-  if (firstTitleIdx === -1) {
-    // No recognizable first section heading at all -- the whole document is
-    // malformed; surface it as zero sections so the caller aborts loudly
-    // rather than guessing.
-    return { preamble: parts[0], sections: [] };
+  return { preambleLines, sections };
+}
+
+// Reassemble what splitDocument produced. Inverse by construction: same
+// lines, same order, same '\n' join.
+function joinDocument({ preambleLines, sections }) {
+  const allLines = [...preambleLines];
+  for (const section of sections) allLines.push(...section.lines);
+  return allLines.join('\n');
+}
+
+// A section's trailing separator chrome: the run of blank and `---`-only
+// lines at the END of its span (the inter-section separator bytes that
+// heading-based splitting attaches to the preceding section). Preserved
+// verbatim when a section's content is replaced, so the published file's
+// real separator shape survives the splice regardless of which join the
+// fresh builder output used.
+function splitTrailingChrome(lines) {
+  let end = lines.length;
+  while (end > 0) {
+    const line = lines[end - 1].trim();
+    if (line === '' || /^-{3,}$/.test(line)) end -= 1;
+    else break;
   }
-  const preamble = firstPartLines.slice(0, firstTitleIdx).join('\n').replace(/\n+$/, '');
-  const firstSection = firstPartLines.slice(firstTitleIdx).join('\n');
-  const sections = [firstSection, ...parts.slice(1)];
-  return { preamble, sections };
+  return { contentLines: lines.slice(0, end), chromeLines: lines.slice(end) };
 }
 
 function sectionTitleLine(section) {
-  return String(section || '').split('\n', 1)[0] || '';
+  return (section && section.lines && section.lines[0]) || '';
 }
 
-// Find the sections in `sections` whose title line matches the manifest
-// card's own `match` regex (A1: manifest matcher, never a loose heading
-// regex). Returns the matching indices.
+// Find the sections whose extracted TITLE TEXT matches the manifest card's
+// own `match` regex (A1: manifest matcher, never a loose heading regex).
+// Returns the matching indices.
 function findMatchingSectionIndices(sections, card) {
   const re = new RegExp(card.match.source, card.match.flags.includes('i') ? 'i' : '');
   const indices = [];
   sections.forEach((section, idx) => {
-    if (re.test(sectionTitleLine(section))) indices.push(idx);
+    if (re.test(section.titleText)) indices.push(idx);
   });
   return indices;
 }
@@ -406,14 +459,21 @@ function spliceCard(existingMarkdown, freshMarkdown, cardId) {
       where: 'the existing published briefing',
     });
     const freshSection = extractFreshSection(fresh.sections, targetCard);
-    sections[existingIdx] = freshSection;
+    // Replace the section's CONTENT but preserve ITS OWN trailing separator
+    // chrome: the published file's real inter-section bytes (blank + `---`
+    // lines) stay exactly as they were, and the fresh builder output's own
+    // chrome (a possibly different join) is discarded with its throwaway
+    // document.
+    const { chromeLines } = splitTrailingChrome(sections[existingIdx].lines);
+    const { contentLines } = splitTrailingChrome(freshSection.lines);
+    sections[existingIdx] = {
+      lines: [...contentLines, ...chromeLines],
+      titleText: freshSection.titleText,
+    };
     replacedIds.push(id);
   }
 
-  const splicedBody = sections.join(SECTION_DELIMITER);
-  const splicedMarkdown = existing.preamble
-    ? `${existing.preamble}\n\n${splicedBody}`
-    : splicedBody;
+  const splicedMarkdown = joinDocument({ preambleLines: existing.preambleLines, sections });
   return { markdown: splicedMarkdown, replacedIds };
 }
 
@@ -662,6 +722,9 @@ if (require.main === module) main();
 module.exports = {
   parseArgs,
   splitDocument,
+  joinDocument,
+  splitTrailingChrome,
+  headingTitleText,
   sectionTitleLine,
   findMatchingSectionIndices,
   requireExactlyOneSection,
