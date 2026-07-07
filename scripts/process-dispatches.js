@@ -881,6 +881,8 @@ const NEW_LIVE_FILES = new Set([
   'scripts/lib/voice-spine-query.js',
   'scripts/lib/voice-tool-policy.js',
   'scripts/lib/spine-ingress.js',
+  'scripts/lib/recall-broker-crypto.js',
+  'scripts/recall-broker-health.js',
 ]);
 
 function changedFilesInRepo(repo = ACT_REPO) {

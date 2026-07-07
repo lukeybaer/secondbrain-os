@@ -5574,6 +5574,19 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
     push(ExampleCo, 'Graphiti: probe could not run on this host.');
   }
 
+  // Recall Broker (ExampleCo 2026-07-06): prompt-time retrieval cost governor +
+  // fail-closed auth canary on the memory read path. The value states the
+  // day's served-query evidence; RED means throttled at the hard cap or the
+  // endpoint stopped failing closed, never runaway cost (enforcement lives in
+  // the hook's spend path). Probe: scripts/recall-broker-health.js.
+  try {
+    const { probeRecallBrokerHealth } = require('./recall-broker-health');
+    const rb = probeRecallBrokerHealth({ serverLedgerDir: path.join(dataDir, 'agent') });
+    push(rb.status === 'green' ? OK : rb.status === 'red' ? BAD : ExampleCo, rb.detail);
+  } catch {
+    push(ExampleCo, 'Recall Broker: probe could not run on this host.');
+  }
+
   // Backups: the graphiti coverage health artifact is the freshest durable proof
   // the nightly backup/coverage pipeline ran. Fresh within 28h = green. The value
   // states WHEN the last backup/coverage ran ("last backup <relative time>") as
