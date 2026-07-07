@@ -7340,7 +7340,7 @@ function triangulateCyberCabDate(sources = CYBERCAB_DATE_SOURCES) {
   // -- late 2026 into H1 2027 -- is the most-likely consumer-reservation window.
   const mostLikely = 'Q4 2026 to H1 2027';
   const reasoning =
-    'Volume production is targeted for end of 2026 (Wikipedia) with the ramp starting Q2/April 2026 (InsideEVs, Teslarati), ' +
+    'Volume production is targeted for end of 2026 (Wikipedia) with the ramp starting Q2 2026 (Teslarati), ' +
     'and Musk has confirmed a sub-$30k consumer Cybercab "by 2027" (Teslarati) but has NOT announced a consumer reservation date. ' +
     'Consumer reservations therefore most likely open once volume production is underway -- late 2026 into H1 2027 -- not before the ramp clears.';
   return { rangeStart, rangeEnd, mostLikely, reasoning };
