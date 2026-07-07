@@ -5604,13 +5604,18 @@ function evaluatePm2FleetHealth({ procs, guardHeartbeat, recentIncidents, now } 
   const nameOf = (p) => (p && p.name) || '';
 
   const down = procs.filter((p) => stateOf(p) !== 'online');
-  // Actively unstable NOW: online but PM2 is still counting fast restarts, or it
-  // has not yet cleared the short stability floor. Lifetime restart_time is NOT
-  // consulted here.
-  const unstable = procs.filter(
-    (p) =>
-      stateOf(p) === 'online' && (unstableOf(p) > 0 || uptimeMsOf(p) < PM2_STABILITY_MIN_UPTIME_MS),
-  );
+  // Actively unstable NOW: online but PM2 is still counting fast restarts
+  // (unstable_restarts > 0). PM2 increments unstable_restarts on a restart faster
+  // than min_uptime and RESETS it to 0 once the process settles, so it is the
+  // live crash-loop signal by itself. A low uptime with unstable_restarts=0 is a
+  // clean recent start (a deploy restart, a manual pm2 restart), NOT instability
+  // -- flagging it would make every deploy paint the fleet non-green for the
+  // whole stability window and block card publishes (ExampleCo 2026-07-07). The
+  // uptime floor only sharpens the case of a process that is BOTH churning
+  // (unstable_restarts > 0) AND still too young to have settled; it never
+  // independently makes a clean-but-young process non-green. Lifetime
+  // restart_time is not consulted at all.
+  const unstable = procs.filter((p) => stateOf(p) === 'online' && unstableOf(p) > 0);
   const liveByName = new Map(procs.map((p) => [nameOf(p), p]));
 
   // Scope storm incidents to processes that are still present AND still unstable.
