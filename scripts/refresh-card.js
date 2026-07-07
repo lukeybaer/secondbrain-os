@@ -743,6 +743,19 @@ async function refreshCard({
     return null;
   }
 
+  // Card-skill context (per-card skill system, 2026-07-06): print the card's
+  // curated 1-pager + last-10 learnings at run start so any human or agent
+  // driving a refresh sees the accumulated per-card knowledge BY DEFAULT
+  // (injection, not discipline). Additive and non-fatal: a missing page or
+  // reader error never blocks the refresh, and no heal/refresh logic changes.
+  try {
+    const { formatCardSkillContext } = require('./lib/card-skills.js');
+    const cardSkillContext = formatCardSkillContext(cardId);
+    if (cardSkillContext) console.log(cardSkillContext);
+  } catch (e) {
+    console.warn(`[refresh-card] card-skill context unavailable: ${(e && e.message) || e}`);
+  }
+
   const now = new Date();
   const markdownPath = markdownPathFor(dataDir, date);
 

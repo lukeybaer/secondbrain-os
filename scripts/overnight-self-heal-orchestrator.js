@@ -1533,6 +1533,19 @@ function buildSessionPrompt(blocker, opts = {}) {
           .filter(Boolean)
           .join('\n')
       : '';
+  // Card-skill context (per-card skill system, 2026-07-06): when the blocker
+  // maps to a manifest card that has a skills/cards/ page, inject the card's
+  // curated 1-pager + last-10 learnings into the worker prompt BY DEFAULT so
+  // the heal worker starts with the card's accumulated knowledge. Additive and
+  // non-fatal: no mapping or a reader error leaves the prompt unchanged.
+  let cardSkillBlock = '';
+  try {
+    const { formatCardSkillContext, cardIdFromBlocker } = require('./lib/card-skills.js');
+    const skillCardId = cardIdFromBlocker(blocker);
+    if (skillCardId) cardSkillBlock = formatCardSkillContext(skillCardId) || '';
+  } catch {
+    /* non-fatal: the prompt works without card-skill context */
+  }
   return [
     `You are Amy doing overnight self-heal development work. ONE briefing blocker to clear.`,
     ``,
@@ -1564,6 +1577,7 @@ function buildSessionPrompt(blocker, opts = {}) {
       : `  8. Wait for the changed artifact/deploy/publish hash when the fix affects the live dashboard, then refresh the card and rerun the targeted/live verification. Local source tests alone are not closure.`,
     `  9. Reflect on the targeted QC result you produced, the prior live defect, and the next design if the coordinator's live QC still fails.`,
     falseClearProofContract,
+    cardSkillBlock ? `\n${cardSkillBlock}` : '',
     ``,
     `OUTPUT CONTRACT (final assistant message MUST be exactly one minified JSON object on its own line, with no Markdown and no prose):`,
     `  {`,
