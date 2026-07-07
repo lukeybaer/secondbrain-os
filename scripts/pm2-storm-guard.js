@@ -241,21 +241,44 @@ async function runGuardLocked({ runSync, stateFile, incidentsFile, notify, now }
   }
 
   // Alert on any halt, any protected-process storm, or a watch flag, but never
-  // on a bare first-run baseline with nothing wrong.
-  const shouldAlert = actions.some((a) => a.action.startsWith('stop')) || protectedStorms.length > 0 || watchFlags.length > 0;
+  // on a bare first-run baseline with nothing wrong. The Telegram text is clean
+  // executive English on purpose: raw operational terms (the process manager's
+  // name, "restarts") are scrubbed from Telegram by the executive-surface
+  // policy and would suppress the whole alert. The detailed operational text
+  // stays in the incident ledger, which the briefing reads and formats itself.
+  const stopped = actions.filter((a) => a.action === 'stopped').map((a) => a.name);
+  const stopFailed = actions.filter((a) => a.action === 'stop-failed').map((a) => a.name);
+  const alertBits = [];
+  if (stopped.length) {
+    alertBits.push(
+      `Amy stopped a cloud background service that was restarting in a rapid loop, to keep the system responsive (${stopped.join(', ')}). It stays stopped until the cause is fixed.`,
+    );
+  }
+  if (stopFailed.length) {
+    alertBits.push(`A looping cloud service could not be stopped automatically and needs a manual look (${stopFailed.join(', ')}).`);
+  }
+  if (protectedStorms.length) {
+    alertBits.push(
+      `A core cloud service is restarting repeatedly; Amy left it running because stopping it would take the system down, but it needs attention now (${protectedStorms.map((p) => p.name).join(', ')}).`,
+    );
+  }
+  if (watchFlags.length) {
+    alertBits.push(`A cloud background service is set to auto-restart on file changes, which can cause a restart loop; Amy flagged it for a permanent fix (${watchFlags.join(', ')}).`);
+  }
+  const shouldAlert = alertBits.length > 0;
   if (shouldAlert && notify) {
     try {
       await notify({
-        text: 'PM2 storm guard fired on the cloud box. ' + incidents.join('. ') + '.',
+        text: alertBits.join(' '),
         source: 'pm2-storm-guard',
-        priority: stop.length || protectedStorms.length ? 'high' : 'normal',
+        priority: stopped.length || stopFailed.length || protectedStorms.length ? 'high' : 'normal',
         kind: 'security',
         dedupKey: 'pm2-storm-' + [...actions.map((a) => a.name), ...protectedStorms.map((p) => p.name), ...watchFlags].sort().join('-'),
       });
     } catch {}
   }
 
-  return { ok: true, firstRun, stopped: stop.map((s) => s.name), protectedStorms: protectedStorms.map((p) => p.name), watchFlags, incidents };
+  return { ok: true, firstRun, stopped: stop.map((s) => s.name), protectedStorms: protectedStorms.map((p) => p.name), watchFlags, incidents, alertText: alertBits.join(' ') };
 }
 
 if (require.main === module) {
