@@ -5477,6 +5477,56 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
 
   // PM2 process fleet: the real backend services. A service that is not
   // "online", or whose restart count is pathological, reads BAD.
+  // Recent PM2 restart-storm incidents (ExampleCo 2026-07-07): the storm guard
+  // (scripts/pm2-storm-guard.js, cron every 2 min) halts a storming process and
+  // logs here. A halt or a watch-enabled misconfig in the last 24h is a
+  // non-green fleet signal even if every process is currently online, because a
+  // stopped-by-guard process shows as a storm, not just a missing service.
+  let stormNote = '';
+  let stormBad = false;
+  // Guard liveness (Codex 2026-07-07 #1): the guard writes pm2-storm-state.json
+  // every run (cron every 2 min). A missing or >8-min-stale heartbeat means the
+  // guard is NOT running, so its whole guarantee is void -- that is a non-green
+  // signal, never a silent "no incidents".
+  try {
+    const statePath = path.join(dataDir, 'agent', 'pm2-storm-state.json');
+    const st = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    const ageMin = (Date.now() - Number(st.ts || 0)) / 60000;
+    if (!Number.isFinite(ageMin) || ageMin > 8) {
+      stormBad = true;
+      stormNote = ` Storm guard heartbeat stale (${Math.round(ageMin)}m); the guard may not be running.`;
+    }
+  } catch {
+    stormBad = true;
+    stormNote = ' Storm guard heartbeat missing; the guard is not running.';
+  }
+  try {
+    const incPath = path.join(dataDir, 'agent', 'pm2-storm-incidents.jsonl');
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const lines = fs.readFileSync(incPath, 'utf8').trim().split('\n').filter(Boolean);
+    const recent = [];
+    for (const l of lines.slice(-50)) {
+      try {
+        const e = JSON.parse(l);
+        if (e.ts && new Date(e.ts).getTime() >= cutoff && Array.isArray(e.incidents)) recent.push(e);
+      } catch {}
+    }
+    if (recent.length) {
+      const all = recent.flatMap((e) => e.incidents);
+      const halts = all.filter((s) => /^STOPPED /.test(s));
+      const protectedStorms = all.filter((s) => /^PROTECTED .* is storming/.test(s));
+      const watches = all.filter((s) => /^WATCH ENABLED/.test(s));
+      if (halts.length || protectedStorms.length || watches.length) stormBad = true;
+      const bits = [];
+      if (halts.length) bits.push(`${halts.length} restart-storm halt(s) in 24h`);
+      if (protectedStorms.length) bits.push(`backend storm flagged (not stopped)`);
+      if (watches.length) bits.push(`PM2 file-watch flagged on a daemon`);
+      if (bits.length) stormNote += ` Storm guard: ${bits.join(', ')}.`;
+    }
+  } catch {
+    /* no incidents ledger = no storms; liveness above still governs green */
+  }
+  const stormHalted = stormBad;
   try {
     const out = spawnSync('pm2', ['jlist'], {
       encoding: 'utf8',
@@ -5487,15 +5537,15 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
       const procs = JSON.parse(out.stdout);
       if (Array.isArray(procs) && procs.length) {
         const down = procs.filter((p) => ((p.pm2_env && p.pm2_env.status) || '') !== 'online');
-        if (down.length) {
+        if (down.length || stormHalted) {
           push(
             BAD,
-            `Backend PM2 fleet: ${procs.length - down.length}/${procs.length} online; down: ${down
-              .map((p) => p.name)
-              .join(', ')}.`,
+            `Backend PM2 fleet: ${procs.length - down.length}/${procs.length} online${
+              down.length ? `; down: ${down.map((p) => p.name).join(', ')}` : ''
+            }.${stormNote}`,
           );
         } else {
-          push(OK, `Backend PM2 fleet: ${procs.length}/${procs.length} services online.`);
+          push(OK, `Backend PM2 fleet: ${procs.length}/${procs.length} services online. Storm guard: no incidents in 24h.`);
         }
       } else {
         push(ExampleCo, 'Backend PM2 fleet: pm2 returned no processes on this host.');
