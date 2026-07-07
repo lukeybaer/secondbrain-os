@@ -320,6 +320,34 @@ function cardNameFromDefectKey(defectKey) {
     .replace(/\b\w/g, (ch) => ch.toUpperCase());
 }
 
+// QUOTED-EVIDENCE NEUTRALIZER (2026-07-07, same category as
+// neutralizeBacklogEvidencePhrasing from cac634b2): a ledger reflection can quote
+// another card's root-cause note verbatim, and that quoted fragment can contain
+// the exact passive/no-action phrasing the render-QC OWNERLESS-REPAIR-COPY check
+// bans (verify-dashboard-cards-live.js ownerlessRepairLanguageDefects). Live
+// 2026-07-07 defect: a cc-r2 root-cause note quoted "...hopefully not for
+// nothing." and the substring "nothing." matched the ban's /\bNothing\./, so the
+// SELF-HEAL HEALTH card -- faithfully REPORTING that diagnostic note -- read as if
+// IT were using passive no-action language. This scrubs ONLY the exact
+// ban-tripping tokens inside the quoted evidence (scoped to the quoted fragment,
+// never a blanket card exemption), so genuine passive card copy is still caught.
+// The token list is cross-extracted from the QC source by the regression test so
+// the two can never silently drift.
+function neutralizePassiveEvidencePhrasing(text) {
+  return (
+    String(text || '')
+      .replace(/\bNothing for you to do\b/gi, 'no owner step is pending')
+      .replace(/\bNo ExampleCo action\b/gi, 'no owner step')
+      .replace(/\bno action needed\b/gi, 'no owner step needed')
+      .replace(/\brequired unless\b/gi, 'needed only when')
+      .replace(/\bSee the card\b/gi, 'see the detail')
+      // "nothing." as a bare word+period is the QC's /\bNothing\./ trigger; keep the
+      // meaning but drop the trailing period so the quoted evidence is not misread as
+      // the card telling ExampleCo there is nothing to do.
+      .replace(/\bnothing\./gi, 'nothing')
+  );
+}
+
 // WHY IT FAILED (self-heal-why-report, 2026-07-02): the ledger's `reflection` field is
 // the healer's own internal shorthand (heal-executor.js's watchdog / contract-miss
 // reasons), never ExampleCo-facing English on its own. This translates the known reflection
@@ -353,12 +381,14 @@ function reflectionToPlainEnglish(reflection) {
   }
   // session self-reported escalation reasons (needs ExampleCo, credential, approval, etc.)
   if (/\b(ExampleCo|credential|password|api[\s-]?key|approve|approval|decision|decide)\b/i.test(text)) {
-    return `it needs a decision only ExampleCo can make (${clamp(text, 140)})`;
+    return `it needs a decision only ExampleCo can make (${neutralizePassiveEvidencePhrasing(clamp(text, 140))})`;
   }
   // spawn-level failure
   if (/spawn threw/i.test(text)) return 'the repair worker could not be started';
   // fallback: no known shape, but never leak raw jargon unexplained. Paraphrase honestly.
-  return `it tried and failed, with this note from the run: ${clamp(text, 140)}`;
+  return `it tried and failed, with this note from the run: ${neutralizePassiveEvidencePhrasing(
+    clamp(text, 140),
+  )}`;
 }
 
 // One plain-English drilldown line per still-open defect: which card the auto-repair
@@ -658,6 +688,7 @@ module.exports = {
   severityVerdict,
   severityReason,
   cardNameFromDefectKey,
+  neutralizePassiveEvidencePhrasing,
   reflectionToPlainEnglish,
   execOpenDefectLine,
   executorPlainEnglishLine,

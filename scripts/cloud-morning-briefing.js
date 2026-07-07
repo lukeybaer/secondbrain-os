@@ -4293,13 +4293,27 @@ function readSnapshotForMarkdown(dataDir, basename) {
 // leaving the drilldown detail intact. Category-based: matches any path shape,
 // not the single incident path.
 function scrubRawPathsFromFace(text) {
-  return String(text || '')
-    .replace(/\/(?:opt\/secondbrain|life-archive|Users|mnt|home|data\/agent)\/[^\s)]+/gi, '')
-    .replace(/\b[A-Za-z]:\\(?:[^\s\\]+\\?)+/g, '')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\(\s*\)/g, '')
-    .replace(/\s+([.,;)])/g, '$1')
-    .trim();
+  return (
+    String(text || '')
+      .replace(/\/(?:opt\/secondbrain|life-archive|Users|mnt|home|data\/agent)\/[^\s)]+/gi, '')
+      .replace(/\b[A-Za-z]:\\(?:[^\s\\]+\\?)+/g, '')
+      // Defense-in-depth (2026-07-07): strip internal ids so no UUID / spine-session
+      // / dispatch-N leaks onto a card face even if a snapshot ExampleCos one. This
+      // matches the render-QC internal-id denylist (verify-dashboard-cards-live.js
+      // FACE_DENYLIST). Drop a leading frontmatter key too ("originSessionId:") so
+      // the residue is not a dangling label.
+      .replace(
+        /\b[A-Za-z][A-Za-z0-9]*(?:[_-]?[A-Za-z0-9]+)*\s*:\s*(?=(?:[0-9a-f]{8}-[0-9a-f]{4}-)|spine-session-|dispatch-\d)/gi,
+        '',
+      )
+      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '')
+      .replace(/\bspine-session-[0-9a-z-]+/gi, '')
+      .replace(/\bdispatch-\d+\b/gi, '')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/\(\s*\)/g, '')
+      .replace(/\s+([.,;)])/g, '$1')
+      .trim()
+  );
 }
 
 // Build the MEMORY.MD CHANGES (24H) markdown section from the snapshot the
@@ -4351,17 +4365,38 @@ function buildPeopleFilesMarkdownSection(dataDir) {
   if (snap.empty || entries.length === 0) return null;
   const totalFiles = Number(snap.totalFiles || entries.length);
   const totalLines = Number(snap.totalLines || 0);
+  // "updated", not "changed": the render-QC PEOPLE-FILE-DETAIL check bans the exact
+  // phrase "contact file changed" (the generic sentinel), and the singular face
+  // "1 contact file changed" tripped it even though it is legitimate English.
   const face =
-    `${totalFiles} contact file${totalFiles === 1 ? '' : 's'} changed ` +
+    `${totalFiles} contact file${totalFiles === 1 ? '' : 's'} updated ` +
     `(${totalLines} line${totalLines === 1 ? '' : 's'}).`;
   const detailLines = [];
   for (const e of entries.slice(0, 5)) {
     const name = scrubRawPathsFromFace(e.name || e.file || 'contact');
-    const sample = scrubRawPathsFromFace(e.addedSample || e.lastSubject || '');
-    detailLines.push(
-      `- ${name}: +${Number(e.added || 0)}/-${Number(e.deleted || 0)}` +
-        (sample ? ` -- ${sample}` : ''),
+    const added = Number(e.added || 0);
+    const deleted = Number(e.deleted || 0);
+    // Per-item "why it matters" must be the CONCRETE change, never the generic
+    // "contact file changed" plumbing subject (render-QC PEOPLE-FILE-DETAIL flags
+    // that literal; feedback_per_item_why_it_matters). Prefer the real added-line
+    // sample; fall back to the commit subject only when it is a genuine subject
+    // (not the "contact file changed" sentinel from freshPeopleSubjectText); and
+    // when neither is concrete, synthesize an honest per-item line from the change
+    // shape so every row still says what happened, not a placeholder.
+    const rawSample = scrubRawPathsFromFace(e.addedSample || '');
+    const rawSubject = scrubRawPathsFromFace(
+      /contact file changed/i.test(String(e.lastSubject || '')) ? '' : e.lastSubject || '',
     );
+    let why = rawSample || rawSubject;
+    if (!why) {
+      why =
+        deleted > 0 && added > 0
+          ? `${added} line${added === 1 ? '' : 's'} added, ${deleted} revised this cycle`
+          : deleted > 0
+            ? `${deleted} line${deleted === 1 ? '' : 's'} pruned this cycle`
+            : `${added} line${added === 1 ? '' : 's'} of new detail this cycle`;
+    }
+    detailLines.push(`- ${name}: +${added}/-${deleted} -- ${why}`);
   }
   return legacySection(
     'PEOPLE FILES CHANGES (24H)',

@@ -277,6 +277,29 @@ function findCardByTitle(cards, title) {
   return list.find((c) => normalizeCardTitle(c && c.title) === key) || null;
 }
 
+// THE Blockers-tile headline count (ExampleCo 2026-07-07 converge fix). The tile
+// headline must be EXACTLY the canonical defectiveCardCount when a fresh artifact
+// exists -- never a re-derivation from parsed markdown, and never Math.max(canonical,
+// parsedRowCount). The old ec2-server.js used Math.max(liveCount, items.length),
+// which let the count of PARSED blocker rows (10 rows on one morning, several
+// collapsing onto the same card) override the canonical distinct-card count (8),
+// re-creating the exact "two numbers for one fact" split
+// feedback_live_board_is_the_only_count.md forbids. Rules, in order:
+//   - fresh artifact  -> canonical defectiveCardCount (the one true number).
+//   - stale/absent artifact -> fall back to the locally parsed row count
+//     (`parsedRowCount`), which the caller must footnote as a fallback.
+// The "a checkmark must never hide blockers" guarantee is preserved by the CALLER:
+// it only reaches this helper past its own empty-set early returns, and when the
+// fresh canonical is 0 while rows exist (a lagging artifact) this still returns 0 --
+// so the caller keeps its defense-in-depth "rows present => show a number" note for
+// that narrow lag window rather than folding it into the canonical count here.
+function blockersTileHeadlineCount({ artifact, stale, parsedRowCount = 0 } = {}) {
+  const canonical = defectiveCardCount(artifact);
+  const haveFresh = canonical !== null && artifact && !stale;
+  if (haveFresh) return canonical;
+  return Number.isFinite(parsedRowCount) ? parsedRowCount : 0;
+}
+
 // Pure decision function for the per-card defect badge (ExampleCo 2026-07-06
 // shared-paradigm fix): given the artifact envelope from readLiveBoardArtifact
 // and a rendered section title, decide whether a badge should show and what
@@ -312,4 +335,5 @@ module.exports = {
   normalizeCardTitle,
   findCardByTitle,
   cardDefectBadge,
+  blockersTileHeadlineCount,
 };

@@ -165,6 +165,31 @@ function isPlaceholderPeopleSamplePart(text) {
   return /^(?:What was new:\s*)?(?:\[\s*\.\s*\.\s*\.\s*\]|\.\.\.|placeholder)$/i.test(cleaned);
 }
 
+// A "what was new" sample must never surface frontmatter/metadata plumbing or an
+// internal id -- those leak onto the PEOPLE FILES CHANGES face and trip the
+// render-QC UUID/internal-id denylist (verify-dashboard-cards-live.js
+// FACE_DENYLIST; live 2026-07-07 defect: PRIVATE_NAME's only fresh added line
+// was "originSessionId: db11bd01-f073-47ab-bd53-94c48e855d0e", which rendered a
+// bare UUID on the face). CATEGORY, not one literal key: any single-token
+// frontmatter key line (`someKey: value`) whose key looks like plumbing
+// (id/session/uuid/slug/origin/*Id), OR any line carrying an internal id shape
+// (a true UUID, a spine-session id, or a dispatch-N id). Kept in sync with the
+// QC's own matchers by the regression test that cross-extracts them.
+const INTERNAL_ID_SHAPE =
+  /(?:\b(?=[0-9a-f]{0,17}[a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\bspine-session-|\bdispatch-\d+\b)/i;
+const METADATA_KEY_LINE =
+  /^(?:[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)*)(?:Id|_id|-id|Session|_session|Uuid|_uuid|Slug)\s*:/i;
+function isInternalIdOrMetadataLine(text) {
+  const s = String(text || '').trim();
+  if (!s) return false;
+  if (INTERNAL_ID_SHAPE.test(s)) return true;
+  // Explicit frontmatter plumbing keys we never want on a face, plus the
+  // generic *Id/*Session/*Uuid/*Slug key shape above.
+  if (/^(?:originSessionId|sessionId|id|uuid|slug|origin|source|guid)\s*:/i.test(s)) return true;
+  if (METADATA_KEY_LINE.test(s)) return true;
+  return false;
+}
+
 function freshPeopleSubjectText(text, hours = 24) {
   const subject = String(text || '').trim();
   if (subject && peopleHistoryPartIsFresh(subject, hours) && !isUnsafePeopleSample(subject))
@@ -233,6 +258,10 @@ function snapshotPeople(hours = 24) {
       const text = ln.slice(1).trim();
       if (!text) continue;
       if (/^(last_update|updated|effective|category|warmth|description):/i.test(text)) continue;
+      // Never let frontmatter plumbing or an internal id (UUID / spine-session /
+      // dispatch-N) become the "what was new" sample -- it leaks onto the face
+      // and trips the render-QC internal-id denylist (2026-07-07 UUID leak).
+      if (isInternalIdOrMetadataLine(text)) continue;
       if (/^---$/.test(text)) continue;
       if (/^##\s/.test(text)) continue;
       if (/^-\s+\d{4}-\d{2}-\d{2}/.test(text)) {
@@ -518,4 +547,5 @@ module.exports = {
   existingSnapshotIsReal,
   main,
   truncatePeopleSample,
+  isInternalIdOrMetadataLine,
 };
