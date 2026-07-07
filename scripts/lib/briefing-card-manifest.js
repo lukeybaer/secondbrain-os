@@ -210,6 +210,14 @@ const CARD_DEFINITIONS = [
     always: true,
     condition:
       'Always: daily self-heal health tile (Phase 4b). Reads the per-defect repair ledger + executor health; shows attempted/cleared/escalated, executor status, and ledger freshness so ExampleCo never opens the logs.',
+    // BLOCKED-TILE fix (live-render-qc-blocked-tile-on-self-heal-health 2026-07-07):
+    // The _domains.json rung only called generateSelfHealHealthCard({write:true}) which
+    // updates the JSON artifact but NOT the briefing markdown, leaving Severity: red in
+    // the briefing even after the ledger became fresh. refresh-card patches the briefing.
+    heal: {
+      command: ['node', 'scripts/refresh-card.js', 'self_heal_health', '--publish'],
+      timeoutMs: 120000,
+    },
   },
 
   // FULL-LIFE DATA BACKUP is CONDITIONAL: the render merges it into SYSTEM

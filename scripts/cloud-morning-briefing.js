@@ -8027,7 +8027,7 @@ function buildCloudMorningBriefing({
     if (devopsHealth.status !== 'green') {
       addBlocker(blockers, {
         title: 'Dev Ops checkout or hooks need repair',
-        evidence: `The Dev Ops health probe is non-green: ${devopsHealth.detail}.`,
+        evidence: `Dev Ops probe failed: ${devopsHealth.detail}.`,
         need: 'Repair: Amy must reconcile the shared checkout (clean/sync) and rewire any missing hooks, then rerun the Dev Ops probe.',
       });
     }
