@@ -90,6 +90,12 @@ LIVE_DEPS=(
   # use the registry-confirmed-cluster binding, not a stale /opt copy. Ship it so
   # the /opt copy never drifts behind a land (feedback_ec2_build_path_silent_revert).
   "scripts/otter-call-speaker-rosters.js"
+  # People/memory snapshot generator (2026-07-07): cloud-morning-briefing.js spawns
+  # this to write the people-files / memory-delta snapshots the PEOPLE FILES CHANGES
+  # and MEMORY.MD CHANGES cards read. It ExampleCos the internal-id/metadata sample
+  # filter (isInternalIdOrMetadataLine); ship it so the /opt copy never drifts behind
+  # a land and a UUID cannot leak back onto the face (feedback_ec2_build_path_silent_revert).
+  "scripts/snapshot-people-and-memory-delta.js"
 )
 
 echo "[deploy] syntax-checking repo ec2-server.js"
