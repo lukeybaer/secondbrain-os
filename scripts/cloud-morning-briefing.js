@@ -7147,6 +7147,136 @@ function fetchEc2CostExplorer30d(date) {
   return { ok: true, start, end, total, services };
 }
 
+// Compute the projected MONTHLY spend ExampleCo asked the alarm to key on: the
+// average DAILY unblended cost over the trailing settled days (a 72h window),
+// projected to a month (avg_daily * 30). This is the run-rate signal, NOT the
+// 30-day historical sum -- a normal 72h average that projects under $1k must not
+// read as runaway just because the 30-day window still ExampleCos older spike days.
+// Pure arithmetic over a Cost Explorer DAILY series (rows: {date, amount}); no
+// loops beyond the day list. Returns null-safe fields so the caller can render
+// the projection even when the CLI is unavailable (projected stays null then and
+// the card falls back to the 30d total for coloring).
+const AWS_PROJECTION_WINDOW_DAYS = 3; // trailing settled days = the "72h" average
+function projectMonthlyFrom72h(dailyRows) {
+  const rows = (dailyRows || [])
+    .map((r) => ({ date: String(r.date || ''), amount: Number(r.amount) }))
+    .filter((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.date) && Number.isFinite(r.amount))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  if (rows.length === 0)
+    return { projectedMonthly: null, avgDaily72h: null, windowDays: 0, trend: 'flat' };
+  // Cost Explorer's most recent DAILY row is the current, still-settling day
+  // (partial). Drop it so the average is over SETTLED days only; otherwise a
+  // half-counted day drags the projection artificially low. Only drop it when we
+  // have more than one row to average.
+  const settled = rows.length > 1 ? rows.slice(0, -1) : rows.slice();
+  const window = settled.slice(-AWS_PROJECTION_WINDOW_DAYS);
+  const avgDaily72h = window.reduce((s, r) => s + r.amount, 0) / window.length;
+  const projectedMonthly = avgDaily72h * 30;
+  // 30-day trend direction: compare the trailing-window average to the average
+  // of the settled days BEFORE the window. Rising/falling by >10% is a signal;
+  // otherwise flat. Guards a tiny prior window.
+  const prior = settled.slice(0, -AWS_PROJECTION_WINDOW_DAYS);
+  let trend = 'flat';
+  if (prior.length >= 2) {
+    const priorAvg = prior.reduce((s, r) => s + r.amount, 0) / prior.length;
+    if (priorAvg > 0) {
+      const pct = (avgDaily72h - priorAvg) / priorAvg;
+      if (pct > 0.1) trend = 'rising';
+      else if (pct < -0.1) trend = 'falling';
+    }
+  }
+  return {
+    projectedMonthly,
+    avgDaily72h,
+    windowDays: window.length,
+    trend,
+  };
+}
+
+// Canonical, parseable render of the projected-monthly run-rate. The SAME line
+// shape ("Projected monthly (from 72h avg): $X ...") is written into the dated
+// artifact AND emitted in the card body, so ec2-server.js parses one figure and
+// the render/QC/wrapper all key on the same projected-monthly number. Returns []
+// when the projection is unavailable (daily pull failed) so the card silently
+// falls back to the 30d total for coloring.
+function renderAwsProjectionLines(projection) {
+  if (!projection || projection.projectedMonthly == null) return [];
+  const proj = Number(projection.projectedMonthly);
+  const avg = Number(projection.avgDaily72h);
+  const trend = String(projection.trend || 'flat');
+  const band = proj > 1000 ? 'action' : proj > 800 ? 'watch' : 'green';
+  return [
+    `Projected monthly (from 72h avg): $${proj.toFixed(2)} (avg $${avg.toFixed(2)}/day over the last ${projection.windowDays} settled day(s) * 30). Band: ${band}.`,
+    `30-day trend: ${trend}.`,
+  ];
+}
+
+// Live DAILY Cost Explorer pull over the trailing ~7 days on the EC2 instance
+// role (default credential chain, no --profile). Best-effort sibling of
+// fetchEc2CostExplorer30d; returns { ok, rows:[{date, amount}] } for the
+// projected-monthly math. A short 7-day window keeps the call well under the
+// 2-minute card budget while giving projectMonthlyFrom72h enough settled days
+// for both the trailing average and a trend baseline. Never throws.
+function fetchEc2CostExplorerDaily7d(date) {
+  const end = String(date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const startDate = new Date(`${end}T00:00:00Z`);
+  if (!Number.isFinite(startDate.getTime())) return { ok: false, error: 'bad date' };
+  startDate.setUTCDate(startDate.getUTCDate() - 7);
+  const start = startDate.toISOString().slice(0, 10);
+  let result;
+  try {
+    result = spawnSync(
+      'aws',
+      [
+        'ce',
+        'get-cost-and-usage',
+        '--time-period',
+        `Start=${start},End=${end}`,
+        '--granularity',
+        'DAILY',
+        '--metrics',
+        'UnblendedCost',
+        '--output',
+        'json',
+      ],
+      {
+        encoding: 'utf8',
+        timeout: 45000,
+        maxBuffer: 8 * 1024 * 1024,
+        env: {
+          ...process.env,
+          AWS_RETRY_MODE: process.env.AWS_RETRY_MODE || 'adaptive',
+          AWS_MAX_ATTEMPTS: process.env.AWS_MAX_ATTEMPTS || '6',
+        },
+      },
+    );
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e).slice(0, 240) };
+  }
+  if (!result || result.status !== 0) {
+    const err = String((result && (result.stderr || result.stdout)) || 'aws ce daily call failed');
+    return { ok: false, error: err.replace(/\s+/g, ' ').trim().slice(0, 240) };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout || '{}');
+  } catch (e) {
+    return {
+      ok: false,
+      error: `unparseable ce daily output: ${String((e && e.message) || e).slice(0, 120)}`,
+    };
+  }
+  const rows = [];
+  for (const period of parsed.ResultsByTime || []) {
+    const day = period.TimePeriod && period.TimePeriod.Start;
+    const amt = Number(
+      period.Total && period.Total.UnblendedCost && period.Total.UnblendedCost.Amount,
+    );
+    if (day && Number.isFinite(amt)) rows.push({ date: day, amount: amt });
+  }
+  return { ok: true, start, end, rows };
+}
+
 // Materialize a live EC2 Cost Explorer snapshot as the SAME aws-costs-<date>.md
 // artifact the existing reader (buildAwsCostsCard) consumes, so the rest of the
 // card path is unchanged. Best-effort; on any error returns false and the
@@ -7156,6 +7286,16 @@ function fetchEc2CostExplorer30d(date) {
 function materializeEc2AwsCostsArtifact(dataDir, date) {
   const ce = fetchEc2CostExplorer30d(date);
   if (!ce.ok) return { ok: false, error: ce.error };
+  // Run-rate projection: pull the DAILY series and project the trailing-72h
+  // average to a monthly figure. This is the number ExampleCo wants the alarm to key
+  // on (avg over last 72h * 30), so a normal recent average does not read as
+  // runaway just because the 30-day window still ExampleCos older spike days.
+  // Best-effort: if the daily pull fails the projection stays null and the card
+  // colors off the 30d total as before.
+  const daily = fetchEc2CostExplorerDaily7d(date);
+  const projection = daily.ok
+    ? projectMonthlyFrom72h(daily.rows)
+    : { projectedMonthly: null, avgDaily72h: null, windowDays: 0, trend: 'flat' };
   const services = Object.entries(ce.services)
     .filter(([, amt]) => Number(amt) > 0)
     .sort((a, b) => b[1] - a[1]);
@@ -7164,6 +7304,7 @@ function materializeEc2AwsCostsArtifact(dataDir, date) {
     '',
     `Total: $${ce.total.toFixed(2)}`,
     `Window: ${ce.start} through ${ce.end} (live Cost Explorer on the EC2 instance role).`,
+    ...renderAwsProjectionLines(projection),
     '',
   ];
   for (const [svc, amt] of services.slice(0, 12)) {
@@ -7412,11 +7553,25 @@ function buildAwsCostsCard(dataDir, date) {
     (text.match(/^Total:\s*([^\r\n]+)/m) || [])[1] ||
     (text.match(/^AWS COSTS\b[^\n]*\(\s*[^$]*\$([\d,.]+)\s+total/i) || [])[1]?.replace(/^/, '$') ||
     'ExampleCo';
+  // Run-rate projection (the number ExampleCo wants the alarm to key on): pull the
+  // "Projected monthly (from 72h avg): $X ..." + "30-day trend: ..." lines the
+  // artifact ExampleCos. If the artifact predates this feature (no projection line)
+  // these stay null and the card colors off the 30d total as before.
+  const projMatch = text.match(/^Projected monthly \(from 72h avg\):\s*\$([\d,.]+)[^\n]*$/im);
+  const projectedMonthly = projMatch ? parseFloat(projMatch[1].replace(/,/g, '')) : null;
+  const projLine = projMatch ? projMatch[0].trim() : null;
+  const trendMatch = text.match(/^30-day trend:\s*([^\n.]+)/im);
+  const trendLine = trendMatch ? `30-day trend: ${trendMatch[1].trim()}.` : null;
   const services = extractAwsArtifactServices(text);
   const lines = [
     `Verified accessible AWS spend: ${total}.`,
     `Snapshot: ${latest.date}; older or partial snapshot status is named here so totals never appear to silently change between runs.`,
   ];
+  // Surface the run-rate projection right at the top of the body so the tile
+  // shows it prominently. This is the alarm signal (avg over last 72h * 30);
+  // the 30d total above is historical context, the projection is the run-rate.
+  if (projLine) lines.push(projLine);
+  if (trendLine) lines.push(trendLine);
   // BLOCKER when the live Cost Explorer scan was DENIED this run and the only
   // figure we have is a prior cached snapshot (not today's date). A stale number
   // shown green with a footnote reads like a fresh live total (ExampleCo 2026-06-20
@@ -7458,8 +7613,16 @@ function buildAwsCostsCard(dataDir, date) {
   lines.push(
     'Decision: keep watching AI/Bedrock image/model charges and public IPv4/VPC charges for avoidable drift.',
   );
+  // Title ExampleCos BOTH the 30d total (historical, kept for the existing
+  // extractors) and, when available, the run-rate "projected $X/mo" the alarm
+  // keys on. The render/QC read the projected figure from the title when
+  // present and fall back to the 30d total otherwise.
+  let title = total === 'ExampleCo' ? 'AWS COSTS' : `AWS COSTS (${total} total)`;
+  if (projectedMonthly != null && total !== 'ExampleCo') {
+    title = `AWS COSTS (${total} total, projected $${projectedMonthly.toFixed(0)}/mo)`;
+  }
   return {
-    title: total === 'ExampleCo' ? 'AWS COSTS' : `AWS COSTS (${total} total)`,
+    title,
     body: lines.join('\n'),
     real: true,
   };
@@ -8937,6 +9100,9 @@ module.exports = {
   buildVideoQueueCard,
   listPendingVideoArtifacts,
   fetchEc2CostExplorer30d,
+  fetchEc2CostExplorerDaily7d,
+  projectMonthlyFrom72h,
+  renderAwsProjectionLines,
   runEc2ReputationScanSync,
   parseRssItemsLite,
   buildEc2SubsystemHealthRows,
