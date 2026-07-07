@@ -3844,6 +3844,26 @@ function buildShortsProposalsCard(dataDir, date, blockers, now = new Date()) {
   };
 }
 
+// Render-time intro/opening/greeting/sponsor detector for the viral card
+// (ExampleCo 2026-07-07 #learn: a viral clip must be a HOOK, never the intro). This
+// is a compact mirror of viral-tech-clip-proposals.js isIntroLikeSegment, kept
+// local so the briefing card ExampleCos no cross-module require. Full rule ->
+// memory/feedback_viral_clip_never_intro_section.md. A stale fallback artifact
+// (materialized before the generator's intro gate) can still carry an intro
+// clip; this drops it at render so the card never surfaces one.
+const VIRAL_CLIP_INTRO_RE =
+  /\b(intro(?:duction|s)?|welcome(?:\s+(?:to|back))?|cold\s*open|opening|preamble|housekeeping|before\s+we\s+(?:start|begin|dive)|let'?s\s+get\s+started|thanks?\s+for\s+(?:watching|tuning|joining)|sponsor(?:ed)?\s+(?:by|read|segment|message)|brought\s+to\s+you\s+by|hit\s+the\s+(?:like|subscribe)|patreon|merch|table\s+of\s+contents|agenda)\b/i;
+const VIRAL_CLIP_GREETING_RE =
+  /^(?:hey|hi|hello|yo|what'?s\s+up|good\s+(?:morning|afternoon|evening))\b[\s,!.]*(?:everyone|everybody|guys|folks|friends|all|there|y'?all)?[\s,!.]*$/i;
+
+function viralClipTextIsIntroLike(text) {
+  const s = String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s) return false;
+  return VIRAL_CLIP_INTRO_RE.test(s) || VIRAL_CLIP_GREETING_RE.test(s);
+}
+
 function buildViralTechCard(dataDir, date, blockers, now = new Date()) {
   let raw = readDatedArtifact(dataDir, ['agent', 'viral-tech-clips'], date);
   let fallback = null;
@@ -3874,6 +3894,22 @@ function buildViralTechCard(dataDir, date, blockers, now = new Date()) {
       proposalsRaw = normalizeArtifactArray(raw, ['proposals', 'clips', 'items']);
     }
   }
+  // Render-time defense (ExampleCo 2026-07-07 #learn): the card must NEVER surface a
+  // clip whose window is a plain intro/opening/greeting/sponsor section, even
+  // when a STALE fallback artifact (materialized before the generator's intro
+  // gate existed) resurfaces one. The generator drops intro segments at source;
+  // this is the belt-and-suspenders at render so an old fallback set can't leak
+  // an intro clip. Mirrors viral-tech-clip-proposals.js isIntroLikeSegment; kept
+  // local so the card ExampleCos no cross-module require.
+  proposalsRaw = proposalsRaw.filter((item) => {
+    const fields = [
+      item && item.insight,
+      item && item.short_description,
+      item && item.clip_description,
+      item && item.speaker,
+    ];
+    return !fields.some((f) => viralClipTextIsIntroLike(f));
+  });
   const proposals = proposalsRaw
     .map((item) => ({
       title: cleanPublicContentFragment(item && (item.source_title || item.title), { max: 140 }),
@@ -9526,6 +9562,7 @@ module.exports = {
   extractProjectBacklog,
   buildShortsProposalsCard,
   buildViralTechCard,
+  viralClipTextIsIntroLike,
   buildRequiredCloudCards,
   buildMemoryDeltaMarkdownSection,
   buildPeopleFilesMarkdownSection,
