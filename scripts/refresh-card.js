@@ -134,6 +134,7 @@ const {
 } = require('./cloud-morning-briefing.js');
 const { qcBriefingMarkdown } = require('./lib/briefing-card-qc.js');
 const { CARDS, getCardById } = require('./lib/briefing-card-manifest.js');
+const { ctDayKeyForInstant } = require('./lib/ct-day.js');
 // The two-way health/blockers consistency checks stay an ABSOLUTE gate (they
 // concern the derived BLOCKERS + SYSTEM HEALTH sections this tool rebuilds
 // itself, so they must hold on every publish), while the rest of the
@@ -967,7 +968,10 @@ async function runVerify({ cardId, date }) {
 
 function main() {
   const opts = parseArgs(process.argv);
-  const date = opts.date || new Date().toISOString().slice(0, 10);
+  // Default to the America/Chicago calendar date, never the UTC one: between
+  // 7 PM and midnight CT the UTC date is already "tomorrow", so a UTC default
+  // would target a briefing file that does not exist yet. Explicit --date wins.
+  const date = opts.date || ctDayKeyForInstant();
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR;
   refreshCard({
     cardId: opts.cardId,

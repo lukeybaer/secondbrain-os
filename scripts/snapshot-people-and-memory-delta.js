@@ -151,6 +151,24 @@ function freshPeopleSubjectText(text, hours = 24) {
   return 'contact file changed';
 }
 
+// Word-boundary truncation for the "What was new" sample. ExampleCo 2026-04-29
+// dispatch: the 280-char cap was cutting off mid-word mid-sentence; 600 chars
+// lets multi-source same-day scans (Gmail + Otter on the same contact) finish
+// their sentences. The truncation suffix must NOT be "[...]": render-QC
+// (peopleFilesDetailDefects in verify-dashboard-cards-live.js) treats a
+// literal "[...]" anywhere in the rendered card as a blank/placeholder
+// "What was new" detail and flags the card defective (2026-07-06 live defect:
+// PRIVATE_NAME' long Otter entry truncated to "... could be [...]" and the
+// whole PEOPLE FILES CHANGES card went red). A plain ellipsis marks the cut
+// without reading as a placeholder token to any QC placeholder matcher.
+function truncatePeopleSample(joined, max = 600) {
+  const text = String(joined || '');
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const lastSpace = cut.lastIndexOf(' ');
+  return (lastSpace > max - 100 ? cut.slice(0, lastSpace) : cut) + '…';
+}
+
 function snapshotPeople(hours = 24) {
   const since = `${hours} hours ago`;
   const numstat = execGit([
@@ -217,11 +235,7 @@ function snapshotPeople(hours = 24) {
       .filter((entry) => !isUnsafePeopleSample(entry, file))
       .slice(0, 3)
       .join(' • ');
-    if (joined.length <= 600) return joined;
-    // Truncate at word boundary near 600 to avoid mid-word cut.
-    const cut = joined.slice(0, 600);
-    const lastSpace = cut.lastIndexOf(' ');
-    return (lastSpace > 500 ? cut.slice(0, lastSpace) : cut) + ' [...]';
+    return truncatePeopleSample(joined);
   }
   const entries = Object.entries(perFile)
     .map(([file, s]) => ({
@@ -412,4 +426,10 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { snapshotPeople, snapshotMemory, emptyPeopleSnapshot, emptyMemorySnapshot };
+module.exports = {
+  snapshotPeople,
+  snapshotMemory,
+  emptyPeopleSnapshot,
+  emptyMemorySnapshot,
+  truncatePeopleSample,
+};

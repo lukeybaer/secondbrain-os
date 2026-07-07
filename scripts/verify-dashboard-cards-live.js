@@ -61,6 +61,7 @@ const {
 const { loadOperatorIdentity } = require('./lib/operator-identity.js');
 const { ARTIFACT_REL_PATH, buildLiveBoardArtifact } = require('./lib/live-board-truth.js');
 const { writeDataArtifact } = require('./lib/data-root.js');
+const { ctDayKeyForInstant } = require('./lib/ct-day.js');
 
 // Operator-specific tokens (employer name + username) are PII and load from
 // memory/ at runtime, never hardcoded in source. The private tree resolves the
@@ -80,7 +81,10 @@ const EXIT_DEFECT = 1;
 const EXIT_UNREACHABLE = 2;
 
 function parseArgs(argv) {
-  const opts = { date: new Date().toISOString().slice(0, 10) };
+  // Default to the America/Chicago calendar date, never the UTC one: between
+  // 7 PM and midnight CT the UTC date is already "tomorrow", so a UTC default
+  // would verify a briefing file that does not exist yet. Explicit --date wins.
+  const opts = { date: ctDayKeyForInstant() };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--date') opts.date = argv[++i];
