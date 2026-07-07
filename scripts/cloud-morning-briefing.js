@@ -912,6 +912,16 @@ function hasOnlyBlockersFeedbackDefects(dashQc) {
   if (!namedCardIds.size) return true;
   for (const status of dashQc.cardStatuses || []) {
     if (!status || !namedCardIds.has(status.id)) continue;
+    // AWS COSTS over the $1000 action threshold is a genuine owner decision (ExampleCo
+    // must reduce spend). Repainting Blockers clean recreates the same BLOCKERS-NAMED-CARD
+    // defect immediately because the tile stays legitimately red. Return false to stop
+    // the false-clear repaint loop and let the caller escalate to ExampleCo instead.
+    // Mirror of AWS_COST_RED_THRESHOLD_FLOOR in verify-dashboard-cards-live.js.
+    if (status.id === 'aws_costs') {
+      const totalMatch = String(status.title || '').match(/\$([\d,]+(?:\.\d+)?)\s+total/i);
+      const total = totalMatch ? parseFloat(totalMatch[1].replace(/,/g, '')) : NaN;
+      if (Number.isFinite(total) && total > 1000) return false;
+    }
     const concreteDefects = (status.defects || []).filter(
       (defect) => !isBlockersFeedbackDefect(defect),
     );
