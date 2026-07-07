@@ -72,10 +72,14 @@
 //      rejected by unrelated pre-existing failures in OTHER cards); the
 //      differential gate keeps A4's spirit -- the whole doc is QC'd and the
 //      splice may never make it worse -- while letting a no-worse splice
-//      publish. The two-way health/blockers consistency checks stay ABSOLUTE
-//      on the spliced doc (this tool re-derives those sections itself every
-//      run, so they must always hold). On a gate failure: print the NEW
-//      failures, exit nonzero, NEVER write.
+//      publish. The two-way health/blockers consistency checks are
+//      DIFFERENTIAL TOO as of 2026-07-07 (they were the last absolute gate,
+//      and an unrelated non-green subsystem named in no card's BLOCKERS -- the
+//      PM2 fleet -- blocked the clean AWS card): block only when the SPLICE
+//      introduces a NEW inconsistency, never a pre-existing one. This tool
+//      re-derives those sections itself, so an inconsistency ITS rebuild
+//      creates still blocks. On a gate failure: print the NEW failures, exit
+//      nonzero, NEVER write.
 //   7. On QC pass: acquire the SAME shared briefing lock the full build uses
 //      (/tmp/secondbrain-morning-briefing-run.lock via flock -- Codex
 //      amendment A2), atomic-write via the existing writeTextAtomic, refresh
@@ -99,9 +103,10 @@
 //   A4. Publish gate is the WHOLE-markdown QC (qcBriefingMarkdown +
 //       checkHealthBlockersConsistency/reverse via the canonical validator)
 //       run against the SPLICED document, not just the new section. As of
-//       2026-07-06 the gate is DIFFERENTIAL (no NEW failures vs the
-//       pre-splice baseline; consistency checks stay absolute) -- see design
-//       item 6 for the live deadlock that forced this.
+//       2026-07-06 the whole-doc failure gate is DIFFERENTIAL (no NEW failures
+//       vs the pre-splice baseline); as of 2026-07-07 the consistency checks
+//       are DIFFERENTIAL too (no NEW inconsistency vs baseline) -- see design
+//       item 6 for the live deadlocks that forced both.
 //   A5. Never call notifyBriefingPublished from this tool; never touch the
 //       notify dedupe marker.
 //
@@ -135,10 +140,13 @@ const {
 const { qcBriefingMarkdown } = require('./lib/briefing-card-qc.js');
 const { CARDS, getCardById } = require('./lib/briefing-card-manifest.js');
 const { ctDayKeyForInstant } = require('./lib/ct-day.js');
-// The two-way health/blockers consistency checks stay an ABSOLUTE gate (they
-// concern the derived BLOCKERS + SYSTEM HEALTH sections this tool rebuilds
-// itself, so they must hold on every publish), while the rest of the
-// whole-doc QC is DIFFERENTIAL -- see the gate note in refreshCard.
+// The two-way health/blockers consistency checks run as a DIFFERENTIAL gate
+// (2026-07-07), the same shape as the whole-doc failure gate: publish unless
+// the SPLICE introduces a NEW inconsistency vs the pre-splice baseline. They
+// concern the derived BLOCKERS + SYSTEM HEALTH sections this tool rebuilds, so
+// an inconsistency THIS run creates still blocks; a pre-existing one an
+// unrelated card left behind (e.g. a non-green subsystem no card named in
+// BLOCKERS) does not -- see the gate note in refreshCard.
 const {
   checkHealthBlockersConsistency,
   checkHealthBlockersReverseConsistency,
@@ -607,8 +615,14 @@ function writeJsonAtomic(file, value) {
 // compute the whole-doc failure set BEFORE the splice and AFTER it, and
 // publish iff AFTER introduces NO NEW failures (after subset-of before,
 // compared on normalized keys). The two-way health/blockers consistency
-// checks stay ABSOLUTE on the spliced doc (those sections are re-derived by
-// this tool itself on every run, so they must always hold).
+// checks use the SAME differential shape as of 2026-07-07 (before they were
+// absolute, and an unrelated non-green subsystem named in no card's BLOCKERS
+// -- the PM2 fleet -- blocked the clean AWS card): compute the consistency
+// failure set on the pre-splice baseline and on the spliced doc, and block
+// only when the SPLICE introduces a NEW inconsistency. Those sections are
+// re-derived by this tool itself on every run, so an inconsistency ITS rebuild
+// creates is in AFTER-but-not-BEFORE and still blocks; a pre-existing one an
+// unrelated card left behind is tolerated.
 // ---------------------------------------------------------------------------
 
 // Normalize a failure message into a comparison key: digit runs collapse to
@@ -782,6 +796,17 @@ async function refreshCard({
       ...((beforePresentation && beforePresentation.failures) || []),
       ...((beforeCanonical && beforeCanonical.failures) || []),
     ];
+    // BEFORE baseline for the DIFFERENTIAL health/blockers consistency gate:
+    // the two-way consistency failure set of the CURRENTLY published document,
+    // computed on the SAME existing markdown, inside the same lock. A
+    // pre-existing inconsistency the target card did not cause (2026-07-07: the
+    // PM2 fleet non-green but named in no card's BLOCKERS, blocking the clean
+    // AWS card) lives in this set and is tolerated exactly as a pre-existing
+    // whole-doc failure is -- only inconsistencies the SPLICE introduces block.
+    const beforeConsistencyFailures = [
+      ...checkHealthBlockersConsistency(existingMarkdown),
+      ...checkHealthBlockersReverseConsistency(existingMarkdown),
+    ];
 
     console.log(`[refresh-card] rebuilding card='${cardId}' date=${date} dataDir=${dataDir}`);
     const fresh = buildFn({ dataDir, date, now, cardId });
@@ -796,22 +821,38 @@ async function refreshCard({
     }
     console.log(`[refresh-card] spliced sections: ${spliced.replacedIds.join(', ')}`);
 
-    // ABSOLUTE gate: the two-way health/blockers consistency checks must hold
-    // on the spliced document unconditionally -- BLOCKERS and SYSTEM HEALTH
-    // are re-derived by THIS tool on every run (DERIVED_CARD_IDS), so a
-    // violation here is always a defect this run introduced, never a
-    // pre-existing condition it should tolerate.
-    const consistencyFailures = [
+    // DIFFERENTIAL gate for the two-way health/blockers consistency checks
+    // (2026-07-07): block ONLY when the SPLICE introduces a NEW consistency
+    // failure, never a pre-existing one this card did not cause. This mirrors
+    // the differential-failure gate below (newFailuresAfterSplice on normalized
+    // keys) exactly, and for the same reason: absolute gating cross-couples
+    // every card, so a single unrelated non-green subsystem that no card names
+    // in BLOCKERS (the PM2 fleet on 2026-07-07) refused EVERY clean card's
+    // publish, including the AWS card. The true invariant is preserved: THIS
+    // tool re-derives BLOCKERS + SYSTEM HEALTH (DERIVED_CARD_IDS), so if its
+    // own rebuild drives the derived sections out of sync (e.g. it drops a
+    // blocker whose health row is still non-green), that inconsistency IS in
+    // afterConsistency but NOT in beforeConsistency and still blocks.
+    const afterConsistencyFailures = [
       ...checkHealthBlockersConsistency(spliced.markdown),
       ...checkHealthBlockersReverseConsistency(spliced.markdown),
     ];
-    if (consistencyFailures.length) {
+    const newConsistencyFailures = newFailuresAfterSplice(
+      beforeConsistencyFailures,
+      afterConsistencyFailures,
+    );
+    if (newConsistencyFailures.length) {
       console.error(
-        '[refresh-card] health/blockers consistency FAILED on the spliced document (absolute gate). Not writing:',
+        `[refresh-card] health/blockers consistency gate FAILED: the splice INTRODUCES ${newConsistencyFailures.length} new inconsistency(ies) (${beforeConsistencyFailures.length} pre-existing tolerated). Not writing:`,
       );
-      for (const f of consistencyFailures) console.error(`  - ${f}`);
+      for (const f of newConsistencyFailures) console.error(`  - ${f}`);
       process.exitCode = 1;
       return null;
+    }
+    if (afterConsistencyFailures.length) {
+      console.log(
+        `[refresh-card] consistency gate PASS (differential): ${afterConsistencyFailures.length} pre-existing inconsistency(ies) remain (baseline ${beforeConsistencyFailures.length}), none introduced by this splice.`,
+      );
     }
 
     // AFTER failure set (Codex amendment A4, differential form): the SAME two
