@@ -194,8 +194,23 @@ function probeDevOpsHealth({
       problems.push('integration env var bypasses guard without lease');
     }
   }
-  if (!repoSettings.ok) problems.push(`repo hooks: ${repoSettings.problems.join('; ')}`);
-  if (!canonicalSettings.ok) {
+  // On the cloud file-deploy the repo and canonical settings directories
+  // (.claude/ and claude-config/) are NOT deployed — the hooks run on the
+  // desktop/CI, not on the cloud host. A missing (unreadable) settings file
+  // on the cloud host is expected. A file that IS present but mis-wired is
+  // still a real problem, so only the 'unreadable' (ENOENT/missing) case is
+  // carved out. Same logic as the user-settings carve-out below.
+  const repoSettingsExpectedMissing =
+    onCloudHost &&
+    !repoSettings.ok &&
+    repoSettings.problems.some((p) => /settings unreadable/i.test(p));
+  const canonicalSettingsExpectedMissing =
+    onCloudHost &&
+    !canonicalSettings.ok &&
+    canonicalSettings.problems.some((p) => /settings unreadable/i.test(p));
+  if (!repoSettings.ok && !repoSettingsExpectedMissing)
+    problems.push(`repo hooks: ${repoSettings.problems.join('; ')}`);
+  if (!canonicalSettings.ok && !canonicalSettingsExpectedMissing) {
     problems.push(`canonical hooks: ${canonicalSettings.problems.join('; ')}`);
   }
   // On the cloud host an unreadable (missing) ~/.claude/settings.json is
@@ -221,6 +236,11 @@ function probeDevOpsHealth({
   }
   if (userSettingsExpectedMissing) {
     cloudNotes.push('no Claude Code home config on the cloud host (expected for the file-deploy)');
+  }
+  if (repoSettingsExpectedMissing || canonicalSettingsExpectedMissing) {
+    cloudNotes.push(
+      'repo/canonical settings absent on the cloud file-deploy (hooks run on desktop/CI, not on this host)',
+    );
   }
   const healthStatus = problems.length ? 'red' : 'green';
   const detail =
