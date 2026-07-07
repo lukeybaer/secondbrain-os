@@ -389,8 +389,21 @@ const NEWS_FRESHNESS = {
 // headline-tier rows (still real URL + real in-window date + real title text;
 // never padded, never fabricated). minSummary 0 means "no summary-grade floor".
 const NEWS_MAX_HEADLINE_FALLBACKS = 1;
+// Mirrors the manifest's newsMinimum:1 for covid_news
+// (scripts/lib/briefing-card-manifest.js) -- covid is CLEAN at 1+ articles even
+// while its aspirational target stays 5 (ExampleCo 2026-06-28).
+const COVID_CLEAN_MINIMUM = 1;
 const NEWS_MIN_SUMMARY_GRADE = {
-  covid: NEWS_TARGETS.covid - NEWS_MAX_HEADLINE_FALLBACKS,
+  // covid: no summary-grade floor, same relaxation as immigration below. COVID
+  // is a thin, low-body-yield health beat: on most days every real, on-topic,
+  // in-window article is headline-tier (a short RSS blurb, no fetchable body),
+  // so a "target - 1 must be summary-grade" floor zeroed the WHOLE card even
+  // when 20+ real headline rows were sitting in the pool (live 2026-07-06: 21
+  // real covid items collected, 0 rendered). Because the live render QC accepts
+  // an honest headline-only row when content-heal owns it, and covid's clean bar
+  // is only 1 article (not 5 like the other cards), covid can fill with headline
+  // rows the same way immigration does.
+  covid: 0,
   us: NEWS_TARGETS.us - NEWS_MAX_HEADLINE_FALLBACKS,
   world: NEWS_TARGETS.world - NEWS_MAX_HEADLINE_FALLBACKS,
   aitech: NEWS_TARGETS.aitech - NEWS_MAX_HEADLINE_FALLBACKS,
@@ -403,9 +416,13 @@ const NEWS_MIN_SUMMARY_GRADE = {
 
 // Per-card cap on how many headline-rescue rows may fill toward target once the
 // summary-grade floor (NEWS_MIN_SUMMARY_GRADE) is met. Immigration can fill all
-// remaining slots with honest headline rows (live render QC allows it); every
-// other card keeps the conservative one-row fallback.
+// remaining slots with honest headline rows (live render QC allows it). Covid is
+// bounded to its clean minimum (1), not the full aspirational target of 5 -- a
+// thin health beat with no summary-grade material should surface as an honest
+// 1-article clean-minimum card, not silently pad toward 5 headline stubs.
+// Every other card keeps the conservative one-row fallback.
 const NEWS_MAX_HEADLINE_FALLBACKS_BY_CARD = {
+  covid: COVID_CLEAN_MINIMUM,
   immigration: Infinity,
 };
 

@@ -792,6 +792,20 @@ function renderQcDefectTitle(defect, idx) {
   return `Render QC defect ${idx + 1}`;
 }
 
+// The manifest card id a raw render-QC defect string names, or null when the
+// defect is not card-scoped (e.g. a cross-card BLOCKERS-* accounting line).
+// Shared by renderQcBlockers so every path that names a card (BLOCKED-CARD,
+// BUILDER-COUNT, NEWS-PROSE, MISSING, ...) resolves to the SAME id and collapses
+// into one blocker entry per card, instead of one entry per defect string.
+function renderQcDefectCardId(defect) {
+  const text = String(defect || '');
+  const m = text.match(/^[A-Z0-9-]+:\s*([a-z0-9_]+)\s*\(/i);
+  if (m) return m[1];
+  const missing = text.match(/->\s*([a-z0-9_]+)\s*\(/i);
+  if (missing) return missing[1];
+  return null;
+}
+
 // Delegates to scripts/lib/live-board-truth.js classifyDefectKind -- the ONE
 // category mapping, shared by the artifact writer and this Blockers-card
 // category rollup, so the two can never drift into different labels for the
@@ -806,17 +820,59 @@ function renderQcDefectCategory(defect) {
 // same meta-defect again. The QC artifact still records those defects; the
 // visible Blockers card lists the real card/content/system failures that need
 // repair.
+//
+// PER-CARD DEDUP (ExampleCo 2026-07-06): dashQc.defects is the FLAT combined list
+// across every check (statusDefects, valueSanityDefects, ...); a single card can
+// legitimately trip more than one check for the SAME underlying condition (e.g.
+// covid_news at 0 items tripped both BLOCKED-CARD, because its body ExampleCos the
+// "known blocker" banner, and BUILDER-COUNT, because the render fell below its
+// minimum). dashQc.cardStatuses already buckets defects per card id; without
+// using that bucketing here, the two strings became two separate numbered
+// Blockers rows for the one broken card, doubling the reported blocker count.
+// Collapse by card id: every defect that names the SAME card id merges into ONE
+// blocker entry (evidence lines joined), while defects that name DIFFERENT card
+// ids (including two truly independent defects on the same card from distinct
+// causes, or a non-card-scoped defect) still get their own entry. A defect that
+// cannot be resolved to a card id (no id) is never merged with another.
 function renderQcBlockers(dashQc) {
   if (!dashQc || dashQc.ok !== false) return [];
-  const rawDefects = (dashQc.defects || []).map((defect) => String(defect || '').trim());
-  return rawDefects
-    .filter((defect) => !isBlockersFeedbackDefect(defect))
-    .map((defect, idx) => ({
-      title: renderQcDefectTitle(defect, idx),
-      category: renderQcDefectCategory(defect),
+  const rawDefects = (dashQc.defects || [])
+    .map((defect) => String(defect || '').trim())
+    .filter((defect) => !isBlockersFeedbackDefect(defect));
+
+  const blockers = [];
+  const indexByCardId = new Map();
+  for (const defect of rawDefects) {
+    const cardId = renderQcDefectCardId(defect);
+    const existingIdx = cardId != null ? indexByCardId.get(cardId) : undefined;
+    if (existingIdx !== undefined) {
+      const existing = blockers[existingIdx];
+      // Exact-match dedup (Codex review 2026-07-06): a `.includes()` substring
+      // check would drop a genuinely distinct SHORTER defect that happens to be
+      // a substring of an already-merged longer one. evidenceParts holds each
+      // raw defect string once, compared for exact equality only.
+      if (!existing.evidenceParts.includes(defect)) {
+        existing.evidenceParts.push(defect);
+        existing.evidence = existing.evidenceParts.join('; ');
+        const category = renderQcDefectCategory(defect);
+        if (!existing.categories.includes(category)) existing.categories.push(category);
+        existing.category = existing.categories.join('; ');
+      }
+      continue;
+    }
+    const category = renderQcDefectCategory(defect);
+    const entry = {
+      title: renderQcDefectTitle(defect, blockers.length),
+      category,
+      categories: [category],
+      evidenceParts: [defect],
       evidence: defect,
       need: 'Repair: change the failed repair tactic, rerun the affected card refresh, and keep looping until live QC clears or names a hard wall.',
-    }));
+    };
+    if (cardId != null) indexByCardId.set(cardId, blockers.length);
+    blockers.push(entry);
+  }
+  return blockers;
 }
 
 function hasOnlyBlockersAccountingDefects(dashQc) {
@@ -1493,8 +1549,22 @@ function renderBlockersSection(blockers, opts = {}) {
   const lines = [];
   const categoryCounts = new Map();
   for (const item of blockers) {
-    const category = cleanExecutiveFragment(item.category || 'other', { max: 40 }) || 'other';
-    categoryCounts.set(category, (categoryCounts.get(category) || 0) + 1);
+    // A card-dedup merge (renderQcBlockers) can carry MULTIPLE distinct
+    // categories on one blocker (e.g. covid_news merges "blocked card" +
+    // "count/render"); count every distinct category the blocker represents so
+    // "At a glance" reflects the real defect mix instead of only the first
+    // check that happened to fire (Codex review 2026-07-06).
+    const categories =
+      Array.isArray(item.categories) && item.categories.length
+        ? item.categories
+        : [item.category || 'other'];
+    const seen = new Set();
+    for (const raw of categories) {
+      const category = cleanExecutiveFragment(raw || 'other', { max: 40 }) || 'other';
+      if (seen.has(category)) continue; // never double-count the SAME category twice for one blocker
+      seen.add(category);
+      categoryCounts.set(category, (categoryCounts.get(category) || 0) + 1);
+    }
   }
   if (categoryCounts.size > 1 || !categoryCounts.has('other')) {
     lines.push('At a glance:');
