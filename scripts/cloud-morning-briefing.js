@@ -8347,6 +8347,16 @@ async function runCloudBriefing({
   // Under test with no injected transport the notify step is inert, so no
   // test can ever hit the network or write fallback-queue entries by accident.
   briefingNotifier = null,
+  // UNCOMMITTED & PARKED WORK git-hygiene snapshot. buildCloudMorningBriefing
+  // already accepts this (defaults to null -> live classifyGitState shellout),
+  // but runCloudBriefing never forwarded it, so every test driving the full
+  // publish flow paid the real ~6-git-call classifier cost against the shared
+  // repo -- fine standalone, multi-minute under the concurrent-session
+  // contention this repo runs under (scripts/__tests__/cloud-briefing-publish-
+  // then-label.test.js 2026-07-06). Forwarding it costs nothing when the
+  // caller does not pass one: the default stays null and the live classifier
+  // still runs exactly as before.
+  gitHygieneState = null,
 } = {}) {
   const scheduleFleet = await maybeRunScheduledTaskPreflight({
     dataDir,
@@ -8406,6 +8416,7 @@ async function runCloudBriefing({
     scheduleFleet,
     selfHealRefresh,
     refreshTargets,
+    gitHygieneState,
   });
   if (!built.ok && !(publish && selfHealRefresh)) {
     // A degraded result must always state the plain-English WHY and an explicit
