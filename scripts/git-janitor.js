@@ -55,6 +55,33 @@ function isWorktreeClean(wtPath) {
   }
 }
 
+// Grace period (incident: the janitor reaped a just-created worktree
+// mid-setup). A brand-new session has not registered a spine-session lease
+// yet -- the lease write happens after the worktree exists -- and the
+// worktree can still look "clean" for the window between `git worktree add`
+// and the session's first file write. A worktree younger than this window is
+// treated as still-being-set-up regardless of lease or dirty state. Age is
+// the directory's birthtime, which exists the instant `git worktree add`
+// creates it, before any lease or file write can land.
+const WORKTREE_GRACE_MS = 30 * 60 * 1000; // 30 minutes
+
+// True when wtPath was created less than graceMs ago relative to nowMs.
+// Returns false (no grace -- safe to consider for reaping) when age cannot be
+// determined (missing dir, no nowMs, unsupported birthtime), so a stat
+// failure never silently blocks legitimate reaping -- the live/dirty checks
+// remain the real safety net for those cases.
+function isWorktreeYoungerThan(wtPath, nowMs, graceMs = WORKTREE_GRACE_MS) {
+  if (!wtPath || !nowMs) return false;
+  try {
+    const st = fs.statSync(wtPath);
+    const birth = st.birthtimeMs || st.ctimeMs;
+    if (!birth || !Number.isFinite(birth)) return false;
+    return nowMs - birth < graceMs;
+  } catch {
+    return false;
+  }
+}
+
 // Pure planning. Reads state, returns what WOULD be reaped + why others were
 // skipped. No mutation.
 function buildManifest(opts = {}) {
@@ -62,9 +89,10 @@ function buildManifest(opts = {}) {
   const state = gh.classifyGitState({ cwd, today: opts.today || '' });
   const live = gh.readLiveWorktrees({ nowMs: opts.nowMs, tasksDir: opts.tasksDir });
   const parked = gh.readParked(state.repoRoot);
+  const nowMs = opts.nowMs || Date.now();
 
   const reap = [];
-  const skipped = { live: 0, dirty: 0, protected: 0, parked: 0, notMerged: 0 };
+  const skipped = { live: 0, dirty: 0, protected: 0, parked: 0, notMerged: 0, young: 0 };
 
   for (const br of state.branches) {
     if (br.category === 'protected') {
@@ -84,6 +112,14 @@ function buildManifest(opts = {}) {
     const wt = br.worktree ? path.resolve(br.worktree) : null;
     if (wt && live.has(wt)) {
       skipped.live++;
+      continue;
+    }
+    // Grace period FIRST, before the dirty check: a worktree mid-setup can
+    // still look clean (no files written yet) in the window between
+    // `git worktree add` and the session's first commit/lease -- exactly how
+    // a prior incident reaped a just-created worktree.
+    if (wt && isWorktreeYoungerThan(wt, nowMs)) {
+      skipped.young++;
       continue;
     }
     if (wt && !isWorktreeClean(wt)) {
@@ -204,8 +240,8 @@ if (require.main === module) {
     const m = res.manifest;
     console.log(
       `[git-janitor] DRY-RUN. ${m.counts.candidates} leftover branches safe to reap; ` +
-        `skipped live=${m.counts.live} dirty=${m.counts.dirty} parked=${m.counts.parked} ` +
-        `protected=${m.counts.protected} unmerged=${m.counts.notMerged}.`,
+        `skipped live=${m.counts.live} dirty=${m.counts.dirty} young=${m.counts.young || 0} ` +
+        `parked=${m.counts.parked} protected=${m.counts.protected} unmerged=${m.counts.notMerged}.`,
     );
     for (const r of m.reap.slice(0, 50)) {
       console.log(`  would reap ${r.branch}${r.worktree ? ' + worktree' : ''}`);
@@ -228,4 +264,11 @@ if (require.main === module) {
   }
 }
 
-module.exports = { buildManifest, runJanitor, writeManifest, stripJunctions };
+module.exports = {
+  buildManifest,
+  runJanitor,
+  writeManifest,
+  stripJunctions,
+  isWorktreeYoungerThan,
+  WORKTREE_GRACE_MS,
+};
