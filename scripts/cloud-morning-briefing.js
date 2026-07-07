@@ -229,9 +229,21 @@ function readTaskRows(dataDir) {
 const ACTION_SPAM_SENDER_RE =
   /(no-?reply|do[\s._-]*not[\s._-]*reply|donotreply|notifications?@|newsletter|mailer|auto-?confirm|automated|smarthub\.coop|e-?statement|e-?stmt|estmt\b|customer\s+service|customerservice@|account\s+services?|statement\s+services?|@.*\b(?:marketing|email|mktg|eml|news)\b)/i;
 const ACTION_SPAM_BRAND_RE =
-  /\b(capital one|ally invest|sam'?s club|shoppers drug mart|salesforce security|standard chartered|td canada trust|at&t|smart\s*hub|amazon (?:health|prime|marketplace|reviews?)|atmos energy|el paso electric|upshur rural electric|peacock|espn|vivid seats|bluesteps|imdb|korn ?ferry|network solutions|red headed hostess|gmb praxis|stripe)\b/i;
+  /\b(capital one|ally invest|sam'?s club|shoppers drug mart|salesforce security|standard chartered|td canada trust|at&t|smart\s*hub|amazon (?:health|prime|marketplace|reviews?)|atmos energy|el paso electric|upshur rural electric|peacock|espn|vivid seats|bluesteps|imdb|korn ?ferry|network solutions|red headed hostess|gmb praxis|stripe|experian|equifax|transunion|credit karma|lifelock|rocket money|truebill)\b/i;
 const ACTION_SPAM_SUBJECT_RE =
   /\b(your .*(?:bill|statement|receipt|order) is (?:available|ready)|monthly statement|statement is now available|new e-?statement is now available|your receipt from|payment (?:has been )?received|payment receipt|e-?transfer.*successfully deposited|your recent stay|opportunities are live|rate your transaction|share your thoughts|prime day|verify your (?:email|domain)|security features|reminder: verify|bonus offer|get rewarded|personalized guidance|fee-waived personalized guidance|last chance|savings starts|wrist health exercises|we'?ll let you in on a secret|wwe night of champions|weekend:|watch live|streaming|newsletter|unsubscribe)\b/i;
+// Promotional / marketing UPSELL language (the CATEGORY, not one brand). These
+// are "save money / you are overpaying / try our product" marketing pitches --
+// subscription-nag, credit-monitoring, and money-management upsells that
+// personalize the subject with the recipient's first name to look like a real
+// note ("ExampleCo, still paying for subscriptions you don't use?"). They are never a
+// real ask, so unlike ACTION_SPAM_SUBJECT_RE they are NOT skipped when the sender
+// looks like a human name -- the marketing copy IS the signal. A genuinely urgent
+// money notice still wins via ACTION_SPAM_URGENT_OVERRIDE_RE, checked first.
+// -> feedback: action items drop promotional upsell marketing (ExampleCo 2026-07-07,
+// Experian "still paying for subscriptions you don't use").
+const ACTION_SPAM_PROMO_UPSELL_RE =
+  /\b(still paying for (?:subscriptions?|services?)|subscriptions? you (?:don'?t|do not|no longer) use|cancel (?:unwanted|unused) subscriptions?|stop (?:overpaying|wasting money)|(?:you'?re|you are) (?:overpaying|still paying)|save (?:money|\$?\d+).{0,30}(?:subscriptions?|bills?|monthly|each month|per month)|lower your bills?|find (?:hidden|unused) subscriptions?|manage your subscriptions?|boost your credit score|raise your credit score|check your (?:free )?credit score|unlock (?:your )?(?:savings|offers?)|(?:exclusive|special|limited-time) offer|upgrade to (?:premium|pro|plus) today|claim your (?:reward|offer|discount)|your (?:free )?trial (?:is ending|expires)|don'?t miss out)\b/i;
 // Genuine-urgency override: even an automated sender survives the spam filter
 // when the content is a real money/deadline emergency.
 const ACTION_SPAM_URGENT_OVERRIDE_RE =
@@ -243,6 +255,10 @@ function isActionItemSpam(person, title) {
   const sender = String(person || '');
   const subject = String(title || '');
   if (ACTION_SPAM_URGENT_OVERRIDE_RE.test(subject)) return false; // real emergency stays
+  // Promotional/marketing UPSELL copy is spam regardless of sender shape: these
+  // marketing pitches personalize the subject to a first name so a human-name
+  // check would let them through. The category (upsell language) is the signal.
+  if (ACTION_SPAM_PROMO_UPSELL_RE.test(subject)) return true;
   if (ACTION_SPAM_SENDER_RE.test(sender)) return true;
   if (ACTION_SPAM_BRAND_RE.test(sender)) return true;
   if (ACTION_SPAM_SUBJECT_RE.test(subject) && !/^[A-Z][a-z]+ [A-Z][a-z]+$/.test(sender.trim()))
@@ -768,8 +784,8 @@ function runDashboardRenderQc({ date, verifier = null, htmlFetcher = null } = {}
 // `cards[].status` shape without defectKinds) are kept alongside for any
 // existing archaeology/log-reading, but no new consumer should read them --
 // read `defectiveCardCount` and `cards[].status` from the canonical shape.
-function writeDashboardQcArtifact(dataDir, dashQc, date, cardTitles = {}) {
-  const canonical = buildLiveBoardArtifact({ dashQc, date, cardTitles });
+function writeDashboardQcArtifact(dataDir, dashQc, date, cardTitles = {}, blockers = []) {
+  const canonical = buildLiveBoardArtifact({ dashQc, date, cardTitles, blockers });
   const artifact = {
     ...canonical,
     // Legacy fields, retained for backward compatibility only.
@@ -1538,11 +1554,15 @@ function blockersReconciliationLine(dataDir, blockersCount) {
   if (stale) {
     return `Live dashboard count: stale (last verified ${artifact.ts || 'ExampleCo time'}, older than one briefing cycle) -- do not treat this markdown's count as current.`;
   }
-  const agrees = canonicalCount === blockersCount;
-  const line = `Live dashboard count: ${canonicalCount} defective card(s) as of ${artifact.ts} (source: dashboard-qc-result.json).`;
-  return agrees
-    ? line
-    : `${line} This section currently lists ${blockersCount}; the live artifact is the canonical count -- a mismatch here means this markdown predates the artifact's last publish cycle.`;
+  // ONE truth (ExampleCo 2026-07-07): the canonical artifact is seeded from THIS
+  // build's own blockers (writeDashboardQcArtifact <- built.blockers), so the
+  // count and this section's list cannot disagree. State the canonical count
+  // plainly. Never narrate a "this markdown predates the artifact" mismatch --
+  // if it ever diverged, that is a bug to fix at the source, not a caveat to
+  // print. The prior self-referential narration (ExampleCo: "You should not have to
+  // make this comment. Just fix it so the live canonical count is the real
+  // count.") is removed.
+  return `Live dashboard count: ${canonicalCount} defective card(s) as of ${artifact.ts} (source: dashboard-qc-result.json).`;
 }
 
 function renderBlockersSection(blockers, opts = {}) {
@@ -1904,7 +1924,22 @@ function extractProjectBacklog(raw) {
     .filter((item) => item.name)
     .sort((a, b) => b.score - a.score);
   if (!rows.length) {
-    return ['- No project backlog snapshot was available in this cloud run.'];
+    // Empty backlog is a DEFECT when the source snapshot itself is missing or
+    // ExampleCos no features -- an empty card here is a broken population probe, not
+    // "you are caught up" (ExampleCo 2026-07-07: empty backlog = defect, not green
+    // zero). Distinguish it from the legitimately-empty case where the source
+    // HAD features but every one is already approved or shipped (clean).
+    const sourceCount =
+      (Array.isArray(raw && raw.features) ? raw.features.length : 0) ||
+      (Array.isArray(raw && raw.items) ? raw.items.length : 0);
+    if (!sourceCount) {
+      return [
+        '- DEFECT: feature-backlog.json is missing or empty in this cloud run, so no backlog could be rendered. This is a broken population probe, not an empty backlog -- regenerate the backlog snapshot before clearing.',
+      ];
+    }
+    return [
+      `- Every backlog feature in this snapshot (${sourceCount}) is already approved or shipped; nothing is awaiting a new decision.`,
+    ];
   }
   const lines = [];
   rows.forEach((item, idx) => {
@@ -5534,6 +5569,118 @@ function formatContentPipelineSection(lines) {
 // run. Each probe is best-effort: a probe that cannot run on EC2 emits a "?"
 // honest row, never a fake green. Returns [] off-EC2 so the desktop/test render
 // is unchanged. Never throws.
+// A process is considered stable NOW, not by its lifetime history, once it has
+// been up past this floor with no active PM2 instability. PM2's own
+// `unstable_restarts` counter tracks restarts faster than min_uptime and resets
+// when the process settles, so it is the live instability signal; `restart_time`
+// is a cumulative lifetime counter that only ever grows and must never by itself
+// make a currently-stable process read non-green (ExampleCo 2026-07-07).
+const PM2_STABILITY_MIN_UPTIME_MS = 10 * 60 * 1000;
+
+// Pure, testable verdict for the Backend PM2 fleet health row. Judges CURRENT
+// stability from the live pm2 process list, and treats a storm incident as a
+// live fleet defect ONLY when its named process is still present in the fleet
+// and still unstable right now. A stale halt (a stopped test process, a service
+// since restarted and stable) is history the row may mention but is not blocked
+// by. Returns { glyph: 'ok'|'bad'|'ExampleCo', text }.
+function evaluatePm2FleetHealth({ procs, guardHeartbeat, recentIncidents, now } = {}) {
+  const t = Number(now) || Date.now();
+  if (!Array.isArray(procs)) {
+    return { glyph: 'ExampleCo', text: 'pm2 not available on this host.' };
+  }
+  if (!procs.length) {
+    return { glyph: 'ExampleCo', text: 'pm2 returned no processes on this host.' };
+  }
+
+  const stateOf = (p) => (p && p.pm2_env && p.pm2_env.status) || '';
+  const uptimeMsOf = (p) => {
+    const up = p && p.pm2_env && Number(p.pm2_env.pm_uptime);
+    return Number.isFinite(up) && up > 0 ? t - up : 0;
+  };
+  const unstableOf = (p) => {
+    const u = p && p.pm2_env && Number(p.pm2_env.unstable_restarts);
+    return Number.isFinite(u) ? u : 0;
+  };
+  const nameOf = (p) => (p && p.name) || '';
+
+  const down = procs.filter((p) => stateOf(p) !== 'online');
+  // Actively unstable NOW: online but PM2 is still counting fast restarts, or it
+  // has not yet cleared the short stability floor. Lifetime restart_time is NOT
+  // consulted here.
+  const unstable = procs.filter(
+    (p) =>
+      stateOf(p) === 'online' && (unstableOf(p) > 0 || uptimeMsOf(p) < PM2_STABILITY_MIN_UPTIME_MS),
+  );
+  const liveByName = new Map(procs.map((p) => [nameOf(p), p]));
+
+  // Scope storm incidents to processes that are still present AND still unstable.
+  const incidentStrings = (recentIncidents || []).flatMap((e) =>
+    Array.isArray(e.incidents) ? e.incidents : [],
+  );
+  const incidentProcName = (s) => {
+    let m = /^STOPPED ([^:]+):/.exec(s);
+    if (m) return m[1].trim();
+    m = /^STOP FAILED ([^:]+):/.exec(s);
+    if (m) return m[1].trim();
+    m = /^PROTECTED (.+?) is storming/.exec(s);
+    if (m) return m[1].trim();
+    m = /^WATCH ENABLED on ([^:]+):/.exec(s);
+    if (m) return m[1].trim();
+    return '';
+  };
+  const activeIncidents = incidentStrings.filter((s) => {
+    const name = incidentProcName(s);
+    if (!name) return false;
+    const live = liveByName.get(name);
+    if (!live) return false; // process no longer in the fleet -> stale history
+    // WATCH ENABLED is a live misconfig as long as the process still runs with
+    // file-watch on; the others are live only while the process is unstable now.
+    if (/^WATCH ENABLED/.test(s)) return true;
+    return stateOf(live) !== 'online' || unstableOf(live) > 0;
+  });
+
+  const bad =
+    down.length > 0 ||
+    unstable.length > 0 ||
+    activeIncidents.length > 0 ||
+    (guardHeartbeat && guardHeartbeat.ok === false);
+
+  const online = procs.length - down.length;
+  if (bad) {
+    const bits = [];
+    if (down.length) bits.push(`down: ${down.map(nameOf).join(', ')}`);
+    if (unstable.length) {
+      bits.push(
+        `unstable now: ${unstable
+          .map(
+            (p) =>
+              `${nameOf(p)} (${unstableOf(p)} unstable restart(s), up ${Math.round(uptimeMsOf(p) / 60000)}m)`,
+          )
+          .join(', ')}`,
+      );
+    }
+    if (activeIncidents.length) {
+      bits.push(`${activeIncidents.length} active storm incident(s) in 24h`);
+    }
+    const note = (guardHeartbeat && guardHeartbeat.note) || '';
+    return {
+      glyph: 'bad',
+      text: `${online}/${procs.length} online${bits.length ? `; ${bits.join('; ')}` : ''}.${note}`,
+    };
+  }
+
+  // Green: everything online and stable now. Mention any stale (non-active) halt
+  // so the row stays honest without being blocked by history.
+  const staleHalts = incidentStrings.filter((s) => /^STOPPED /.test(s)).length;
+  const staleNote = staleHalts
+    ? ` Storm guard: ${staleHalts} halt(s) in 24h, all since recovered (no live impact).`
+    : ' Storm guard: no incidents in 24h.';
+  return {
+    glyph: 'ok',
+    text: `${procs.length}/${procs.length} services online.${staleNote}`,
+  };
+}
+
 function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
   if (!runningOnEc2(dataDir)) return [];
   const OK = '✓';
@@ -5542,59 +5689,17 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
   const rows = [];
   const push = (glyph, text) => rows.push(`${glyph} ${text}`);
 
-  // PM2 process fleet: the real backend services. A service that is not
-  // "online", or whose restart count is pathological, reads BAD.
-  // Recent PM2 restart-storm incidents (ExampleCo 2026-07-07): the storm guard
-  // (scripts/pm2-storm-guard.js, cron every 2 min) halts a storming process and
-  // logs here. A halt or a watch-enabled misconfig in the last 24h is a
-  // non-green fleet signal even if every process is currently online, because a
-  // stopped-by-guard process shows as a storm, not just a missing service.
-  let stormNote = '';
-  let stormBad = false;
-  // Guard liveness (Codex 2026-07-07 #1): the guard writes pm2-storm-state.json
-  // every run (cron every 2 min). A missing or >8-min-stale heartbeat means the
-  // guard is NOT running, so its whole guarantee is void -- that is a non-green
-  // signal, never a silent "no incidents".
-  try {
-    const statePath = path.join(dataDir, 'agent', 'pm2-storm-state.json');
-    const st = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-    const ageMin = (Date.now() - Number(st.ts || 0)) / 60000;
-    if (!Number.isFinite(ageMin) || ageMin > 8) {
-      stormBad = true;
-      stormNote = ` Storm guard heartbeat stale (${Math.round(ageMin)}m); the guard may not be running.`;
-    }
-  } catch {
-    stormBad = true;
-    stormNote = ' Storm guard heartbeat missing; the guard is not running.';
-  }
-  try {
-    const incPath = path.join(dataDir, 'agent', 'pm2-storm-incidents.jsonl');
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    const lines = fs.readFileSync(incPath, 'utf8').trim().split('\n').filter(Boolean);
-    const recent = [];
-    for (const l of lines.slice(-50)) {
-      try {
-        const e = JSON.parse(l);
-        if (e.ts && new Date(e.ts).getTime() >= cutoff && Array.isArray(e.incidents))
-          recent.push(e);
-      } catch {}
-    }
-    if (recent.length) {
-      const all = recent.flatMap((e) => e.incidents);
-      const halts = all.filter((s) => /^STOPPED /.test(s));
-      const protectedStorms = all.filter((s) => /^PROTECTED .* is storming/.test(s));
-      const watches = all.filter((s) => /^WATCH ENABLED/.test(s));
-      if (halts.length || protectedStorms.length || watches.length) stormBad = true;
-      const bits = [];
-      if (halts.length) bits.push(`${halts.length} restart-storm halt(s) in 24h`);
-      if (protectedStorms.length) bits.push(`backend storm flagged (not stopped)`);
-      if (watches.length) bits.push(`PM2 file-watch flagged on a daemon`);
-      if (bits.length) stormNote += ` Storm guard: ${bits.join(', ')}.`;
-    }
-  } catch {
-    /* no incidents ledger = no storms; liveness above still governs green */
-  }
-  const stormHalted = stormBad;
+  // PM2 process fleet: the real backend services. The fleet reads BAD only for
+  // a CURRENT problem -- a process not "online", or a process ACTIVELY storming
+  // right now -- never for stale history (ExampleCo 2026-07-07 "honest current state,
+  // not stale restart history"). Lifetime restart_time is a cumulative counter
+  // that only grows; a process online for an hour with unstable_restarts=0 is
+  // stable NOW regardless of a 44-lifetime restart count, so it reads green.
+  // Read the live pm2 fleet FIRST so the storm-incident check can be scoped to
+  // processes that are still present and still unstable -- a STOPPED incident
+  // for a process no longer in the fleet (a stopped test process, a service
+  // since manually restarted and stable) is history, not a live fleet defect.
+  let procs = null;
   try {
     const out = spawnSync('pm2', ['jlist'], {
       encoding: 'utf8',
@@ -5602,30 +5707,61 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
       maxBuffer: 8 * 1024 * 1024,
     });
     if (out.status === 0 && out.stdout) {
-      const procs = JSON.parse(out.stdout);
-      if (Array.isArray(procs) && procs.length) {
-        const down = procs.filter((p) => ((p.pm2_env && p.pm2_env.status) || '') !== 'online');
-        if (down.length || stormHalted) {
-          push(
-            BAD,
-            `Backend PM2 fleet: ${procs.length - down.length}/${procs.length} online${
-              down.length ? `; down: ${down.map((p) => p.name).join(', ')}` : ''
-            }.${stormNote}`,
-          );
-        } else {
-          push(
-            OK,
-            `Backend PM2 fleet: ${procs.length}/${procs.length} services online. Storm guard: no incidents in 24h.`,
-          );
-        }
-      } else {
-        push(ExampleCo, 'Backend PM2 fleet: pm2 returned no processes on this host.');
-      }
-    } else {
-      push(ExampleCo, 'Backend PM2 fleet: pm2 not available on this host.');
+      const parsed = JSON.parse(out.stdout);
+      if (Array.isArray(parsed)) procs = parsed;
     }
   } catch {
-    push(ExampleCo, 'Backend PM2 fleet: pm2 probe could not run on this host.');
+    procs = null;
+  }
+
+  // Guard liveness (Codex 2026-07-07 #1): the guard writes pm2-storm-state.json
+  // every run (cron every 2 min). A missing or >8-min-stale heartbeat means the
+  // guard is NOT running, so its whole guarantee is void -- that is a non-green
+  // signal, never a silent "no incidents".
+  let guardHeartbeat = { ok: true, note: '' };
+  try {
+    const statePath = path.join(dataDir, 'agent', 'pm2-storm-state.json');
+    const st = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    const ageMin = (Date.now() - Number(st.ts || 0)) / 60000;
+    if (!Number.isFinite(ageMin) || ageMin > 8) {
+      guardHeartbeat = {
+        ok: false,
+        note: ` Storm guard heartbeat stale (${Math.round(ageMin)}m); the guard may not be running.`,
+      };
+    }
+  } catch {
+    guardHeartbeat = {
+      ok: false,
+      note: ' Storm guard heartbeat missing; the guard is not running.',
+    };
+  }
+
+  // Recent storm incidents (last 24h). Only an ACTIVE incident -- one whose
+  // named process is still in the fleet and still unstable RIGHT NOW -- counts
+  // against the live fleet verdict; everything else is history the row can
+  // mention but not be blocked by.
+  let recentIncidents = [];
+  try {
+    const incPath = path.join(dataDir, 'agent', 'pm2-storm-incidents.jsonl');
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const lines = fs.readFileSync(incPath, 'utf8').trim().split('\n').filter(Boolean);
+    for (const l of lines.slice(-50)) {
+      try {
+        const e = JSON.parse(l);
+        if (e.ts && new Date(e.ts).getTime() >= cutoff && Array.isArray(e.incidents)) {
+          recentIncidents.push(e);
+        }
+      } catch {}
+    }
+  } catch {
+    /* no incidents ledger = no storms; liveness above still governs green */
+  }
+
+  const verdict = evaluatePm2FleetHealth({ procs, guardHeartbeat, recentIncidents });
+  if (verdict.glyph === 'ExampleCo') {
+    push(ExampleCo, `Backend PM2 fleet: ${verdict.text}`);
+  } else {
+    push(verdict.glyph === 'bad' ? BAD : OK, `Backend PM2 fleet: ${verdict.text}`);
   }
 
   // Disk headroom on the cloud root. The value states the EVIDENCE: percent used
@@ -8727,6 +8863,11 @@ function buildCloudMorningBriefing({
     date,
     markdown: qc.markdown || markdown,
     qc,
+    // The build's own named-blocker list (same entries renderBlockersSection
+    // drew). The publish path seeds the canonical live-board artifact with these
+    // so defectiveCardCount can never read 0 while the Blockers section lists
+    // them (ExampleCo 2026-07-07 single-source paradigm fix).
+    blockers: blockers.map((b) => ({ title: b.title, category: b.category })),
     inputs: {
       actionItems: actionItems.length,
       openCommitments: openCommitments.length,
@@ -9044,7 +9185,17 @@ async function runCloudBriefing({
     try {
       const dashQc = dashboardRenderQc({ date });
       receipt.dashboardRenderQc = dashQc;
-      receipt.dashboardQcArtifact = writeDashboardQcArtifact(dataDir, dashQc, date);
+      // Seed the canonical artifact with the build's own named blockers so the
+      // count and the visible Blockers list share ONE truth even when the live
+      // render-QC could not run (retry): defectiveCardCount can never read 0
+      // while the Blockers section lists a real blocker (ExampleCo 2026-07-07).
+      receipt.dashboardQcArtifact = writeDashboardQcArtifact(
+        dataDir,
+        dashQc,
+        date,
+        {},
+        built.blockers,
+      );
       if (dashQc.ran && dashQc.ok === false) {
         // Label, do not block: name each raw survived render-QC defect on the
         // Blockers card and surface per-card statuses on the receipt. The visible
@@ -9067,7 +9218,13 @@ async function runCloudBriefing({
           writeTextAtomic(markdownPath, publishedMarkdown);
           const cleanDashQc = dashboardRenderQc({ date });
           receipt.dashboardRenderQcAfterLabel = cleanDashQc;
-          receipt.dashboardQcArtifact = writeDashboardQcArtifact(dataDir, cleanDashQc, date);
+          receipt.dashboardQcArtifact = writeDashboardQcArtifact(
+            dataDir,
+            cleanDashQc,
+            date,
+            {},
+            clean.blockers,
+          );
           labeledDashQc = cleanDashQc;
           qcBlockerEntries = renderQcBlockers(cleanDashQc);
         }
@@ -9086,7 +9243,13 @@ async function runCloudBriefing({
           writeTextAtomic(markdownPath, publishedMarkdown);
           const nextDashQc = dashboardRenderQc({ date });
           receipt.dashboardRenderQcAfterLabel = nextDashQc;
-          receipt.dashboardQcArtifact = writeDashboardQcArtifact(dataDir, nextDashQc, date);
+          receipt.dashboardQcArtifact = writeDashboardQcArtifact(
+            dataDir,
+            nextDashQc,
+            date,
+            {},
+            labeled.blockers,
+          );
           if (!nextDashQc || !nextDashQc.ran || nextDashQc.ok !== false) {
             if (nextDashQc && nextDashQc.ran && nextDashQc.ok === true) {
               const clean = buildCloudMorningBriefing({
@@ -9122,7 +9285,13 @@ async function runCloudBriefing({
             writeTextAtomic(markdownPath, publishedMarkdown);
             const cleanDashQc = dashboardRenderQc({ date });
             receipt.dashboardRenderQcAfterLabel = cleanDashQc;
-            receipt.dashboardQcArtifact = writeDashboardQcArtifact(dataDir, cleanDashQc, date);
+            receipt.dashboardQcArtifact = writeDashboardQcArtifact(
+              dataDir,
+              cleanDashQc,
+              date,
+              {},
+              clean.blockers,
+            );
             labeledDashQc = cleanDashQc;
             qcBlockerEntries = renderQcBlockers(cleanDashQc);
             break;
@@ -9323,6 +9492,8 @@ module.exports = {
   runEc2ReputationScanSync,
   parseRssItemsLite,
   buildEc2SubsystemHealthRows,
+  evaluatePm2FleetHealth,
+  PM2_STABILITY_MIN_UPTIME_MS,
   runningOnEc2,
   inspectBusinessPulse,
   extractProjectBacklog,

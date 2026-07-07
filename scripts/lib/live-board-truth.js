@@ -100,6 +100,49 @@ function cardStatusFromDefects(defects) {
   return 'defect';
 }
 
+// Stable slug for a build-known blocker entry so a blocker with no manifest
+// card id still produces a distinct, deduplicated card row. Pure + deterministic
+// (title-derived) so the same blocker always maps to the same synthetic id.
+function blockerCardId(blocker) {
+  const explicit = blocker && (blocker.id || blocker.cardId);
+  if (explicit) return String(explicit);
+  const title = String((blocker && blocker.title) || '').toLowerCase();
+  const slug = title
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60);
+  return slug ? `blocker_${slug}` : 'blocker_unnamed';
+}
+
+// The canonical count and the visible Blockers list MUST derive from ONE truth
+// (ExampleCo 2026-07-07 paradigm hot button): it is never acceptable for the markdown
+// to list N blockers while defectiveCardCount reads 0. The render-QC catches
+// cards that render broken on the LIVE page; but when the live page is briefly
+// unreachable (ran:false, retry:true) the render-QC has nothing to say, while the
+// BUILD still knows real blockers (recorded test failures, a non-green Dev Ops
+// probe). Those build-known blockers are the same truth the Blockers section
+// lists, so they must seed the canonical cards too -- otherwise the artifact
+// falsely reads 0 while the markdown lists 1. This helper turns each build
+// blocker into a defective card entry.
+function blockersToCards(blockers, ts) {
+  const list = Array.isArray(blockers) ? blockers : [];
+  const byId = new Map();
+  for (const b of list) {
+    if (!b || !b.title) continue;
+    const id = blockerCardId(b);
+    if (byId.has(id)) continue; // one card per distinct blocker
+    const kind = classifyDefectKind(b.category || b.title || '');
+    byId.set(id, {
+      id,
+      title: String(b.title),
+      status: 'defect',
+      defectKinds: [kind],
+      asOf: ts,
+    });
+  }
+  return [...byId.values()];
+}
+
 // Build the canonical artifact object from the render-QC's raw result shape
 // (`{ ran, ok, retry, defects, cardStatuses }`, as returned by
 // runDashboardRenderQc in cloud-morning-briefing.js / verifyDashboard in
@@ -111,7 +154,28 @@ function cardStatusFromDefects(defects) {
 // matched); `cardTitles` (optional) is a card id -> title map the caller can
 // pass INSTEAD when it does not have per-entry titles. Either way the schema
 // field always falls back to the card id so it is never blank.
-function buildLiveBoardArtifact({ dashQc, date, cardTitles = {}, now = () => new Date() } = {}) {
+//
+// `blockers` (optional) is the build's own named-blocker list (the same entries
+// the Blockers markdown section renders). It SEEDS the cards ONLY when the live
+// render-QC did not itself produce a defective-card verdict: when render-QC
+// could not run (ran:false, retry) or ran and found zero defective cards, the
+// artifact would otherwise falsely read 0 defective cards while the build's
+// Blockers section legitimately lists blockers (recorded test failures, a
+// non-green Dev Ops probe) it knows about independent of the live page. In that
+// case the build blockers become the canonical defective cards so the count and
+// the Blockers list share ONE truth (ExampleCo 2026-07-07). When render-QC RAN and
+// found defective cards, its live-render verdict is authoritative and complete
+// (it already saw every rendered tile, including any blocked ones), so the
+// build blockers are NOT additively merged -- that would double-count the same
+// underlying defect whenever the pre-render blocker title differs from the
+// rendered tile title.
+function buildLiveBoardArtifact({
+  dashQc,
+  date,
+  cardTitles = {},
+  blockers = [],
+  now = () => new Date(),
+} = {}) {
   const ts = now().toISOString();
   const rawCardStatuses = (dashQc && dashQc.cardStatuses) || [];
   const cards = rawCardStatuses.map((c) => {
@@ -126,6 +190,20 @@ function buildLiveBoardArtifact({ dashQc, date, cardTitles = {}, now = () => new
       asOf: ts,
     };
   });
+  // Seed build-known blockers only when the live render-QC did not produce its
+  // own defective-card verdict (see the doc comment above). A render-QC card
+  // already covering the same card id or normalized title still wins.
+  const renderFoundDefectiveCards = cards.some((c) => c.status !== 'clean');
+  if (!renderFoundDefectiveCards) {
+    const haveIds = new Set(cards.map((c) => String(c.id)));
+    const haveTitles = new Set(cards.map((c) => normalizeCardTitle(c.title)));
+    for (const bc of blockersToCards(blockers, ts)) {
+      if (haveIds.has(bc.id)) continue;
+      if (haveTitles.has(normalizeCardTitle(bc.title))) continue;
+      cards.push(bc);
+      haveIds.add(bc.id);
+    }
+  }
   const defectiveCardCount = cards.filter((c) => c.status !== 'clean').length;
   return {
     ts,
@@ -225,6 +303,8 @@ module.exports = {
   STALE_AFTER_MS,
   classifyDefectKind,
   cardStatusFromDefects,
+  blockerCardId,
+  blockersToCards,
   buildLiveBoardArtifact,
   defectiveCardCount,
   isStale,

@@ -462,6 +462,15 @@ const DEV_TEST_NOTIFICATION_RE =
 // imperative phrasing fools the human-ask detector, so they hard-drop.
 const SOLICITATION_RE =
   /\bloved ones (are|stay|will be) protected\b|\bmake sure your loved ones\b|\b(life|final expense|term|whole life) insurance\b|\bprotect your (family|loved ones|legacy)\b|\b(get|request) (a |your )?(free )?quote\b/i;
+// Promotional/marketing UPSELL blasts that personalize the subject with a first
+// name so they read like a real note but are pure "save money / you are
+// overpaying / boost your credit" marketing (Experian "ExampleCo, still paying for
+// subscriptions you don't use?"). The CATEGORY is upsell marketing copy, not one
+// brand. Hard-drop regardless of human-ask/system-action wording, because the
+// personalized imperative phrasing is exactly what fools the ask detector.
+// -> feedback: action items drop promotional upsell marketing (ExampleCo 2026-07-07).
+const PROMO_UPSELL_RE =
+  /\b(still paying for (?:subscriptions?|services?)|subscriptions? you (?:don'?t|do not|no longer) use|cancel (?:unwanted|unused) subscriptions?|stop (?:overpaying|wasting money)|(?:you'?re|you are) (?:overpaying|still paying)|save (?:money|\$?\d+).{0,30}(?:subscriptions?|bills?|monthly|each month|per month)|lower your bills?|find (?:hidden|unused) subscriptions?|manage your subscriptions?|boost your credit score|raise your credit score|check your (?:free )?credit score|unlock (?:your )?(?:savings|offers?)|upgrade to (?:premium|pro|plus) today|claim your (?:reward|offer|discount)|your (?:free )?trial (?:is ending|expires))\b/i;
 
 function isLikelyActionable(msg) {
   const subject = cleanText(msg.subject || '', 240);
@@ -484,6 +493,7 @@ function isLikelyActionable(msg) {
   // real ask, even when they carry system-action or imperative wording.
   if (DEV_TEST_NOTIFICATION_RE.test(combined)) return false;
   if (SOLICITATION_RE.test(combined)) return false;
+  if (PROMO_UPSELL_RE.test(combined)) return false;
   const hasHumanAsk = HUMAN_ASK_RE.test(combined);
   const hasSystemAction = SYSTEM_ACTION_RE.test(combined);
   // Drop FYI notifications (receipts/statements/stays/promos) that no human is

@@ -190,6 +190,7 @@ describe('completeness guard — canonical rule drift protection', () => {
       /^data\/agent\/shorts-proposals\/\d{4}-\d{2}-\d{2}\.json$/i,
       /^data\/agent\/viral-tech-clips\/\d{4}-\d{2}-\d{2}\.json$/i,
       /^data\/briefings\/briefing-\d{4}-\d{2}-\d{2}\.(md|docx)$/i,
+      /^data\/briefing-action-items\.json$/i,
       /^data\/(gmail|otter|vapi|whatsapp)\/raw\/.+\.json$/i,
       /^data\/outbound\/.*\/\.sent\/.+\.json$/i,
     ];
