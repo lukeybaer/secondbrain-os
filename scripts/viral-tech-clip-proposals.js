@@ -427,6 +427,56 @@ function youtubeIdFromUrl(sourceUrl) {
   );
 }
 
+// Availability gate (ExampleCo 2026-07-07: "that video is unavailable, so there was
+// a bug there with your output"). A viral-clip proposal points at a YouTube
+// video the dashboard renders in an /embed/ iframe; a deleted, private, removed,
+// region-blocked, or nonexistent video shows "Video unavailable" there. The
+// briefing must NEVER surface such a proposal. YouTube oEmbed is the reliable,
+// low-maintenance signal: HTTP 2xx + valid JSON metadata means the video is
+// public and available; 400/401/403/404 means it is gone/private/invalid. An
+// embed-restriction hint in the oEmbed body is also treated as unavailable.
+//
+// FAIL-SAFE: a network/timeout error returns { available: true } so a transient
+// blip never silently drops a good proposal. We only EXCLUDE on a definitive
+// unavailable signal from YouTube itself. Injectable via options.fetchUrl for
+// tests, so no live network in CI.
+async function isYouTubeVideoAvailable(videoIdOrUrl, options = {}) {
+  const fetchText = options.fetchUrl || fetchUrl;
+  const id =
+    youtubeIdFromUrl(videoIdOrUrl) ||
+    (/^[\w-]{6,20}$/.test(String(videoIdOrUrl || '')) ? String(videoIdOrUrl) : null);
+  if (!id) return { available: true, reason: 'no-video-id', checked: false };
+  const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(
+    `https://www.youtube.com/watch?v=${id}`,
+  )}&format=json`;
+  let res;
+  try {
+    res = await fetchText(oembedUrl, { timeout: options.timeout || 12000 });
+  } catch (err) {
+    // Network/timeout: do not penalize a good video for a transient failure.
+    return { available: true, reason: `probe-error: ${safeError(err)}`, checked: false };
+  }
+  const status = Number(res && res.status) || 0;
+  if (status >= 200 && status < 300) {
+    let meta = {};
+    try {
+      meta = res.body ? JSON.parse(res.body) : {};
+    } catch {
+      meta = {};
+    }
+    // oEmbed 200 with no title is a soft-unavailable signal; an explicit
+    // embed-disabled hint (rare in oEmbed) is a hard one.
+    if (meta && meta.title)
+      return { available: true, reason: 'ok', checked: true, title: meta.title };
+    return { available: true, reason: 'ok-no-title', checked: true };
+  }
+  if (status === 400 || status === 401 || status === 403 || status === 404) {
+    return { available: false, reason: `oembed-http-${status}`, checked: true };
+  }
+  // Any other status (5xx, 0) is treated as inconclusive -> fail-safe available.
+  return { available: true, reason: `oembed-http-${status}-inconclusive`, checked: false };
+}
+
 function withClipUrl(sourceUrl, timestamp) {
   const start = timestampStartSeconds(timestamp);
   const id = youtubeIdFromUrl(sourceUrl);
@@ -445,6 +495,7 @@ function normalizeYouTubeVideo(item, now = new Date()) {
   const snippet = item && item.snippet ? item.snippet : {};
   const stats = item && item.statistics ? item.statistics : {};
   const contentDetails = item && item.contentDetails ? item.contentDetails : {};
+  const status = item && item.status ? item.status : {};
   const videoId = item && item.id;
   if (!videoId) return null;
   const views = parseInteger(stats.viewCount, 0);
@@ -470,9 +521,35 @@ function normalizeYouTubeVideo(item, now = new Date()) {
       views,
       viewCount: views,
       view_count: views,
+      // Authoritative embed/availability signals from the Data API status part
+      // (ExampleCo 2026-07-07: "that video is unavailable"). The dashboard renders
+      // each proposal in an /embed/ iframe; a non-embeddable, private, or
+      // failed/rejected upload shows "Video unavailable" there. These flags let
+      // isEmbeddableYouTubeCandidate() drop such a source BEFORE it becomes a
+      // proposal, complementing the oEmbed removal check at proposal time.
+      // Absent (mock/legacy items with no status part) means "ExampleCo" -> kept,
+      // fail-safe, so a missing status never silently drops a good candidate.
+      privacyStatus: status.privacyStatus || null,
+      uploadStatus: status.uploadStatus || null,
+      embeddable: status.embeddable === undefined ? null : Boolean(status.embeddable),
+      regionRestriction: contentDetails.regionRestriction || null,
     },
     now,
   );
+}
+
+// True unless the Data API status part gives a DEFINITIVE not-embeddable /
+// not-public / failed-upload signal. Fail-safe: ExampleCo (null) status keeps the
+// candidate. This is the authoritative iframe-embed gate; the oEmbed check at
+// proposal time covers deletions that happen after sourcing.
+function isEmbeddableYouTubeCandidate(video) {
+  if (!video) return true;
+  if (video.embeddable === false) return false;
+  if (video.privacyStatus && video.privacyStatus !== 'public' && video.privacyStatus !== 'unlisted')
+    return false;
+  if (video.uploadStatus && (video.uploadStatus === 'rejected' || video.uploadStatus === 'failed'))
+    return false;
+  return true;
 }
 
 function isTechRelevantVideo(video) {
@@ -569,7 +646,7 @@ async function fetchYouTubeCandidatesWithAuth(auth, options = {}) {
     const detail = await youtubeJson(
       'videos',
       {
-        part: 'statistics,snippet,contentDetails',
+        part: 'statistics,snippet,contentDetails,status',
         id: chunk.join(','),
       },
       auth,
@@ -577,7 +654,10 @@ async function fetchYouTubeCandidatesWithAuth(auth, options = {}) {
     );
     for (const item of detail.items || []) {
       const normalized = normalizeYouTubeVideo(item, now);
-      if (normalized && isTechRelevantVideo(normalized)) videos.push(normalized);
+      // Drop a non-embeddable / non-public / failed-upload source before it can
+      // become a proposal (ExampleCo 2026-07-07: never surface an unavailable video).
+      if (normalized && isTechRelevantVideo(normalized) && isEmbeddableYouTubeCandidate(normalized))
+        videos.push(normalized);
     }
   }
   return videos.sort((a, b) => b.viewsPerDay - a.viewsPerDay || b.views - a.views);
@@ -842,6 +922,35 @@ async function fetchYouTubeTranscript(videoId, options = {}) {
   return [];
 }
 
+// A viral clip needs a hook / payoff / tension moment, NOT a podcast intro
+// (ExampleCo 2026-07-07 #learn: "Your clip for the rise and fall of the Roman
+// Empire, it was just a simple introduction section... You need some really
+// viral clip"). This flags the opening/greeting/sponsor/channel-intro material
+// that is death for a short: it has no standalone hook and no payoff. Used to
+// de-prioritize such segments as viral-clip candidates -- both chapter anchors
+// (by title) and transcript cues (by spoken text). Full rule ->
+// memory/feedback_viral_clip_never_intro_section.md.
+const INTRO_LIKE_SEGMENT_RE =
+  /\b(intro(?:duction|s)?|welcome(?:\s+(?:to|back))?|(?:welcome\s+)?(?:to\s+)?(?:the\s+)?(?:show|channel|podcast|episode|stream)|cold\s*open|opening|preamble|housekeeping|before\s+we\s+(?:start|begin|dive)|let'?s\s+get\s+started|thanks?\s+for\s+(?:watching|tuning|joining)|(?:today'?s|this\s+(?:video|episode)\s+is)\s+sponsor(?:ed)?|sponsor(?:ed)?\s+(?:by|read|segment|message)|brought\s+to\s+you\s+by|(?:like|subscribe|smash\s+that)\b.*\b(?:button|subscribe|notification)|hit\s+the\s+(?:like|subscribe)|patreon|merch|(?:in\s+)?this\s+(?:video|episode)\s*,?\s*(?:we'?ll|i'?ll|we\s+are|i\s+am)\b|table\s+of\s+contents|agenda|outline\s+of|who\s+(?:i\s+am|we\s+are)|my\s+name\s+is)\b/i;
+
+// A short greeting cue with no substance ("Hey everyone", "What's up guys") is
+// also intro-like even without a keyword above.
+const GREETING_ONLY_RE =
+  /^(?:hey|hi|hello|yo|what'?s\s+up|good\s+(?:morning|afternoon|evening))\b[\s,!.]*(?:everyone|everybody|guys|folks|friends|all|there|y'?all)?[\s,!.]*$/i;
+
+function isIntroLikeSegment(text, startSeconds = null) {
+  const s = String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s) return false;
+  if (INTRO_LIKE_SEGMENT_RE.test(s)) return true;
+  if (GREETING_ONLY_RE.test(s)) return true;
+  // A generic label literally named as the first/opening section is intro-like
+  // even if the wording dodges the regex above.
+  if (/^(?:part\s*0|section\s*0|chapter\s*0|0[.:)]|start\b)/i.test(s)) return true;
+  return false;
+}
+
 // Pick a real, substantive cue from a fetched transcript to anchor a clip on.
 // Prefers a cue with a tech-relevant, quotable line that has room for the full
 // clip window inside the runtime. Returns { startSec, text } or null.
@@ -855,9 +964,15 @@ function pickTranscriptAnchor(cues, durationSeconds, clipSeconds = 18) {
     return String(c.text || '').replace(/\s+/g, '').length >= 12;
   });
   const pool = inBounds.length > 0 ? inBounds : cues;
+  // A viral clip is a hook/payoff, never a greeting or channel intro. Drop
+  // intro-like cues from the candidate pool so the anchor lands on substance
+  // (ExampleCo 2026-07-07 #learn). Keep a non-intro fallback so we never return null
+  // just because every early cue reads as an intro.
+  const substantivePool = pool.filter((c) => !isIntroLikeSegment(c.text || '', c.start));
+  const anchorPool = substantivePool.length > 0 ? substantivePool : pool;
   const interestRe =
     /(agent|model|ai|claude|openai|gpt|robot|build|future|breakthrough|chip|gpu|startup|code|tool|learn|data)/i;
-  const preferred = pool.find((c) => interestRe.test(c.text || '')) || pool[0];
+  const preferred = anchorPool.find((c) => interestRe.test(c.text || '')) || anchorPool[0];
   if (!preferred) return null;
   const startSec = Math.max(0, Math.round(Number(preferred.start || 0)));
   if (dur > 0 && startSec + clipSeconds > dur) return null;
@@ -929,14 +1044,22 @@ async function chapterFreeProposal(cand, options = {}) {
 function deterministicChapterProposal(cand) {
   const chapters = Array.isArray(cand && cand.chapters) ? cand.chapters : [];
   if (!cand || chapters.length === 0) return null;
+  // A viral clip needs a hook, never an intro/greeting/sponsor chapter (ExampleCo
+  // 2026-07-07 #learn: the Roman Empire clip was "just a simple introduction
+  // section"). Exclude intro-like chapters from selection so the deterministic
+  // fallback picks a substantive moment, not chapters[0] (which is almost always
+  // the intro). Only fall back to an intro chapter when EVERY chapter reads as
+  // intro-like -- a real, if weak, timestamp still beats null.
+  const nonIntro = chapters.filter((c) => !isIntroLikeSegment(c.title || '', c.seconds));
+  const pool = nonIntro.length > 0 ? nonIntro : chapters;
   const preferred =
-    chapters.find((c) =>
+    pool.find((c) =>
       /(agent|ai|model|openai|claude|robot|demo|build|future|tool|startup|chip|gpu)/i.test(
         c.title || '',
       ),
     ) ||
-    chapters.find((c) => c.seconds >= 30) ||
-    chapters[0];
+    pool.find((c) => c.seconds >= 30) ||
+    pool[0];
   if (!preferred || preferred.seconds == null) return null;
   const clipSeconds = 16;
   const start = preferred.timestamp || formatTimestamp(preferred.seconds);
@@ -984,6 +1107,9 @@ async function proposeClipFor(cand, options = {}) {
     `VIEWS_PER_DAY: ${Math.round(cand.viewsPerDay || 0)}\n` +
     chapterPromptBlock(cand) +
     `\nUse only the chapter timestamps above as source anchors. The approx_timestamp start must be one listed chapter timestamp. ` +
+    `A viral short lives on a HOOK or PAYOFF -- a surprising claim, a bold prediction, a tension or reveal moment. ` +
+    `NEVER pick the intro, the greeting, the "welcome to the channel/show", a table of contents, a housekeeping, or a sponsor/subscribe segment: those have no standalone hook and kill retention. ` +
+    `Pick the single most quotable, self-contained moment of substance. ` +
     `If you cannot pick a real timestamp from the chapter list, output PASS and nothing else.\n\n` +
     `Output JSON only, no markdown fences:\n` +
     `{\n` +
@@ -1228,6 +1354,21 @@ async function generate(options = {}) {
         out.errors.push(`skipped rejected clip id: ${built.id}`);
         continue;
       }
+      // Never surface a proposal whose source video is unavailable in the
+      // dashboard iframe (ExampleCo 2026-07-07: "that video is unavailable"). The
+      // check is fail-safe: only a definitive YouTube "gone/private/invalid"
+      // signal excludes; a transient probe error keeps the proposal.
+      const availability = await isYouTubeVideoAvailable(
+        built.youtube_video_id || built.source_url,
+        options,
+      );
+      if (availability.checked && availability.available === false) {
+        out.errors.push(
+          `skipped unavailable video: ${built.source_title || built.source_url} (${availability.reason})`,
+        );
+        out.skippedUnavailable = (out.skippedUnavailable || 0) + 1;
+        continue;
+      }
       out.proposals.push(built);
     }
 
@@ -1350,6 +1491,10 @@ module.exports = {
   chapterFreeProposal,
   fetchYouTubeTranscript,
   pickTranscriptAnchor,
+  isIntroLikeSegment,
+  isYouTubeVideoAvailable,
+  isEmbeddableYouTubeCandidate,
+  normalizeYouTubeVideo,
   proposeClipFor,
   isCredibleClipProposal,
   isTechRelevantVideo,
