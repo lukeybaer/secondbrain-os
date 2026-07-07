@@ -59,6 +59,8 @@ const {
   newsPublisherChromeSource,
 } = require('./lib/news-summarize.js');
 const { loadOperatorIdentity } = require('./lib/operator-identity.js');
+const { ARTIFACT_REL_PATH, buildLiveBoardArtifact } = require('./lib/live-board-truth.js');
+const { writeDataArtifact } = require('./lib/data-root.js');
 
 // Operator-specific tokens (employer name + username) are PII and load from
 // memory/ at runtime, never hardcoded in source. The private tree resolves the
@@ -85,9 +87,58 @@ function parseArgs(argv) {
     else if (a === '--html') opts.htmlFile = argv[++i];
     else if (a === '--url') opts.url = argv[++i];
     else if (a === '--host') opts.host = argv[++i];
+    // Write the canonical dashboard-qc-result.json artifact after this run,
+    // the SAME schema/path writeDashboardQcArtifact (cloud-morning-briefing.js)
+    // writes at publish time. See writeCanonicalArtifactFromResult below for
+    // why a standalone run needs this (2026-07-06 stale-Blockers-count gap).
+    else if (a === '--write-artifact') opts.writeArtifact = true;
+    // Test-only override for the artifact write location; production always
+    // writes through writeDataArtifact's normal SECONDBRAIN_DATA_DIR/repo
+    // resolution.
+    else if (a === '--data-dir') opts.dataDir = argv[++i];
     else if (!a.startsWith('--') && /^\d{4}-\d{2}-\d{2}$/.test(a)) opts.date = a;
   }
   return opts;
+}
+
+// Build the canonical dashboard-qc-result.json artifact from a verifyDashboard
+// result and write it to the ONE path every consumer reads (the dashboard
+// tile, the markdown At-a-glance line, chat reports, self-heal --
+// scripts/lib/live-board-truth.js). Mirrors writeDashboardQcArtifact in
+// cloud-morning-briefing.js exactly (same buildLiveBoardArtifact call, same
+// legacy defectCount/defects fields kept alongside for archaeology) so a
+// standalone `--write-artifact` run and a publish-time run are indistinguishable
+// to any reader.
+//
+// WHY THIS EXISTS (ExampleCo 2026-07-06 #gap): only the publish-time build path
+// (cloud-morning-briefing.js's own writeDashboardQcArtifact call) ever wrote
+// this artifact. A standalone `node scripts/verify-dashboard-cards-live.js`
+// run -- e.g. run by hand mid-day, or by a babysitter loop between publish
+// cycles -- computed a fresh, correct result and printed it to stdout, but
+// never persisted it. So the artifact could sit stale for hours (poisoned by
+// an earlier outage-window run) while a fresh manual verify proved the truth
+// had moved, with no way for that fresh truth to reach the dashboard tile
+// short of waiting for the next publish. This function is that missing write.
+function writeCanonicalArtifactFromResult(result, opts) {
+  const dashQc = {
+    ran: true,
+    ok: result.status === 'ok',
+    retry: false,
+    defects: result.defects || [],
+    cardStatuses: result.cardStatuses || [],
+  };
+  const canonical = buildLiveBoardArtifact({ dashQc, date: opts.date });
+  const artifact = {
+    ...canonical,
+    // Legacy fields, retained for backward compatibility only -- see
+    // writeDashboardQcArtifact's comment in cloud-morning-briefing.js.
+    defectCount: dashQc.ok === false ? dashQc.defects.length : 0,
+    defects: dashQc.defects.slice(0, 200),
+  };
+  const writeOpts = {};
+  if (opts.dataDir) writeOpts.dataDir = opts.dataDir;
+  const absPath = writeDataArtifact(ARTIFACT_REL_PATH, artifact, writeOpts);
+  return { artifact, absPath };
 }
 
 const strip = (s) =>
@@ -2435,6 +2486,19 @@ function main() {
     for (const a of result.advisories) console.log('  . ' + a);
   }
 
+  // --write-artifact: persist this run's result to the canonical
+  // dashboard-qc-result.json so a standalone verify run is no longer
+  // invisible to every consumer that reads through live-board-truth.js.
+  // Runs regardless of pass/fail -- a defect run must overwrite a stale
+  // "clean" artifact just as much as a clean run must overwrite a stale
+  // defect count.
+  if (opts.writeArtifact) {
+    const { artifact, absPath } = writeCanonicalArtifactFromResult(result, opts);
+    console.log(
+      `Wrote canonical dashboard-qc artifact to ${absPath}: defectiveCardCount=${artifact.defectiveCardCount}, ts=${artifact.ts}`,
+    );
+  }
+
   if (result.status === 'ok') {
     console.log(
       'PASS: every always-expected card is rendered, non-empty, value-sane, and exec-crisp.',
@@ -2468,6 +2532,8 @@ module.exports = {
   redactPathsInEvidence,
   fetchLiveHtml,
   findTiles,
+  parseArgs,
+  writeCanonicalArtifactFromResult,
   FACE_DENYLIST,
   EMPTY_BODY_FLOOR,
   STALE_HOURS,

@@ -59,9 +59,37 @@ function applyVideoDelete(v, nowIso) {
   return true;
 }
 
+/**
+ * Whether a manifest video must be EXCLUDED from every "stuck" dashboard
+ * scanner (the tile stuck-scan videoNeedsReviewOrRegen in ec2-server.js, and
+ * videoNeedsRepair in cloud-morning-briefing.js).
+ *
+ * Background (2026-07-06 ExampleCo #gap): ExampleCo deleted all 44 pending videos via
+ * applyVideoDelete, which correctly clears video_needs_regen /
+ * thumbnail_needs_regen and sets status='deleted' + regen_suppressed=true.
+ * But both stuck-scanners ALSO treat a leftover `regen_status` value of
+ * 'failed' / 'rubric_failed' / 'dead-letter' / 'hard_blocked' (or a stale
+ * `regen_hard_block_reason` / `regen_hard_blocked`) as stuck, independent of
+ * the delete markers -- those fields are write-once forensic history from
+ * the failed regen attempt; applyVideoDelete never clears them (by design,
+ * they are a record of what happened, not live state). So a video that is
+ * deleted from ExampleCo's point of view kept showing as "1 stuck item" because
+ * neither scanner ever consulted isVideoDeleted() before reading those
+ * fields.
+ *
+ * The fix: deleted means gone from ExampleCo's view, full stop, including every
+ * retry-ledger / regen-status ghost field a prior failed attempt left
+ * behind. Both scanners call this FIRST and short-circuit to "not stuck"
+ * before evaluating any regen_status / hard-block field.
+ */
+function isTerminallyExcludedFromStuckScan(v) {
+  return isVideoDeleted(v);
+}
+
 module.exports = {
   DELETED_STATUS,
   isVideoDeleted,
   isRegenCandidate,
   applyVideoDelete,
+  isTerminallyExcludedFromStuckScan,
 };

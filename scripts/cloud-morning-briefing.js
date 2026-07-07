@@ -43,6 +43,7 @@ const { resolveDataArtifact } = require('./lib/data-root.js');
 // blocker we emit per non-green row covers EXACTLY the set the QC counts.
 const { nonGreenSubsystems } = require('./lib/system-health-nongreen.js');
 const { CARDS: BRIEFING_MANIFEST_CARDS } = require('./lib/briefing-card-manifest.js');
+const { isTerminallyExcludedFromStuckScan } = require('./lib/video-delete-state.js');
 const {
   summarizeNewsItems,
   buildExtractiveSummary,
@@ -3912,6 +3913,14 @@ function videoIsAbandonedDeadLetterStub(video) {
 
 function videoNeedsRepair(video) {
   if (!video || video.status === 'posted' || videoIsAbandonedNoArtifactStub(video)) return false;
+  // 2026-07-06 ExampleCo #gap: a video ExampleCo deleted (applyVideoDelete) must NEVER
+  // count as needing repair, even when a leftover regen_status/hard-block
+  // field from a prior failed attempt is still sitting on the record.
+  // Deleted means gone from ExampleCo's view, full stop -- checked before any
+  // regen_status read below. Mirrors the identical fix to
+  // videoNeedsReviewOrRegen in ec2-server.js; both scanners share the one
+  // video-delete-state.js predicate so they can never drift apart again.
+  if (isTerminallyExcludedFromStuckScan(video)) return false;
   return (
     video.video_needs_regen === true ||
     video.thumbnail_needs_regen === true ||
@@ -8817,6 +8826,10 @@ module.exports = {
   runDashboardRenderQc,
   writeDashboardQcArtifact,
   renderQcBlockers,
+  // Exported so the markdown-side video stuck-scan predicate is directly
+  // unit-testable (2026-07-06 ExampleCo #gap: deleted-video-still-shows-stuck).
+  // Adds no new behavior; buildVideoQueueCard already calls this internally.
+  videoNeedsRepair,
   // Exported for scripts/refresh-card.js (single-card refresh tool): the
   // never-drop assembly chokepoint that walks the canonical manifest and
   // resolves each card to its real section or an honest blocker. Exporting
