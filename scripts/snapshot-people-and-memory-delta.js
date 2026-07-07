@@ -48,6 +48,27 @@ function execGit(args) {
   }
 }
 
+// Distinguish "git ran, no commits in window" from "git is fatal in this dir"
+// (REPO has no real .git). On EC2 the live briefing runner's REPO is
+// /opt/secondbrain, whose .git is an empty stub, so EVERY `git log` was fatal and
+// execGit returned '' -- indistinguishable from a genuinely idle 24h. That false
+// empty was written over the real snapshot and the card read "0 people/memory
+// changes" even on a day with a Gmail-scan commit touching 6 contacts (ExampleCo
+// 2026-07-07 #gap). This probe lets main() refuse to write a false-zero and lets
+// the cloud runner point REPO at a checkout with a real .git.
+function gitIsAvailable() {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: REPO,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return out === 'true';
+  } catch {
+    return false;
+  }
+}
+
 function ensureDir(p) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
 }
@@ -399,15 +420,46 @@ function emptyMemorySnapshot(hours = 24) {
   };
 }
 
+function gitUnavailableSnapshot(kind, hours = 24) {
+  return {
+    hours,
+    empty: true,
+    gitUnavailable: true,
+    detail: `git is not available in ${REPO} (no real .git); the ${kind} change window could not be read. This is a runtime/deploy defect, not a genuinely idle day.`,
+    source: 'snapshot-git-unavailable',
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 function main() {
-  const people = snapshotPeople(24);
-  const memory = snapshotMemory(24);
+  // If git is fatal in REPO, a '' from execGit is NOT "no commits" -- it is "we
+  // could not look." Never overwrite an existing real snapshot with a false zero;
+  // write an honest gitUnavailable marker (or leave a good snapshot in place) so
+  // the card renders a repair blocker instead of "0 changes."
+  const gitOk = gitIsAvailable();
+  const people = gitOk ? snapshotPeople(24) : null;
+  const memory = gitOk ? snapshotMemory(24) : null;
   ensureDir(OUT_PEOPLE);
   if (people) {
     fs.writeFileSync(OUT_PEOPLE, JSON.stringify(people, null, 2));
     console.log(
       `wrote ${OUT_PEOPLE}: biggest=${people.biggest.name} (${people.biggest.delta} lines), totalFiles=${people.totalFiles}`,
     );
+  } else if (!gitOk) {
+    // Do not clobber an existing good snapshot (e.g. one SCP'd from the git
+    // machine) with a false zero. Only write the honest marker if no real
+    // snapshot is already present.
+    if (existingSnapshotIsReal(OUT_PEOPLE)) {
+      console.log(`${OUT_PEOPLE}: git unavailable in ${REPO}; kept existing real snapshot`);
+    } else {
+      fs.writeFileSync(
+        OUT_PEOPLE,
+        JSON.stringify(gitUnavailableSnapshot('people-file', 24), null, 2),
+      );
+      console.log(
+        `wrote ${OUT_PEOPLE}: git unavailable in ${REPO} (honest marker, not a false zero)`,
+      );
+    }
   } else {
     fs.writeFileSync(OUT_PEOPLE, JSON.stringify(emptyPeopleSnapshot(24), null, 2));
     console.log(`wrote ${OUT_PEOPLE}: no people-file changes in window`);
@@ -418,9 +470,39 @@ function main() {
     console.log(
       `wrote ${OUT_MEMORY}: +${memory.added}/-${memory.deleted}, ${memory.commits} commits`,
     );
+  } else if (!gitOk) {
+    if (existingSnapshotIsReal(OUT_MEMORY)) {
+      console.log(`${OUT_MEMORY}: git unavailable in ${REPO}; kept existing real snapshot`);
+    } else {
+      fs.writeFileSync(
+        OUT_MEMORY,
+        JSON.stringify(gitUnavailableSnapshot('MEMORY.md', 24), null, 2),
+      );
+      console.log(
+        `wrote ${OUT_MEMORY}: git unavailable in ${REPO} (honest marker, not a false zero)`,
+      );
+    }
   } else {
     fs.writeFileSync(OUT_MEMORY, JSON.stringify(emptyMemorySnapshot(24), null, 2));
     console.log(`wrote ${OUT_MEMORY}: no MEMORY.md changes in window`);
+  }
+}
+
+// A pre-existing snapshot counts as "real" only if it recorded actual changes
+// (not an empty/marker snapshot). We must never keep a stale empty in place of a
+// fresh honest marker, and never overwrite a real one with a false zero.
+function existingSnapshotIsReal(file) {
+  try {
+    const snap = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!snap || snap.empty || snap.gitUnavailable) return false;
+    const changed =
+      Number(snap.totalFiles || 0) > 0 ||
+      Number(snap.commits || 0) > 0 ||
+      Number(snap.added || 0) > 0 ||
+      Number(snap.deleted || 0) > 0;
+    return changed;
+  } catch {
+    return false;
   }
 }
 
@@ -431,5 +513,9 @@ module.exports = {
   snapshotMemory,
   emptyPeopleSnapshot,
   emptyMemorySnapshot,
+  gitUnavailableSnapshot,
+  gitIsAvailable,
+  existingSnapshotIsReal,
+  main,
   truncatePeopleSample,
 };
