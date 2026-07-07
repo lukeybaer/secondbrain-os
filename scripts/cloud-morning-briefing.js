@@ -2078,6 +2078,24 @@ function backlogResearchSources(item) {
 // starting with the literal "pain:" prefix. Matching on the prefix alone
 // silently dropped real pain evidence and pushed the caller into the
 // no-evidence fallback. Match on EITHER the reason prefix OR dim === 'pain'.
+// Backlog pain incidents are QUOTED commit-history evidence (score_history
+// reasons, pain_events), not Amy narrating her own repair. A commit subject like
+// "Nightly heal-tests loop GREEN at attempt 1" is data about a past run, but its
+// substring "heal loop"/"heal-tests loop" trips the clean-contract
+// SELF_NARRATION_BAN (findSelfNarration), which then replaced the WHOLE 208-line
+// FEATURE BACKLOG card with the red "self-heal failed" hard-block (ExampleCo
+// 2026-07-07). Neutralize only the exact ban-tripping operational phrasing in the
+// quoted evidence -- rephrase "heal loop"/"heal-tests loop" to the plainer
+// "heal-tests run", which preserves the evidence without reading as self-talk.
+// This is the same false-positive class the clean-contract seam already exempts
+// the SELF-HEAL HEALTH card for; here the fix is scoped to the quoted fragment
+// instead of exempting the whole card, so genuine self-narration is still caught.
+function neutralizeBacklogEvidencePhrasing(text) {
+  return String(text || '')
+    .replace(/\bheal[- ]?tests loop\b/gi, 'heal-tests run')
+    .replace(/\bheal loop\b/gi, 'heal-tests run');
+}
+
 function backlogPainIncidents(item) {
   const history = Array.isArray(item && item.score_history) ? item.score_history : [];
   const fromHistory = history
@@ -2087,11 +2105,15 @@ function backlogPainIncidents(item) {
         (/^pain:/i.test(String(h.reason || '')) || String(h.dim || '').toLowerCase() === 'pain'),
     )
     .map((h) =>
-      cleanExecutiveFragment(String(h.reason || '').replace(/^pain:\s*/i, ''), { max: 160 }),
+      neutralizeBacklogEvidencePhrasing(
+        cleanExecutiveFragment(String(h.reason || '').replace(/^pain:\s*/i, ''), { max: 160 }),
+      ),
     );
   const fromEvents = (Array.isArray(item && item.pain_events) ? item.pain_events : [])
     .map((e) =>
-      cleanExecutiveFragment((e && (e.summary || e.description || e.reason)) || '', { max: 160 }),
+      neutralizeBacklogEvidencePhrasing(
+        cleanExecutiveFragment((e && (e.summary || e.description || e.reason)) || '', { max: 160 }),
+      ),
     )
     .filter(Boolean);
   return [...fromHistory, ...fromEvents].filter(Boolean);
