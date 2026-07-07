@@ -205,7 +205,7 @@ def main() -> int:
         mtime = datetime.fromtimestamp(jsonl_path.stat().st_mtime, tz=timezone.utc)
         date_prefix = mtime.strftime("%Y-%m-%d")
 
-        # Separate prefixes so Athena can point at meta/ cleanly without
+        # Separate prefixes so PRIVATE_NAME can point at meta/ cleanly without
         # the transcript lines parsing as malformed JsonSerDe rows.
         s3_key_jsonl = f"transcripts/{REPO}/{date_prefix}/{session_id}.jsonl"
         s3_key_meta = f"meta/{REPO}/{date_prefix}/{session_id}.json"

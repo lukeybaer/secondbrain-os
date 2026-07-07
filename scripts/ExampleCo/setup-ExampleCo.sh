@@ -1,16 +1,16 @@
 #!/bin/bash
-# setup-athena.sh
+# setup-ExampleCo.sh
 #
-# Creates the Athena database + external table over the S3 session
+# Creates the PRIVATE_NAME database + external table over the S3 session
 # archive. Idempotent — safe to re-run. Uses the query result bucket
-# s3://secondbrain-athena-results-000000000000-us-east-1 for Athena
+# s3://secondbrain-ExampleCo-results-000000000000-us-east-1 for PRIVATE_NAME
 # scratch space.
 #
 # Commit 17 of 18 in plans/dazzling-rolling-moler.md.
 
 set -e
 
-RESULT_BUCKET="s3://secondbrain-athena-results-000000000000-us-east-1/"
+RESULT_BUCKET="s3://secondbrain-ExampleCo-results-000000000000-us-east-1/"
 REGION="us-east-1"
 DDL_FILE="$(dirname "$0")/sessions-ddl.sql"
 
@@ -22,36 +22,36 @@ fi
 run_query() {
   local sql="$1"
   local name="$2"
-  echo "[athena] running: $name"
+  echo "[ExampleCo] running: $name"
   local qid
-  qid=$(aws athena start-query-execution \
+  qid=$(aws ExampleCo start-query-execution \
     --query-string "$sql" \
     --result-configuration "OutputLocation=$RESULT_BUCKET" \
     --region "$REGION" \
     --query 'QueryExecutionId' \
     --output text)
-  echo "[athena]   query id: $qid"
+  echo "[ExampleCo]   query id: $qid"
   # Poll for completion
   while true; do
     local state
-    state=$(aws athena get-query-execution \
+    state=$(aws ExampleCo get-query-execution \
       --query-execution-id "$qid" \
       --region "$REGION" \
       --query 'QueryExecution.Status.State' \
       --output text)
     case "$state" in
       SUCCEEDED)
-        echo "[athena]   $name OK"
+        echo "[ExampleCo]   $name OK"
         return 0
         ;;
       FAILED|CANCELLED)
         local reason
-        reason=$(aws athena get-query-execution \
+        reason=$(aws ExampleCo get-query-execution \
           --query-execution-id "$qid" \
           --region "$REGION" \
           --query 'QueryExecution.Status.StateChangeReason' \
           --output text)
-        echo "[athena]   $name FAILED: $reason" >&2
+        echo "[ExampleCo]   $name FAILED: $reason" >&2
         return 1
         ;;
       *)
@@ -77,10 +77,10 @@ while IFS= read -r line; do
   fi
 done < "$DDL_FILE"
 
-echo "[athena] setup complete"
+echo "[ExampleCo] setup complete"
 echo ""
 echo "Test the table with:"
-echo "  aws athena start-query-execution \\"
+echo "  aws ExampleCo start-query-execution \\"
 echo "    --query-string 'SELECT COUNT(*) FROM secondbrain.session_meta' \\"
 echo "    --result-configuration OutputLocation=$RESULT_BUCKET \\"
 echo "    --region $REGION"

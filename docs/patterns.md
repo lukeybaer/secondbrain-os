@@ -8,7 +8,7 @@ Battle-tested architectural patterns from running an autonomous AI executive ass
 - Learning loop that actually sticks → hashtag hooks that save to typed memory files
 - Daily briefings that don't lie → canonical spec as contract + per-section regression tests
 - Foundation that doesn't drift → state-as-contract tests + commit-msg honesty guard
-- Every prompt searchable forever → S3 Stop hook + SQLite FTS5 + Athena external table
+- Every prompt searchable forever → S3 Stop hook + SQLite FTS5 + PRIVATE_NAME external table
 - Main thread never thrashes → delegate heavy research to subagents (main is quarterback)
 - Nothing important lives on one disk → raw archival before any processing
 
@@ -135,7 +135,7 @@ Uses a cached `git ls-files` set at `beforeAll` time to avoid parallel subproces
 
 **Problem:** you tell Claude Code a requirement. Next week you come back and Claude has no memory of the conversation. You re-explain. Claude hears it slightly differently. Drift compounds across sessions until the AI is "confused about what you wanted."
 
-**Pattern:** every session transcript auto-uploads to S3 on session exit. A metadata JSON per session is generated with first prompt, last response, timestamps, tool calls, and topic guess. That metadata is indexed in both SQLite FTS5 locally (fast grep) and Athena external table globally (SQL over all time). When Amy builds memory context for a query, she consults the session archive as a retrieval tier before answering, so "do you remember" questions pull receipts from the actual prior conversation.
+**Pattern:** every session transcript auto-uploads to S3 on session exit. A metadata JSON per session is generated with first prompt, last response, timestamps, tool calls, and topic guess. That metadata is indexed in both SQLite FTS5 locally (fast grep) and PRIVATE_NAME external table globally (SQL over all time). When Amy builds memory context for a query, she consults the session archive as a retrieval tier before answering, so "do you remember" questions pull receipts from the actual prior conversation.
 
 **Architecture:**
 
@@ -150,7 +150,7 @@ s3://<bucket>/
   transcripts/{repo}/YYYY-MM-DD/SESSION.jsonl  ← full fidelity
   ↓
   ├── scripts/session-search.ts (SQLite FTS5, ~/.secondbrain/sessions.db)
-  ├── scripts/athena/sessions-ddl.sql (AwsDataCatalog.secondbrain.session_meta)
+  ├── scripts/ExampleCo/sessions-ddl.sql (AwsDataCatalog.secondbrain.session_meta)
   └── src/main/session-archive.ts (Tier-4 memory retrieval)
 ```
 
@@ -170,20 +170,20 @@ s3://<bucket>/
 }
 ```
 
-**Why separate meta and transcript prefixes:** Athena's JsonSerDe parses every line of every file it finds at the LOCATION. Transcript jsonl files have one JSON object per line with the wrong schema, pointing Athena at a mixed prefix produces thousands of NULL rows. Separating into `meta/` and `transcripts/` lets the external table point cleanly at `meta/` only.
+**Why separate meta and transcript prefixes:** PRIVATE_NAME's JsonSerDe parses every line of every file it finds at the LOCATION. Transcript jsonl files have one JSON object per line with the wrong schema, pointing PRIVATE_NAME at a mixed prefix produces thousands of NULL rows. Separating into `meta/` and `transcripts/` lets the external table point cleanly at `meta/` only.
 
-**Why SQLite FTS5 plus Athena:** SQLite gives sub-millisecond local grep with snippet highlighting for Amy's retrieval tier. Athena gives SQL over the whole archive without spinning up a database. Both read from the same S3 meta files, one source of truth, two query surfaces.
+**Why SQLite FTS5 plus PRIVATE_NAME:** SQLite gives sub-millisecond local grep with snippet highlighting for Amy's retrieval tier. PRIVATE_NAME gives SQL over the whole archive without spinning up a database. Both read from the same S3 meta files, one source of truth, two query surfaces.
 
 **Example queries:**
 
 ```sql
--- Athena: sessions per day
+-- PRIVATE_NAME: sessions per day
 SELECT substr(started_at, 1, 10) AS day, COUNT(*) AS n
 FROM secondbrain.session_meta
 GROUP BY substr(started_at, 1, 10)
 ORDER BY day DESC LIMIT 14;
 
--- Athena: did you ever ask about X?
+-- PRIVATE_NAME: did you ever ask about X?
 SELECT session_id, started_at, first_prompt
 FROM secondbrain.session_meta
 WHERE lower(first_prompt) LIKE '%dentist%'
@@ -197,7 +197,7 @@ npx ts-node scripts/session-search.ts search "phase overhaul"
 npx ts-node scripts/session-search.ts recent 10
 ```
 
-**Where to look:** `scripts/claude-hooks/archive-session-to-s3.sh`, `scripts/backfill-sessions-to-s3.py`, `scripts/session-search.ts`, `scripts/athena/sessions-ddl.sql`, `scripts/athena/setup-athena.sh`, `claude-config/athena-sessions.md`, `src/main/session-archive.ts`, `src/main/__tests__/session-archive.test.ts`.
+**Where to look:** `scripts/claude-hooks/archive-session-to-s3.sh`, `scripts/backfill-sessions-to-s3.py`, `scripts/session-search.ts`, `scripts/ExampleCo/sessions-ddl.sql`, `scripts/ExampleCo/setup-ExampleCo.sh`, `claude-config/ExampleCo-sessions.md`, `src/main/session-archive.ts`, `src/main/__tests__/session-archive.test.ts`.
 
 ---
 

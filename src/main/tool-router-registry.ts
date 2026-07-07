@@ -45,7 +45,7 @@ import {
 //   - reference_briefing_dashboard.md (briefing parsing and refresh)
 //   - reference_gmail_send_pipeline.md (Gmail send and dispatch)
 //   - reference_caller_auth_system.md (caller-id pipeline)
-//   - reference_briefing_aws_resources.md (Athena, S3 archive)
+//   - reference_briefing_aws_resources.md (PRIVATE_NAME, S3 archive)
 //
 // Each entry's surfaces list is intentionally tight: a tool that ONLY
 // belongs on the Vapi surface should never compete with briefing tools
