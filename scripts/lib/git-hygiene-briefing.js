@@ -196,12 +196,24 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   // with "Status: git hygiene ..." which is log-speak, not an answer.
   const anyWork =
     parkedRecords.length + strayItems + safeBranches.length + protectedBranches.length > 0;
+  // Timed-out classifier calls mean the snapshot is INCOMPLETE: empty buckets
+  // may be missing data, not cleanliness. Never render "Clean" from a degraded
+  // snapshot (Codex review 2026-07-06); name the defect and keep trailing data.
+  const degradedCalls = asArray(snapshot && snapshot.degraded);
+  const degradedShown = degradedCalls.slice(0, 4).join('; ');
+  const degradedSuffix = degradedCalls.length > 4 ? `, +${degradedCalls.length - 4} more` : '';
+  const degradedLine = degradedCalls.length
+    ? `DEFECT (red): git snapshot INCOMPLETE, ${plural(degradedCalls.length, 'classifier call')} timed out under shared-.git contention (${degradedShown}${degradedSuffix}). Counts below may be undercounts. Repair: retry once contention clears, or raise SB_GIT_TIMEOUT_MS.`
+    : '';
   const verdictLead = anyWork
     ? `${plural(parkedRecords.length, 'parked item')}: ${plural(strayItems, 'stray item')} needing a decision, ${plural(safeBranches.length, 'landed leftover')} safe to clear, ${plural(protectedBranches.length, 'protected rescue snapshot')}.`
-    : 'Clean: no parked work, no stray branches, nothing to decide.';
+    : degradedLine
+      ? 'Unverified: cannot confirm clean, the git snapshot is incomplete (see defect below).'
+      : 'Clean: no parked work, no stray branches, nothing to decide.';
   const strandedLine = strandedCommitsLine(snapshot);
   const lines = [
     verdictLead,
+    ...(degradedLine ? [degradedLine] : []),
     ...(strandedLine ? [strandedLine] : []),
     'Actions: [Land] merge/push the work now; [Park] protect it with a reason and review date; [Drop] discard it only when it is clearly obsolete.',
     'Legend: STRAY needs a decision; PARKED is protected; LANDED already reached origin/master; PROTECTED is a rescue snapshot and never auto-cleans.',

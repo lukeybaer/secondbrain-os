@@ -39,12 +39,22 @@ const APPLY = process.argv.includes('--apply');
 // argument array, never a shell string, so nothing is shell-interpolated).
 // ---------------------------------------------------------------------------
 
+// Bounded like git-hygiene's helper: shared-.git contention must surface as a
+// clear failure, never an indefinite hang that blocks every future lander.
+// Generous because fetch/rebase/push legitimately cross the network.
+// Override: SB_LAND_GIT_TIMEOUT_MS.
+const GIT_TIMEOUT_MS = (() => {
+  const raw = Number.parseInt(process.env.SB_LAND_GIT_TIMEOUT_MS || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 300_000;
+})();
+
 function git(args, opts = {}) {
   return execFileSync('git', args, {
     cwd: process.cwd(),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 64 * 1024 * 1024,
+    timeout: GIT_TIMEOUT_MS,
     ...opts,
   }).trim();
 }
@@ -135,10 +145,27 @@ function rebaseOntoTarget(branch) {
   try {
     git(['rebase', `${REMOTE}/${TARGET}`], { stdio: ['ignore', 'pipe', 'inherit'] });
   } catch (err) {
-    // Leave the working tree clean for the human: abort the half-done rebase.
-    gitSafe(['rebase', '--abort']);
+    // Leave the working tree clean for the human: abort the half-done rebase,
+    // and say whether the abort worked so nobody trusts a half-rebased tree.
+    let aborted = true;
+    try {
+      git(['rebase', '--abort']);
+    } catch {
+      aborted = false;
+    }
+    const abortNote = aborted
+      ? 'Half-done rebase aborted cleanly.'
+      : 'ALSO failed to abort the half-done rebase; run `git rebase --abort` manually first.';
+    if (err && err.code === 'ETIMEDOUT') {
+      // A killed rebase is contention, not conflicts; do not send the lander
+      // hunting for conflict markers that do not exist.
+      throw new Error(
+        `rebase onto ${REMOTE}/${TARGET} exceeded ${GIT_TIMEOUT_MS}ms (likely shared-.git contention, ` +
+          `not conflicts). ${abortNote} Retry land shortly, or raise SB_LAND_GIT_TIMEOUT_MS.`,
+      );
+    }
     throw new Error(
-      `rebase onto ${REMOTE}/${TARGET} failed (conflicts?). Resolve manually, then re-run land.`,
+      `rebase onto ${REMOTE}/${TARGET} failed (conflicts?). ${abortNote} Resolve manually, then re-run land.`,
     );
   }
 }
@@ -178,6 +205,14 @@ function runScopedTests(scope) {
 
   const nodeModuleDirs = dependencyNodeModules(root);
   const vitestEntry = resolveVitestEntry(root, nodeModuleDirs);
+  // Wall-clock bound: scoped suites that transitively hit the shared .git
+  // (e.g. anything reaching the git-hygiene classifier) have been observed
+  // stalling a seconds-long run past 30 minutes under concurrent-session
+  // ref/lock contention. Kill and report instead of hanging the lander.
+  // Override: SB_LAND_TEST_TIMEOUT_MS.
+  const testTimeoutRaw = Number.parseInt(process.env.SB_LAND_TEST_TIMEOUT_MS || '', 10);
+  const testTimeout =
+    Number.isFinite(testTimeoutRaw) && testTimeoutRaw > 0 ? testTimeoutRaw : 600_000;
   const res = spawnSync(process.execPath, [vitestEntry, 'run', ...existing], {
     cwd: root,
     stdio: 'inherit',
@@ -185,7 +220,14 @@ function runScopedTests(scope) {
       ...process.env,
       NODE_PATH: mergeNodePath(nodeModuleDirs),
     },
+    timeout: testTimeout,
   });
+  if (res.error && res.error.code === 'ETIMEDOUT') {
+    log(`scoped tests exceeded ${testTimeout}ms wall-clock and were killed.`);
+    log('likely shared-.git contention (concurrent sessions), not necessarily a red test.');
+    log('retry land shortly; raise SB_LAND_TEST_TIMEOUT_MS if this scope is legitimately slow.');
+    return false;
+  }
   return res.status === 0;
 }
 

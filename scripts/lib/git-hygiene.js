@@ -31,19 +31,53 @@ function isProtectedRef(ref) {
   return PROTECTED_PATTERNS.some((re) => re.test(ref));
 }
 
-function git(args, cwd) {
-  return execFileSync('git', args, {
-    cwd: cwd || process.cwd(),
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-    maxBuffer: 64 * 1024 * 1024,
-  }).trim();
+// Every git call is wall-clock bounded. Dozens of concurrent sessions share
+// this repo's one .git directory; under ref/lock contention a single read-only
+// call (e.g. `branch --merged` in classifyGitState) has stalled for minutes
+// while execFileSync blocked the event loop, turning seconds-long briefing
+// builds and scoped test runs into 30+ minute apparent hangs. 45s is far above
+// any healthy call. Override: SB_GIT_TIMEOUT_MS.
+const DEFAULT_GIT_TIMEOUT_MS = 45_000;
+
+function gitTimeoutMs() {
+  const raw = Number.parseInt(process.env.SB_GIT_TIMEOUT_MS || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_GIT_TIMEOUT_MS;
 }
 
-function gitSafe(args, cwd, fallback = '') {
+function git(args, cwd) {
+  const timeout = gitTimeoutMs();
+  try {
+    return execFileSync('git', args, {
+      cwd: cwd || process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 64 * 1024 * 1024,
+      timeout,
+    }).trim();
+  } catch (err) {
+    if (err && err.code === 'ETIMEDOUT') {
+      const e = new Error(
+        `git ${args.join(' ')} exceeded ${timeout}ms and was killed. ` +
+          'Likely shared-.git lock/ref contention from concurrent sessions; ' +
+          'retry, or raise SB_GIT_TIMEOUT_MS.',
+      );
+      e.code = 'ETIMEDOUT';
+      e.cause = err;
+      throw e;
+    }
+    throw err;
+  }
+}
+
+// onTimeout: called (with the error) ONLY when the failure was a timeout kill,
+// so callers can degrade to the fallback without silently fabricating a clean
+// state from empty data (Codex review 2026-07-06). Non-timeout errors keep the
+// original silent-fallback semantics (e.g. no origin/master in a bare test repo).
+function gitSafe(args, cwd, fallback = '', onTimeout) {
   try {
     return git(args, cwd);
-  } catch {
+  } catch (err) {
+    if (onTimeout && err && err.code === 'ETIMEDOUT') onTimeout(err);
     return fallback;
   }
 }
@@ -225,16 +259,19 @@ function classifyGitState(opts = {}) {
   const parked = readParked(repoRoot);
   const parkedRefs = new Set(parked.map((r) => r.ref));
 
-  const currentBranch = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot, 'HEAD');
+  // Degradation ledger: every classifier call that TIMED OUT (vs merely
+  // errored) is recorded here and returned as `degraded`, so consumers can
+  // refuse to render a fabricated "clean" verdict from empty fallbacks.
+  const degraded = [];
+  const safe = (args, fallback) =>
+    gitSafe(args, repoRoot, fallback, () => degraded.push(`git ${args.join(' ')}`));
+
+  const currentBranch = safe(['rev-parse', '--abbrev-ref', 'HEAD'], 'HEAD');
 
   // master vs origin/master (the clean/synced check)
   let masterAhead = 0;
   let masterBehind = 0;
-  const lr = gitSafe(
-    ['rev-list', '--left-right', '--count', 'origin/master...master'],
-    repoRoot,
-    '',
-  );
+  const lr = safe(['rev-list', '--left-right', '--count', 'origin/master...master'], '');
   if (lr) {
     const m = lr.split(/\s+/).map((n) => parseInt(n, 10));
     masterBehind = m[0] || 0;
@@ -250,7 +287,7 @@ function classifyGitState(opts = {}) {
   // is the detector that let 4 commits sit invisible on the shared checkout
   // since Jun 30 -- the count existed in master.ahead, but nothing surfaced it
   // as a named, actionable defect.
-  const strandedRaw = gitSafe(['log', '--format=%h\t%s', 'origin/master..master'], repoRoot, '');
+  const strandedRaw = safe(['log', '--format=%h\t%s', 'origin/master..master'], '');
   const sharedMasterAheadCommits = strandedRaw
     ? strandedRaw
         .split('\n')
@@ -262,7 +299,7 @@ function classifyGitState(opts = {}) {
     : [];
 
   // uncommitted edits in the main working tree
-  const statusRaw = gitSafe(['status', '--porcelain'], repoRoot, '');
+  const statusRaw = safe(['status', '--porcelain'], '');
   const uncommittedEdits = statusRaw
     ? statusRaw
         .split('\n')
@@ -277,11 +314,7 @@ function classifyGitState(opts = {}) {
     : [];
 
   // merged set (commits already in origin/master)
-  const mergedRaw = gitSafe(
-    ['branch', '--merged', 'origin/master', '--format=%(refname:short)'],
-    repoRoot,
-    '',
-  );
+  const mergedRaw = safe(['branch', '--merged', 'origin/master', '--format=%(refname:short)'], '');
   const mergedSet = new Set(
     mergedRaw
       .split('\n')
@@ -290,7 +323,7 @@ function classifyGitState(opts = {}) {
   );
 
   // worktree map: branch -> worktree path
-  const wtRaw = gitSafe(['worktree', 'list', '--porcelain'], repoRoot, '');
+  const wtRaw = safe(['worktree', 'list', '--porcelain'], '');
   const worktrees = [];
   const branchToWorktree = new Map();
   {
@@ -310,13 +343,12 @@ function classifyGitState(opts = {}) {
   }
 
   // all local branches
-  const branchRaw = gitSafe(
+  const branchRaw = safe(
     [
       'for-each-ref',
       '--format=%(refname:short)\t%(objectname:short)\t%(committerdate:short)\t%(contents:subject)',
       'refs/heads',
     ],
-    repoRoot,
     '',
   );
   const branches = [];
@@ -340,7 +372,7 @@ function classifyGitState(opts = {}) {
   }
 
   // stashes (identify by SHA, not stash@{n})
-  const stashRaw = gitSafe(['stash', 'list', '--format=%H\t%gd\t%gs'], repoRoot, '');
+  const stashRaw = safe(['stash', 'list', '--format=%H\t%gd\t%gs'], '');
   const stashes = stashRaw
     ? stashRaw
         .split('\n')
@@ -369,6 +401,7 @@ function classifyGitState(opts = {}) {
     repoRoot,
     currentBranch,
     today,
+    degraded,
     master: { ahead: masterAhead, behind: masterBehind, clean: uncommittedEdits.length === 0 },
     sharedMasterAheadOfOrigin: {
       count: sharedMasterAheadCommits.length,
@@ -411,6 +444,7 @@ function classifyGitState(opts = {}) {
 
 module.exports = {
   isProtectedRef,
+  gitSafe,
   getRepoRoot,
   parkedDir,
   slugifyRef,

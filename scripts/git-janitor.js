@@ -26,12 +26,24 @@ const fs = require('fs');
 const path = require('path');
 const gh = require('./lib/git-hygiene');
 
+// Wall-clock bounded like git-hygiene's helper: the janitor runs from the Stop
+// hook and health self-heal against the shared .git, so an unbounded call under
+// ref/lock contention would hang every stopping session. 120s default (worktree
+// remove deletes real directories, slower than the read-only classifier calls);
+// same SB_GIT_TIMEOUT_MS override. Every mutating call site is inside a
+// per-item try/catch, so a timeout skips that item and the janitor moves on.
+function janitorTimeoutMs() {
+  const raw = Number.parseInt(process.env.SB_GIT_TIMEOUT_MS || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
+}
+
 function git(args, cwd) {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 32 * 1024 * 1024,
+    timeout: janitorTimeoutMs(),
   }).trim();
 }
 
@@ -122,7 +134,12 @@ function stripJunctions(dir) {
     if (st.isSymbolicLink()) {
       try {
         // cmd rmdir removes the link, never the target (proven in safe-worktree-remove.sh).
-        execFileSync('cmd', ['/c', 'rmdir', p.replace(/\//g, '\\')], { stdio: 'ignore' });
+        // Removing a junction is metadata-only; 15s is generous, and the catch
+        // below already falls back to fs.rmdirSync then skip-and-refuse.
+        execFileSync('cmd', ['/c', 'rmdir', p.replace(/\//g, '\\')], {
+          stdio: 'ignore',
+          timeout: 15_000,
+        });
         stripped.push(p);
       } catch {
         try {
