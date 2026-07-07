@@ -85,6 +85,11 @@ LIVE_DEPS=(
   # (verify-deploy-parity.js) and its pure-logic libs run from the build-path
   # git checkout, not /opt, so they are intentionally NOT listed here.
   "scripts/lib/deploy-parity-row.js"
+  # Roster builder (2026-07-07): the deployed refresh-briefing-generated-sections.js
+  # reads the roster artifact this script writes, and a /opt-cwd roster rebuild must
+  # use the registry-confirmed-cluster binding, not a stale /opt copy. Ship it so
+  # the /opt copy never drifts behind a land (feedback_ec2_build_path_silent_revert).
+  "scripts/otter-call-speaker-rosters.js"
 )
 
 echo "[deploy] syntax-checking repo ec2-server.js"
