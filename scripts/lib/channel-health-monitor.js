@@ -22,6 +22,24 @@ const { execSync } = require('child_process');
 
 const DEFAULT_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_MIN_ALERT_INTERVAL_MS = 60 * 60 * 1000;
+// Confirmed-down gate (2026-07-07 healer-principle fix). A single self-probe
+// that times out is a LOAD symptom, not a crash: the backend is answering, just
+// slowly, because the shared box is contended (5 peer sessions + sub-agents +
+// git ops). Treating that timeout as "backend down" and running an auto-fix on
+// a healthy process violates feedback_health_report_must_not_kill_the_healer.md.
+// So a probe outcome is now three-valued: green | inconclusive | red. Only a
+// GENUINE down (connection refused, HTTP error status, or a pm2 status that is
+// not 'online') counts toward the red streak, and remediation only fires after
+// CONFIRM_DOWN_TICKS consecutive genuine-red observations. Inconclusive
+// (timeout / ETIMEDOUT / box busy) holds state and does nothing.
+const CONFIRM_DOWN_TICKS = Number(process.env.CHANNEL_CONFIRM_DOWN_TICKS) || 3;
+// Safety valve for the "wedged but not crashed" case: a backend whose event
+// loop is blocked can answer neither /health nor pm2 cleanly, so it could sit
+// inconclusive forever and never surface. After this many CONSECUTIVE
+// inconclusive ticks (~1 hour at the 5-min interval) we send ONE loud advisory
+// so ExampleCo knows the channel is unverifiable, but we STILL never auto-reset on
+// inconclusive: the healer principle holds, the human decides.
+const INCONCLUSIVE_ESCALATE_TICKS = Number(process.env.CHANNEL_INCONCLUSIVE_ESCALATE_TICKS) || 12;
 // Laptop-hosted channels (Claude Max proxy, Gmail scan, LinkedIn crawl) run on
 // ExampleCo's laptop, not EC2. EC2 cannot restart them; they recover on their own
 // when his machine is on. They flap whenever the laptop sleeps or the network
@@ -30,22 +48,72 @@ const DEFAULT_MIN_ALERT_INTERVAL_MS = 60 * 60 * 1000;
 // surface, never in Telegram.
 const LAPTOP_REALERT_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const PROBE_TIMEOUT_MS = 5000;
+// The backend self-probe races /health against the box being contended, so it
+// gets a longer timeout and retries before it is allowed to conclude anything.
+// A slow answer is still an answer; only a genuine failure (refused / bad
+// status) or exhausting all retries with a hard error is actionable.
+const BACKEND_PROBE_TIMEOUT_MS = Number(process.env.BACKEND_PROBE_TIMEOUT_MS) || 12000;
+const BACKEND_PROBE_RETRIES = Number(process.env.BACKEND_PROBE_RETRIES) || 2;
+
+// Classify an httpGetJson failure into a probe reason so the orchestrator can
+// tell "the process is gone" (refused) from "the box is busy" (timeout). A
+// timeout / ETIMEDOUT / reset is INCONCLUSIVE (load), a refused connection or an
+// HTTP error status is a GENUINE down.
+function classifyProbeFailure(r) {
+  const raw = String((r && (r.error || r.body)) || '').toLowerCase();
+  if (r && Number.isFinite(r.status) && r.status > 0) {
+    // The port answered with a non-2xx: the process is up but unhealthy. Real.
+    return 'down';
+  }
+  if (/econnrefused|connection refused/.test(raw)) return 'down';
+  if (/timeout|etimedout|econnreset|ehostunreach|enetunreach|socket hang up/.test(raw)) {
+    return 'inconclusive';
+  }
+  // PRIVATE_NAME transport error: be conservative and treat as inconclusive rather
+  // than firing remediation on a symptom we cannot classify.
+  return 'inconclusive';
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function httpGetJson(url, { timeoutMs = PROBE_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (val) => { if (!settled) { settled = true; resolve(val); } };
+    const finish = (val) => {
+      if (!settled) {
+        settled = true;
+        resolve(val);
+      }
+    };
     const client = url.startsWith('https://') ? https : http;
     const req = client.get(url, (res) => {
       let body = '';
       res.on('data', (d) => (body += d));
       res.on('end', () => {
-        try { finish({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body, json: JSON.parse(body) }); }
-        catch { finish({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body, json: null }); }
+        try {
+          finish({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            status: res.statusCode,
+            body,
+            json: JSON.parse(body),
+          });
+        } catch {
+          finish({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            status: res.statusCode,
+            body,
+            json: null,
+          });
+        }
       });
     });
-    req.on('error', (e) => finish({ ok: false, error: e.message }));
-    req.setTimeout(timeoutMs, () => { req.destroy(); finish({ ok: false, error: 'timeout' }); });
+    req.on('error', (e) => finish({ ok: false, error: e.message, code: e.code }));
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      finish({ ok: false, error: 'timeout', code: 'ETIMEDOUT' });
+    });
   });
 }
 
@@ -65,17 +133,109 @@ async function probeTelegram({ botToken, fetcher = httpGetJson } = {}) {
 async function probeProxy({ proxyPort = 3456, fetcher = httpGetJson } = {}) {
   const r = await fetcher('http://127.0.0.1:' + proxyPort + '/health');
   if (r.ok && r.json && r.json.status === 'ok') {
-    return { status: 'green', detail: 'claude max proxy up, uptime ' + Math.round(r.json.uptime || 0) + 's' };
+    return {
+      status: 'green',
+      detail: 'claude max proxy up, uptime ' + Math.round(r.json.uptime || 0) + 's',
+    };
   }
-  return { status: 'red', detail: 'proxy 127.0.0.1:' + proxyPort + ' not responding: ' + (r.error || r.status || 'ExampleCo') };
+  return {
+    status: 'red',
+    detail:
+      'proxy 127.0.0.1:' + proxyPort + ' not responding: ' + (r.error || r.status || 'ExampleCo'),
+  };
 }
 
-async function probeBackend({ backendPort = 3001, fetcher = httpGetJson } = {}) {
-  const r = await fetcher('http://127.0.0.1:' + backendPort + '/health');
-  if (r.ok && r.json && r.json.status === 'ok') {
-    return { status: 'green', detail: 'backend :' + backendPort + ' /health ok, uptime ' + Math.round(r.json.uptime || 0) + 's' };
+async function probeBackend({
+  backendPort = 3001,
+  fetcher = httpGetJson,
+  timeoutMs = BACKEND_PROBE_TIMEOUT_MS,
+  retries = BACKEND_PROBE_RETRIES,
+  pm2StatusProvider = null,
+  sleepImpl = sleep,
+} = {}) {
+  // The monitor runs INSIDE secondbrain-backend, so a self-probe that cannot
+  // reach 127.0.0.1:3001 while we are alive almost always means the box is
+  // contended, not that the backend crashed. Retry with backoff before
+  // concluding, and classify a hard failure as inconclusive (load) vs down
+  // (refused / bad status). A timeout is never treated as death.
+  let last = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    last = await fetcher('http://127.0.0.1:' + backendPort + '/health', { timeoutMs });
+    if (last.ok && last.json && last.json.status === 'ok') {
+      return {
+        status: 'green',
+        detail:
+          'backend :' +
+          backendPort +
+          ' /health ok, uptime ' +
+          Math.round(last.json.uptime || 0) +
+          's',
+      };
+    }
+    // A refused connection or an HTTP error status will not fix itself on retry;
+    // fail fast to the classifier. Only a soft/transient error is worth retrying.
+    const reason = classifyProbeFailure(last);
+    if (reason === 'down') break;
+    if (attempt < retries) await sleepImpl(500 * (attempt + 1));
   }
-  return { status: 'red', detail: 'backend :' + backendPort + ' not responding: ' + (r.error || r.status || 'ExampleCo') };
+
+  const reason = classifyProbeFailure(last);
+  const httpErrorStatus = Number.isFinite(last && last.status) && last.status > 0;
+
+  // pm2 status is a VETO against auto-reset on a TRANSPORT failure, not proof of
+  // app health (Codex #2, 2026-07-07). pm2 'online' means the process is alive,
+  // which downgrades a timeout / reset to inconclusive. It must NOT mask an HTTP
+  // error status: a /health that answered 5xx means the app is unhealthy even
+  // though the process is up, so that stays a genuine red. Conversely pm2
+  // errored / stopped escalates a transport failure to red.
+  if (pm2StatusProvider) {
+    let pm2Status = null;
+    try {
+      pm2Status = pm2StatusProvider();
+    } catch {
+      pm2Status = null;
+    }
+    if (pm2Status === 'online' && reason === 'inconclusive' && !httpErrorStatus) {
+      return {
+        status: 'inconclusive',
+        detail:
+          'backend :' +
+          backendPort +
+          ' slow to answer (' +
+          (last.error || last.status || 'ExampleCo') +
+          ') but pm2 process is online; holding (load symptom, no action)',
+        meta: { reason: 'inconclusive', pm2Status },
+      };
+    }
+    if (pm2Status && pm2Status !== 'online') {
+      return {
+        status: 'red',
+        detail: 'backend :' + backendPort + ' not responding and pm2 process status=' + pm2Status,
+        meta: { reason: 'down', pm2Status },
+      };
+    }
+  }
+
+  if (reason === 'inconclusive') {
+    return {
+      status: 'inconclusive',
+      detail:
+        'backend :' +
+        backendPort +
+        ' probe inconclusive after ' +
+        (retries + 1) +
+        ' tries: ' +
+        (last.error || last.status || 'ExampleCo') +
+        ' (box likely busy; no action)',
+      meta: { reason: 'inconclusive' },
+    };
+  }
+  return {
+    status: 'red',
+    detail:
+      'backend :' + backendPort + ' not responding: ' + (last.error || last.status || 'ExampleCo'),
+    meta: { reason: 'down' },
+  };
 }
 
 async function probeVapi({
@@ -93,7 +253,10 @@ async function probeVapi({
     ? await fetcher('https://api.vapi.ai/health').catch(() => ({ ok: false }))
     : { ok: false, error: 'VAPI_API_KEY not set' };
   if (!apiReach.ok) {
-    return { status: 'red', detail: 'vapi api unreachable: ' + (apiReach.error || apiReach.status || 'ExampleCo') };
+    return {
+      status: 'red',
+      detail: 'vapi api unreachable: ' + (apiReach.error || apiReach.status || 'ExampleCo'),
+    };
   }
   const lastTs = lastWebhookTsProvider();
   if (lastTs == null) {
@@ -103,7 +266,12 @@ async function probeVapi({
   if (ageSec > staleSec) {
     return {
       status: 'red',
-      detail: 'vapi api reachable but no webhook in ' + Math.round(ageSec / 3600) + 'h (threshold ' + Math.round(staleSec / 3600) + 'h)',
+      detail:
+        'vapi api reachable but no webhook in ' +
+        Math.round(ageSec / 3600) +
+        'h (threshold ' +
+        Math.round(staleSec / 3600) +
+        'h)',
     };
   }
   return { status: 'green', detail: 'vapi api reachable, last webhook ' + ageSec + 's ago' };
@@ -151,7 +319,10 @@ async function probeClaudeMaxToken({
   }
   return {
     status: 'red',
-    detail: 'pushed ' + Math.round(ageMin / 60) + 'h ago. Refresh chain broken; Amy will go dark on Telegram next time the in-memory token expires.',
+    detail:
+      'pushed ' +
+      Math.round(ageMin / 60) +
+      'h ago. Refresh chain broken; Amy will go dark on Telegram next time the in-memory token expires.',
   };
 }
 
@@ -173,8 +344,12 @@ async function probeGmail({
     try {
       const raw = exec('pm2 jlist');
       const list = JSON.parse(raw);
-      return list.some((p) => p.name === 'gmail-amy-scan' && p.pm2_env && p.pm2_env.status === 'online');
-    } catch { return false; }
+      return list.some(
+        (p) => p.name === 'gmail-amy-scan' && p.pm2_env && p.pm2_env.status === 'online',
+      );
+    } catch {
+      return false;
+    }
   }
   if (!fsImpl.existsSync(heartbeatPath)) {
     const helperExists = fsImpl.existsSync(helperScriptPath);
@@ -205,11 +380,17 @@ async function probeGmail({
   } catch (e) {
     return { status: 'red', detail: 'gmail heartbeat read failed: ' + e.message };
   }
-  const lines = tailText.split('\n').map((l) => l.trim()).filter(Boolean);
+  const lines = tailText
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
   if (!lines.length) return { status: 'red', detail: 'gmail heartbeat empty' };
   let last;
-  try { last = JSON.parse(lines[lines.length - 1]); }
-  catch (e) { return { status: 'red', detail: 'gmail heartbeat tail malformed: ' + e.message }; }
+  try {
+    last = JSON.parse(lines[lines.length - 1]);
+  } catch (e) {
+    return { status: 'red', detail: 'gmail heartbeat tail malformed: ' + e.message };
+  }
   const lastTs = last && (last.ts || last.timestamp || last.at);
   if (!lastTs) return { status: 'red', detail: 'gmail heartbeat tail missing ts field' };
   const ageMin = Math.round((now() - new Date(lastTs).getTime()) / 60000);
@@ -223,10 +404,16 @@ async function probeGmail({
     if (!helperExists && !pm2Running) {
       return {
         status: 'green',
-        detail: 'gmail-amy-scan not deployed on this host; #inbox runs from ExampleCo laptop (heartbeat ' + ageMin + 'm old, ignored)',
+        detail:
+          'gmail-amy-scan not deployed on this host; #inbox runs from ExampleCo laptop (heartbeat ' +
+          ageMin +
+          'm old, ignored)',
       };
     }
-    return { status: 'red', detail: 'gmail-amy-scan heartbeat ' + ageMin + 'm old (threshold ' + staleMin + 'm)' };
+    return {
+      status: 'red',
+      detail: 'gmail-amy-scan heartbeat ' + ageMin + 'm old (threshold ' + staleMin + 'm)',
+    };
   }
   return { status: 'green', detail: 'gmail-amy-scan heartbeat ' + ageMin + 'm old' };
 }
@@ -251,7 +438,10 @@ async function probeLinkedin({
   }
   const ageH = Math.round((now() - ts) / 3600000);
   if (ageH > staleHours) {
-    return { status: 'red', detail: 'linkedin crawl ' + ageH + 'h old (threshold ' + staleHours + 'h)' };
+    return {
+      status: 'red',
+      detail: 'linkedin crawl ' + ageH + 'h old (threshold ' + staleHours + 'h)',
+    };
   }
   return { status: 'green', detail: 'linkedin crawl ' + ageH + 'h old' };
 }
@@ -274,24 +464,79 @@ function createPm2Probe({
   function probe({ uptimeMs, restarts, now = () => Date.now() } = {}) {
     let resolvedUptime = uptimeMs;
     let resolvedRestarts = restarts;
+    let resolvedStatus = null;
     if (resolvedUptime == null || resolvedRestarts == null) {
+      // `pm2 jlist` itself times out when the box is contended (spawnSync
+      // ETIMEDOUT). That is the box being BUSY, which is the opposite of a
+      // crash loop, so it must NEVER drive healPm2 (`pm2 reset all`). Retry
+      // once, then hold as inconclusive on a spawn/timeout error. Only a
+      // jlist that RAN and reported the process missing / not-online is a
+      // genuine red.
+      let raw = null;
+      let lastErr = null;
+      for (let attempt = 0; attempt < 2 && raw == null; attempt += 1) {
+        try {
+          raw = exec('pm2 jlist');
+        } catch (e) {
+          lastErr = e;
+          raw = null;
+        }
+      }
+      if (raw == null) {
+        const msg = String((lastErr && lastErr.message) || 'ExampleCo');
+        const busy = /etimedout|timed out|timeout|spawnsync|eagain|enomem/i.test(msg);
+        return {
+          status: busy ? 'inconclusive' : 'red',
+          detail:
+            'pm2 jlist ' + (busy ? 'inconclusive (box busy): ' : 'failed: ') + msg.slice(0, 80),
+          meta: { reason: busy ? 'inconclusive' : 'down' },
+        };
+      }
+      let list;
       try {
-        const raw = exec('pm2 jlist');
-        const list = JSON.parse(raw);
-        const found = list.find((p) => p.name === pm2Process);
-        if (!found) return { status: 'red', detail: 'pm2 process ' + pm2Process + ' not found' };
-        resolvedRestarts = found.pm2_env && found.pm2_env.restart_time != null
+        list = JSON.parse(raw);
+      } catch (e) {
+        return {
+          status: 'inconclusive',
+          detail: 'pm2 jlist unparseable: ' + (e.message || 'ExampleCo').slice(0, 60),
+          meta: { reason: 'inconclusive' },
+        };
+      }
+      const found = list.find((p) => p.name === pm2Process);
+      if (!found) {
+        return {
+          status: 'red',
+          detail: 'pm2 process ' + pm2Process + ' not found',
+          meta: { reason: 'down' },
+        };
+      }
+      resolvedStatus = found.pm2_env && found.pm2_env.status ? found.pm2_env.status : null;
+      resolvedRestarts =
+        found.pm2_env && found.pm2_env.restart_time != null
           ? found.pm2_env.restart_time
           : resolvedRestarts;
-        resolvedUptime = found.pm2_env && found.pm2_env.pm_uptime != null
+      resolvedUptime =
+        found.pm2_env && found.pm2_env.pm_uptime != null
           ? now() - found.pm2_env.pm_uptime
           : resolvedUptime;
-      } catch (e) {
-        return { status: 'red', detail: 'pm2 jlist failed: ' + (e.message || 'ExampleCo').slice(0, 80) };
+      // A process that pm2 reports as not 'online' (errored / stopped) is a
+      // genuine down worth acting on, distinct from a busy box.
+      if (resolvedStatus && resolvedStatus !== 'online' && resolvedStatus !== 'launching') {
+        return {
+          status: 'red',
+          detail: 'pm2 ' + pm2Process + ' status=' + resolvedStatus,
+          meta: { reason: 'down', pm2Status: resolvedStatus },
+        };
       }
     }
     if (resolvedRestarts == null || resolvedUptime == null) {
-      return { status: 'red', detail: 'pm2 stats unavailable' };
+      // Could not determine stats without a hard error: inconclusive, not a
+      // crash-loop signal. Never let missing stats trigger a reset.
+      return {
+        status: 'inconclusive',
+        detail: 'pm2 stats unavailable (holding, no action)',
+        meta: { reason: 'inconclusive' },
+      };
     }
     const uptimeMin = Math.round(resolvedUptime / 60000);
     if (!baseline) {
@@ -301,7 +546,14 @@ function createPm2Probe({
       baseline = { restarts: resolvedRestarts, observedAt: now() };
       return {
         status: 'green',
-        detail: 'pm2 ' + pm2Process + ' baseline set: ' + resolvedRestarts + ' lifetime restarts, uptime ' + uptimeMin + 'm',
+        detail:
+          'pm2 ' +
+          pm2Process +
+          ' baseline set: ' +
+          resolvedRestarts +
+          ' lifetime restarts, uptime ' +
+          uptimeMin +
+          'm',
         meta: { restarts: resolvedRestarts, uptimeMs: resolvedUptime, baseline: true },
       };
     }
@@ -311,7 +563,16 @@ function createPm2Probe({
     if (inCrashWindow && delta > restartDeltaThreshold) {
       return {
         status: 'red',
-        detail: 'pm2 crash loop: ' + delta + ' new restarts in last ' + Math.round(elapsedMs / 60000) + 'm (total ' + resolvedRestarts + ', uptime ' + uptimeMin + 'm)',
+        detail:
+          'pm2 crash loop: ' +
+          delta +
+          ' new restarts in last ' +
+          Math.round(elapsedMs / 60000) +
+          'm (total ' +
+          resolvedRestarts +
+          ', uptime ' +
+          uptimeMin +
+          'm)',
         meta: { restarts: resolvedRestarts, delta, uptimeMs: resolvedUptime },
       };
     }
@@ -323,7 +584,16 @@ function createPm2Probe({
     }
     return {
       status: 'green',
-      detail: 'pm2 ' + pm2Process + ' uptime ' + uptimeMin + 'm, ' + resolvedRestarts + ' lifetime restarts (+' + delta + ' since baseline)',
+      detail:
+        'pm2 ' +
+        pm2Process +
+        ' uptime ' +
+        uptimeMin +
+        'm, ' +
+        resolvedRestarts +
+        ' lifetime restarts (+' +
+        delta +
+        ' since baseline)',
       meta: { restarts: resolvedRestarts, delta, uptimeMs: resolvedUptime },
     };
   }
@@ -354,19 +624,28 @@ function healProxy() {
   return {
     attempted: false,
     action: 'manual',
-    detail: 'Claude Max proxy runs on ExampleCo laptop via start-claude-proxy.vbs. EC2 cannot restart it. Surface to ExampleCo.',
+    detail:
+      'Claude Max proxy runs on ExampleCo laptop via start-claude-proxy.vbs. EC2 cannot restart it. Surface to ExampleCo.',
   };
 }
 
-function healBackend({ exec = (cmd) => execSync(cmd, { encoding: 'utf-8', timeout: 10000 }) } = {}) {
+function healBackend({
+  exec = (cmd) => execSync(cmd, { encoding: 'utf-8', timeout: 10000 }),
+} = {}) {
   // We are running INSIDE secondbrain-backend. Restarting it would kill our
-  // own monitor. The most useful action is to ask pm2 to reset counters so
-  // any future crash loop is detected cleanly, and to surface to ExampleCo that
-  // the local /health endpoint failed (which should be impossible while we
-  // are alive, but if it happens it usually means port collision).
+  // own monitor, and PM2 already auto-restarts a genuinely crashed backend, so
+  // the safe action is a counter reset plus a ExampleCo alert. This heal only fires
+  // after >=CONFIRM_DOWN_TICKS consecutive GENUINE-down ticks (2026-07-07 gate):
+  // a load-induced /health timeout is inconclusive and never reaches here, so
+  // this can no longer be triggered by a healthy-but-slow backend.
   try {
     const out = exec('pm2 reset secondbrain-backend');
-    return { attempted: true, action: 'pm2-reset', detail: 'pm2 reset run; if backend still red, manual fix needed. out=' + out.trim().slice(0, 120) };
+    return {
+      attempted: true,
+      action: 'pm2-reset',
+      detail:
+        'pm2 reset run; if backend still red, manual fix needed. out=' + out.trim().slice(0, 120),
+    };
   } catch (e) {
     return { attempted: true, action: 'pm2-reset', detail: 'pm2 reset failed: ' + e.message };
   }
@@ -376,7 +655,11 @@ function healVapi() {
   // Vapi is external. The only thing we can do from here is force a refresh
   // of the cached assistant config. The orchestrator hands us a refresher
   // callback if available.
-  return { attempted: false, action: 'manual', detail: 'Vapi api outage is upstream; alert ExampleCo and wait.' };
+  return {
+    attempted: false,
+    action: 'manual',
+    detail: 'Vapi api outage is upstream; alert ExampleCo and wait.',
+  };
 }
 
 function healGmail({ exec = (cmd) => execSync(cmd, { encoding: 'utf-8', timeout: 15000 }) } = {}) {
@@ -385,9 +668,17 @@ function healGmail({ exec = (cmd) => execSync(cmd, { encoding: 'utf-8', timeout:
   // (Windows task scheduler), surface to ExampleCo.
   try {
     const out = exec('pm2 restart gmail-amy-scan || true');
-    return { attempted: true, action: 'pm2-restart-gmail', detail: 'pm2 restart gmail-amy-scan attempted: ' + out.trim().slice(0, 120) };
+    return {
+      attempted: true,
+      action: 'pm2-restart-gmail',
+      detail: 'pm2 restart gmail-amy-scan attempted: ' + out.trim().slice(0, 120),
+    };
   } catch (e) {
-    return { attempted: true, action: 'pm2-restart-gmail', detail: 'pm2 restart gmail-amy-scan failed: ' + e.message };
+    return {
+      attempted: true,
+      action: 'pm2-restart-gmail',
+      detail: 'pm2 restart gmail-amy-scan failed: ' + e.message,
+    };
   }
 }
 
@@ -398,19 +689,50 @@ function healLinkedin() {
   return {
     attempted: false,
     action: 'manual',
-    detail: 'LinkedIn crawl runs nightly in the Electron app on ExampleCo laptop. EC2 cannot trigger it. Surface to ExampleCo.',
+    detail:
+      'LinkedIn crawl runs nightly in the Electron app on ExampleCo laptop. EC2 cannot trigger it. Surface to ExampleCo.',
   };
 }
 
 function healPm2({ exec = (cmd) => execSync(cmd, { encoding: 'utf-8', timeout: 5000 }) } = {}) {
   // Reset restart counter so the next probe sees a clean slate. PM2 already
   // auto-restarts crashed processes, so the heal here is the counter reset
-  // plus a ExampleCo alert so he can investigate the underlying cause.
+  // plus a ExampleCo alert so he can investigate the underlying cause. This only
+  // fires after a CONFIRMED crash loop (>=CONFIRM_DOWN_TICKS genuine-red ticks);
+  // a `pm2 jlist` timeout is inconclusive (busy box) and never reaches here, so
+  // reset-all can no longer be triggered by the box merely being contended.
   try {
     const out = exec('pm2 reset all');
-    return { attempted: true, action: 'pm2-reset-all', detail: 'pm2 reset all run: ' + out.trim().slice(0, 120) };
+    return {
+      attempted: true,
+      action: 'pm2-reset-all',
+      detail: 'pm2 reset all run: ' + out.trim().slice(0, 120),
+    };
   } catch (e) {
-    return { attempted: true, action: 'pm2-reset-all', detail: 'pm2 reset all failed: ' + e.message };
+    return {
+      attempted: true,
+      action: 'pm2-reset-all',
+      detail: 'pm2 reset all failed: ' + e.message,
+    };
+  }
+}
+
+// Cheap pm2 status read for the backend cross-check. Returns the pm2-reported
+// status string ('online' | 'errored' | 'stopped' | ...) for a process, or
+// null if pm2 could not be read (busy / spawn error). Never throws: a null
+// result means "ExampleCo", which the backend probe treats as inconclusive, not
+// as a reason to act.
+function pm2ProcessStatus({
+  pm2Process = 'secondbrain-backend',
+  exec = (cmd) => execSync(cmd, { encoding: 'utf-8', timeout: 5000 }),
+} = {}) {
+  try {
+    const list = JSON.parse(exec('pm2 jlist'));
+    const found = list.find((p) => p.name === pm2Process);
+    if (!found) return 'missing';
+    return (found.pm2_env && found.pm2_env.status) || null;
+  } catch {
+    return null;
   }
 }
 
@@ -457,13 +779,25 @@ function createMonitor({
     {
       name: 'backend',
       friendly: 'Backend (port ' + backendPort + ')',
-      probe: () => probeBackend({ backendPort, fetcher }),
+      // Cross-check pm2 process status so a slow /health while pm2 says
+      // "online" is held as inconclusive (load), never treated as down.
+      probe: () =>
+        probeBackend({
+          backendPort,
+          fetcher,
+          pm2StatusProvider: () => pm2ProcessStatus({ pm2Process, exec }),
+        }),
       heal: () => healBackend({ exec }),
+      // Only act after this many CONSECUTIVE genuine-down ticks. Inconclusive
+      // ticks never count. At a 5-min interval this is ~15 min of confirmed
+      // down before any restart, which no healthy-but-slow backend produces.
+      confirmDownTicks: CONFIRM_DOWN_TICKS,
     },
     {
       name: 'vapi',
       friendly: 'Vapi',
-      probe: () => probeVapi({ vapiKey, lastWebhookTsProvider: lastVapiWebhookTsProvider, fetcher }),
+      probe: () =>
+        probeVapi({ vapiKey, lastWebhookTsProvider: lastVapiWebhookTsProvider, fetcher }),
       heal: () => healVapi(),
     },
     {
@@ -486,6 +820,9 @@ function createMonitor({
       friendly: 'PM2 crash loop',
       probe: () => pm2Probe.probe({ now }),
       heal: () => healPm2({ exec }),
+      // A jlist timeout is inconclusive (busy box), never red, so this gate
+      // only ever sees a confirmed crash loop or a not-online process.
+      confirmDownTicks: CONFIRM_DOWN_TICKS,
     },
     {
       // Catches the 2026-05-23 outage where ExampleCo's laptop was awake, the proxy
@@ -519,6 +856,15 @@ function createMonitor({
       lastHealAction: null,
       lastHealDetail: null,
       consecutiveRed: 0,
+      // Count of consecutive inconclusive (load-symptom) ticks, surfaced for
+      // observability. Inconclusive never counts as red and never heals.
+      consecutiveInconclusive: 0,
+      lastInconclusiveAt: null,
+      // True between sending a CONFIRMED down alert and the channel recovering.
+      // Gates the "recovered on its own" note so an unconfirmed blip (red then
+      // green below the confirm-down threshold, no alert sent) stays silent
+      // (Codex #4, 2026-07-07).
+      confirmedDownOpen: false,
       // Laptop-hosted only: true between sending an offline note and the
       // matching recovery note, so a suppressed flap does not emit a stray
       // "back online" message.
@@ -554,8 +900,32 @@ function createMonitor({
     try {
       result = await def.probe();
     } catch (e) {
-      result = { status: 'red', detail: 'probe threw: ' + (e.message || 'ExampleCo') };
+      // A probe that THREW (bug, not a classified transport failure) is
+      // inconclusive, not down: we have no evidence the channel is actually
+      // broken, so we must not remediate on it.
+      result = { status: 'inconclusive', detail: 'probe threw: ' + (e.message || 'ExampleCo') };
     }
+
+    // Inconclusive = a load symptom (slow probe, busy box). It is NOT a state
+    // transition: hold the prior status, do not touch the red streak (so a
+    // genuine down cannot be reset by an interleaved busy tick, and load cannot
+    // build toward the heal gate), and record it for observability only.
+    if (result.status === 'inconclusive') {
+      ch.consecutiveInconclusive += 1;
+      ch.lastInconclusiveAt = now();
+      ch.lastInconclusiveDetail = result.detail || '';
+      logEvent({
+        ts: new Date(now()).toISOString(),
+        channel: def.name,
+        status: 'inconclusive',
+        detail: result.detail,
+      });
+      // Report the HELD prior status so the tick loop and snapshot see no
+      // transition and take no action.
+      return { def, before, after: { status: before, detail: ch.detail, held: true } };
+    }
+
+    ch.consecutiveInconclusive = 0;
     ch.status = result.status;
     ch.detail = result.detail || '';
     ch.meta = result.meta || null;
@@ -569,7 +939,12 @@ function createMonitor({
       ch.lastRedAt = now();
       ch.consecutiveRed += 1;
     }
-    logEvent({ ts: new Date(now()).toISOString(), channel: def.name, status: result.status, detail: result.detail });
+    logEvent({
+      ts: new Date(now()).toISOString(),
+      channel: def.name,
+      status: result.status,
+      detail: result.detail,
+    });
     return { def, before, after: result };
   }
 
@@ -602,57 +977,157 @@ function createMonitor({
           continue;
         }
         await sendMessage(
-          'ℹ️ ' + ch.friendly + ' is offline. It runs on your laptop and will recover when your machine is on.',
+          'ℹ️ ' +
+            ch.friendly +
+            ' is offline. It runs on your laptop and will recover when your machine is on.',
           { kind: 'health-alert-laptop-offline', extras: { channel: t.def.name } },
         );
         recordAlertSent(t.def.name);
         ch.laptopAlertOpen = true;
-        logEvent({ ts: new Date(now()).toISOString(), channel: t.def.name, event: 'alert-laptop-offline', detail: ch.detail });
+        logEvent({
+          ts: new Date(now()).toISOString(),
+          channel: t.def.name,
+          event: 'alert-laptop-offline',
+          detail: ch.detail,
+        });
         continue;
       }
 
-      const isNew = t.before !== 'red';
-      if (!isNew && !shouldAlert(t.def.name)) continue;
+      // Confirmed-down gate: for channels that carry a confirmDownTicks (the
+      // backend and pm2 crash-loop), do NOT alert or heal until we have seen
+      // this many CONSECUTIVE genuine-red ticks. A single genuine-red between
+      // greens is a blip; a load-induced probe is inconclusive and never even
+      // reaches here. This is the core healer-principle fix: a healthy-but-slow
+      // backend can never be auto-remediated. The FIRST time the streak crosses
+      // the threshold we alert+heal; subsequent reds respect the normal
+      // re-alert interval.
+      if (t.def.confirmDownTicks && ch.consecutiveRed < t.def.confirmDownTicks) {
+        logEvent({
+          ts: new Date(now()).toISOString(),
+          channel: t.def.name,
+          event: 'down-unconfirmed',
+          detail:
+            'genuine-down ' +
+            ch.consecutiveRed +
+            '/' +
+            t.def.confirmDownTicks +
+            ' consecutive ticks; holding before any auto-fix. ' +
+            ch.detail,
+        });
+        continue;
+      }
+
+      // The tick where a confirmDownTicks channel first reaches the threshold is
+      // the confirmed-down crossing. It MUST alert+heal exactly once regardless
+      // of a recent lastAlertedAt left over from a prior episode (Codex #3), so
+      // it bypasses the shouldAlert re-alert gate. For channels without a
+      // confirmDownTicks the original isNew/shouldAlert behaviour is unchanged.
+      const justConfirmed =
+        t.def.confirmDownTicks &&
+        !ch.confirmedDownOpen &&
+        ch.consecutiveRed >= t.def.confirmDownTicks;
+      if (justConfirmed) {
+        ch.confirmedDownOpen = true;
+      } else {
+        const isNew = t.before !== 'red';
+        if (!isNew && !shouldAlert(t.def.name)) continue;
+      }
 
       const downMsg = '⚠️ ' + ch.friendly + ' is down. ' + ch.detail + '\n\nAttempting auto-fix...';
       await sendMessage(downMsg, { kind: 'health-alert-down', extras: { channel: t.def.name } });
       recordAlertSent(t.def.name);
-      logEvent({ ts: new Date(now()).toISOString(), channel: t.def.name, event: 'alert-down', detail: ch.detail });
+      logEvent({
+        ts: new Date(now()).toISOString(),
+        channel: t.def.name,
+        event: 'alert-down',
+        detail: ch.detail,
+      });
 
       let healResult;
-      try { healResult = t.def.heal(); }
-      catch (e) { healResult = { attempted: false, action: 'error', detail: 'heal threw: ' + e.message }; }
+      try {
+        healResult = t.def.heal();
+      } catch (e) {
+        healResult = { attempted: false, action: 'error', detail: 'heal threw: ' + e.message };
+      }
       ch.lastHealAttemptAt = now();
       ch.lastHealAction = healResult.action;
       ch.lastHealDetail = healResult.detail;
-      logEvent({ ts: new Date(now()).toISOString(), channel: t.def.name, event: 'heal-attempted', action: healResult.action, detail: healResult.detail });
+      logEvent({
+        ts: new Date(now()).toISOString(),
+        channel: t.def.name,
+        event: 'heal-attempted',
+        action: healResult.action,
+        detail: healResult.detail,
+      });
 
       if (!healResult.attempted) {
         await sendMessage(
-          '❌ Auto-fix for ' + ch.friendly + ' not possible from EC2. ' + healResult.detail + '\n\nManual fix needed.',
-          { kind: 'health-alert-manual-needed', extras: { channel: t.def.name, heal_action: healResult.action } },
+          '❌ Auto-fix for ' +
+            ch.friendly +
+            ' not possible from EC2. ' +
+            healResult.detail +
+            '\n\nManual fix needed.',
+          {
+            kind: 'health-alert-manual-needed',
+            extras: { channel: t.def.name, heal_action: healResult.action },
+          },
         );
         continue;
       }
 
       let after2;
-      try { after2 = await t.def.probe(); }
-      catch (e) { after2 = { status: 'red', detail: 'reprobe threw: ' + e.message }; }
+      try {
+        after2 = await t.def.probe();
+      } catch (e) {
+        after2 = { status: 'inconclusive', detail: 'reprobe threw: ' + e.message };
+      }
+      // An inconclusive reprobe (box still busy) is not evidence either way:
+      // hold the pre-heal red status and stay quiet rather than declaring a
+      // false "did not recover". The next tick re-evaluates from a clean probe.
+      if (after2.status === 'inconclusive') {
+        ch.consecutiveInconclusive += 1;
+        ch.lastInconclusiveAt = now();
+        logEvent({
+          ts: new Date(now()).toISOString(),
+          channel: t.def.name,
+          event: 'reprobe-inconclusive',
+          detail: after2.detail,
+        });
+        continue;
+      }
       ch.status = after2.status;
       ch.detail = after2.detail;
       if (after2.status === 'green') {
         ch.lastOkAt = now();
         ch.consecutiveRed = 0;
         ch.lastChangedAt = now();
+        ch.confirmedDownOpen = false;
         recoveredAfterHeal.add(t.def.name);
         await sendMessage(
-          '✅ ' + ch.friendly + ' is back online after auto-fix (' + healResult.action + '). ' + after2.detail,
-          { kind: 'health-alert-recovered', extras: { channel: t.def.name, heal_action: healResult.action } },
+          '✅ ' +
+            ch.friendly +
+            ' is back online after auto-fix (' +
+            healResult.action +
+            '). ' +
+            after2.detail,
+          {
+            kind: 'health-alert-recovered',
+            extras: { channel: t.def.name, heal_action: healResult.action },
+          },
         );
       } else {
         await sendMessage(
-          '❌ Auto-fix for ' + ch.friendly + ' did not recover the channel. Action: ' + healResult.action + '. State: ' + after2.detail + '. Manual fix needed.',
-          { kind: 'health-alert-heal-failed', extras: { channel: t.def.name, heal_action: healResult.action } },
+          '❌ Auto-fix for ' +
+            ch.friendly +
+            ' did not recover the channel. Action: ' +
+            healResult.action +
+            '. State: ' +
+            after2.detail +
+            '. Manual fix needed.',
+          {
+            kind: 'health-alert-heal-failed',
+            extras: { channel: t.def.name, heal_action: healResult.action },
+          },
         );
       }
     }
@@ -666,21 +1141,73 @@ function createMonitor({
         // window produces no recovery message (no spam from a quiet flap).
         if (t.def.laptopHosted) {
           if (ch.laptopAlertOpen) {
-            await sendMessage(
-              '✅ ' + ch.friendly + ' back online.',
-              { kind: 'health-alert-laptop-recovered', extras: { channel: t.def.name } },
-            );
+            await sendMessage('✅ ' + ch.friendly + ' back online.', {
+              kind: 'health-alert-laptop-recovered',
+              extras: { channel: t.def.name },
+            });
             ch.laptopAlertOpen = false;
-            logEvent({ ts: new Date(now()).toISOString(), channel: t.def.name, event: 'alert-laptop-recovered', detail: t.after.detail });
+            logEvent({
+              ts: new Date(now()).toISOString(),
+              channel: t.def.name,
+              event: 'alert-laptop-recovered',
+              detail: t.after.detail,
+            });
           }
           continue;
         }
 
+        // For a confirm-gated channel (backend / pm2) a red episode that never
+        // crossed the confirm-down threshold sent NO down alert, so a recovery
+        // note would be noise about an event ExampleCo never saw (Codex #4). Only
+        // announce self-recovery if a confirmed-down alert was actually open.
+        if (t.def.confirmDownTicks && !ch.confirmedDownOpen) {
+          logEvent({
+            ts: new Date(now()).toISOString(),
+            channel: t.def.name,
+            event: 'recovered-unconfirmed',
+            detail:
+              'red episode cleared without ever confirming down; no recovery note. ' +
+              t.after.detail,
+          });
+          continue;
+        }
+        ch.confirmedDownOpen = false;
+
+        await sendMessage('✅ ' + ch.friendly + ' recovered on its own. ' + t.after.detail, {
+          kind: 'health-alert-self-recovered',
+          extras: { channel: t.def.name },
+        });
+        recordAlertSent(t.def.name);
+      }
+    }
+
+    // Inconclusive-escalation safety valve (the "wedged but not crashed" case).
+    // A channel that has been unverifiable for INCONCLUSIVE_ESCALATE_TICKS in a
+    // row gets ONE loud advisory so a genuinely stuck backend cannot hide behind
+    // "the box is busy" forever. We STILL do not auto-reset: this is a report to
+    // the human, never a remediation. Fires once per escalation streak (reset
+    // when the channel next resolves green or red).
+    for (const t of transitions) {
+      const ch = state.channels[t.def.name];
+      if (!t.def.confirmDownTicks) continue; // only the actionable channels
+      if (t.def.laptopHosted) continue;
+      if (ch.consecutiveInconclusive === INCONCLUSIVE_ESCALATE_TICKS) {
         await sendMessage(
-          '✅ ' + ch.friendly + ' recovered on its own. ' + t.after.detail,
-          { kind: 'health-alert-self-recovered', extras: { channel: t.def.name } },
+          '⚠️ ' +
+            ch.friendly +
+            ' has been unverifiable for an extended period (the box may be overloaded). No automatic action was taken. Please check it when you can.',
+          { kind: 'health-alert-inconclusive-escalated', extras: { channel: t.def.name } },
         );
         recordAlertSent(t.def.name);
+        logEvent({
+          ts: new Date(now()).toISOString(),
+          channel: t.def.name,
+          event: 'inconclusive-escalated',
+          detail:
+            ch.consecutiveInconclusive +
+            ' consecutive inconclusive ticks; advisory sent, no auto-reset. ' +
+            (ch.lastInconclusiveDetail || ''),
+        });
       }
     }
     return transitions;
@@ -708,9 +1235,13 @@ function createMonitor({
   let timerHandle = null;
   function start() {
     if (timerHandle) return;
-    tick().catch((e) => logEvent({ ts: new Date(now()).toISOString(), event: 'tick-error', detail: e.message }));
+    tick().catch((e) =>
+      logEvent({ ts: new Date(now()).toISOString(), event: 'tick-error', detail: e.message }),
+    );
     timerHandle = setInterval(() => {
-      tick().catch((e) => logEvent({ ts: new Date(now()).toISOString(), event: 'tick-error', detail: e.message }));
+      tick().catch((e) =>
+        logEvent({ ts: new Date(now()).toISOString(), event: 'tick-error', detail: e.message }),
+      );
     }, intervalMs);
     if (timerHandle && timerHandle.unref) timerHandle.unref();
   }
@@ -741,4 +1272,8 @@ module.exports = {
   healLinkedin,
   healPm2,
   httpGetJson,
+  classifyProbeFailure,
+  pm2ProcessStatus,
+  CONFIRM_DOWN_TICKS,
+  INCONCLUSIVE_ESCALATE_TICKS,
 };
