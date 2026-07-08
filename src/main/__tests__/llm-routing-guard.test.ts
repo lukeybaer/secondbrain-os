@@ -5,9 +5,10 @@
  * DIRECTLY. LLM traffic must route through the fallback ladder (2026-06-11
  * policy, plan: dev-plans/llm-fallback-ladder-2026-06-11.html): OpenAI sub
  * (codex CLI) -> Claude sub (proxy port 3456 / claude CLI) -> paid API
- * floors (Bedrock/Anthropic where wired -> OpenAI API soft-capped). Paid
- * floor calls are only legal inside sanctioned ladder implementations,
- * where they sit BELOW the subscription rungs.
+ * floors (Bedrock/Anthropic where wired -> OpenAI API). Paid floor calls
+ * are only legal inside sanctioned ladder implementations, where they sit
+ * BELOW the subscription rungs and require charged-usage approval after Codex
+ * is down too.
  *
  * Root cause this test prevents: the 2026-04-10 manual-briefing-v2.js
  * regression where I called api.openai.com directly for 30 article

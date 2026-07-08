@@ -9,14 +9,15 @@
 //   3. claude-cli    -- Claude Max via the local `claude -p` CLI
 //   4. bedrock       -- AWS Bedrock funded $20/mo lane (only where configured)
 //   5. anthropic-api -- Anthropic API key floor (only if key set)
-//   6. openai-api    -- OpenAI API key floor, SOFT-capped (never blocked)
+//   6. openai-api    -- OpenAI API key floor, ExampleCo-approved charged floor
 //
 // Hard requirement: no surface dead when the Claude subscription is down.
 // Therefore: every rung failure (null, throw, or sentinel auth-error output)
 // DESCENDS to the next rung; BrainUnreachable throws only when ALL rungs fail;
-// and the paid-floor budget is a soft rolling counter that WARNS at the cap
-// but never synchronously blocks (a hard cap would kill the floor exactly when
-// both subscriptions are down -- Codex review ruling).
+// and charged API floors are blocked unless (a) Codex has already failed in
+// this call path and (b) ExampleCo explicitly approved charged extra usage for this
+// call. The OpenAI provider canary is the separate approved diagnostic probe;
+// answer generation is never allowed to burn paid API usage silently.
 //
 // Runs on EC2 and the PC (pure Node builtins). Surfaces inject per-call
 // options; tests inject rung fns directly.
@@ -36,6 +37,7 @@ const ATTEMPT_LOG = path.join(REPO, 'data', 'agent', 'ask-ai-rungs.jsonl');
 const SPEND_FILE = path.join(REPO, 'data', 'agent', 'openai-api-spend.json');
 const OPENAI_SOFT_CAP_USD = Number(process.env.OPENAI_API_SOFT_CAP_USD || 20);
 const OPENAI_WARN_USD = Number(process.env.OPENAI_API_WARN_USD || 15);
+const CHARGED_API_RUNGS = new Set(['openai-api', 'anthropic-api', 'bedrock']);
 
 class BrainUnreachable extends Error {
   constructor(attempts) {
@@ -92,6 +94,32 @@ function budgetWarning(budget) {
     return `OpenAI API floor spend $${spent.toFixed(2)} approaching the $${cap} soft cap.`;
   }
   return null;
+}
+
+function isChargedApiRung(rung) {
+  if (!rung) return false;
+  return rung.paid === true || CHARGED_API_RUNGS.has(String(rung.name || ''));
+}
+
+function chargedLlmApiGate(opts, attempts) {
+  const terminalCodexAttempt = attempts
+    .slice()
+    .reverse()
+    .find(
+      (a) =>
+        a &&
+        a.rung === 'codex' &&
+        typeof a.outcome === 'string' &&
+        !a.outcome.startsWith('transient-retry'),
+    );
+  const codexDown = terminalCodexAttempt && terminalCodexAttempt.outcome !== 'answered';
+  if (!codexDown) {
+    return { ok: false, outcome: 'charged-api-blocked:codex-not-proven-down' };
+  }
+  if (opts.allowChargedLlmApi !== true) {
+    return { ok: false, outcome: 'charged-api-blocked:ExampleCo-approval-required' };
+  }
+  return { ok: true };
 }
 
 // Estimate the USD cost of one OpenAI floor call from its usage block.
@@ -322,8 +350,22 @@ async function askAI(question, opts = {}) {
     const started = Date.now();
     let text = null;
     let outcome = 'null';
-    // Soft budget: warn (never block) before a paid rung when over thresholds.
-    if (r.paid) {
+    if (isChargedApiRung(r)) {
+      const gate = chargedLlmApiGate(opts, attempts);
+      if (!gate.ok) {
+        const attempt = { rung: r.name, outcome: gate.outcome, latencyMs: 0 };
+        attempts.push(attempt);
+        if (typeof opts.onAttempt === 'function') opts.onAttempt(attempt);
+        appendJsonl(ATTEMPT_LOG, {
+          ts: new Date().toISOString(),
+          surface: opts.surface || 'ExampleCo',
+          ...attempt,
+        });
+        continue;
+      }
+    }
+    // Soft budget: warn before an approved paid rung when over thresholds.
+    if (isChargedApiRung(r)) {
       const b = opts.budget || { spentUsd: readSpend().spentUsd, capUsd: OPENAI_SOFT_CAP_USD };
       const warn = budgetWarning(b);
       if (warn) {
@@ -389,6 +431,7 @@ module.exports = {
   BrainUnreachable,
   defaultRungOrder,
   budgetWarning,
+  chargedLlmApiGate,
   estimateOpenAiCostUsd,
   readSpend,
   ATTEMPT_LOG,

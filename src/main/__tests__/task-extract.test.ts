@@ -2,10 +2,11 @@
  * Tests for task-extract.ts, smart #amy dispatch extraction.
  *
  * config, claude-runner, and codex-runner are mocked (no electron, no
- * subprocess). Strict-JSON extraction follows the 2026-06-11 provider LADDER:
- * codex (OpenAI sub, read-only) -> claude CLI (Claude sub) -> OpenAI API key
- * soft floor. Covers the safe-fallback paths (empty input, every rung failing,
- * garbage response), the per-rung descent, and the confident path. The
+ * subprocess). Strict-JSON extraction follows the provider LADDER:
+ * codex (subscription, read-only) -> claude CLI (subscription) -> OpenAI API
+ * floor only when the charged-LLM approval gate is active. Covers the
+ * safe-fallback paths (empty input, every rung failing, garbage response), the
+ * per-rung descent, and the confident path. The
  * not-confident terminal fallback is unchanged: when the whole ladder fails
  * the dispatch is recorded but held for a human, never auto-run.
  */
@@ -49,7 +50,7 @@ beforeEach(() => {
   mockRunClaudeCode.mockReset();
   mockRunCodex.mockReset();
   mockRunOpenAiFloor.mockReset();
-  // Defaults: codex and the paid floor fail, so the pre-ladder tests keep
+  // Defaults: codex and the charged floor fail, so the pre-ladder tests keep
   // their exact old semantics (claude is the deciding rung).
   mockRunCodex.mockResolvedValue({ text: null, exitCode: -1, failureReason: 'nonzero-exit' });
   mockRunOpenAiFloor.mockResolvedValue(null);
@@ -126,7 +127,7 @@ describe('extractDispatch confident path', () => {
   });
 });
 
-describe('extractDispatch provider ladder (codex -> claude -> openai floor)', () => {
+describe('extractDispatch provider ladder (codex -> claude -> charged floor)', () => {
   it('answers from the read-only codex rung first and never consults claude', async () => {
     mockRunCodex.mockResolvedValue({
       text: JSON.stringify({
@@ -142,18 +143,21 @@ describe('extractDispatch provider ladder (codex -> claude -> openai floor)', ()
     expect(mockRunClaudeCode).not.toHaveBeenCalled();
   });
 
-  it('lands on the OpenAI API floor when codex and claude both fail', async () => {
+  it('blocks the OpenAI API floor without ExampleCo approval even when codex and claude both fail', async () => {
     mockRunClaudeCode.mockResolvedValue({ output: '', success: false, exitCode: 1 });
-    mockRunOpenAiFloor.mockResolvedValue(
-      JSON.stringify({
-        instruction: 'Schedule the dentist call for Friday.',
-        confident: true,
-        reason: 'clear',
-      }),
+    mockRunOpenAiFloor.mockImplementation(
+      async (
+        _prompt: ExampleCo,
+        opts: { codexDown?: boolean; allowChargedLlmApi?: boolean },
+      ) => {
+        expect(opts.codexDown).toBe(true);
+        expect(opts.allowChargedLlmApi).toBe(false);
+        return null;
+      },
     );
     const r = await extractDispatch('hashtag amy uh dentist friday');
-    expect(r.prompt).toBe('Schedule the dentist call for Friday.');
-    expect(r.confident).toBe(true);
+    expect(r.prompt).toBe('hashtag amy uh dentist friday');
+    expect(r.confident).toBe(false);
   });
 
   it('treats an exit-0 auth sentinel from claude as a rung failure, not JSON', async () => {

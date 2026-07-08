@@ -9,6 +9,7 @@ import * as path from 'path';
 import { app } from 'electron';
 import Anthropic from '@anthropic-ai/sdk';
 import { getConfig } from './config';
+import { canUseChargedLlmApi } from './charged-llm-api-guard';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -290,6 +291,8 @@ export async function processRejectionLearning(input: RejectionLearningInput): P
     console.warn('[rsl] No Anthropic API key — skipping RSL classification');
     return;
   }
+
+  if (!canUseChargedLlmApi({ surface: 'rejection-skill-learning' })) return;
 
   let rubric: Rubric;
   try {

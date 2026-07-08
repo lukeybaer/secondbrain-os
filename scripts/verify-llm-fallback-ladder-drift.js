@@ -5,12 +5,12 @@
  * Keeps dev-plans/core/llm-fallback-ladder.md equal to the code: every
  * load-bearing file the doc names must still exist, and the design
  * invariants the doc asserts (subscription rungs before paid floors, the
- * failure guard fronting every rung, the soft never-block budget, honest
+ * failure guard fronting every rung, the charged API approval gate, honest
  * proxy /health) must still hold. If the code moves and the doc does not,
  * this fails loud so the doc gets fixed instead of rotting into fiction.
  *
- * Scoped per review: the rung order, the failure-detection guard, the soft
- * budget contract, and the proxy health honesty -- NOT every rung's HTTP
+ * Scoped per review: the rung order, the failure-detection guard, the charged
+ * API approval contract, and the proxy health honesty -- NOT every rung's HTTP
  * implementation detail.
  *
  * No dev-plans/core/llm-fallback-ladder.LESSONS.md exists yet (the doc's own
@@ -66,6 +66,16 @@ const MUST_CONTAIN = [
     'scripts/lib/ask-ai.js',
     "return ['codex', 'claude-proxy', 'claude-cli', 'openai-api']",
     'policy is fixed: subscription rungs (codex, claude-proxy, claude-cli) before the paid floor (openai-api)',
+  ],
+  [
+    'scripts/lib/ask-ai.js',
+    'function chargedLlmApiGate',
+    'charged API answer generation is gated before any paid floor runs',
+  ],
+  [
+    'scripts/lib/ask-ai.js',
+    'allowChargedLlmApi',
+    'ExampleCo approval is an explicit per-call option, not an implicit budget descent',
   ],
   [
     'scripts/lib/ask-ai.js',
@@ -169,21 +179,21 @@ function checkDrift(repoRoot) {
     if (read(rel) !== null) failures.push(`file should stay deleted but exists: ${rel}`);
   }
 
-  // The doc must still state the never-hard-block policy for the paid floor.
+  // The doc must still state the Codex-down plus ExampleCo-approval policy for charged floors.
   if (
     doc &&
-    !/never (?:be )?hard-block|never hard-blocked|soft-capped|soft rolling|WARNS at the cap/i.test(
-      doc,
-    )
+    !/Codex has already failed|Codex-down proof|Codex is down too/i.test(doc)
   ) {
-    failures.push('doc no longer states the paid-floor budget is soft (warns, never hard-blocks)');
+    failures.push('doc no longer states charged API floors require Codex-down proof');
+  }
+  if (doc && !/ExampleCo explicitly approved|ExampleCo approval|approved charged extra usage/i.test(doc)) {
+    failures.push('doc no longer states charged API floors require ExampleCo approval');
   }
 
-  // The doc must still state the core hard requirement: no surface goes dead
-  // when the Claude subscription is down.
-  if (doc && !/no surface goes dead when the Claude subscription is down/i.test(doc)) {
+  // The doc must still state the core requirement: subscription rungs first.
+  if (doc && !/subscription rungs (?:are tried )?first|subscription rungs first/i.test(doc)) {
     failures.push(
-      'doc no longer states the hard requirement that no surface goes dead when the Claude subscription is down',
+      'doc no longer states the hard requirement that subscription rungs run first',
     );
   }
 

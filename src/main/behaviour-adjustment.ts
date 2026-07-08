@@ -10,6 +10,7 @@ import * as path from "path";
 import * as cp from "child_process";
 import Anthropic from "@anthropic-ai/sdk";
 import { getConfig } from "./config";
+import { canUseChargedLlmApi } from "./charged-llm-api-guard";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -88,6 +89,7 @@ function updateSkillMeta(skillRelPath: string, outcome: SkillUsageLog["outcome"]
 export async function evolveSkillInBackground(skillRelPath: string, useCount: number): Promise<void> {
   const config = getConfig();
   if (!config.anthropicApiKey) return;
+  if (!canUseChargedLlmApi({ surface: "behaviour-adjustment" })) return;
 
   const fullPath = path.join(skillsDir(), skillRelPath);
   if (!fs.existsSync(fullPath)) return;

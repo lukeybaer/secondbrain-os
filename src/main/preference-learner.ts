@@ -28,6 +28,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { getConfig } from './config';
+import { canUseChargedLlmApi } from './charged-llm-api-guard';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -169,6 +170,9 @@ export async function learnFromInteraction(
 ): Promise<LearnResult> {
   const apiKey = opts.apiKey ?? getConfig().anthropicApiKey;
   if (!apiKey) {
+    return { learned: [], reinforced: [], skippedLow: 0, totalInQueue: 0 };
+  }
+  if (!canUseChargedLlmApi({ surface: 'preference-learner' })) {
     return { learned: [], reinforced: [], skippedLow: 0, totalInQueue: 0 };
   }
 

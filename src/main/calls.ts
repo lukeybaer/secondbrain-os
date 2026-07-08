@@ -32,39 +32,24 @@ import { heuristicCallScore, callScoreToRunScore } from './call-score';
 import { appendScore } from './run-score-store';
 
 async function detectCompletion(instructions: string, transcript: string): Promise<boolean> {
-  const config = getConfig();
-  if (!config.openaiApiKey || !transcript.trim()) return false;
-  try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.openaiApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You determine if a phone call achieved its goal. Reply with only the JSON: {"completed": true} or {"completed": false}.',
-          },
-          {
-            role: 'user',
-            content: `Goal: ${instructions.trim()}\n\nTranscript:\n${transcript.trim()}`,
-          },
-        ],
-        response_format: { type: 'json_object' },
-        max_tokens: 20,
-      }),
-    });
-    if (!res.ok) return false;
-    const data = await res.json();
-    const result = JSON.parse(data.choices[0]?.message?.content ?? '{}');
-    return result.completed === true;
-  } catch {
-    return false;
-  }
+  const t = transcript.trim().toLowerCase();
+  if (!t) return false;
+  const clearFailure =
+    /\b(no answer|voicemail|left a message|call back|not available|could not|couldn't|unable|wrong number|hung up)\b/i.test(
+      t,
+    );
+  if (clearFailure) return false;
+  const goalWords = instructions
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 4)
+    .slice(0, 8);
+  const goalMentioned = goalWords.length === 0 || goalWords.some((w) => t.includes(w));
+  const completionSignal =
+    /\b(scheduled|booked|confirmed|completed|done|approved|agreed|sent|received|resolved|yes,? that works|we can do that)\b/i.test(
+      t,
+    );
+  return goalMentioned && completionSignal;
 }
 
 export type CallStatus = 'queued' | 'ringing' | 'in-progress' | 'forwarding' | 'ended' | 'error';

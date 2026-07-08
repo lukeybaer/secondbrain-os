@@ -5,20 +5,18 @@
  * dev-plans/llm-fallback-ladder-2026-06-11.html, ExampleCo directive: "In all
  * areas, Amy should be able to operate even if claude sub is down"):
  *
- *   askAmy() must descend a fixed rung ladder, subscriptions first, paid
- *   API floors last:
+ *   askAmy() must descend a fixed rung ladder, subscriptions first, charged
+ *   API floors gated:
  *
  *     1. codex          (OpenAI subscription via Codex CLI)
  *     2. claude proxy   (Claude Max via laptop SSH-tunnel proxy)
  *     3. claude CLI     (Claude Max via EC2-local `claude -p`)
- *     4. bedrock        (AWS Bedrock funded $20/mo lane)
- *     5. anthropic API  (key floor, only when ANTHROPIC_API_KEY set)
- *     6. openai API     (key floor, SOFT-capped $20/mo, warn-never-block)
+ *     4. bedrock        (charged, only if Codex is down and ExampleCo approved)
+ *     5. anthropic API  (charged, only if Codex is down and ExampleCo approved)
+ *     6. openai API     (charged, only if Codex is down and ExampleCo approved)
  *
- * The OpenAI API rung is the FLOOR: it must exist (no surface dead when the
- * Claude subscription is down) and it must come LAST (never ahead of a
- * subscription rung). This supersedes the old 2026-04-20 "Claude Max only /
- * no paid API branches" assertion that used to live in this file.
+ * Charged API rungs are emergency floors only. They must stay behind
+ * canUseChargedLlmApi(), which requires Codex-down proof plus ExampleCo approval.
  *
  * Scoping unchanged: Whisper audio transcription elsewhere in ec2-server.js
  * is a separate paid-API surface with no subscription equivalent and is NOT
@@ -100,21 +98,18 @@ describe('ec2-server askAmy routing (LLM fallback ladder)', () => {
     }
   });
 
-  it('the OpenAI API rung is the LAST rung (paid floor, never ahead of a subscription rung)', () => {
+  it('charged API rungs are behind Codex-down proof plus ExampleCo approval', () => {
     const fn = extractAskAmy();
+    const gateIdx = fn.indexOf('canUseChargedLlmApi');
+    const bedrockIdx = fn.indexOf('askAmyViaBedrock');
+    const anthropicIdx = fn.indexOf('askAmyViaAnthropicAPI');
     const openaiIdx = fn.indexOf('askAmyViaOpenAI');
-    expect(openaiIdx, 'askAmyViaOpenAI floor rung missing from askAmy()').toBeGreaterThan(-1);
-    for (const earlier of [
-      'askAmyViaCodex',
-      'askAmyViaProxy',
-      'askAmyViaCLI',
-      'askAmyViaBedrock',
-      'askAmyViaAnthropicAPI',
-    ]) {
-      expect(openaiIdx, `openai rung must come after ${earlier}`).toBeGreaterThan(
-        fn.indexOf(earlier),
-      );
-    }
+    expect(gateIdx).toBeGreaterThan(-1);
+    expect(fn).toContain('codexDown: true');
+    expect(fn).toContain('explicitApproval: allowChargedLlmApi');
+    expect(bedrockIdx).toBeGreaterThan(gateIdx);
+    expect(anthropicIdx).toBeGreaterThan(gateIdx);
+    expect(openaiIdx).toBeGreaterThan(gateIdx);
   });
 });
 

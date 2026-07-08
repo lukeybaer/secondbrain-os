@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { spawn } from 'child_process';
 import { getConfig } from './config';
+import { canUseChargedLlmApi } from './charged-llm-api-guard';
 import { resolvePythonExe } from './util/python';
 import type {
   StudioRecording,
@@ -360,6 +361,10 @@ Return ONLY a JSON array of edit decisions. Each decision:
 }
 
 Remove dead air, filler, and retakes. Keep only the best content. Return valid JSON only.`;
+
+  if (!canUseChargedLlmApi({ surface: 'studio-director:edit-decisions' })) {
+    return generateSimpleEDL(recording, transcript);
+  }
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',

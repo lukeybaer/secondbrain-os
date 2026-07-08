@@ -30,6 +30,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { getConfig } from './config';
+import { canUseChargedLlmApi } from './charged-llm-api-guard';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -97,6 +98,9 @@ export async function extractIntents(
   const cfg = getConfig();
   const apiKey = cfg.anthropicApiKey;
   if (!apiKey) {
+    return { intents: [], newCount: 0, dupCount: 0, skippedLow: 0 };
+  }
+  if (!canUseChargedLlmApi({ surface: 'intent-extractor' })) {
     return { intents: [], newCount: 0, dupCount: 0, skippedLow: 0 };
   }
 

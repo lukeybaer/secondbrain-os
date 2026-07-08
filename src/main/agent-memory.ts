@@ -31,6 +31,7 @@ import { buildKnowledgeContext, ingestCallTranscript } from './graphiti-client';
 import { buildSessionArchiveContext } from './session-archive';
 import { readCanonicalMemory } from './memory-sync';
 import { runFallbackChain } from './tool-fallback-chain';
+import { canUseChargedLlmApi } from './charged-llm-api-guard';
 
 // ── Agent registry ────────────────────────────────────────────────────────────
 
@@ -238,6 +239,8 @@ export async function generateReflectionViaLadder(
   const anthropicFn =
     deps.anthropicFn ??
     (async (p: string) => {
+      if (!canUseChargedLlmApi({ codexDown: true, surface: 'agent-memory:anthropic' }))
+        return null;
       const { getConfig: getAppConfig } = await import('./config');
       const apiKey = getAppConfig().anthropicApiKey || process.env.ANTHROPIC_API_KEY;
       if (!apiKey) return null;
@@ -268,6 +271,11 @@ export async function generateReflectionViaLadder(
         apiKey: apiKey || process.env.OPENAI_API_KEY || '',
         ...(model ? { model } : {}),
         maxTokens: 512,
+        codexDown: true,
+        allowChargedLlmApi: canUseChargedLlmApi({
+          codexDown: true,
+          surface: 'agent-memory:openai',
+        }),
       });
     });
 

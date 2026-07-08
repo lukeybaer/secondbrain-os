@@ -31,8 +31,8 @@ const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..', '..')
 const RUNG_LOG_PATH = path.join(REPO, 'data', 'agent', 'ask-ai-rungs.jsonl');
 
 // The first configured rung in ask-ai.js defaultRungOrder(); answering here is
-// the healthy steady state. Paid rungs are the soft-capped last resort: any
-// real answer from one means both subscriptions failed for that call.
+// the healthy steady state. Paid rungs are ExampleCo-approved last resorts: any
+// real answer from one means Codex failed and charged usage was approved.
 const DEFAULT_FIRST_RUNG = 'codex';
 const DEFAULT_PAID_RUNGS = ['openai-api'];
 
@@ -100,7 +100,7 @@ function classify(outcome) {
 //   opts.now         ISO/epoch reference for the window (default: latest ts seen)
 //   opts.windowHours window to include, anchored at opts.now (default 24)
 //   opts.firstRung   the healthy steady-state rung (default 'codex')
-//   opts.paidRungs   soft-capped floor rungs (default ['openai-api'])
+//   opts.paidRungs   charged floor rungs (default ['openai-api'])
 function summarizeLadder(records, opts = {}) {
   const firstRung = opts.firstRung || DEFAULT_FIRST_RUNG;
   const paidRungs = opts.paidRungs || DEFAULT_PAID_RUNGS;

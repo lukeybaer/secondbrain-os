@@ -182,11 +182,21 @@ describe('runCodex (read-only codex rung)', () => {
 
 const FLOOR_KEY = 'sk-test-12345678901234567890';
 
-describe('runOpenAiFloor (paid soft floor, transport injected)', () => {
+describe('runOpenAiFloor (charged floor, transport injected)', () => {
+  it('returns null without calling the transport when charged use is not approved', async () => {
+    const transport = vi.fn();
+    expect(await runOpenAiFloor('q', { apiKey: FLOOR_KEY, codexDown: true, transport })).toBeNull();
+    expect(
+      await runOpenAiFloor('q', { apiKey: FLOOR_KEY, allowChargedLlmApi: true, transport }),
+    ).toBeNull();
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   it('returns null without calling the transport when no usable api key is set', async () => {
     const transport = vi.fn();
-    expect(await runOpenAiFloor('q', { apiKey: '', transport })).toBeNull();
-    expect(await runOpenAiFloor('q', { apiKey: 'short', transport })).toBeNull();
+    const approved = { allowChargedLlmApi: true, codexDown: true };
+    expect(await runOpenAiFloor('q', { apiKey: '', transport, ...approved })).toBeNull();
+    expect(await runOpenAiFloor('q', { apiKey: 'short', transport, ...approved })).toBeNull();
     expect(transport).not.toHaveBeenCalled();
   });
 
@@ -199,12 +209,26 @@ describe('runOpenAiFloor (paid soft floor, transport injected)', () => {
         body: JSON.stringify({ choices: [{ message: { content: 'floor answer' } }] }),
       };
     });
-    expect(await runOpenAiFloor('q', { apiKey: FLOOR_KEY, transport })).toBe('floor answer');
+    expect(
+      await runOpenAiFloor('q', {
+        apiKey: FLOOR_KEY,
+        transport,
+        allowChargedLlmApi: true,
+        codexDown: true,
+      }),
+    ).toBe('floor answer');
   });
 
   it('returns null on a non-2xx response', async () => {
     const transport = vi.fn(async () => ({ status: 500, body: 'oops' }));
-    expect(await runOpenAiFloor('q', { apiKey: FLOOR_KEY, transport })).toBeNull();
+    expect(
+      await runOpenAiFloor('q', {
+        apiKey: FLOOR_KEY,
+        transport,
+        allowChargedLlmApi: true,
+        codexDown: true,
+      }),
+    ).toBeNull();
   });
 
   it('returns null when the content is itself a quota/auth sentinel', async () => {
@@ -214,7 +238,14 @@ describe('runOpenAiFloor (paid soft floor, transport injected)', () => {
         choices: [{ message: { content: 'You exceeded your current quota.' } }],
       }),
     }));
-    expect(await runOpenAiFloor('q', { apiKey: FLOOR_KEY, transport })).toBeNull();
+    expect(
+      await runOpenAiFloor('q', {
+        apiKey: FLOOR_KEY,
+        transport,
+        allowChargedLlmApi: true,
+        codexDown: true,
+      }),
+    ).toBeNull();
   });
 });
 

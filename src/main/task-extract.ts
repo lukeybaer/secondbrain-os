@@ -16,6 +16,7 @@
 // "auto-run what we clearly understood, hold what we did not".
 
 import { wrapUntrusted } from './untrusted-content';
+import { canUseChargedLlmApi } from './charged-llm-api-guard';
 
 /**
  * What kind of action the extracted instruction performs. Gates auto-run:
@@ -285,6 +286,11 @@ export async function extractDispatch(
               apiKey: apiKey || process.env.OPENAI_API_KEY || '',
               ...(model ? { model } : {}),
               maxTokens: 400,
+              codexDown: true,
+              allowChargedLlmApi: canUseChargedLlmApi({
+                codexDown: true,
+                surface: 'task-extract:openai',
+              }),
             });
             const parsed = parseStrictJson(text);
             if (!parsed) throw new Error('openai floor: no strict-JSON extraction');

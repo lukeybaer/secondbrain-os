@@ -691,6 +691,14 @@ const BEDROCK_MODEL_ID = 'us.anthropic.claude-sonnet-4-6';
 const BEDROCK_REGION = 'us-east-1';
 const BEDROCK_TIMEOUT_MS = 60000;
 let bedrockUsableCache = null;
+
+function chargedLlmApiApprovedForDirectSurface() {
+  const codexDown = /^(1|true|yes)$/i.test(process.env.AMY_CODEX_DOWN_PROVEN || '');
+  if (!codexDown) return false;
+  const approvedUntil = Date.parse(process.env.AMY_CHARGED_LLM_API_APPROVED_UNTIL || '');
+  return Number.isFinite(approvedUntil) && approvedUntil > Date.now();
+}
+
 // Pure parser for the bedrock-runtime invoke-model output body
 // ({ content: [{ type, text }] }). Returns trimmed text or '' for any malformed
 // shape. Exported so the response-shape contract has a no-network unit test.
@@ -707,6 +715,7 @@ function parseBedrockOut(rawJson) {
 function bedrockSummarizeAsync(prompt) {
   return new Promise((resolve) => {
     if (bedrockUsableCache === false) return resolve('');
+    if (!chargedLlmApiApprovedForDirectSurface()) return resolve('');
     const safePrompt = String(prompt || '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
     if (!safePrompt) return resolve('');
     const stamp = `${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;

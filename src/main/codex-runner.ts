@@ -196,11 +196,10 @@ export function runCodex(prompt: string, opts: RunCodexOptions = {}): Promise<Ru
 
 // -- runOpenAiFloor -----------------------------------------------------------------
 //
-// The paid SOFT floor of the ladder (rung 3). Mirrors scripts/lib/ask-ai.js
+// The charged, ExampleCo-approved floor of the ladder (rung 3). Mirrors scripts/lib/ask-ai.js
 // runOpenAiApiRung: hostname and path stay separate https.request fields (the
-// Codex-reviewed P0 pattern). Per the 2026-06-11 policy this floor exists so
-// no surface is dead when both subscriptions are down; spend is tracked as a
-// soft rolling budget by ask-ai.js on the script side.
+// Codex-reviewed P0 pattern). Per the 2026-07-08 policy this floor only runs
+// after Codex is down too and ExampleCo explicitly approved charged extra usage.
 
 export interface OpenAiFloorResponse {
   status: number;
@@ -218,6 +217,8 @@ export interface RunOpenAiFloorOptions {
   system?: string;
   maxTokens?: number;
   timeoutMs?: number;
+  codexDown?: boolean;
+  allowChargedLlmApi?: boolean;
   /** Test injection: stub the HTTPS transport. */
   transport?: OpenAiFloorTransport;
 }
@@ -258,6 +259,7 @@ export async function runOpenAiFloor(
   prompt: string,
   opts: RunOpenAiFloorOptions,
 ): Promise<string | null> {
+  if (!opts.codexDown || opts.allowChargedLlmApi !== true) return null;
   const apiKey = opts.apiKey || '';
   if (!apiKey || apiKey.length < 20) return null;
   const transport = opts.transport ?? httpsTransport;

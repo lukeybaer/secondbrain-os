@@ -6,7 +6,7 @@
  * reflection fell to the manual-review stub even with two healthy
  * subscriptions available. Reflection is simple bullet-generation, fully
  * portable, so it now follows the universal ladder:
- *   codex (read-only) -> claude CLI -> Anthropic API key if set -> OpenAI API floor
+ *   codex (read-only) -> claude CLI -> charged API floors only with approval
  *
  * Categories encoded:
  *  - each rung is only consulted when every rung above it failed
@@ -158,6 +158,17 @@ describe('generateReflectionViaLadder (default rungs)', () => {
     });
     const r = await generateReflectionViaLadder('reflect');
     expect(r.text).toBeNull();
+  });
+
+  it('does not wake charged default rungs from API keys alone', async () => {
+    mockConfig.anthropicApiKey = 'anthropic-key-present';
+    mockConfig.openaiApiKey = 'sk-test-openai-key-present';
+    const r = await generateReflectionViaLadder('reflect');
+    expect(r).toEqual({ text: null, rung: null });
+    expect(mockRunOpenAiFloor).toHaveBeenCalledWith(
+      'reflect',
+      expect.objectContaining({ codexDown: true, allowChargedLlmApi: false }),
+    );
   });
 });
 

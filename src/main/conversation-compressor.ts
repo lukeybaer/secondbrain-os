@@ -23,6 +23,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import { getConfig } from './config';
+import { canUseChargedLlmApi } from './charged-llm-api-guard';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -203,6 +204,18 @@ export async function runCompressionPass(opts: CompressorOptions): Promise<Compr
   const apiKey = opts.apiKey ?? getConfig().anthropicApiKey;
   if (!apiKey) {
     // No API key: skip compression, keep recent only
+    const ctx: CompressedContext = {
+      previous_summary: prevSummary,
+      recent_rounds: recentRounds,
+      rounds_compressed: prevCompressed + roundsToCompress.length,
+      rounds_kept: recentRounds.length,
+      last_compressed_at: new Date().toISOString(),
+      version: prevVersion + 1,
+    };
+    writeState(opts.statePath, ctx);
+    return ctx;
+  }
+  if (!canUseChargedLlmApi({ surface: 'conversation-compressor' })) {
     const ctx: CompressedContext = {
       previous_summary: prevSummary,
       recent_rounds: recentRounds,

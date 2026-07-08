@@ -17,6 +17,7 @@
 import { spawn } from 'child_process';
 import { app } from 'electron';
 import Anthropic from '@anthropic-ai/sdk';
+import { canUseChargedLlmApi } from './charged-llm-api-guard';
 
 // 5 minutes was too short for the kinds of tasks Amy escalates from a Vapi
 // call (deep search across many transcripts, multi-file refactors,
@@ -334,6 +335,9 @@ export async function summarizeTaskOutput(fullOutput: string, success: boolean, 
   let summary = success
     ? fullOutput.slice(0, 500)
     : `Task failed (exit ${exitCode}): ${fullOutput.slice(0, 300)}`;
+  if (!canUseChargedLlmApi({ surface: 'claude-runner:summarizeTaskOutput' })) {
+    return summary;
+  }
   try {
     const anthropic = new Anthropic();
     const msg = await anthropic.messages.create({

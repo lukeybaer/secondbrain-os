@@ -53,14 +53,24 @@ function cleanup(dir: string) {
 
 describe('sleep-time-consolidation', () => {
   let dir: string;
+  let oldCodexDown: string | undefined;
+  let oldApprovedUntil: string | undefined;
 
   beforeEach(() => {
     dir = makeTmpDir();
     mockCreate.mockReset();
+    oldCodexDown = process.env.AMY_CODEX_DOWN_PROVEN;
+    oldApprovedUntil = process.env.AMY_CHARGED_LLM_API_APPROVED_UNTIL;
+    process.env.AMY_CODEX_DOWN_PROVEN = '1';
+    process.env.AMY_CHARGED_LLM_API_APPROVED_UNTIL = new Date(Date.now() + 60_000).toISOString();
   });
 
   afterEach(() => {
     cleanup(dir);
+    if (oldCodexDown == null) delete process.env.AMY_CODEX_DOWN_PROVEN;
+    else process.env.AMY_CODEX_DOWN_PROVEN = oldCodexDown;
+    if (oldApprovedUntil == null) delete process.env.AMY_CHARGED_LLM_API_APPROVED_UNTIL;
+    else process.env.AMY_CHARGED_LLM_API_APPROVED_UNTIL = oldApprovedUntil;
   });
 
   it('returns no-blocks result when dir has no blocks', async () => {

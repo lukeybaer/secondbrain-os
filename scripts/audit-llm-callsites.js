@@ -4,15 +4,17 @@
 // AUDIT MODE: report-only inventory of direct LLM call sites (always exits 0).
 // Part of the 2026-06-11 LLM fallback ladder plan
 // (dev-plans/llm-fallback-ladder-2026-06-11.html): every surface should reach
-// LLMs through scripts/lib/ask-ai.js (subscriptions first, paid floors last).
-// This scanner finds the surfaces that still talk to an LLM directly so the
-// migration backlog is visible, not guessed.
+// LLMs through scripts/lib/ask-ai.js or the charged LLM API guard. This scanner
+// finds the surfaces that still talk to an LLM directly so the migration backlog
+// is visible, not guessed.
 //
 // Detected kinds:
 //   cli-spawn      spawn/spawnSync/execSync/execFile of `claude` or `codex`
 //                  (JS) or subprocess.run/Popen/... of the same (Python)
 //   anthropic-api  reference to api.anthropic.com
+//   anthropic-sdk  reference to the Anthropic SDK client
 //   openai-api     reference to api.openai.com
+//   groq-sdk       reference to the Groq SDK client
 //   bedrock        reference to bedrock-runtime
 //   openai-key     OPENAI_API_KEY read
 //   anthropic-key  ANTHROPIC_API_KEY read
@@ -80,14 +82,18 @@ const PATTERNS = [
     re: /subprocess\.(?:run|Popen|check_output|check_call|call)\s*\(\s*\[?\s*[`'"](?:claude|codex)\b/,
   },
   { kind: 'anthropic-api', re: /api\.anthropic\.com/ },
+  { kind: 'anthropic-sdk', re: /@anthropic-ai\/sdk|new\s+Anthropic\s*\(|\banthropic\.Anthropic\s*\(/ },
   { kind: 'openai-api', re: /api\.openai\.com/ },
+  { kind: 'groq-sdk', re: /\bfrom\s+groq\s+import\s+Groq\b|new\s+Groq\s*\(|\bGroq\s*\(/ },
   { kind: 'bedrock', re: /bedrock-runtime/ },
   { kind: 'openai-key', re: /OPENAI_API_KEY/ },
   { kind: 'anthropic-key', re: /ANTHROPIC_API_KEY/ },
 ];
 
-// A file already on the ladder imports/requires scripts/lib/ask-ai.
-const LADDER_REQUIRE = /require\([^)]*ask-ai|from\s+['"][^'"]*ask-ai/;
+// A file already on the ladder/guard imports the universal askAI ladder or the
+// charged API guard.
+const LADDER_REQUIRE =
+  /require\([^)]*ask-ai|from\s+['"][^'"]*ask-ai|charged-llm-api-guard|chargedLlmApiApprovedForDirectSurface|charged_llm_api_allowed/;
 
 const SELF = 'scripts/audit-llm-callsites.js';
 

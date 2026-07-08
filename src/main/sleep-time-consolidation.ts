@@ -21,6 +21,7 @@ import { app } from 'electron';
 import Anthropic from '@anthropic-ai/sdk';
 import { readBlock, writeBlock, listBlocks } from './core-memory-blocks';
 import { getConfig } from './config';
+import { canUseChargedLlmApi } from './charged-llm-api-guard';
 
 // ── Path helper ───────────────────────────────────────────────────────────────
 
@@ -194,6 +195,11 @@ export async function runSleepTimeConsolidation(
   const apiKey = getConfig().anthropicApiKey || process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     result.errors.push('anthropicApiKey not configured — skipping sleep-time consolidation');
+    return result;
+  }
+
+  if (!canUseChargedLlmApi({ surface: 'sleep-time-consolidation' })) {
+    result.errors.push('charged LLM API not approved - skipping sleep-time consolidation');
     return result;
   }
 
