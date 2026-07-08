@@ -1116,7 +1116,7 @@ function blockedCardRepairNeed(id, cardName, reason, text = '') {
   }
   if (/linkedin/i.test(haystack)) {
     if (/blocked on ExampleCo|li_at|auth cookie|login|captcha|2fa|mfa|authwall|checkpoint|re-auth/i.test(haystack)) {
-      return 'Next step ExampleCo: open scripts\\linkedin-bulk-scan-login.cmd, complete LinkedIn login/CAPTCHA/2FA, stay on the signed-in feed for about one minute, then click "I finished LinkedIn login - refresh LinkedIn".';
+      return 'Next step ExampleCo: open C:\\Users\\ExampleCod\\secondbrain\\scripts\\linkedin-bulk-scan-login.cmd, complete LinkedIn login/CAPTCHA/2FA, stay on the signed-in feed for about one minute, then click "I finished LinkedIn login - refresh LinkedIn".';
     }
     return 'Repair: rerun the authenticated LinkedIn scanner; if login or CAPTCHA blocks it, name that exact access wall here.';
   }
@@ -8156,7 +8156,7 @@ function formatLinkedInAuthWallSection(authWall, crawlLabel = 'ExampleCo') {
     'hard blocker: blocked on ExampleCo - LinkedIn scanner profile needs re-authentication before Amy can scan or draft fresh reach-outs.',
     `Status: ${authWall.detail} Last scanner proof: ${proof}. Last successful crawl: ${crawlLabel}.`,
     'ExampleCo steps:',
-    '1. Open scripts\\linkedin-bulk-scan-login.cmd from the SecondBrain folder on this laptop.',
+    '1. Open C:\\Users\\ExampleCod\\secondbrain\\scripts\\linkedin-bulk-scan-login.cmd on this laptop.',
     '2. Complete LinkedIn login, CAPTCHA, or 2FA in the Chromium window.',
     '3. Stay on the signed-in LinkedIn feed for about one minute so the li_at cookie persists.',
     '4. Return to this briefing and click "I finished LinkedIn login - refresh LinkedIn".',
