@@ -60,7 +60,7 @@ const {
 } = require('./lib/news-summarize.js');
 const { loadOperatorIdentity } = require('./lib/operator-identity.js');
 const { ARTIFACT_REL_PATH, buildLiveBoardArtifact } = require('./lib/live-board-truth.js');
-const { writeDataArtifact } = require('./lib/data-root.js');
+const { resolveDataArtifact, writeDataArtifact } = require('./lib/data-root.js');
 const { ctDayKeyForInstant } = require('./lib/ct-day.js');
 
 // Operator-specific tokens (employer name + username) are PII and load from
@@ -178,6 +178,8 @@ function scopeDashboardResult(result, cardIds = []) {
 // had moved, with no way for that fresh truth to reach the dashboard tile
 // short of waiting for the next publish. This function is that missing write.
 function writeCanonicalArtifactFromResult(result, opts) {
+  const writeOpts = {};
+  if (opts.dataDir) writeOpts.dataDir = opts.dataDir;
   const dashQc = {
     ran: true,
     ok: result.status === 'ok',
@@ -186,17 +188,72 @@ function writeCanonicalArtifactFromResult(result, opts) {
     cardStatuses: result.cardStatuses || [],
   };
   const canonical = buildLiveBoardArtifact({ dashQc, date: opts.date });
-  const artifact = {
+  let artifact = {
     ...canonical,
     // Legacy fields, retained for backward compatibility only -- see
     // writeDashboardQcArtifact's comment in cloud-morning-briefing.js.
     defectCount: dashQc.ok === false ? dashQc.defects.length : 0,
     defects: dashQc.defects.slice(0, 200),
   };
-  const writeOpts = {};
-  if (opts.dataDir) writeOpts.dataDir = opts.dataDir;
+  if (result.scoped) {
+    const existing = resolveDataArtifact(ARTIFACT_REL_PATH, writeOpts).json;
+    artifact = mergeScopedArtifact(existing, artifact, result.scopeCardIds || []);
+  }
   const absPath = writeDataArtifact(ARTIFACT_REL_PATH, artifact, writeOpts);
   return { artifact, absPath };
+}
+
+function mergeScopedArtifact(existing, scopedArtifact, scopeCardIds) {
+  const scopedIds = new Set((scopeCardIds || []).map(String).filter(Boolean));
+  const base =
+    existing && Array.isArray(existing.cards)
+      ? { ...existing, cards: existing.cards.slice() }
+      : {
+          ts: scopedArtifact.ts,
+          date: scopedArtifact.date || null,
+          ran: true,
+          ok: null,
+          retry: false,
+          defectiveCardCount: 0,
+          cards: [],
+          defectCount: 0,
+          defects: [],
+        };
+  const byId = new Map();
+  for (const card of base.cards || []) {
+    if (card && card.id) byId.set(String(card.id), card);
+  }
+  for (const card of scopedArtifact.cards || []) {
+    if (!card || !card.id) continue;
+    byId.set(String(card.id), card);
+    scopedIds.add(String(card.id));
+  }
+
+  const cards = [...byId.values()];
+  const scopedNeedles = [...scopedIds].map((id) => id.toLowerCase());
+  const keptDefects = Array.isArray(base.defects)
+    ? base.defects.filter((defect) => {
+        const lower = String(defect || '').toLowerCase();
+        return !scopedNeedles.some((id) => lower.includes(id));
+      })
+    : [];
+  const defects = [...keptDefects, ...((scopedArtifact.defects || []).slice(0, 200))].slice(
+    0,
+    200,
+  );
+  const defectiveCardCount = cards.filter((card) => card && card.status !== 'clean').length;
+  return {
+    ...base,
+    ts: scopedArtifact.ts,
+    date: scopedArtifact.date || base.date || null,
+    ran: true,
+    ok: defectiveCardCount === 0,
+    retry: false,
+    defectiveCardCount,
+    cards,
+    defectCount: defects.length,
+    defects,
+  };
 }
 
 const strip = (s) =>
@@ -2586,14 +2643,10 @@ function main() {
   // Runs regardless of pass/fail -- a defect run must overwrite a stale
   // "clean" artifact just as much as a clean run must overwrite a stale
   // defect count.
-  if (opts.writeArtifact && result.scoped) {
-    console.log(
-      `Skipped canonical dashboard-qc artifact write for scoped run (${result.scopeCardIds.join(',')}); scoped QC is a transaction receipt, not the all-dashboard truth artifact.`,
-    );
-  } else if (opts.writeArtifact) {
+  if (opts.writeArtifact) {
     const { artifact, absPath } = writeCanonicalArtifactFromResult(result, opts);
     console.log(
-      `Wrote canonical dashboard-qc artifact to ${absPath}: defectiveCardCount=${artifact.defectiveCardCount}, ts=${artifact.ts}`,
+      `Wrote canonical dashboard-qc artifact to ${absPath}: defectiveCardCount=${artifact.defectiveCardCount}, ts=${artifact.ts}${result.scoped ? `, scoped=${result.scopeCardIds.join(',')}` : ''}`,
     );
   }
 
@@ -2634,6 +2687,7 @@ module.exports = {
   findTiles,
   parseArgs,
   writeCanonicalArtifactFromResult,
+  mergeScopedArtifact,
   parseCardScope,
   scopeDashboardResult,
   FACE_DENYLIST,
