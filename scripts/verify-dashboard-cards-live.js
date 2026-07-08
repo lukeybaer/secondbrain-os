@@ -96,6 +96,7 @@ function parseArgs(argv) {
     // writes at publish time. See writeCanonicalArtifactFromResult below for
     // why a standalone run needs this (2026-07-06 stale-Blockers-count gap).
     else if (a === '--write-artifact') opts.writeArtifact = true;
+    else if (a === '--cards') opts.cardIds = parseCardScope(argv[++i]);
     // Test-only override for the artifact write location; production always
     // writes through writeDataArtifact's normal SECONDBRAIN_DATA_DIR/repo
     // resolution.
@@ -103,6 +104,59 @@ function parseArgs(argv) {
     else if (!a.startsWith('--') && /^\d{4}-\d{2}-\d{2}$/.test(a)) opts.date = a;
   }
   return opts;
+}
+
+function parseCardScope(raw) {
+  return [
+    ...new Set(
+      String(raw || '')
+        .split(',')
+        .map((part) => part.trim().toLowerCase())
+        .filter((part) => /^[a-z][a-z0-9_]*$/.test(part)),
+    ),
+  ];
+}
+
+function scopeDashboardResult(result, cardIds = []) {
+  const scope = [...new Set((cardIds || []).map(String).filter(Boolean))];
+  if (!scope.length || !result || result.status === 'parse-failed') return result;
+  const selected = new Set(scope);
+  const cardStatuses = (result.cardStatuses || []).filter((card) => selected.has(card.id));
+  const blockersOnly = selected.size === 1 && selected.has('blockers');
+  const titleNeedles = new Set(
+    cardStatuses
+      .filter((card) => blockersOnly || card.id !== 'blockers')
+      .flatMap((card) => [card.id, card.title])
+      .map((value) => String(value || '').toLowerCase())
+      .filter(Boolean),
+  );
+  const scoped = new Set();
+  for (const card of cardStatuses) {
+    for (const defect of card.defects || []) scoped.add(defect);
+  }
+  for (const defect of result.defects || []) {
+    const text = String(defect || '');
+    const lower = text.toLowerCase();
+    if (blockersOnly && /^BLOCKERS-/i.test(text)) {
+      scoped.add(text);
+      continue;
+    }
+    for (const needle of titleNeedles) {
+      if (needle && lower.includes(needle)) {
+        scoped.add(text);
+        break;
+      }
+    }
+  }
+  const defects = [...scoped];
+  return {
+    ...result,
+    scoped: true,
+    scopeCardIds: scope,
+    cardStatuses,
+    defects,
+    status: defects.length ? 'defect' : 'ok',
+  };
 }
 
 // Build the canonical dashboard-qc-result.json artifact from a verifyDashboard
@@ -2451,7 +2505,10 @@ function main() {
     process.exit(EXIT_UNREACHABLE);
   }
 
-  const result = verifyDashboard(html, opts.date);
+  let result = verifyDashboard(html, opts.date);
+  if (opts.cardIds && opts.cardIds.length) {
+    result = scopeDashboardResult(result, opts.cardIds);
+  }
 
   if (result.status === 'parse-failed') {
     // AUTH FAILED is checked FIRST and named distinctly. The briefing auth
@@ -2490,7 +2547,11 @@ function main() {
     process.exit(EXIT_UNREACHABLE);
   }
 
-  console.log(`Dashboard render QC. date=${opts.date} source=${source}`);
+  console.log(
+    `Dashboard render QC. date=${opts.date} source=${source}${
+      result.scoped ? ` scope=${result.scopeCardIds.join(',')}` : ''
+    }`,
+  );
   console.log(
     `Tiles rendered: ${result.tiles.length}. Manifest cards represented: ${result.present.length}/${manifest.CARDS.length}.`,
   );
@@ -2507,7 +2568,11 @@ function main() {
   // Runs regardless of pass/fail -- a defect run must overwrite a stale
   // "clean" artifact just as much as a clean run must overwrite a stale
   // defect count.
-  if (opts.writeArtifact) {
+  if (opts.writeArtifact && result.scoped) {
+    console.log(
+      `Skipped canonical dashboard-qc artifact write for scoped run (${result.scopeCardIds.join(',')}); scoped QC is a transaction receipt, not the all-dashboard truth artifact.`,
+    );
+  } else if (opts.writeArtifact) {
     const { artifact, absPath } = writeCanonicalArtifactFromResult(result, opts);
     console.log(
       `Wrote canonical dashboard-qc artifact to ${absPath}: defectiveCardCount=${artifact.defectiveCardCount}, ts=${artifact.ts}`,
@@ -2551,6 +2616,8 @@ module.exports = {
   findTiles,
   parseArgs,
   writeCanonicalArtifactFromResult,
+  parseCardScope,
+  scopeDashboardResult,
   FACE_DENYLIST,
   EMPTY_BODY_FLOOR,
   STALE_HOURS,

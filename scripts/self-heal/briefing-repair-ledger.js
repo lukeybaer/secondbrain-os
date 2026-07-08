@@ -108,6 +108,22 @@ function tacticKey(tactic) {
   return tacticLabel(tactic).toLowerCase().replace(/\s+/g, ' ').replace(/[`'"]/g, '').trim();
 }
 
+function normalizeCardIds(value) {
+  const parts = [];
+  const push = (item) => {
+    if (Array.isArray(item)) {
+      for (const child of item) push(child);
+      return;
+    }
+    for (const part of String(item == null ? '' : item).split(',')) {
+      const id = part.trim().toLowerCase();
+      if (/^[a-z][a-z0-9_]*$/.test(id) && !parts.includes(id)) parts.push(id);
+    }
+  };
+  push(value);
+  return parts;
+}
+
 function append(date, row, opts = {}) {
   const dir = ledgerDir(opts);
   fs.mkdirSync(dir, { recursive: true });
@@ -135,6 +151,12 @@ function recordAttempt(date, entry, opts = {}) {
       tacticKey: tacticKey(e.tactic),
       tacticInputHash:
         e.tacticInputHash != null ? String(e.tacticInputHash) : hashTacticInput(e.tacticInput),
+      transactionState: e.transactionState ? String(e.transactionState) : '',
+      ownerCardId: normalizeCardIds(e.ownerCardId)[0] || '',
+      affectedCardIds: normalizeCardIds(e.affectedCardIds),
+      dependentCardIds: normalizeCardIds(e.dependentCardIds),
+      sourceHashes: e.sourceHashes && typeof e.sourceHashes === 'object' ? e.sourceHashes : {},
+      qcScope: normalizeCardIds(e.qcScope || e.affectedCardIds),
       fix: e.fix ? String(e.fix).slice(0, 2000) : '',
       qcResult: e.qcResult ? String(e.qcResult) : 'failed',
       reflection: e.reflection ? String(e.reflection).slice(0, 2000) : '',
@@ -275,6 +297,7 @@ module.exports = {
   hashTacticInput,
   tacticKey,
   tacticLabel,
+  normalizeCardIds,
   recordAttempt,
   readRows,
   attemptRows,

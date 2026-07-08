@@ -36,6 +36,7 @@ const repairLedger = require('./self-heal/briefing-repair-ledger.js');
 const { executorHealthRow } = require('./lib/executor-health-row.js');
 const { assertModeEquivalence, loadRunGraph } = require('./lib/briefing-heal-run-graph.js');
 const { createBudget, phaseExhausted, budgetExhaustedRed } = require('./lib/heal-error-budget.js');
+const { applyVideoDelete, isTerminallyExcludedFromStuckScan } = require('./lib/video-delete-state.js');
 // ITEM W2a: the C1 mechanical-first heal tier (defect-class -> mechanical
 // action, run BEFORE any LLM worker) + the 3-day recurrence masking guard.
 const mechanicalRunbook = require('./self-heal/mechanical-runbook.js');
@@ -2096,10 +2097,41 @@ function syncRuntimeCoreFilesFromSource({
   return { copied, sudoCopied, files, sourceRoot: srcRoot };
 }
 
+function normalizeRepairCardIds(...values) {
+  const out = [];
+  const push = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) push(item);
+      return;
+    }
+    for (const part of String(value == null ? '' : value).split(',')) {
+      const id = part.trim().toLowerCase();
+      if (/^[a-z][a-z0-9_]*$/.test(id) && !out.includes(id)) out.push(id);
+    }
+  };
+  for (const value of values) push(value);
+  return out;
+}
+
+function explicitRefreshCardsFromHealResult(result) {
+  if (!result) return [];
+  return normalizeRepairCardIds(
+    result.refreshCardIds,
+    result.affectedCardIds,
+    result.ownerCardId,
+    result.dependentCardIds,
+  );
+}
+
 function refreshCardsFromHealResults(results = []) {
   const cards = new Set();
   const broadNewsTargets = new Set(['news_cards', 'all_news_cards', 'news_content']);
   for (const result of results || []) {
+    const explicitCards = explicitRefreshCardsFromHealResult(result);
+    if (explicitCards.length) {
+      for (const card of explicitCards) cards.add(card);
+      continue;
+    }
     const title = String((result && (result.blockerTitle || result.title)) || '');
     const rawRows = Array.isArray(result && result.rawDefects) ? result.rawDefects.map(String) : [];
     const evidence = String((result && result.evidence) || '');
@@ -2359,45 +2391,82 @@ function refreshPublishedBriefingAfterHeal({
       return { skipped: true, reason: 'not-ec2-app-root' };
     }
   }
-  const result = runner(
-    process.execPath,
-    [
-      'scripts/cloud-morning-briefing.js',
-      '--date',
-      date,
-      '--data-dir',
-      path.join(resolved, 'data'),
-      '--publish',
-      '--self-heal-refresh',
-    ],
-    {
-      cwd: resolved,
-      encoding: 'utf8',
-      timeout: budgetMs,
-      env: {
-        ...env,
-        AMY_BRIEFING_ALLOW_CLOUD_HEAL: '1',
-        AMY_BRIEFING_SELF_HEAL_REFRESH: '1',
-        SELF_HEAL_REFRESH_CARDS: refreshCardsFromHealResults(results).join(','),
+  const refreshCards = refreshCardsFromHealResults(results);
+  const runRefresh = (cards) =>
+    runner(
+      process.execPath,
+      [
+        'scripts/cloud-morning-briefing.js',
+        '--date',
+        date,
+        '--data-dir',
+        path.join(resolved, 'data'),
+        '--publish',
+        '--self-heal-refresh',
+      ],
+      {
+        cwd: resolved,
+        encoding: 'utf8',
+        timeout: budgetMs,
+        env: {
+          ...env,
+          AMY_BRIEFING_ALLOW_CLOUD_HEAL: '1',
+          AMY_BRIEFING_SELF_HEAL_REFRESH: '1',
+          SELF_HEAL_REFRESH_CARDS: normalizeRepairCardIds(cards).join(','),
+        },
+        maxBuffer: 16 * 1024 * 1024,
       },
-      maxBuffer: 16 * 1024 * 1024,
-    },
-  );
-  const timedOut =
-    result &&
-    (result.signal === 'SIGTERM' ||
-      /timed\s*out|ETIMEDOUT/i.test(String((result.error && result.error.code) || '')) ||
-      /timed\s*out|ETIMEDOUT/i.test(String((result.error && result.error.message) || '')));
-  return {
-    ok: result.status === 0,
-    status: result.status,
-    signal: result.signal || null,
-    watchdog: timedOut
-      ? { kind: 'publish-refresh-budget', killed: true, thresholdMs: budgetMs }
-      : null,
-    stdout: String(result.stdout || '').slice(-1500),
-    stderr: String(result.stderr || result.error?.message || '').slice(-1500),
+    );
+  const summarizeRefresh = (result, extra = {}) => {
+    const timedOut =
+      result &&
+      (result.signal === 'SIGTERM' ||
+        /timed\s*out|ETIMEDOUT/i.test(String((result.error && result.error.code) || '')) ||
+        /timed\s*out|ETIMEDOUT/i.test(String((result.error && result.error.message) || '')));
+    return {
+      ok: result.status === 0,
+      status: result.status,
+      signal: result.signal || null,
+      watchdog: timedOut
+        ? { kind: 'publish-refresh-budget', killed: true, thresholdMs: budgetMs }
+        : null,
+      stdout: String(result.stdout || '').slice(-1500),
+      stderr: String(result.stderr || result.error?.message || '').slice(-1500),
+      ...extra,
+    };
   };
+  const hasExplicitTransactionCards = (results || []).some(
+    (result) => explicitRefreshCardsFromHealResult(result).length > 1,
+  );
+  if (
+    refreshCards.length > 1 &&
+    hasExplicitTransactionCards &&
+    env.SELF_HEAL_SEQUENTIAL_CARD_REFRESH !== '0'
+  ) {
+    const receipts = [];
+    let last = null;
+    for (const card of refreshCards) {
+      const receipt = summarizeRefresh(runRefresh([card]), { card });
+      receipts.push(receipt);
+      last = receipt;
+      if (!receipt.ok) {
+        return {
+          ...receipt,
+          sequential: true,
+          refreshedCards: refreshCards,
+          refreshReceipts: receipts,
+          failedCard: card,
+        };
+      }
+    }
+    return {
+      ...(last || { ok: true, status: 0, signal: null, stdout: '', stderr: '' }),
+      sequential: true,
+      refreshedCards: refreshCards,
+      refreshReceipts: receipts,
+    };
+  }
+  return summarizeRefresh(runRefresh(refreshCards), { refreshedCards: refreshCards });
 }
 
 // Run one self-heal session per blocker, with automatic claude->codex
@@ -3049,6 +3118,45 @@ function rebuildVideoManifestFromPendingArtifacts(repoRoot, opts = {}) {
 // reached. These sit in the queue forever because no rebuild can succeed, and
 // the orchestrator burns LLM sessions trying to "fix" them. Mechanical fix:
 // move exhausted entries out of the active videos array and log them.
+function deleteAllVideoApprovalQueueEntries(repoRoot, opts = {}) {
+  const manifestPath =
+    opts.manifestPath ||
+    process.env.VIDEO_APPROVAL_MANIFEST_PATH ||
+    path.join(repoRoot, 'content-review', 'pending', 'manifest.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch {
+    return null;
+  }
+  const videos = Array.isArray(manifest.videos) ? manifest.videos : [];
+  const changed = [];
+  for (const video of videos) {
+    if (!video || isTerminallyExcludedFromStuckScan(video) || video.status === 'posted') continue;
+    if (applyVideoDelete(video)) {
+      video.deleted_by = opts.deletedBy || 'self_heal_attended_video_queue_cleanup';
+      changed.push(video);
+    }
+  }
+  if (!changed.length) {
+    return { repaired: 0, cleared: true, actions: [], manifestPath, alreadyClean: true };
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = `${manifestPath}.self-heal-${stamp}.bak`;
+  fs.copyFileSync(manifestPath, backupPath);
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+  return {
+    repaired: changed.length,
+    cleared: true,
+    manifestPath,
+    backupPath,
+    actions: changed.map((video) => ({
+      action: 'terminally deleted video approval queue entry',
+      videoId: video.id,
+    })),
+  };
+}
+
 function tryVideoApprovalQueueRepair(blocker, opts = {}) {
   const text = videoApprovalBlockerText(blocker).toLowerCase();
   if (
@@ -3059,6 +3167,11 @@ function tryVideoApprovalQueueRepair(blocker, opts = {}) {
     return null;
 
   const repoRoot = opts.repoRoot || REPO;
+  if (opts.deleteAll === true || process.env.SELF_HEAL_DELETE_VIDEO_APPROVAL_QUEUE === '1') {
+    const deleted = deleteAllVideoApprovalQueueEntries(repoRoot, opts);
+    if (deleted) return deleted;
+  }
+
   const manifestRepair = rebuildVideoManifestFromPendingArtifacts(repoRoot, opts);
   if (manifestRepair) return manifestRepair;
 
@@ -4248,12 +4361,25 @@ async function runOrchestrator(opts = {}) {
           status: 'cleared',
           blockerTitle: blocker.title,
           blockerId: actionPreflightBlockerId,
+          ownerCardId: 'action_items',
+          affectedCardIds: ['action_items'],
+          dependentCardIds:
+            actionPreflightBlockerId === 'system_health' ? ['system_health'] : ['blockers'],
+          transactionState: 'mechanical_preflight_repaired',
           rawDefectCount: Number(blocker.rawDefectCount || 0),
           rawDefects: actionPreflightRawDefects,
           evidence: actionPreflightEvidence,
           pushed: false,
           refreshOnly: true,
           source: 'action-items-preflight',
+          healDefectKey: repairLedger.defectKey(
+            blocker.defectKey || blocker.blocker_id || blocker.blockerId || blocker.title,
+          ),
+          healTactic: 'action items mechanical preflight',
+          healTacticInputHash: repairLedger.hashTacticInput({
+            evidence: actionPreflightEvidence,
+            rawDefects: actionPreflightRawDefects,
+          }),
         });
         cleared++;
         continue;
@@ -4270,36 +4396,84 @@ async function runOrchestrator(opts = {}) {
     // Video approval queue repair: dead-letter exhausted-retry videos from the
     // build queue. Acts (writes ec2-build-queue.json), so non-observe only.
     if (!mode.observe && !isSelfHealMechanismBlocker && !bypassDeterministicPreflights) {
-      const videoApproval = videoApprovalRepair(blocker, { repoRoot: REPO });
-      if (videoApproval && videoApproval.cleared) {
-        logRun({
-          stage: 'video-approval-queue-repair',
-          blocker: blocker.title,
-          repaired: videoApproval.repaired,
-          actions: (videoApproval.actions || []).slice(0, 10),
-          status: 'cleared',
+      const videoApprovalCandidate =
+        /video[_\s-]?approval|video[_\s-]?manifest[_\s-]?drift|pending video files|content-review manifest/i.test(
+          videoApprovalBlockerText(blocker),
+        );
+      if (videoApprovalCandidate) {
+        const videoApprovalRawDefects = Array.isArray(blocker.rawDefects)
+          ? blocker.rawDefects
+          : [];
+        const videoApprovalEvidence = blocker.evidence || '';
+        const videoApprovalDefect = 'video_approval_queue:VIDEO-APPROVAL-QUALITY';
+        const videoApprovalTactic =
+          process.env.SELF_HEAL_DELETE_VIDEO_APPROVAL_QUEUE === '1'
+            ? 'delete all active video approval queue entries'
+            : 'video approval queue mechanical repair';
+        const videoApprovalInputHash = repairLedger.hashTacticInput({
+          evidence: videoApprovalEvidence,
+          rawDefects: videoApprovalRawDefects,
         });
-        refreshOnlyResults.push({
-          status: 'cleared',
-          blockerTitle: blocker.title,
-          blockerId: 'video_approval_queue',
-          rawDefectCount: Number(blocker.rawDefectCount || 0),
-          rawDefects: Array.isArray(blocker.rawDefects) ? blocker.rawDefects : [],
-          evidence: blocker.evidence || '',
-          pushed: false,
-          refreshOnly: true,
-          source: 'video-approval-queue-preflight',
-        });
-        cleared++;
-        continue;
-      }
-      if (videoApproval && !videoApproval.cleared && videoApproval.actions) {
-        logRun({
-          stage: 'video-approval-queue-repair',
-          blocker: blocker.title,
-          actions: videoApproval.actions,
-          status: 'partial',
-        });
+        if (
+          recordRepairLedger &&
+          repairLedger.tacticAlreadyFailed(
+            date,
+            videoApprovalDefect,
+            videoApprovalTactic,
+            videoApprovalInputHash,
+            ledgerOpts,
+          )
+        ) {
+          logRun({
+            stage: 'no-repeat-tactic',
+            pass: passNumber,
+            blocker: blocker.title,
+            defect: videoApprovalDefect,
+            reason: repairLedger.tacticExhaustedReason(videoApprovalDefect, videoApprovalTactic),
+            status: 'escalated',
+          });
+          escalated++;
+          continue;
+        }
+        const videoApproval = videoApprovalRepair(blocker, { repoRoot: REPO });
+        if (videoApproval && videoApproval.cleared) {
+          logRun({
+            stage: 'video-approval-queue-repair',
+            blocker: blocker.title,
+            repaired: videoApproval.repaired,
+            actions: (videoApproval.actions || []).slice(0, 10),
+            status: 'cleared',
+          });
+          refreshOnlyResults.push({
+            status: 'cleared',
+            blockerTitle: blocker.title,
+            blockerId: 'video_approval_queue',
+            ownerCardId: 'video_approval_queue',
+            affectedCardIds: ['video_approval_queue'],
+            dependentCardIds: ['blockers'],
+            transactionState: 'mechanical_preflight_repaired',
+            rawDefectCount: Number(blocker.rawDefectCount || 0),
+            rawDefects: videoApprovalRawDefects,
+            evidence: videoApprovalEvidence,
+            pushed: false,
+            refreshOnly: true,
+            source: 'video-approval-queue-preflight',
+            healDefectKey: videoApprovalDefect,
+            healTactic: videoApprovalTactic,
+            healTacticInputHash: videoApprovalInputHash,
+            fix: `${videoApproval.repaired || 0} video approval queue item(s) repaired`,
+          });
+          cleared++;
+          continue;
+        }
+        if (videoApproval && !videoApproval.cleared && videoApproval.actions) {
+          logRun({
+            stage: 'video-approval-queue-repair',
+            blocker: blocker.title,
+            actions: videoApproval.actions,
+            status: 'partial',
+          });
+        }
       }
     }
     // Observe mode is otherwise strictly zero-side-effect: classify ownership and
@@ -4715,6 +4889,8 @@ async function runOrchestrator(opts = {}) {
       refreshOnlyRepairs: refreshOnlyResults.length,
       ok: !!(publishRefresh && publishRefresh.ok),
       skipped: !!(publishRefresh && publishRefresh.skipped),
+      refreshedCards: (publishRefresh && publishRefresh.refreshedCards) || [],
+      refreshReceipts: (publishRefresh && publishRefresh.refreshReceipts) || [],
       status: publishRefresh && publishRefresh.status,
       signal: publishRefresh && publishRefresh.signal,
       watchdog: publishRefresh && publishRefresh.watchdog,
@@ -4739,7 +4915,8 @@ async function runOrchestrator(opts = {}) {
   // reduction => the card stays red, never reported cleared.
   // The cleared/escalated tally above ran before post-repair live QC existed, so adjust
   // the counts for every worker this gate finds still-red (cleared-- / escalated++).
-  for (const r of results) {
+  const qcGatedResults = [...results, ...refreshOnlyResults];
+  for (const r of qcGatedResults) {
     if (!r || r.status !== 'cleared') continue;
     const gate = workerLiveQcCleared(r, postRepairLiveRenderQc.defects || []);
     if (!gate.cleared) {
@@ -4761,7 +4938,7 @@ async function runOrchestrator(opts = {}) {
   // survived. qcResult drives the no-repeat guard (item 2) and openDefects/Blockers
   // (item 3) on the next pass. Best-effort: a ledger write must never wedge the loop.
   if (recordRepairLedger) {
-    for (const r of results) {
+    for (const r of qcGatedResults) {
       if (!r || !r.healDefectKey) continue;
       const qcResult =
         r.status === 'cleared' && !r.liveQcGateSurvived
@@ -4778,10 +4955,18 @@ async function runOrchestrator(opts = {}) {
             defect: r.healDefectKey,
             tactic: r.healTactic,
             tacticInputHash: r.healTacticInputHash,
-            fix: r.verification || r.tests || '',
+            fix: r.fix || r.verification || r.tests || '',
             qcResult,
             reflection: r.reflection || r.escalationReason || '',
             deployedHash: r.commit_sha || '',
+            transactionState: r.transactionState || '',
+            ownerCardId: r.ownerCardId || r.blockerId || r.blocker_id || '',
+            affectedCardIds: r.affectedCardIds || r.refreshCardIds || [],
+            dependentCardIds: r.dependentCardIds || [],
+            qcScope: normalizeRepairCardIds(
+              r.affectedCardIds || r.refreshCardIds || [],
+              r.dependentCardIds || [],
+            ),
           },
           ledgerOpts,
         );
@@ -5182,6 +5367,8 @@ module.exports = {
   parseBlockersFromMarkdown,
   rawDefectCountForBlockers,
   bundleRelatedRepairBlockers,
+  normalizeRepairCardIds,
+  explicitRefreshCardsFromHealResult,
   refreshCardsFromHealResults,
   classifyOwnership,
   buildSessionPrompt,
@@ -5204,6 +5391,7 @@ module.exports = {
   tryScheduledTaskRepair,
   tryVideoBlockerPreflight,
   tryActionItemsRepair,
+  deleteAllVideoApprovalQueueEntries,
   tryVideoApprovalQueueRepair,
   parseRunMode,
   parseDateArg,
