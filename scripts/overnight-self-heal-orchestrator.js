@@ -2387,10 +2387,15 @@ function refreshPublishedBriefingAfterHeal({
       ? String(appRoot)
       : path.resolve(appRoot || '');
   if (env.SELF_HEAL_PUBLISH_REFRESH !== '1') {
-    if (platform !== 'linux' || !resolved.startsWith('/opt/secondbrain')) {
+    const isEc2RuntimeRoot =
+      platform === 'linux' &&
+      (resolved.startsWith('/opt/secondbrain') ||
+        resolved.startsWith('/home/ec2-user/secondbrain-current'));
+    if (!isEc2RuntimeRoot) {
       return { skipped: true, reason: 'not-ec2-app-root' };
     }
   }
+  const refreshDataDir = env.SECONDBRAIN_DATA_DIR || path.join(resolved, 'data');
   const refreshCards = refreshCardsFromHealResults(results);
   const runRefresh = (cards) =>
     runner(
@@ -2400,7 +2405,7 @@ function refreshPublishedBriefingAfterHeal({
         '--date',
         date,
         '--data-dir',
-        path.join(resolved, 'data'),
+        refreshDataDir,
         '--publish',
         '--self-heal-refresh',
       ],
