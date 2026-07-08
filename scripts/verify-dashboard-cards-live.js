@@ -230,10 +230,24 @@ function mergeScopedArtifact(existing, scopedArtifact, scopeCardIds) {
   }
 
   const cards = [...byId.values()];
-  const scopedNeedles = [...scopedIds].map((id) => id.toLowerCase());
+  // Never use the generic "blockers" card id as a substring needle: every
+  // BLOCKERS-NAMED-CARD defect starts with that word, so a scoped refresh that
+  // includes the derived Blockers card would erase unrelated card defects.
+  const scopedNeedles = [...scopedIds]
+    .filter((id) => id !== 'blockers')
+    .map((id) => id.toLowerCase());
+  const replaceBlockersAccounting = scopedIds.has('blockers');
+  const replaceBlockersOnly = scopedIds.size === 1 && scopedIds.has('blockers');
   const keptDefects = Array.isArray(base.defects)
     ? base.defects.filter((defect) => {
         const lower = String(defect || '').toLowerCase();
+        if (
+          replaceBlockersAccounting &&
+          /^BLOCKERS-(?:COUNT|FLOOR):/i.test(String(defect || ''))
+        ) {
+          return false;
+        }
+        if (replaceBlockersOnly && /^BLOCKERS-/i.test(String(defect || ''))) return false;
         return !scopedNeedles.some((id) => lower.includes(id));
       })
     : [];

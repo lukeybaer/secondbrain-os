@@ -300,6 +300,60 @@ function blockersTileHeadlineCount({ artifact, stale, parsedRowCount = 0 } = {})
   return Number.isFinite(parsedRowCount) ? parsedRowCount : 0;
 }
 
+function normalizeIssueText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function blockerMatchesSystemHealthIssue(blocker, systemHealthIssueNames = []) {
+  const text = normalizeIssueText(
+    [
+      blocker && blocker.title,
+      blocker && blocker.blocker,
+      blocker && blocker.evidence,
+      blocker && blocker.nextRepair,
+      blocker && blocker.need,
+    ]
+      .filter(Boolean)
+      .join(' '),
+  );
+  if (!text) return false;
+  return (systemHealthIssueNames || []).some((name) => {
+    const needle = normalizeIssueText(name);
+    return needle && text.includes(needle);
+  });
+}
+
+// Executive issue count for the BLOCKERS tile face. This is deliberately
+// separate from defectiveCardCount(): badges need distinct live-rendered card
+// status, while ExampleCo's top-card issue count is "non-health blockers + individual
+// System Health failures" so one red System Health card with four failed checks
+// reads as four issues, not one card.
+function blockerIssueSummary({ blockers = [], systemHealthIssueNames = [] } = {}) {
+  const uniqueHealth = [];
+  const seenHealth = new Set();
+  for (const name of systemHealthIssueNames || []) {
+    const clean = String(name || '').trim();
+    const key = normalizeIssueText(clean);
+    if (!clean || seenHealth.has(key)) continue;
+    seenHealth.add(key);
+    uniqueHealth.push(clean);
+  }
+  const nonHealthBlockers = (blockers || []).filter(
+    (blocker) => !blockerMatchesSystemHealthIssue(blocker, uniqueHealth),
+  );
+  return {
+    systemHealthIssueNames: uniqueHealth,
+    systemHealthIssueCount: uniqueHealth.length,
+    nonHealthBlockerCount: nonHealthBlockers.length,
+    nonHealthBlockers,
+    issueCount: uniqueHealth.length + nonHealthBlockers.length,
+  };
+}
+
 // Pure decision function for the per-card defect badge (ExampleCo 2026-07-06
 // shared-paradigm fix): given the artifact envelope from readLiveBoardArtifact
 // and a rendered section title, decide whether a badge should show and what
@@ -336,4 +390,6 @@ module.exports = {
   findCardByTitle,
   cardDefectBadge,
   blockersTileHeadlineCount,
+  blockerIssueSummary,
+  blockerMatchesSystemHealthIssue,
 };

@@ -962,7 +962,7 @@ async function refreshCard({
   if (!spliced) return null;
 
   if (verify) {
-    await runVerify({ cardId, date });
+    await runVerify({ cardId, date, dataDir });
   }
   return spliced;
 }
@@ -975,7 +975,7 @@ async function refreshCard({
 // filter its OWN result to the one card we care about, since verifyDashboard
 // and fetchLiveHtml are already exported for exactly this kind of reuse
 // (runDashboardRenderQc in cloud-morning-briefing.js does the same thing).
-async function runVerify({ cardId, date }) {
+async function runVerify({ cardId, date, dataDir }) {
   let liveQc;
   try {
     liveQc = require('./verify-dashboard-cards-live.js');
@@ -1012,6 +1012,24 @@ async function runVerify({ cardId, date }) {
     console.error(`[refresh-card] --verify: card '${cardId}' not found in live render QC output.`);
     process.exitCode = 1;
     return;
+  }
+  const scopedCardIds = [...new Set([cardId, ...DERIVED_CARD_IDS])];
+  const scopedResult =
+    typeof liveQc.scopeDashboardResult === 'function'
+      ? liveQc.scopeDashboardResult(result, scopedCardIds)
+      : result;
+  if (typeof liveQc.writeCanonicalArtifactFromResult === 'function') {
+    const { artifact, absPath } = liveQc.writeCanonicalArtifactFromResult(scopedResult, {
+      date,
+      dataDir,
+    });
+    console.log(
+      `[refresh-card] --verify: wrote canonical dashboard artifact ${absPath} (defectiveCardCount=${artifact.defectiveCardCount}, scoped=${scopedCardIds.join(',')})`,
+    );
+  } else {
+    console.warn(
+      '[refresh-card] --verify: live QC module cannot write the canonical artifact; dashboard badges may remain stale.',
+    );
   }
   console.log(`[refresh-card] --verify: card='${cardId}' status=${cardStatus.status}`);
   if (cardStatus.status !== 'clean') {
