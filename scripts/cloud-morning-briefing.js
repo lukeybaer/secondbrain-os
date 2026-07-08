@@ -1534,15 +1534,12 @@ function qcSeamSections(sections) {
   });
 }
 
-// Reconciliation line against the ONE canonical live-board artifact (ExampleCo
-// 2026-07-06 shared-paradigm fix): when a fresh dashboard-qc-result.json
-// exists for THIS build's dataDir, name its defectiveCardCount explicitly so
-// the markdown can never silently show a different number than the live
-// dashboard tile without the discrepancy being visible. Returns '' when there
-// is no artifact yet (the first pass of a fresh build, before any render-QC
-// has run against this run's published page) or it is stale -- an absent/
-// stale artifact is not itself an error here, just nothing to reconcile
-// against yet.
+// Reconciliation line against the canonical live-board artifact. The artifact
+// owns per-card badge status; the Blockers section owns executive issue count.
+// Those are related, but not identical: one blocked System Health card can
+// represent several failed health checks. Returns '' when there is no artifact
+// yet (the first pass of a fresh build, before any render-QC has run against
+// this run's published page).
 function blockersReconciliationLine(dataDir, blockersCount) {
   let read;
   try {
@@ -1555,17 +1552,9 @@ function blockersReconciliationLine(dataDir, blockersCount) {
   const canonicalCount = liveBoardDefectiveCardCount(artifact);
   if (canonicalCount === null) return '';
   if (stale) {
-    return `Live dashboard count: stale (last verified ${artifact.ts || 'ExampleCo time'}, older than one briefing cycle) -- do not treat this markdown's count as current.`;
+    return `Live card badge count: stale (last verified ${artifact.ts || 'ExampleCo time'}, older than one briefing cycle) -- do not treat this as the current Blockers issue count.`;
   }
-  // ONE truth (ExampleCo 2026-07-07): the canonical artifact is seeded from THIS
-  // build's own blockers (writeDashboardQcArtifact <- built.blockers), so the
-  // count and this section's list cannot disagree. State the canonical count
-  // plainly. Never narrate a "this markdown predates the artifact" mismatch --
-  // if it ever diverged, that is a bug to fix at the source, not a caveat to
-  // print. The prior self-referential narration (ExampleCo: "You should not have to
-  // make this comment. Just fix it so the live canonical count is the real
-  // count.") is removed.
-  return `Live dashboard count: ${canonicalCount} defective card(s) as of ${artifact.ts} (source: dashboard-qc-result.json).`;
+  return `Live card badge count: ${canonicalCount} defective card(s) as of ${artifact.ts} (source: dashboard-qc-result.json); Blockers issue count is blocker rows plus individual System Health failures.`;
 }
 
 function renderBlockersSection(blockers, opts = {}) {
