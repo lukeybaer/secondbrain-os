@@ -7600,11 +7600,10 @@ function projectMonthlyFrom72h(dailyRows) {
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   if (rows.length === 0)
     return { projectedMonthly: null, avgDaily72h: null, windowDays: 0, trend: 'flat' };
-  // Cost Explorer's most recent DAILY row is the current, still-settling day
-  // (partial). Drop it so the average is over SETTLED days only; otherwise a
-  // half-counted day drags the projection artificially low. Only drop it when we
-  // have more than one row to average.
-  const settled = rows.length > 1 ? rows.slice(0, -1) : rows.slice();
+  // The Cost Explorer call uses End=<briefing date>, and End is exclusive.
+  // That means the newest returned row is already the latest settled day for
+  // this briefing. Do not drop it, or the run-rate lags one day behind a fix.
+  const settled = rows;
   const window = settled.slice(-AWS_PROJECTION_WINDOW_DAYS);
   const avgDaily72h = window.reduce((s, r) => s + r.amount, 0) / window.length;
   const projectedMonthly = avgDaily72h * 30;
