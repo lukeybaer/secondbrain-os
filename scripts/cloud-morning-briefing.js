@@ -8076,6 +8076,45 @@ function buildAwsCostsCard(dataDir, date) {
   };
 }
 
+function readLinkedInScanStatus(dataDir = DEFAULT_DATA_DIR) {
+  return readJson(path.join(dataDir, 'agent', 'linkedin-scan-status.json'), null);
+}
+
+function linkedInAuthWallInfo(status) {
+  if (!status || String(status.status || '').toLowerCase() !== 'red') return null;
+  const detail = String(status.detail || '').replace(/\s+/g, ' ').trim();
+  const signal = [status.status, status.script, detail].filter(Boolean).join(' ');
+  if (
+    !/\b(li_at|auth cookie|login|log in|captcha|checkpoint|2fa|mfa|authwall|signed-in|not logged in|session expired|re-authorize|reauth)\b/i.test(
+      signal,
+    )
+  ) {
+    return null;
+  }
+  const statusTime = status.checkedAt ? Date.parse(status.checkedAt) : NaN;
+  return {
+    checkedAt: status.checkedAt || '',
+    detail: detail || 'LinkedIn scanner profile needs interactive re-authentication.',
+    script: status.script || 'LinkedIn scanner',
+    statusTime: Number.isFinite(statusTime) ? statusTime : 0,
+  };
+}
+
+function formatLinkedInAuthWallSection(authWall, crawlLabel = 'ExampleCo') {
+  const proof = authWall.checkedAt
+    ? `${authWall.checkedAt} from ${authWall.script}`
+    : authWall.script;
+  return [
+    'hard blocker: blocked on ExampleCo - LinkedIn scanner profile needs re-authentication before Amy can scan or draft fresh reach-outs.',
+    `Status: ${authWall.detail} Last scanner proof: ${proof}. Last successful crawl: ${crawlLabel}.`,
+    'ExampleCo steps:',
+    '1. Open scripts\\linkedin-bulk-scan-login.cmd from the SecondBrain folder on this laptop.',
+    '2. Complete LinkedIn login, CAPTCHA, or 2FA in the Chromium window.',
+    '3. Stay on the signed-in LinkedIn feed for about one minute so the li_at cookie persists.',
+    '4. Return to this briefing and click "I finished LinkedIn login - refresh LinkedIn".',
+  ].join('\n');
+}
+
 // Renders the LinkedIn reach-out card from the structured intel written by
 // scripts/linkedin-bulk-scan.js (data/linkedin/linkedin-intel.json). Was a
 // hardcoded 2-line stub that read no data, so the card was always empty even
@@ -8106,7 +8145,9 @@ function formatLinkedInSection(
   }
 
   const { intel } = reader();
+  const authWall = linkedInAuthWallInfo(readLinkedInScanStatus(dataDir));
   if (!intel) {
+    if (authWall) return formatLinkedInAuthWallSection(authWall, 'ExampleCo');
     // The dashboard parser (ec2-server.js parseLinkedInBody) reads a
     // "hard blocker:" line and renders an explicit BLOCKED banner, never a
     // silent empty card. EC2 ships without data/linkedin/linkedin-intel.json
@@ -8126,6 +8167,9 @@ function formatLinkedInSection(
     intel.lastCrawlAt && Number.isFinite(crawlMs)
       ? intel.lastCrawlAt.slice(0, 16).replace('T', ' ') + 'Z'
       : 'ExampleCo';
+  if (authWall && (!crawlFresh || authWall.statusTime >= crawlMs)) {
+    return formatLinkedInAuthWallSection(authWall, crawlLabel);
+  }
   if (!crawlFresh) {
     return [
       `hard blocker: LinkedIn scan stale (last crawl ${crawlLabel}, older than 48h).`,
