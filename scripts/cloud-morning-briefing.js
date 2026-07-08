@@ -7607,6 +7607,21 @@ function projectMonthlyFrom72h(dailyRows) {
   const window = settled.slice(-AWS_PROJECTION_WINDOW_DAYS);
   const avgDaily72h = window.reduce((s, r) => s + r.amount, 0) / window.length;
   const projectedMonthly = avgDaily72h * 30;
+  let currentProjectedMonthly = null;
+  let currentAvgDaily = null;
+  let currentWindowDays = 0;
+  let outlierDay = null;
+  if (window.length >= 3) {
+    const recentWindow = window.slice(-2);
+    const recentAvg = recentWindow.reduce((s, r) => s + r.amount, 0) / recentWindow.length;
+    const older = window[0];
+    if (recentAvg > 0 && older.amount > recentAvg * 2) {
+      currentAvgDaily = recentAvg;
+      currentProjectedMonthly = recentAvg * 30;
+      currentWindowDays = recentWindow.length;
+      outlierDay = { date: older.date, amount: older.amount };
+    }
+  }
   // 30-day trend direction: compare the trailing-window average to the average
   // of the settled days BEFORE the window. Rising/falling by >10% is a signal;
   // otherwise flat. Guards a tiny prior window.
@@ -7624,6 +7639,10 @@ function projectMonthlyFrom72h(dailyRows) {
     projectedMonthly,
     avgDaily72h,
     windowDays: window.length,
+    currentProjectedMonthly,
+    currentAvgDaily,
+    currentWindowDays,
+    outlierDay,
     trend,
   };
 }
@@ -7640,10 +7659,25 @@ function renderAwsProjectionLines(projection) {
   const avg = Number(projection.avgDaily72h);
   const trend = String(projection.trend || 'flat');
   const band = proj > 1000 ? 'action' : proj > 800 ? 'watch' : 'green';
-  return [
+  const lines = [];
+  if (projection.currentProjectedMonthly != null && projection.currentAvgDaily != null) {
+    const current = Number(projection.currentProjectedMonthly);
+    const currentAvg = Number(projection.currentAvgDaily);
+    const currentBand = current > 1000 ? 'action' : current > 800 ? 'watch' : 'green';
+    const outlier = projection.outlierDay || {};
+    const outlierNote =
+      outlier.date && Number.isFinite(Number(outlier.amount))
+        ? `; excludes prior outlier ${outlier.date} at $${Number(outlier.amount).toFixed(2)}`
+        : '';
+    lines.push(
+      `Current monthly run-rate: $${current.toFixed(2)} (avg $${currentAvg.toFixed(2)}/day over the newest ${projection.currentWindowDays} settled day(s)${outlierNote}). Band: ${currentBand}.`,
+    );
+  }
+  lines.push(
     `Projected monthly (from 72h avg): $${proj.toFixed(2)} (avg $${avg.toFixed(2)}/day over the last ${projection.windowDays} settled day(s) * 30). Band: ${band}.`,
     `30-day trend: ${trend}.`,
-  ];
+  );
+  return lines;
 }
 
 // Live DAILY Cost Explorer pull over the trailing ~7 days on the EC2 instance
@@ -8011,6 +8045,11 @@ function buildAwsCostsCard(dataDir, date) {
   // "Projected monthly (from 72h avg): $X ..." + "30-day trend: ..." lines the
   // artifact ExampleCos. If the artifact predates this feature (no projection line)
   // these stay null and the card colors off the 30d total as before.
+  const currentMatch = text.match(/^Current monthly run-rate:\s*\$([\d,.]+)[^\n]*$/im);
+  const currentProjectedMonthly = currentMatch
+    ? parseFloat(currentMatch[1].replace(/,/g, ''))
+    : null;
+  const currentLine = currentMatch ? currentMatch[0].trim() : null;
   const projMatch = text.match(/^Projected monthly \(from 72h avg\):\s*\$([\d,.]+)[^\n]*$/im);
   const projectedMonthly = projMatch ? parseFloat(projMatch[1].replace(/,/g, '')) : null;
   const projLine = projMatch ? projMatch[0].trim() : null;
@@ -8024,6 +8063,7 @@ function buildAwsCostsCard(dataDir, date) {
   // Surface the run-rate projection right at the top of the body so the tile
   // shows it prominently. This is the alarm signal (avg over last 72h * 30);
   // the 30d total above is historical context, the projection is the run-rate.
+  if (currentLine) lines.push(currentLine);
   if (projLine) lines.push(projLine);
   if (trendLine) lines.push(trendLine);
   // BLOCKER when the live Cost Explorer scan was DENIED this run and the only
@@ -8068,11 +8108,13 @@ function buildAwsCostsCard(dataDir, date) {
     'Decision: keep watching AI/Bedrock image/model charges and public IPv4/VPC charges for avoidable drift.',
   );
   // Title ExampleCos BOTH the 30d total (historical, kept for the existing
-  // extractors) and, when available, the run-rate "projected $X/mo" the alarm
-  // keys on. The render/QC read the projected figure from the title when
+  // extractors) and, when available, the current run-rate or legacy 72h
+  // projection. The render/QC read the run-rate figure from the title when
   // present and fall back to the 30d total otherwise.
   let title = total === 'ExampleCo' ? 'AWS COSTS' : `AWS COSTS (${total} total)`;
-  if (projectedMonthly != null && total !== 'ExampleCo') {
+  if (currentProjectedMonthly != null && total !== 'ExampleCo') {
+    title = `AWS COSTS (${total} total, current $${currentProjectedMonthly.toFixed(0)}/mo)`;
+  } else if (projectedMonthly != null && total !== 'ExampleCo') {
     title = `AWS COSTS (${total} total, projected $${projectedMonthly.toFixed(0)}/mo)`;
   }
   return {

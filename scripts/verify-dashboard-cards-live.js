@@ -1255,17 +1255,21 @@ function awsCostsIsCleanThresholdAlert(card, tile) {
   // not always pair it with the literal word "total" next to the digits.
   const totalMatch = String(tile.name || '').match(/\$([\d,]+(?:\.\d+)?)\s+total/i);
   const total = totalMatch ? parseFloat(totalMatch[1].replace(/,/g, '')) : NaN;
-  // ALARM BASIS (ExampleCo 2026-07-07): the render colors RED off the run-rate
-  // projection (72h avg * 30), not the 30-day sum. So a genuine over-floor alert
-  // is one whose PROJECTED monthly crosses the red floor -- which can be true
-  // while the 30d total is under $1k. Read the projected figure from the title
-  // ("projected $1444/mo") or the body ("Projected monthly (from 72h avg):
-  // $1443.80"); fall back to the 30d total only when no projection rendered.
+  // ALARM BASIS (ExampleCo 2026-07-07): the render colors RED off the run-rate, not
+  // the 30-day sum. Prefer "current $X/mo" / "Current monthly run-rate" when a
+  // post-fix outlier day is named; otherwise use the legacy 72h projection.
+  // Fall back to the 30d total only when no run-rate rendered.
+  const currentTitle = String(tile.name || '').match(/current\s*\$([\d,]+(?:\.\d+)?)\/mo/i);
+  const currentBody = body.match(/Current monthly run-rate:\s*\$([\d,]+(?:\.\d+)?)/i);
+  const current =
+    currentTitle || currentBody
+      ? parseFloat((currentTitle || currentBody)[1].replace(/,/g, ''))
+      : NaN;
   const projTitle = String(tile.name || '').match(/projected\s*\$([\d,]+(?:\.\d+)?)\/mo/i);
   const projBody = body.match(/Projected monthly \(from 72h avg\):\s*\$([\d,]+(?:\.\d+)?)/i);
   const projected =
     projTitle || projBody ? parseFloat((projTitle || projBody)[1].replace(/,/g, '')) : NaN;
-  const alarmBasis = Number.isFinite(projected) ? projected : total;
+  const alarmBasis = Number.isFinite(current) ? current : Number.isFinite(projected) ? projected : total;
   if (!Number.isFinite(alarmBasis) || alarmBasis <= AWS_COST_RED_THRESHOLD_FLOOR) return false;
   return true;
 }
