@@ -1115,6 +1115,9 @@ function blockedCardRepairNeed(id, cardName, reason, text = '') {
     return 'Repair: rebuild COVID source discovery and article extraction until five valid source-backed rows render, then rerun live QC.';
   }
   if (/linkedin/i.test(haystack)) {
+    if (/blocked on ExampleCo|li_at|auth cookie|login|captcha|2fa|mfa|authwall|checkpoint|re-auth/i.test(haystack)) {
+      return 'Next step ExampleCo: open scripts\\linkedin-bulk-scan-login.cmd, complete LinkedIn login/CAPTCHA/2FA, stay on the signed-in feed for about one minute, then click "I finished LinkedIn login - refresh LinkedIn".';
+    }
     return 'Repair: rerun the authenticated LinkedIn scanner; if login or CAPTCHA blocks it, name that exact access wall here.';
   }
   if (/content readiness|required cards|card readiness/i.test(haystack)) {
@@ -1607,7 +1610,11 @@ function renderBlockersSection(blockers, opts = {}) {
   blockers.forEach((item, idx) => {
     lines.push(`${idx + 1}. ${item.title}`);
     lines.push(`Evidence: ${item.evidence}`);
-    if (item.need) lines.push(`Need from ExampleCo: ${item.need}`);
+    if (item.need) {
+      const nextStep = String(item.need).match(/^(Next step (?:ExampleCo|Amy)):\s*(.+)$/i);
+      if (nextStep) lines.push(`${nextStep[1]}: ${nextStep[2]}`);
+      else lines.push(`Need from ExampleCo: ${item.need}`);
+    }
     lines.push('');
   });
   if (reconciliation) lines.push(reconciliation, '');
