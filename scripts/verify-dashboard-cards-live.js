@@ -266,7 +266,9 @@ function parseTiles(html) {
     const status = (m[1].match(/tile-(red|green|yellow|neutral|ExampleCo|warn)/) || [])[1] || 'neutral';
     const rawTitle = m[2];
     const name = strip(rawTitle);
-    const inner = m[3];
+    const rawInner = m[3];
+    const defectBadgeText = extractLiveBoardBadgeText(rawInner);
+    const inner = stripLiveBoardBadges(rawInner);
     const metric = strip((inner.match(/class="tile-metric[^"]*"[^>]*>([\s\S]*?)<\/div>/) || [])[1]);
     const body = strip(inner);
     // The visible tile FACE is `tile-content` up to the expandable `tile-full`
@@ -289,6 +291,8 @@ function parseTiles(html) {
       status,
       name,
       inner,
+      rawInner,
+      defectBadgeText,
       metric,
       body,
       face,
@@ -298,6 +302,20 @@ function parseTiles(html) {
     });
   }
   return tiles;
+}
+
+function extractLiveBoardBadgeText(html) {
+  return [...String(html || '').matchAll(/<div\s+class="tile-defect-badge"[^>]*>([\s\S]*?)<\/div>/gi)]
+    .map((match) => strip(match[1]))
+    .filter(Boolean)
+    .join(' ');
+}
+
+function stripLiveBoardBadges(html) {
+  return String(html || '').replace(
+    /<div\s+class="tile-defect-badge"[^>]*>[\s\S]*?<\/div>/gi,
+    ' ',
+  );
 }
 
 function extractFace(inner) {
