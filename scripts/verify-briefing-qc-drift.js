@@ -223,6 +223,7 @@ function checkWiredIntoPublish(repoRoot) {
 const CANONICAL_COUNT_LIB = 'scripts/lib/live-board-truth.js';
 const CANONICAL_COUNT_CONSUMERS = ['ec2-server.js', 'cloud-morning-briefing.js'];
 const REFRESH_CARD = 'scripts/refresh-card.js';
+const MANUAL_BRIEFING = 'scripts/manual-briefing-v3.js';
 
 // 3. The design doc exists and names the render-QC as THE one QC.
 function checkDesignDoc(repoRoot) {
@@ -333,6 +334,23 @@ function checkScopedRefreshGate(repoRoot) {
   return { failures };
 }
 
+function checkNoManualHealthMirrors(repoRoot) {
+  const failures = [];
+  const src = readFileSafe(path.join(repoRoot, MANUAL_BRIEFING));
+  if (!src) {
+    failures.push(
+      `${MANUAL_BRIEFING} is missing or unreadable; Blockers/System Health dedupe cannot be linted.`,
+    );
+    return { failures };
+  }
+  if (/title:\s*`\$\{label\}:\s*needs attention`/.test(src)) {
+    failures.push(
+      `${MANUAL_BRIEFING} still mirrors non-green System Health rows into Blockers. System Health owns health-check detail; Blockers may count failures but must not repeat named health rows.`,
+    );
+  }
+  return { failures };
+}
+
 function runDrift(repoRoot = REPO_ROOT) {
   const failures = [];
   const single = checkSingleRenderQc(repoRoot);
@@ -341,6 +359,7 @@ function runDrift(repoRoot = REPO_ROOT) {
   failures.push(...checkDesignDoc(repoRoot).failures);
   failures.push(...checkCanonicalCountLib(repoRoot).failures);
   failures.push(...checkScopedRefreshGate(repoRoot).failures);
+  failures.push(...checkNoManualHealthMirrors(repoRoot).failures);
   return { ok: failures.length === 0, failures, renderQcFound: single.found };
 }
 
@@ -365,6 +384,7 @@ module.exports = {
   checkDesignDoc,
   checkCanonicalCountLib,
   checkScopedRefreshGate,
+  checkNoManualHealthMirrors,
   hasRealLiveBoardTruthWiring,
   stripComments,
   hasRealRenderQcWiring,
@@ -374,6 +394,7 @@ module.exports = {
   CANONICAL_COUNT_LIB,
   CANONICAL_COUNT_CONSUMERS,
   REFRESH_CARD,
+  MANUAL_BRIEFING,
 };
 
 if (require.main === module) main();

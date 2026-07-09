@@ -78,7 +78,8 @@
 //      degradedNotice, renderQcDefectCards), release the lock.
 //   8. --verify: after publish, fetch the live rendered dashboard, merge a
 //      scoped target+derived-card result into the canonical dashboard artifact,
-//      and fail the command only when the target card itself is still not clean.
+//      patch Blockers' reconciliation line from that fresh artifact, and fail
+//      the command only when the target card itself is still not clean.
 //
 // CODEX AMENDMENTS applied (binding, from the 2026-07 design review):
 //   A1. Section boundaries by manifest id/matcher, never a loose heading
@@ -581,6 +582,30 @@ function writeJsonAtomic(file, value) {
   fs.renameSync(tmp, file);
 }
 
+function liveCardBadgeLineFromArtifact(artifact) {
+  const rawCount = Number(artifact && artifact.defectiveCardCount);
+  const count = Number.isFinite(rawCount) && rawCount >= 0 ? rawCount : 0;
+  const ts = (artifact && artifact.ts) || new Date().toISOString();
+  return `Live card badge count: ${count} defective card(s) as of ${ts} (source: dashboard-qc-result.json); Blockers issue count is blocker rows plus individual System Health failures.`;
+}
+
+function refreshBlockersReconciliationLine(markdown, artifact) {
+  const nextLine = liveCardBadgeLineFromArtifact(artifact);
+  const lineRe = /^Live card badge count: .*$/m;
+  if (lineRe.test(markdown)) return markdown.replace(lineRe, nextLine);
+  return markdown;
+}
+
+function refreshPublishedBlockersReconciliationLine({ markdownPath, artifact }) {
+  if (!markdownPath || !artifact) return false;
+  if (!fs.existsSync(markdownPath)) return false;
+  const current = fs.readFileSync(markdownPath, 'utf8');
+  const next = refreshBlockersReconciliationLine(current, artifact);
+  if (next === current) return false;
+  writeTextAtomic(markdownPath, next);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Scoped QC gate helpers (pure; exported for tests).
 //
@@ -926,6 +951,21 @@ async function runVerify({ cardId, date, dataDir }) {
     console.log(
       `[refresh-card] --verify: wrote canonical dashboard artifact ${absPath} (defectiveCardCount=${artifact.defectiveCardCount}, scoped=${scopedCardIds.join(',')})`,
     );
+    try {
+      const markdownPath = markdownPathFor(dataDir, date);
+      const changed = await withSharedBriefingLock(() =>
+        refreshPublishedBlockersReconciliationLine({ markdownPath, artifact }),
+      );
+      if (changed) {
+        console.log('[refresh-card] --verify: refreshed Blockers live badge line from canonical artifact');
+      }
+    } catch (e) {
+      console.error(
+        `[refresh-card] --verify: failed to refresh Blockers live badge line: ${(e && e.message) || e}`,
+      );
+      process.exitCode = 1;
+      return;
+    }
   } else {
     console.warn(
       '[refresh-card] --verify: live QC module cannot write the canonical artifact; dashboard badges may remain stale.',
@@ -974,6 +1014,9 @@ module.exports = {
   scopedCardIdsForRefresh,
   scopedMarkdownForCardIds,
   scopedRefreshFailures,
+  liveCardBadgeLineFromArtifact,
+  refreshBlockersReconciliationLine,
+  refreshPublishedBlockersReconciliationLine,
   spliceCard,
   buildTargetedRebuild,
   withSharedBriefingLock,
