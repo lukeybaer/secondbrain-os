@@ -31,6 +31,7 @@ const STAGE_FILES = [
   'scripts/otter-diarized-segment-backfill.js',
   'scripts/otter-wavlm-speaker-resolver.js',
   'scripts/voice-sample-sequence-review-html.js',
+  'scripts/voice-confirmation-queue-build.js',
   'scripts/otter-life-relevance-enricher.js',
   'deploy/voice-fargate/taskdef.json',
 ];
@@ -77,6 +78,21 @@ const MUST_CONTAIN = [
     'scripts/voice-sample-sequence-review-html.js',
     'distinct_calls_found',
     'recurring ExampleCo review can prove consistency across multiple calls',
+  ],
+  [
+    'scripts/voice-confirmation-queue-build.js',
+    'otter-speaker-intelligence-latest.json',
+    'voice confirmation queue sources recurring ExampleCo acoustic voices from fresh speaker intelligence',
+  ],
+  [
+    'scripts/voice-confirmation-queue-build.js',
+    'recurring_unresolved_acoustic_voice',
+    'recurring acoustic ExampleCos are surfaced as their own review lane by default',
+  ],
+  [
+    'scripts/voice-confirmation-queue-build.js',
+    'non_speech_audio_artifact',
+    'non-speech acoustic artifacts are suppressed from ExampleCo review queue',
   ],
 ];
 
@@ -128,6 +144,12 @@ function checkDrift(repoRoot) {
   }
   if (doc && !/SPEAKER_MATCH_SCORE=0\.56|voice-only review page|distinct calls/i.test(doc)) {
     failures.push('doc no longer states the voice-only review and 0.56 acoustic matching standard');
+  }
+  if (
+    doc
+    && !/voice-confirmation-queue-build\.js|otter-speaker-intelligence-latest\.json|non_speech_audio_artifact/i.test(doc)
+  ) {
+    failures.push('doc no longer states the fresh speaker-intelligence queue source and non-speech suppression standard');
   }
 
   return { failures, warnings };
