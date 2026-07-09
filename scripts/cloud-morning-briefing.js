@@ -6113,8 +6113,17 @@ function formatSystemHealthSection({
   speakerFreshness,
   voiceCoverage,
   testsHealth,
+  narrowSelfHealRefresh = false,
+  refreshTargets = new Set(),
 }) {
-  const incomplete = requiredStates.filter((state) => state && state.ok === false);
+  const refreshTargetSet =
+    refreshTargets instanceof Set ? refreshTargets : normalizedRefreshTargetSet(refreshTargets);
+  const incomplete = requiredStates.filter(
+    (state) =>
+      state &&
+      state.ok === false &&
+      (!narrowSelfHealRefresh || refreshTargetSet.has(state.id)),
+  );
   const labels = {
     ai_tech_news: 'AI & tech news',
     'ai-tech-news': 'AI & tech news',
@@ -8871,6 +8880,8 @@ function buildCloudMorningBriefing({
         speakerFreshness,
         voiceCoverage,
         testsHealth,
+        narrowSelfHealRefresh,
+        refreshTargets: refreshTargetSet,
       }),
     ),
     // Phase 4b: the daily SELF-HEAL HEALTH card. Its owning generator reads the
