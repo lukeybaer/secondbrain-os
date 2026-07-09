@@ -147,6 +147,51 @@ function signalFreshness(attempts, rows, nowMs) {
   return { ageHours: (nowMs - newest) / 3.6e6, newestTs: new Date(newest).toISOString() };
 }
 
+// The mechanical-only orchestrator can record a fresh pass summary before any
+// per-defect ledger row exists for the day. That summary is still proof the
+// self-heal loop ran and tried N blockers. Without this fallback the card can
+// render "0 attempted" or stale even though the orchestrator just wrote a run
+// receipt. Prefer the richer per-defect ledger when it exists; use this only as
+// the run-log bridge.
+function latestRunAttemptSummary(rows, date) {
+  const day = ledger.safeDate(date);
+  const sameDay = (row) => !row || !row.date || ledger.safeDate(row.date) === day;
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i];
+    if (!row || !sameDay(row)) continue;
+    if (row.stage !== 'orchestrator-complete') continue;
+    const blockers = Array.isArray(row.blockers) ? row.blockers : [];
+    const attemptedRaw = Number(row.attempted);
+    const clearedRaw = Number(row.cleared);
+    const attempted = Number.isFinite(attemptedRaw) ? attemptedRaw : blockers.length;
+    const cleared = Number.isFinite(clearedRaw)
+      ? clearedRaw
+      : blockers.filter((b) => b && b.cleared).length;
+    if (attempted <= 0) continue;
+    const open = blockers
+      .filter((b) => !(b && b.cleared))
+      .map((b, ix) => ({
+        defect: (b && b.title) || `self-heal repair ${ix + 1}`,
+        attempts: 1,
+        lastQcResult: b && b.timedOut ? 'timed out' : 'not cleared',
+        lastReflection:
+          b && b.timedOut
+            ? 'mechanical-only bounded pass timed out'
+            : 'mechanical-only pass did not clear this defect',
+        triedTactics: [((b && b.stage) || 'mechanical-only').replace(/\s+/g, ' ')],
+      }));
+    const escalated = Math.max(0, attempted - cleared);
+    return {
+      attempted,
+      cleared,
+      escalated,
+      totalAttempts: attempted,
+      open,
+    };
+  }
+  return null;
+}
+
 // Distinct-defect counts from the per-defect ledger:
 //   attempted = distinct defects with >= 1 attempt row today
 //   cleared   = distinct defects whose LATEST attempt cleared
@@ -485,8 +530,19 @@ function buildSelfHealHealthCard(opts = {}) {
     ? ledger.safeDate(opts.date)
     : opts.date || new Date().toISOString().slice(0, 10);
   const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
-  const counts = defectCounts(date, opts);
   const rows = readRunLogRows(opts);
+  let counts = defectCounts(date, opts);
+  const runSummary = latestRunAttemptSummary(rows, date);
+  if (counts.attempted === 0 && runSummary && runSummary.attempted > 0) {
+    counts = {
+      ...counts,
+      attempted: runSummary.attempted,
+      cleared: runSummary.cleared,
+      escalated: runSummary.escalated,
+      totalAttempts: runSummary.totalAttempts,
+      open: runSummary.open,
+    };
+  }
   const executorRow = resolveExecutorRow(rows, opts);
   const fresh = signalFreshness(counts.attempts, rows, nowMs);
   const maxAgeHours = Number.isFinite(opts.maxAgeHours)
@@ -682,6 +738,7 @@ module.exports = {
   readRunLogRows,
   resolveExecutorRow,
   signalFreshness,
+  latestRunAttemptSummary,
   defectCounts,
   thrashingDefects,
   maskingGuardDefects,
