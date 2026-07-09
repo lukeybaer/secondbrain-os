@@ -242,6 +242,11 @@ function checkDrift(repoRoot) {
         'doc no longer states the run announces its real mode on startup (the fix-the-fix guard)',
       );
     }
+    if (!/scoped live card QC/i.test(docSrc)) {
+      failures.push(
+        'doc no longer states scoped live card QC for one-card healer closure',
+      );
+    }
   }
 
   // LESSONS content checks: hard-won lessons that must not be edited away.
@@ -260,6 +265,9 @@ function checkDrift(repoRoot) {
       failures.push(
         `${LESSONS} no longer mentions worktree-isolated landing (the landing-conflict-is-a-healer-defect lesson)`,
       );
+    }
+    if (!/scoped live card QC|One-card healer closure must stay scoped/i.test(lessonsSrc)) {
+      failures.push(`${LESSONS} no longer records the scoped one-card healer closure lesson`);
     }
   }
 

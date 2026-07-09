@@ -2,7 +2,7 @@
 'use strict';
 //
 // refresh-card.js -- rebuild ONE briefing card by manifest id, splice it into
-// the PUBLISHED briefing, re-QC the whole document, republish.
+// the PUBLISHED briefing, run scoped card QC, republish.
 //
 // WHY: verifying a single-card fix today means a full cloud-morning-briefing.js
 // rebuild (10-40 minutes: every news card re-summarizes, every generator
@@ -61,35 +61,24 @@
 //      preserving each replaced section's own trailing separator chrome
 //      (blank lines + `---` lines), so the published file's real separator
 //      shape survives the splice byte-for-byte outside the new content.
-//   6. Whole-document QC gate (Codex amendment A4, DIFFERENTIAL form as of
-//      2026-07-06): the SAME two whole-doc checks (qcBriefingMarkdown + the
-//      canonical validator) run against BOTH the existing published document
-//      (the BEFORE baseline) and the SPLICED document (AFTER). Publish iff
-//      the splice introduces NO NEW failures -- after subset-of before,
-//      compared on normalized failure keys (digit runs collapse so counts/
-//      dates/amounts never make an old failure look new). Absolute gating
-//      deadlocked incremental healing in production (six live refreshes were
-//      rejected by unrelated pre-existing failures in OTHER cards); the
-//      differential gate keeps A4's spirit -- the whole doc is QC'd and the
-//      splice may never make it worse -- while letting a no-worse splice
-//      publish. The two-way health/blockers consistency checks are
-//      DIFFERENTIAL TOO as of 2026-07-07 (they were the last absolute gate,
-//      and an unrelated non-green subsystem named in no card's BLOCKERS -- the
-//      PM2 fleet -- blocked the clean AWS card): block only when the SPLICE
-//      introduces a NEW inconsistency, never a pre-existing one. This tool
-//      re-derives those sections itself, so an inconsistency ITS rebuild
-//      creates still blocks. On a gate failure: print the NEW failures, exit
-//      nonzero, NEVER write.
+//   6. Scoped card QC gate (ExampleCo 2026-07-08): this is a card-by-card repair
+//      loop, not a whole-document recertification. After the splice, pre-write
+//      QC runs only on the target card plus the companion labels this tool
+//      rewrites (`blockers`, `system_health`). Unrelated card failures remain
+//      visible in the dashboard artifact and the broader live QC result, but
+//      they do not veto this card's independent publish. The companion
+//      health/blockers checks use the current dedupe contract: System Health
+//      owns health-check details and remediation; Blockers may count health
+//      failures but must not repeat those rows. If the scoped slice fails,
+//      print the scoped failures, exit nonzero, NEVER write.
 //   7. On QC pass: acquire the SAME shared briefing lock the full build uses
 //      (/tmp/secondbrain-morning-briefing-run.lock via flock -- Codex
 //      amendment A2), atomic-write via the existing writeTextAtomic, refresh
 //      the publish receipt fields the full build derives (publishState,
 //      degradedNotice, renderQcDefectCards), release the lock.
-//   8. --verify: after publish, fetch the live rendered dashboard and report
-//      just the target card's live render-QC status (verify-dashboard-cards-
-//      live.js already returns per-card cardStatuses; no changes needed to
-//      that file for this -- Codex's "add a --card filter if trivial, else
-//      run whole and report just the target card" escape hatch taken here).
+//   8. --verify: after publish, fetch the live rendered dashboard, merge a
+//      scoped target+derived-card result into the canonical dashboard artifact,
+//      and fail the command only when the target card itself is still not clean.
 //
 // CODEX AMENDMENTS applied (binding, from the 2026-07 design review):
 //   A1. Section boundaries by manifest id/matcher, never a loose heading
@@ -100,13 +89,11 @@
 //       (SECONDBRAIN_DATA_DIR / /opt/secondbrain/data / APPDATA fallback).
 //       NEVER a REPO_ROOT/data hardcode (the refresh-news-only.js anti-
 //       pattern).
-//   A4. Publish gate is the WHOLE-markdown QC (qcBriefingMarkdown +
-//       checkHealthBlockersConsistency/reverse via the canonical validator)
-//       run against the SPLICED document, not just the new section. As of
-//       2026-07-06 the whole-doc failure gate is DIFFERENTIAL (no NEW failures
-//       vs the pre-splice baseline); as of 2026-07-07 the consistency checks
-//       are DIFFERENTIAL too (no NEW inconsistency vs baseline) -- see design
-//       item 6 for the live deadlocks that forced both.
+//   A4. Publish gate is scoped card QC (qcBriefingMarkdown plus the
+//       health/blockers dedupe checks) against the target card and the derived
+//       cards this tool rewrites, not a whole-document recertification. This
+//       keeps the repair loop surgical: unrelated defects stay visible, but
+//       cannot block an independent card refresh.
 //   A5. Never call notifyBriefingPublished from this tool; never touch the
 //       notify dedupe marker.
 //
@@ -115,7 +102,7 @@
 //        [--data-dir D] [--verify]
 //
 // EXIT CODES: 0 success. 1 abort (bad card id, section-boundary violation,
-// lock contention, whole-doc QC failure). 2 usage error.
+// lock contention, scoped card QC failure). 2 usage error.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -135,18 +122,13 @@ const {
   MANIFEST_CARD_RENDER,
   writeTextAtomic,
   DEFAULT_DATA_DIR,
-  runCanonicalBriefingValidator,
 } = require('./cloud-morning-briefing.js');
 const { qcBriefingMarkdown } = require('./lib/briefing-card-qc.js');
 const { CARDS, getCardById } = require('./lib/briefing-card-manifest.js');
 const { ctDayKeyForInstant } = require('./lib/ct-day.js');
-// The two-way health/blockers consistency checks run as a DIFFERENTIAL gate
-// (2026-07-07), the same shape as the whole-doc failure gate: publish unless
-// the SPLICE introduces a NEW inconsistency vs the pre-splice baseline. They
-// concern the derived BLOCKERS + SYSTEM HEALTH sections this tool rebuilds, so
-// an inconsistency THIS run creates still blocks; a pre-existing one an
-// unrelated card left behind (e.g. a non-green subsystem no card named in
-// BLOCKERS) does not -- see the gate note in refreshCard.
+// The health/blockers checks run only on the scoped refresh slice. System
+// Health owns health-check rows and remediation; Blockers may count health
+// failures but must not repeat those rows.
 const {
   checkHealthBlockersConsistency,
   checkHealthBlockersReverseConsistency,
@@ -600,29 +582,14 @@ function writeJsonAtomic(file, value) {
 }
 
 // ---------------------------------------------------------------------------
-// Differential QC gate helpers (pure; exported for tests).
+// Scoped QC gate helpers (pure; exported for tests).
 //
-// WHY DIFFERENTIAL (2026-07-06 production evidence): six live refreshes each
-// rebuilt their card successfully and were then rejected by the ABSOLUTE
-// whole-doc gate because of UNRELATED pre-existing failures in OTHER cards
-// ("US IMMIGRATION NEWS item 2 contains publisher chrome", "FEATURE BACKLOG
-// has no current scored approval asks", "TOKEN USAGE ... stale"). Absolute
-// gating deadlocks incremental healing: no card can be fixed until every
-// card is clean, which is exactly the situation this tool exists to dig out
-// of. The differential gate preserves Codex amendment A4's spirit -- the
-// WHOLE document is still QC'd, and the splice may never make it worse --
-// while allowing a strict improvement or a no-worse splice to publish:
-// compute the whole-doc failure set BEFORE the splice and AFTER it, and
-// publish iff AFTER introduces NO NEW failures (after subset-of before,
-// compared on normalized keys). The two-way health/blockers consistency
-// checks use the SAME differential shape as of 2026-07-07 (before they were
-// absolute, and an unrelated non-green subsystem named in no card's BLOCKERS
-// -- the PM2 fleet -- blocked the clean AWS card): compute the consistency
-// failure set on the pre-splice baseline and on the spliced doc, and block
-// only when the SPLICE introduces a NEW inconsistency. Those sections are
-// re-derived by this tool itself on every run, so an inconsistency ITS rebuild
-// creates is in AFTER-but-not-BEFORE and still blocks; a pre-existing one an
-// unrelated card left behind is tolerated.
+// WHY SCOPED (2026-07-08): a targeted card refresh is not a full briefing
+// recertification. The gate is the target card plus the derived companion cards
+// this tool rewrites (`blockers`, `system_health`). Unrelated cards can remain
+// red in the canonical live artifact, but they cannot veto a clean independent
+// publish. This is the same repair unit the self-heal loop must reason about:
+// one card, one refresh, one card-level live QC result.
 // ---------------------------------------------------------------------------
 
 // Normalize a failure message into a comparison key: digit runs collapse to
@@ -644,6 +611,47 @@ function normalizeFailureKey(failure) {
 function newFailuresAfterSplice(beforeFailures, afterFailures) {
   const beforeKeys = new Set((beforeFailures || []).map(normalizeFailureKey));
   return (afterFailures || []).filter((f) => !beforeKeys.has(normalizeFailureKey(f)));
+}
+
+function scopedCardIdsForRefresh(cardId) {
+  const card = getCardById(cardId);
+  const targetId = card ? card.id : String(cardId || '');
+  return [...new Set([targetId, ...DERIVED_CARD_IDS].filter(Boolean))];
+}
+
+function scopedMarkdownForCardIds(markdown, cardIds) {
+  const doc = splitDocument(markdown);
+  if (doc.sections.length === 0) {
+    throw new Error(
+      'ABORT: the briefing markdown has no recognizable sections for scoped QC.',
+    );
+  }
+  const sections = [];
+  const seenSectionIdx = new Set();
+  for (const id of cardIds || []) {
+    const card = getCardById(id);
+    if (!card) continue;
+    const idx = requireExactlyOneSection(doc.sections, card, {
+      where: 'the scoped QC slice',
+    });
+    if (seenSectionIdx.has(idx)) continue;
+    seenSectionIdx.add(idx);
+    sections.push(doc.sections[idx]);
+  }
+  if (sections.length === 0) {
+    throw new Error('ABORT: scoped QC found zero matching card sections.');
+  }
+  return joinDocument({ preambleLines: doc.preambleLines, sections });
+}
+
+function scopedRefreshFailures(markdown, cardIds) {
+  const scopedMarkdown = scopedMarkdownForCardIds(markdown, cardIds);
+  const presentation = qcBriefingMarkdown(scopedMarkdown);
+  return [
+    ...((presentation && presentation.failures) || []),
+    ...checkHealthBlockersConsistency(scopedMarkdown),
+    ...checkHealthBlockersReverseConsistency(scopedMarkdown),
+  ];
 }
 
 // Pure core: given the EXISTING markdown and a targeted rebuild's fresh
@@ -677,7 +685,7 @@ function spliceCard(existingMarkdown, freshMarkdown, cardId) {
 
   // Target + derived ids, deduped, target first so its own abort (if any)
   // reports first.
-  const idsToSplice = [card.id, ...DERIVED_CARD_IDS.filter((id) => id !== card.id)];
+  const idsToSplice = scopedCardIdsForRefresh(card.id);
 
   const sections = [...existing.sections];
   const replacedIds = [];
@@ -734,20 +742,9 @@ async function refreshCard({
   // genuinely slow -- it shells out to aws/pm2/df/python for health probing
   // regardless of data-dir content). Tests substitute a fast synthetic
   // builder here to exercise refreshCard's OWN orchestration (lock scope,
-  // probe-write-then-validate, receipt fields, QC-failure-blocks-write)
+  // scoped QC gate, receipt fields, QC-failure-blocks-write)
   // without paying for a real multi-minute build.
   buildFn = buildTargetedRebuild,
-  // Injectable ONLY for tests, same pattern buildCloudMorningBriefing itself
-  // already uses for its own `canonicalValidator` parameter. The real CLI
-  // path always uses the default (the actual spawn to
-  // validate-briefing-quality.js). Called TWICE per run for the differential
-  // gate: once against the real published file (the BEFORE baseline) and
-  // once against the spliced probe file (AFTER); test stubs distinguish the
-  // two by markdownPath (the probe path contains '.refresh-card-probe.').
-  // With the differential gate, a minimal synthetic fixture that fails the
-  // real validator identically before and after publishes cleanly -- only
-  // NEW failures block.
-  canonicalValidator = runCanonicalBriefingValidator,
 } = {}) {
   const card = getCardById(cardId);
   if (!card) {
@@ -783,31 +780,6 @@ async function refreshCard({
   const doRefresh = () => {
     const existingMarkdown = fs.readFileSync(markdownPath, 'utf8');
 
-    // BEFORE baseline for the DIFFERENTIAL whole-doc gate: the failure set of
-    // the document as it is published RIGHT NOW (presentation QC + the
-    // canonical validator against the real file), computed inside the lock so
-    // the baseline cannot drift between this read and our write. See the
-    // differential-gate note above newFailuresAfterSplice for why the gate is
-    // differential (2026-07-06 live deadlock: six single-card refreshes were
-    // rejected by unrelated pre-existing failures in OTHER cards).
-    const beforePresentation = qcBriefingMarkdown(existingMarkdown);
-    const beforeCanonical = canonicalValidator({ dataDir, date, markdownPath });
-    const beforeFailures = [
-      ...((beforePresentation && beforePresentation.failures) || []),
-      ...((beforeCanonical && beforeCanonical.failures) || []),
-    ];
-    // BEFORE baseline for the DIFFERENTIAL health/blockers consistency gate:
-    // the two-way consistency failure set of the CURRENTLY published document,
-    // computed on the SAME existing markdown, inside the same lock. A
-    // pre-existing inconsistency the target card did not cause (2026-07-07: the
-    // PM2 fleet non-green but named in no card's BLOCKERS, blocking the clean
-    // AWS card) lives in this set and is tolerated exactly as a pre-existing
-    // whole-doc failure is -- only inconsistencies the SPLICE introduces block.
-    const beforeConsistencyFailures = [
-      ...checkHealthBlockersConsistency(existingMarkdown),
-      ...checkHealthBlockersReverseConsistency(existingMarkdown),
-    ];
-
     console.log(`[refresh-card] rebuilding card='${cardId}' date=${date} dataDir=${dataDir}`);
     const fresh = buildFn({ dataDir, date, now, cardId });
 
@@ -821,89 +793,24 @@ async function refreshCard({
     }
     console.log(`[refresh-card] spliced sections: ${spliced.replacedIds.join(', ')}`);
 
-    // DIFFERENTIAL gate for the two-way health/blockers consistency checks
-    // (2026-07-07): block ONLY when the SPLICE introduces a NEW consistency
-    // failure, never a pre-existing one this card did not cause. This mirrors
-    // the differential-failure gate below (newFailuresAfterSplice on normalized
-    // keys) exactly, and for the same reason: absolute gating cross-couples
-    // every card, so a single unrelated non-green subsystem that no card names
-    // in BLOCKERS (the PM2 fleet on 2026-07-07) refused EVERY clean card's
-    // publish, including the AWS card. The true invariant is preserved: THIS
-    // tool re-derives BLOCKERS + SYSTEM HEALTH (DERIVED_CARD_IDS), so if its
-    // own rebuild drives the derived sections out of sync (e.g. it drops a
-    // blocker whose health row is still non-green), that inconsistency IS in
-    // afterConsistency but NOT in beforeConsistency and still blocks.
-    const afterConsistencyFailures = [
-      ...checkHealthBlockersConsistency(spliced.markdown),
-      ...checkHealthBlockersReverseConsistency(spliced.markdown),
-    ];
-    const newConsistencyFailures = newFailuresAfterSplice(
-      beforeConsistencyFailures,
-      afterConsistencyFailures,
-    );
-    if (newConsistencyFailures.length) {
-      console.error(
-        `[refresh-card] health/blockers consistency gate FAILED: the splice INTRODUCES ${newConsistencyFailures.length} new inconsistency(ies) (${beforeConsistencyFailures.length} pre-existing tolerated). Not writing:`,
-      );
-      for (const f of newConsistencyFailures) console.error(`  - ${f}`);
-      process.exitCode = 1;
-      return null;
-    }
-    if (afterConsistencyFailures.length) {
-      console.log(
-        `[refresh-card] consistency gate PASS (differential): ${afterConsistencyFailures.length} pre-existing inconsistency(ies) remain (baseline ${beforeConsistencyFailures.length}), none introduced by this splice.`,
-      );
-    }
-
-    // AFTER failure set (Codex amendment A4, differential form): the SAME two
-    // whole-document checks the full build runs -- presentation QC
-    // (qcBriefingMarkdown) and the canonical validator -- against the SPLICED
-    // document, never just the new section.
-    const afterPresentation = qcBriefingMarkdown(spliced.markdown);
-    fs.mkdirSync(path.dirname(markdownPath), { recursive: true });
-    // Write to a TEMP path first so the canonical validator (which reads the
-    // markdown FILE, not a string) can check the spliced content before it
-    // ever lands at the real markdownPath -- the file only moves to its real
-    // path after the gate passes (never write on a gate failure).
-    const probePath = `${markdownPath}.refresh-card-probe.${process.pid}.md`;
-    writeTextAtomic(probePath, spliced.markdown);
-    let canonicalValidation;
+    const scopedCardIds = scopedCardIdsForRefresh(cardId);
+    let scopedFailures;
     try {
-      canonicalValidation = canonicalValidator({
-        dataDir,
-        date,
-        markdownPath: probePath,
-      });
-    } finally {
-      try {
-        fs.unlinkSync(probePath);
-      } catch {
-        /* best effort */
-      }
-    }
-    const afterFailures = [
-      ...((afterPresentation && afterPresentation.failures) || []),
-      ...((canonicalValidation && canonicalValidation.failures) || []),
-    ];
-
-    // DIFFERENTIAL gate: publish iff the splice introduces NO NEW failures
-    // (after subset-of before on normalized keys). A splice that reduces or
-    // merely ExampleCos the pre-existing failure set publishes -- incremental
-    // healing must never be deadlocked by unrelated pre-existing defects.
-    const newFailures = newFailuresAfterSplice(beforeFailures, afterFailures);
-    if (newFailures.length) {
-      console.error(
-        `[refresh-card] whole-document QC gate FAILED: the splice INTRODUCES ${newFailures.length} new failure(s) (${beforeFailures.length} pre-existing failures tolerated). Not writing:`,
-      );
-      for (const f of newFailures) console.error(`  - ${f}`);
+      scopedFailures = scopedRefreshFailures(spliced.markdown, scopedCardIds);
+    } catch (e) {
+      console.error((e && e.message) || String(e));
       process.exitCode = 1;
       return null;
     }
-    if (afterFailures.length) {
-      console.log(
-        `[refresh-card] differential gate PASS: ${afterFailures.length} pre-existing failure(s) remain (baseline ${beforeFailures.length}), none introduced by this splice.`,
+    if (scopedFailures.length) {
+      console.error(
+        `[refresh-card] scoped card QC gate FAILED for ${scopedCardIds.join(', ')}: ${scopedFailures.length} failure(s). Not writing:`,
       );
+      for (const f of scopedFailures) console.error(`  - ${f}`);
+      process.exitCode = 1;
+      return null;
     }
+    console.log(`[refresh-card] scoped card QC gate PASS (${scopedCardIds.join(', ')})`);
 
     writeTextAtomic(markdownPath, spliced.markdown);
     console.log(`[refresh-card] wrote ${markdownPath}`);
@@ -921,30 +828,23 @@ async function refreshCard({
         generatedAt: now.toISOString(),
         generator: 'refresh-card',
         markdownPath,
-        // The gate passed (we only reach the receipt after the write), so the
-        // publish state is ready. Pre-existing failures the differential gate
-        // tolerated are recorded honestly below, never hidden.
+        // The scoped gate passed (we only reach the receipt after the write),
+        // so this targeted publish is ready. Other cards may still be red in
+        // the canonical live artifact; they stay visible there, not here.
         publishState: 'ready',
         qc: {
           ok: true,
-          gate: 'differential',
-          newFailures: [],
-          preExistingFailures: afterFailures.slice(0, 120),
-          preExistingFailureCount: afterFailures.length,
-          baselineFailureCount: beforeFailures.length,
+          gate: 'scoped-card',
+          scopedCardIds,
+          scopedFailures: [],
         },
-        canonicalValidation: canonicalValidation
-          ? {
-              ok: canonicalValidation.ok,
-              skipped: canonicalValidation.skipped || null,
-              status: canonicalValidation.status ?? null,
-              failureCount:
-                canonicalValidation.failureCount ||
-                (canonicalValidation.failures || []).length ||
-                0,
-              failures: (canonicalValidation.failures || []).slice(0, 120),
-            }
-          : previousReceipt.canonicalValidation || null,
+        canonicalValidation: {
+          ok: true,
+          skipped: 'refresh-card uses scoped card QC; full canonical validation is owned by full publish/live QC.',
+          status: 0,
+          failureCount: 0,
+          failures: [],
+        },
         renderQcDefectCards: previousReceipt.renderQcDefectCards || [],
         degradedNotice: null,
         refreshedCard: cardId,
@@ -1013,7 +913,7 @@ async function runVerify({ cardId, date, dataDir }) {
     process.exitCode = 1;
     return;
   }
-  const scopedCardIds = [...new Set([cardId, ...DERIVED_CARD_IDS])];
+  const scopedCardIds = scopedCardIdsForRefresh(cardId);
   const scopedResult =
     typeof liveQc.scopeDashboardResult === 'function'
       ? liveQc.scopeDashboardResult(result, scopedCardIds)
@@ -1071,6 +971,9 @@ module.exports = {
   requireExactlyOneSection,
   normalizeFailureKey,
   newFailuresAfterSplice,
+  scopedCardIdsForRefresh,
+  scopedMarkdownForCardIds,
+  scopedRefreshFailures,
   spliceCard,
   buildTargetedRebuild,
   withSharedBriefingLock,

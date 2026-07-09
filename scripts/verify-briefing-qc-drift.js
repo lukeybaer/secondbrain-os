@@ -222,6 +222,7 @@ function checkWiredIntoPublish(repoRoot) {
 // defect count.
 const CANONICAL_COUNT_LIB = 'scripts/lib/live-board-truth.js';
 const CANONICAL_COUNT_CONSUMERS = ['ec2-server.js', 'cloud-morning-briefing.js'];
+const REFRESH_CARD = 'scripts/refresh-card.js';
 
 // 3. The design doc exists and names the render-QC as THE one QC.
 function checkDesignDoc(repoRoot) {
@@ -242,6 +243,21 @@ function checkDesignDoc(repoRoot) {
   if (!src.includes(CANONICAL_COUNT_LIB)) {
     failures.push(
       `design doc ${DESIGN_DOC} does not name ${CANONICAL_COUNT_LIB} as the canonical defect-count library (ExampleCo 2026-07-06 shared-paradigm fix).`,
+    );
+  }
+  if (!/briefing reliability loop/i.test(src)) {
+    failures.push(
+      `design doc ${DESIGN_DOC} does not state that briefing, briefing QC, and self-heal are one parent briefing reliability loop.`,
+    );
+  }
+  if (!src.includes('scopedRefreshFailures')) {
+    failures.push(
+      `design doc ${DESIGN_DOC} does not name scopedRefreshFailures as the scoped refresh-card gate.`,
+    );
+  }
+  if (!/System Health owns health-check detail/i.test(src) || !/must not repeat/i.test(src)) {
+    failures.push(
+      `design doc ${DESIGN_DOC} no longer states the System Health owns detail / Blockers must not repeat health rows rule.`,
     );
   }
   return { failures };
@@ -296,6 +312,27 @@ function checkCanonicalCountLib(repoRoot) {
   return { failures };
 }
 
+function checkScopedRefreshGate(repoRoot) {
+  const failures = [];
+  const src = readFileSafe(path.join(repoRoot, REFRESH_CARD));
+  if (!src) {
+    failures.push(`${REFRESH_CARD} is missing or unreadable; one-card refresh cannot be linted.`);
+    return { failures };
+  }
+  if (!src.includes('function scopedRefreshFailures')) {
+    failures.push(`${REFRESH_CARD} no longer exports function scopedRefreshFailures.`);
+  }
+  if (!src.includes("gate: 'scoped-card'")) {
+    failures.push(`${REFRESH_CARD} no longer records refresh receipts as gate: scoped-card.`);
+  }
+  if (/canonicalValidator\s*=\s*runCanonicalBriefingValidator/.test(src)) {
+    failures.push(
+      `${REFRESH_CARD} has regressed to the broad canonical pre-write gate; one-card refresh must stay scoped.`,
+    );
+  }
+  return { failures };
+}
+
 function runDrift(repoRoot = REPO_ROOT) {
   const failures = [];
   const single = checkSingleRenderQc(repoRoot);
@@ -303,6 +340,7 @@ function runDrift(repoRoot = REPO_ROOT) {
   failures.push(...checkWiredIntoPublish(repoRoot).failures);
   failures.push(...checkDesignDoc(repoRoot).failures);
   failures.push(...checkCanonicalCountLib(repoRoot).failures);
+  failures.push(...checkScopedRefreshGate(repoRoot).failures);
   return { ok: failures.length === 0, failures, renderQcFound: single.found };
 }
 
@@ -326,6 +364,7 @@ module.exports = {
   checkWiredIntoPublish,
   checkDesignDoc,
   checkCanonicalCountLib,
+  checkScopedRefreshGate,
   hasRealLiveBoardTruthWiring,
   stripComments,
   hasRealRenderQcWiring,
@@ -334,6 +373,7 @@ module.exports = {
   PUBLISH_PATHS,
   CANONICAL_COUNT_LIB,
   CANONICAL_COUNT_CONSUMERS,
+  REFRESH_CARD,
 };
 
 if (require.main === module) main();

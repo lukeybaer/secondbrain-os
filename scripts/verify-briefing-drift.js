@@ -46,6 +46,7 @@ const KEY_FILES = [
   'scripts/collect-codex-token-usage.js',
   'scripts/verify-dashboard-cards-live.js',
   'scripts/verify-briefing-cards-live.js',
+  'scripts/refresh-card.js',
   'scripts/overnight-self-heal-orchestrator.js',
   'scripts/health-self-heal.js',
   'scripts/overnight-briefing-orchestrator.js',
@@ -126,6 +127,16 @@ const MUST_CONTAIN = [
     'scripts/lib/live-board-truth.js',
     'defectiveCardCount',
     'the single accessor for the canonical defect count every consumer must call',
+  ],
+  [
+    'scripts/refresh-card.js',
+    'function scopedRefreshFailures',
+    'single-card refresh pre-write gate must be scoped to the target plus companion labels',
+  ],
+  [
+    'scripts/refresh-card.js',
+    "gate: 'scoped-card'",
+    'refresh-card receipts must identify the scoped card gate, not the retired whole-doc gate',
   ],
 ];
 
@@ -214,6 +225,15 @@ function checkDrift(repoRoot) {
     failures.push(
       'doc no longer states the babysitter rule (fix the self-healer, never the card content)',
     );
+  }
+
+  if (doc && !/briefing reliability loop/i.test(doc)) {
+    failures.push(
+      'doc no longer states that briefing, briefing QC, and self-heal are one parent briefing reliability loop',
+    );
+  }
+  if (doc && !/scopedRefreshFailures/.test(doc)) {
+    failures.push('doc no longer names scopedRefreshFailures as the refresh-card gate');
   }
 
   // The doc must still state the Otter card-identity boundary: the call-history
