@@ -25,8 +25,8 @@ function nonGreenSubsystems(systemHealthBody) {
   // trigger: any subsystem row that states on its own line that it is not
   // evaluated/measured on this build is informational. ExampleCo 2026-06-20 #gap.
   const isInformationalNotEvaluatedRow = (line) =>
-    /\bTests\b/i.test(line) &&
-    /(not evaluated on the cloud build|run on the desktop and in ci|not (?:run|evaluated|measured) (?:live |on )|informational, not a failure)/i.test(
+    /\b(Tests|Automated regression suite)\b/i.test(line) &&
+    /(not evaluated on the cloud build|run on the desktop and in ci|no current runtime proof|not (?:run|evaluated|measured) (?:live |on )|informational, not a failure)/i.test(
       line,
     );
   for (const line of lines) {
@@ -42,8 +42,9 @@ function nonGreenSubsystems(systemHealthBody) {
     // A non-green row starts with the cross/X glyph or a question glyph, then
     // the subsystem name. Match both the "name: detail" and bare "name" forms
     // (the Attention block lists bare names).
-    const m = line.match(/^\s*([✗?])\s+([A-Za-z][\w:\s-]*?)\s*(?::\s+.+)?$/);
+    const m = line.match(/^\s*([✗?])\s+([A-Za-z][\w:\s+&/().#-]*?)\s*(?::\s+.+)?$/);
     if (m) {
+      if (isInformationalNotEvaluatedRow(line)) continue;
       const name = m[2].trim().replace(/:$/, '');
       if (fileChurnWatchOnly && /^FileChurn(?: probe)?$/i.test(name)) continue;
       if (isInformationalNotEvaluatedRow(line)) continue;
@@ -68,12 +69,18 @@ function presentSubsystems(systemHealthBody) {
   const out = [];
   const text = String(systemHealthBody || '');
   const lines = text.split(/\r?\n/);
+  const isInformationalNotEvaluatedRow = (line) =>
+    /\b(Tests|Automated regression suite)\b/i.test(line) &&
+    /(not evaluated on the cloud build|run on the desktop and in ci|no current runtime proof|not (?:run|evaluated|measured) (?:live |on )|informational, not a failure)/i.test(
+      line,
+    );
   for (const line of lines) {
     if (/^\s*Probe detail \(proof of health\)\s*$/.test(line)) break;
     // Any glyph (green checkmark, cross, question) then the subsystem name, in
     // both the "name: detail" and bare-name (Attention block) forms.
-    const m = line.match(/^\s*([✓✗?])\s+([A-Za-z][\w:\s-]*?)\s*(?::\s+.+)?$/);
+    const m = line.match(/^\s*([✓✗?])\s+([A-Za-z][\w:\s+&/().#-]*?)\s*(?::\s+.+)?$/);
     if (m) {
+      if (isInformationalNotEvaluatedRow(line)) continue;
       const name = m[2].trim().replace(/:$/, '');
       out.push(name);
     }

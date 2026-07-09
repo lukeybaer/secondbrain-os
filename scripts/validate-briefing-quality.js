@@ -7,6 +7,7 @@ const path = require('path');
 const { findSelfNarration, isRealExampleCoAction } = require('./lib/briefing-clean-contract.js');
 const { resolveDataPath } = require('./lib/resolve-data-path.js');
 const { isHeadlineOnlyExampleCoraphs } = require('./lib/news-summarize.js');
+const { TEST_CATEGORY_LABELS } = require('./lib/system-health-tests-row.js');
 // ONE shared parser for the non-green SYSTEM HEALTH roster so the dashboard
 // count and validator dedupe checks can never count a different set.
 const { nonGreenSubsystems, presentSubsystems } = require('./lib/system-health-nongreen.js');
@@ -582,10 +583,10 @@ function buildCardStatusMap(failures) {
   return cards;
 }
 
-// (b) Tests-truth. If data/agent/tests-blocked.json shows failures or is stale,
-// the SYSTEM HEALTH Tests row must be non-green. A briefing must never show
-// tests clean while the recorded run failed. Blockers must not duplicate the
-// Tests row because System Health owns health-check remediation details.
+// (b) Test-health truth. If data/agent/tests-blocked.json shows failures or is
+// stale, System Health must show a non-green product-domain row. A briefing
+// must never show tests clean while the recorded run failed. Blockers must not
+// duplicate System Health rows because System Health owns remediation detail.
 function checkTestsTruth(markdown, testsBlocked, opts = {}) {
   const fails = [];
   const freshnessHours = opts.freshnessHours == null ? 14 : opts.freshnessHours;
@@ -603,16 +604,24 @@ function checkTestsTruth(markdown, testsBlocked, opts = {}) {
   // defect, when the Tests row is rendered as informational/not-evaluated. Real
   // test FAILURES (failedCount > 0) are still enforced below.
   const testsInformational =
-    /Tests[^\n]*(not evaluated|run on the desktop|desktop, not|informational)/i.test(healthBody);
+    /(Tests|Automated regression suite)[^\n]*(not evaluated|run on the desktop|desktop, not|informational|no current runtime proof)/i.test(
+      healthBody,
+    );
   if (failedCount === 0 && stale && testsInformational) return fails;
-  const testsNonGreen = nonGreenSubsystems(healthBody).some((name) => /^Tests\b/i.test(name));
+  const testHealthLabels = new Set(
+    Object.values(TEST_CATEGORY_LABELS).map((label) => String(label).toLowerCase()),
+  );
+  const testsNonGreen = nonGreenSubsystems(healthBody).some((name) => {
+    const normalized = String(name || '').toLowerCase();
+    return /^Tests\b/i.test(name) || testHealthLabels.has(normalized);
+  });
 
   const reason =
     failedCount > 0
       ? `tests-blocked.json records ${failedCount} failing assertion(s)`
       : `tests-blocked.json is stale (ranAt older than ${freshnessHours}h)`;
   if (!testsNonGreen) {
-    fails.push(`${reason} but SYSTEM HEALTH Tests row is not marked non-green`);
+    fails.push(`${reason} but SYSTEM HEALTH has no non-green test-health product row`);
   }
   return fails;
 }
@@ -886,7 +895,7 @@ const nonGreenHealth = [];
 for (const line of healthLines) {
   if (isInformationalNotEvaluatedRow(line)) continue;
   if (fileChurnWatchOnly && /^\s*[âœ—?]\s+FileChurn(?: probe)?\b/i.test(line)) continue;
-  const m = line.match(/^\s*([✗?])\s+([A-Za-z][\w:\s-]*?):\s+(.+)$/);
+  const m = line.match(/^\s*([✗?])\s+([A-Za-z][\w:\s+&/().#-]*?):\s+(.+)$/);
   if (m) nonGreenHealth.push({ mark: m[1], name: m[2].trim() });
 }
 if (nonGreenHealth.length) {

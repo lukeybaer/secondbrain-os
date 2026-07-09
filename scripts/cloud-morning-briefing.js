@@ -39,6 +39,12 @@ const { probeDevOpsHealth } = require('./lib/devops-health.js');
 const { formatDeployParityRow } = require('./lib/deploy-parity-row.js');
 const { computeSpeakerFreshness } = require('./lib/speaker-freshness.js');
 const { resolveDataArtifact } = require('./lib/data-root.js');
+const {
+  INFORMATIONAL_TESTS_ROW,
+  formatTestsHealthRows,
+  readFreshestTestsBlocked,
+  summarizeTestsByCategory,
+} = require('./lib/system-health-tests-row.js');
 // Same non-green SYSTEM HEALTH parser the publish validator uses, so the named
 // blocker we emit per non-green row covers EXACTLY the set the QC counts.
 const { nonGreenSubsystems } = require('./lib/system-health-nongreen.js');
@@ -5983,10 +5989,7 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
   // informational "?" row -- the section must carry exactly one Tests row, and a
   // recorded failure is a real failing subsystem, not "not evaluated".
   if (!opts.skipTestsRow) {
-    push(
-      ExampleCo,
-      'Tests: run on the desktop and in CI, not evaluated on the cloud build (informational, not a failure).',
-    );
+    rows.push(INFORMATIONAL_TESTS_ROW);
   }
 
   // The Dev Ops verdict is computed via the shared helper so the row glyph and
@@ -6131,7 +6134,7 @@ function formatSystemHealthSection({
   // there are NO failures we leave the informational row to the EC2 probe set.
   const testsDefect = Boolean(testsHealth && testsHealth.defect);
   if (testsDefect) {
-    lines.push(row(BAD, `Tests: ${testsHealth.summary}`));
+    for (const testsRow of testsHealth.rows || []) lines.push(testsRow);
   }
   // Real per-subsystem EC2 probes (PM2 fleet, disk, Graphiti, backups,
   // life-archive). Each already ExampleCos its own leading glyph. Off-EC2 this is
@@ -6165,7 +6168,7 @@ function formatSystemHealthSection({
   // 2026-06-22) is the row that newly needs this block on the cloud build.
   const attention = [];
   for (const line of lines) {
-    const m = String(line).match(/^([✗?])\s+([A-Za-z][\w:\s-]*?):\s+(.+)$/);
+    const m = String(line).match(/^([✗?])\s+([A-Za-z][\w:\s+&/().#-]*?):\s+(.+)$/);
     if (!m) continue;
     const name = m[2].trim();
     const detail = m[3].trim();
@@ -6650,44 +6653,32 @@ function computeSpeakerFreshnessForHealth(dataDir) {
   return computeSpeakerFreshness({ pareto });
 }
 
-// Tests-truth health. data/agent/tests-blocked.json records the last suite run:
+// Test-health truth. data/agent/tests-blocked.json records the last suite run:
 // { ranAt, total, passed, failed, files, items:[{file,name,...}] }. When failed
-// > 0 the cloud SYSTEM HEALTH "Tests" row must surface NON-GREEN with a factual
-// Status line instead of the informational "?" row -- otherwise the briefing
-// claims tests are fine while a recorded run failed (build QC: checkTestsTruth).
-// Pure + exported for tests. Returns { defect, failed, total, names, summary }.
+// > 0 the cloud SYSTEM HEALTH card must surface NON-GREEN product-domain rows,
+// never a generic "Tests" umbrella.
 function computeTestsHealth(testsBlocked) {
   if (!testsBlocked || typeof testsBlocked !== 'object') {
-    return { defect: false, failed: 0, total: 0, names: [], summary: '' };
+    return { defect: false, failed: 0, total: 0, names: [], summary: '', rows: [] };
   }
   const failed = Number(testsBlocked.failed || 0);
   const total = Number(testsBlocked.total || 0);
-  const items = Array.isArray(testsBlocked.items) ? testsBlocked.items : [];
-  // A short, human list of failing test names (deduped), for the Status line.
-  const names = [];
-  const seen = new Set();
-  for (const it of items) {
-    const name = cleanExecutiveFragment(String((it && (it.name || it.file)) || ''), { max: 80 });
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    names.push(name);
-  }
-  const shown = names.slice(0, 3);
-  const moreCount = Math.max(0, names.length - shown.length);
-  const list = shown.length ? `${shown.join('; ')}${moreCount ? `; +${moreCount} more` : ''}` : '';
+  const buckets = summarizeTestsByCategory(testsBlocked);
+  const rows = formatTestsHealthRows(testsBlocked);
+  const names = buckets.map((bucket) => bucket.label);
   const summary =
-    failed > 0 ? `${failed} failing test${failed === 1 ? '' : 's'}${list ? `: ${list}` : ''}.` : '';
-  return { defect: failed > 0, failed, total, names, summary };
+    failed > 0
+      ? `${failed} failing assertion${failed === 1 ? '' : 's'} across ${buckets.length || 1} product area${buckets.length === 1 ? '' : 's'}: ${names.join(', ')}.`
+      : '';
+  return { defect: failed > 0, failed, total, names, summary, rows, buckets };
 }
 
 function computeTestsHealthForHealth(dataDir) {
-  // Read from the repo-relative path first (desktop/CI), then the cloud data
-  // store on EC2; either way the failure count is the same source of truth the
-  // validator reads (data/agent/tests-blocked.json).
-  const repoRel = path.join(REPO_ROOT, 'data', 'agent', 'tests-blocked.json');
-  const absStore = path.join(dataDir || '', 'agent', 'tests-blocked.json');
-  const testsBlocked = readJson(absStore, null) || readJson(repoRel, null);
-  return computeTestsHealth(testsBlocked);
+  const artifact = readFreshestTestsBlocked({ repo: REPO_ROOT, dataDir });
+  const health = computeTestsHealth(artifact && artifact.json);
+  health.sourcePath = artifact && artifact.path;
+  health.sourceTimeMs = artifact && artifact.timeMs;
+  return health;
 }
 
 // The top-BLOCKERS entry for recorded test failures. Mirrors the speaker-
@@ -6696,19 +6687,6 @@ function computeTestsHealthForHealth(dataDir) {
 function testsBlockedToBlocker(testsBlocked) {
   void testsBlocked;
   return null;
-  const health = computeTestsHealth(testsBlocked);
-  if (!health.defect) return null;
-  return {
-    title: `Tests are failing: ${health.failed} assertion${health.failed === 1 ? '' : 's'} did not pass`,
-    evidence: health.summary
-      ? `Recorded test run: ${health.summary}`
-      : `Recorded test run shows ${health.failed} failing assertion(s).`,
-    // Self-talk-free and NOT permission-gated. The need text must survive the
-    // briefing-clean scrubber (briefing-clean-contract.js AMY_VERB_CLAUSE_RE
-    // strips "Amy keeps ..." and leaves malformed copy -- Codex peer review
-    // 2026-06-23). State the durable healing loop and the only real ExampleCo wall.
-    need: 'Repair: run the nightly test-healing loop, apply the real fix, and keep this blocker until the failing assertion passes or a genuine owner decision is named.',
-  };
 }
 
 function buildFullLifeBackupCard(dataDir) {
@@ -9577,6 +9555,7 @@ module.exports = {
   classifyOtterVoiceLock,
   otterVoiceLockPidAlive,
   computeTestsHealth,
+  computeTestsHealthForHealth,
   testsBlockedToBlocker,
   formatScheduleSection,
   extractScheduleLines,
