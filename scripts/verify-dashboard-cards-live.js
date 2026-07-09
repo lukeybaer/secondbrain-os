@@ -1497,6 +1497,11 @@ function otterCallHistoryContentDefects(card, tile) {
       `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) renders generic fallback prose instead of what happened, decisions made, and ExampleCo next actions`,
     );
   }
+  if (/Summary unavailable:\s*the processed transcript did not yield a coherent exec summary/i.test(text)) {
+    defects.push(
+      `OTTER-CALL-SUMMARY-MISSING: ${card.id} (${tile.name}) has a failed executive summary; missing call summaries are blockers, not clean content`,
+    );
+  }
   if (
     /\b(?:clearest source-backed read is|Touches [^.;]{0,120}; Contains|family wealth\s*\/\s*mission|relationship capital)\b/i.test(
       text,
@@ -1521,6 +1526,18 @@ function otterCallHistoryContentDefects(card, tile) {
   if (/\bcall covered again\b|\bI just want\b|\breally good start\b/i.test(text)) {
     defects.push(
       `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) still reads like transcript fragments instead of an executive summary`,
+    );
+  }
+  if (
+    /\bcall covered\s+(?:tough|again|yes|yeah|okay|ok|so|and\s+i['’]?m|i['’]?m|i am|we['’]?re|we are|you know)\b/i.test(
+      text,
+    ) ||
+    /\bcall covered\b[\s\S]{0,240}\b(?:i['’]?m|i am|we['’]?re|we are|trying to|get a deal|watching my budget|manager level people)\b/i.test(
+      text,
+    )
+  ) {
+    defects.push(
+      `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) renders first-person transcript fragments instead of an executive summary`,
     );
   }
   if (/\b\d+\.\s+\d\w?\b/i.test(text)) {
@@ -1901,6 +1918,14 @@ function voiceConfirmationDefects(card, tile) {
   ) {
     defects.push(
       `VOICE-KNOWN-SPEAKERS-CALLS: ${card.id} (${tile.name}) known voices are organized by reference clips; they must show and sort by number of calls with each person`,
+    );
+  }
+  if (
+    /\bAll unresolved speaker arcs by conversation count\b/i.test(text) ||
+    /\b\d+\s+calls together\b/i.test(text)
+  ) {
+    defects.push(
+      `VOICE-IDENTITY-COUNT-TRUTH: ${card.id} (${tile.name}) presents current-generation voice counts as complete lifetime counts; label them as current-generation lower bounds until ECAPA backfill proves continuity`,
     );
   }
   if (
