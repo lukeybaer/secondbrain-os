@@ -802,6 +802,8 @@ const NEWS_PUBLISHER_CHROME_PATTERNS = [
   String.raw`\bbroadcast on (?:the )?CBS\b`,
   String.raw`\bstreams on (?:the )?CBS\b`,
   String.raw`\bwatch CBS News\b`,
+  String.raw`\b(?:Comment Loader\s+Save Story\s+Save this story\s*)+\b`,
+  String.raw`\bLoading the player\b`,
   String.raw`:\s*(?:Image|Photo)\s+Credits?:\s*[^.!?\n]{1,120}?(?=\s+[A-Z][a-z])`,
   String.raw`\[?deltaMinutes?\]?`,
 ];
@@ -966,7 +968,10 @@ const PUBLISHER_CHROME_RULES = [
   /^Text settings Story text Size (?:Small|Standard|Large|\*){0,80}\s*Standard Wide Links Standard Orange \* Subscribers only Learn more Minimize to nav\s*/i,
   /^Listen Listen \(\d+\s+mins?\) Save Click here to share on social media share-nodes\b[\s\S]{0,260}?Add Al Jazeera on Google info\s*/i,
   /^Toggle Play\s+/i,
-  /^News\s+(?:AI|Mobile Smartphones|EVs and Transportation)\s+/i,
+  /^(?:Comment Loader\s+Save Story\s+Save this story\s*)+/i,
+  /^Loading the player\s*/i,
+  /^News\s+(?:AI|Mobile Smartphones|EVs and Transportation|Social Media|Computing)\s+/i,
+  /^Reviews?\s+(?:Gaming|Computing|AI|Tech)\s+/i,
   /^Big Tech\s+/i,
   // Leading date-fragment + relative-timestamp dateline (live WORLD NEWS miss
   // 2026-06-30: the body opened "une 2026 Updated 7 hours ago Many areas ..."

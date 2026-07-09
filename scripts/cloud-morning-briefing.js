@@ -2419,7 +2419,7 @@ const IMMIGRATION_NEWS_STATIC_PAGE_RE =
   /\b(?:Know Before You Go|Office Closings?|Find A USCIS Office|File Online|MAKING AMERICA SAFE AGAIN|Coast Guard is smashing records|Even areas above 1,000 metres|heatwave temperatures?|No one should face the immigration system alone|Help ensure someone has a lawyer|Keep Your Station Strong|Watch Preview|Cloudflare|Attention Required|Please enable cookies|National Guard deployments|Exclusive National Guard deployments|Delegation of Immigration Authority|Section 287\(g\)|Victims Of Immigration Crime Engagement|Partner With ICE Through the 287\(g\) Program|Immigration Enforcement Frequently Asked Questions|Worst of the Worst)\b/i;
 
 const NEWS_CATEGORY_PREFIX_RE =
-  /^(?:News|Big Tech|Tech|Home\s*&\s*Office|Gaming|Mobile Smartphones|AI|EVs and Transportation|Google|Apple|Meta|Amazon|Microsoft)\s+(?=[A-Z0-9'"(])/;
+  /^(?:News|Reviews?|Big Tech|Tech|Home\s*&\s*Office|Gaming|Mobile Smartphones|AI|EVs and Transportation|Google|Apple|Meta|Amazon|Microsoft)\s+(?=[A-Z0-9'"(])/;
 const NEWS_TRAILING_PUBLISHER_RE =
   /\s+(?:-|[|])\s+(?:ABC News|AP News|Associated Press|BBC News|CBS News|NBC News|NPR|PBS NewsHour|Reuters|SCOTUSblog|Sahan Journal|Spotlight PA|The Guardian|The National Law Review|Immigration Blog|[A-Z][A-Za-z0-9&.' ]{2,70}(?:News|Journal|Times|Post|Review|Blog|Press|Wire|Tribune|Herald))$/;
 const NEWS_ARTICLE_META_PROSE_RE =
@@ -2465,6 +2465,7 @@ function newsTitleLooksLikeBodyFragment(title) {
   const s = stripNewsDateline(decodeHtmlEntities(stripHtml(title))).trim();
   if (!s) return true;
   if (/^[a-z]/.test(s)) return true;
+  if (/^(?:And|But|So)\s+what\s+if\b/i.test(s)) return true;
   if (
     /^(?:The|This)\s+(?:article|story|report|author|reporter|piece|column|op-?ed|analysis)\b/i.test(
       s,
@@ -3271,7 +3272,11 @@ const NEWS_TITLE_COHERENCE_STOPWORDS = new Set(
 );
 
 function newsTitleSummaryCoherent(summary, item = {}) {
-  const title = String(item.title || '')
+  const rawTitle = String(item.title || '');
+  if (newsTitleLooksLikeBodyFragment(rawTitle) || newsRenderTitleLooksJumbled(rawTitle)) {
+    return true;
+  }
+  const title = rawTitle
     .replace(/\s+-\s+[A-Z][A-Za-z0-9 .&'-]{2,70}$/g, '')
     .toLowerCase();
   const terms = [
