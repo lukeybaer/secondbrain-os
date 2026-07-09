@@ -91,7 +91,7 @@ function classifyDefectKind(defect) {
 // BLOCKED-TILE markers verify-dashboard-cards-live.js already emits for a
 // card the render itself renders red or self-narrates as blocked. Everything
 // else that failed a hard check but is not yet proven un-curable stays
-// 'defect'. This mirrors dev-plans/core/briefing-qc.md's clean/defect/blocked
+// 'defect'. This mirrors dev-plans/core/briefing.md's clean/defect/blocked
 // three-state contract at the per-card level.
 function cardStatusFromDefects(defects) {
   const list = Array.isArray(defects) ? defects : [];

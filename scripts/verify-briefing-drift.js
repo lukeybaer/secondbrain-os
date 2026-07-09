@@ -21,11 +21,9 @@ const fs = require('fs');
 const path = require('path');
 
 const DOC = 'dev-plans/core/briefing.md';
-// The doc's own LESSONS section (5) names the component LESSONS file as
-// scheduled-tasks/daily-briefing/LESSONS.md, NOT a co-located
-// dev-plans/core/briefing.LESSONS.md (unlike some other core components).
-// We check whichever the doc currently claims, so a future move to the
-// dev-plans/core/*.LESSONS.md convention is not itself flagged as drift.
+// The unified briefing core doc uses the co-located core-component lessons file.
+// The older scheduled-task LESSONS file remains a run log for the daily skill,
+// not the core component lesson source.
 const LESSONS_FALLBACK = 'scheduled-tasks/daily-briefing/LESSONS.md';
 const LESSONS_COLOCATED = 'dev-plans/core/briefing.LESSONS.md';
 
@@ -184,6 +182,9 @@ function checkDrift(repoRoot) {
         `doc no longer names a LESSONS file (expected ${LESSONS_COLOCATED} or ${LESSONS_FALLBACK})`,
       );
     }
+    if (!docNamesColocated) {
+      failures.push(`doc must name ${LESSONS_COLOCATED} as the unified briefing core LESSONS file`);
+    }
   }
 
   for (const rel of KEY_FILES) {
@@ -229,8 +230,11 @@ function checkDrift(repoRoot) {
 
   if (doc && !/briefing reliability loop/i.test(doc)) {
     failures.push(
-      'doc no longer states that briefing, briefing QC, and self-heal are one parent briefing reliability loop',
+      'doc no longer states that briefing generation, render-QC, targeted refresh, and briefing-specific self-heal are one briefing reliability loop',
     );
+  }
+  if (doc && !/any task that mentions or touches the briefing/i.test(doc)) {
+    failures.push('doc no longer states the mandatory load rule for briefing-touching work');
   }
   if (doc && !/scopedRefreshFailures/.test(doc)) {
     failures.push('doc no longer names scopedRefreshFailures as the refresh-card gate');
@@ -246,12 +250,9 @@ function checkDrift(repoRoot) {
     failures.push('doc no longer states the boundary with voice_confirmation');
   }
 
-  // LESSONS content check (only when the fallback LESSONS file is the one in
-  // play): it must still describe itself as a self-refining, append-only log,
-  // per the doc's "read last 10 entries... append after" contract.
-  const fallbackLessons = read(LESSONS_FALLBACK);
-  if (fallbackLessons !== null && !/self-refining/i.test(fallbackLessons)) {
-    failures.push(`${LESSONS_FALLBACK} no longer describes itself as self-refining`);
+  const coreLessons = read(LESSONS_COLOCATED);
+  if (coreLessons !== null && !/self-refining/i.test(coreLessons)) {
+    failures.push(`${LESSONS_COLOCATED} no longer describes itself as self-refining`);
   }
 
   return { failures, warnings };

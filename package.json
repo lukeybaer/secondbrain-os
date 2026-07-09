@@ -18,6 +18,7 @@
     "verify:amy-e2e": "node scripts/verify-amy-e2e-test-manifest.js",
     "verify:briefing-cards": "node scripts/verify-dashboard-cards-live.js",
     "verify:dashboard-cards": "node scripts/verify-dashboard-cards-live.js",
+    "verify:briefing-core-drift": "node scripts/verify-briefing-drift.js && node scripts/verify-briefing-qc-drift.js",
     "verify:briefing-qc-drift": "node scripts/verify-briefing-qc-drift.js",
     "verify:cards-drift": "node scripts/verify-cards-drift.js",
     "verify:heal-ladder-refs": "node scripts/verify-heal-ladder-refs.js",

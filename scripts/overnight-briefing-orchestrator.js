@@ -916,7 +916,7 @@ function realPublish({ date, mode }) {
     ],
     { timeoutMs: 20 * 60 * 1000, env },
   );
-  // PUBLISH-THEN-LABEL render-QC (dev-plans/core/briefing-qc.md). This is a publish
+  // PUBLISH-THEN-LABEL render-QC (dev-plans/core/briefing.md). This is a publish
   // path, so it runs the ONE render-QC (verify-dashboard-cards-live.js) against the
   // live published product and records its result. It NEVER blocks the publish that
   // already landed; a defect is logged loud and labeled (exit 1), unreachable is a

@@ -713,7 +713,7 @@ function checkFullBriefingContract(markdown) {
 // failures). It
 // runs AGAINST the final published product (the live rendered tiles) and stamps
 // each card clean/defect. It NEVER blocks publishing: a defect is published AND
-// labeled, per dev-plans/core/briefing-qc.md (publish-then-label).
+// labeled, per dev-plans/core/briefing.md (publish-then-label).
 //
 // Returns a structured result the wire-in uses to (1) write the durable artifact,
 // (2) label each defective tile, and (3) name defects on the Blockers card:
@@ -966,8 +966,8 @@ function uniqueLines(lines) {
 // it must actually RUN against the real markdown the build wrote -- never skip to
 // ok:true. The historical bug: it skipped (returning ok:true) whenever dataDir
 // was not exactly REPO_ROOT/data, but the live box builds into /opt/secondbrain/data,
-// so on the live box the pre-gate never ran (dev-plans/core/briefing-qc.md line 9,
-// LESSONS 2026-06-21). The fix: validate the ACTUAL dataDir/date markdown by
+// so on the live box the pre-gate never ran (dev-plans/core/briefing.md
+// publish-then-label contract, LESSONS 2026-06-21). The fix: validate the ACTUAL dataDir/date markdown by
 // pointing the validator at it with --briefing-path, and treat a non-validation as
 // a HARD failure (ok:false), never a skip-to-pass. `markdownPath` (when supplied by
 // the caller) is the exact file written; otherwise it is derived from dataDir/date.
@@ -9299,7 +9299,7 @@ async function runCloudBriefing({
     receipt.notifyResult = notifyResult;
   }
 
-  // PUBLISH-THEN-LABEL render-QC gate (dev-plans/core/briefing-qc.md). The markdown
+  // PUBLISH-THEN-LABEL render-QC gate (dev-plans/core/briefing.md). The markdown
   // contract above only proves the section text exists; this single render-QC runs
   // against the FINAL PUBLISHED product (the live rendered tiles) and stamps each
   // card clean/defect. It NEVER blocks publishing: the briefing is already written

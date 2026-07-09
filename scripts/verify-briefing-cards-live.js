@@ -6,7 +6,7 @@
  * scripts/verify-dashboard-cards-live.js. This file used to be a second,
  * overlapping render-QC (it parsed the same live tiles and asserted per-card
  * status), which is precisely the fragmentation the 2026-06-21 failure traced to
- * (dev-plans/core/briefing-qc.LESSONS.md). It is now a THIN re-export of the
+ * (dev-plans/core/briefing.LESSONS.md). It is now a THIN re-export of the
  * single QC so no second render-QC implementation exists.
  *
  * Its one unique check -- a news card delivering fewer than its requested count

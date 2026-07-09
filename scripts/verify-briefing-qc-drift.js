@@ -2,10 +2,11 @@
 /**
  * verify-briefing-qc-drift.js
  *
- * DRIFT-LINT for the Briefing QC core component. This is the mechanical
- * prevention that keeps design-equals-code from drifting (per
- * dev-plans/core/briefing-qc.md). It FAILS (exit 1) if any of the load-bearing
- * invariants in that design doc are violated:
+ * DRIFT-LINT for the render-QC and scoped-refresh slice of the unified Briefing
+ * core component. This is the mechanical prevention that keeps
+ * design-equals-code from drifting (per dev-plans/core/briefing.md). It FAILS
+ * (exit 1) if any of the load-bearing invariants in that design doc are
+ * violated:
  *
  *   1. ONE render-QC. Exactly one tool may scan the LIVE dashboard and assert
  *      per-card render status. The authoritative one is
@@ -21,7 +22,7 @@
  *      overnight-briefing-orchestrator.js. An unwired render-QC is a QC that never
  *      runs against the published product (the exact 2026-06-21 failure).
  *
- *   3. DESIGN DOC present + authoritative. dev-plans/core/briefing-qc.md must
+ *   3. DESIGN DOC present + authoritative. dev-plans/core/briefing.md must
  *      exist and must name verify-dashboard-cards-live.js as THE one QC.
  *
  * USAGE:
@@ -43,7 +44,7 @@ const path = require('path');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const RENDER_QC = 'verify-dashboard-cards-live.js';
-const DESIGN_DOC = path.join('dev-plans', 'core', 'briefing-qc.md');
+const DESIGN_DOC = path.join('dev-plans', 'core', 'briefing.md');
 const PUBLISH_PATHS = ['cloud-morning-briefing.js', 'overnight-briefing-orchestrator.js'];
 
 function readFileSafe(file) {
@@ -232,7 +233,7 @@ function checkDesignDoc(repoRoot) {
   const src = readFileSafe(docPath);
   if (!src) {
     failures.push(
-      `design doc ${DESIGN_DOC} is missing. It is the authoritative design-equals-code spec for briefing QC.`,
+      `design doc ${DESIGN_DOC} is missing. It is the authoritative design-equals-code spec for briefing generation, render-QC, targeted refresh, and briefing self-heal.`,
     );
     return { failures };
   }
@@ -248,7 +249,12 @@ function checkDesignDoc(repoRoot) {
   }
   if (!/briefing reliability loop/i.test(src)) {
     failures.push(
-      `design doc ${DESIGN_DOC} does not state that briefing, briefing QC, and self-heal are one parent briefing reliability loop.`,
+      `design doc ${DESIGN_DOC} does not state that briefing generation, render-QC, targeted refresh, and briefing-specific self-heal are one briefing reliability loop.`,
+    );
+  }
+  if (!/any task that mentions or touches the briefing/i.test(src)) {
+    failures.push(
+      `design doc ${DESIGN_DOC} does not state the mandatory load rule for any briefing-touching task.`,
     );
   }
   if (!src.includes('scopedRefreshFailures')) {
@@ -367,11 +373,11 @@ function main() {
   const result = runDrift(REPO_ROOT);
   if (result.ok) {
     console.log(
-      `briefing QC drift-lint PASS: exactly one render-QC (${RENDER_QC}), wired into ${PUBLISH_PATHS.join(' + ')}, and named in ${DESIGN_DOC}.`,
+      `briefing render-QC drift-lint PASS: exactly one render-QC (${RENDER_QC}), wired into ${PUBLISH_PATHS.join(' + ')}, and named in ${DESIGN_DOC}.`,
     );
     process.exit(0);
   }
-  console.error(`briefing QC drift-lint FAILED: ${result.failures.length} drift issue(s):`);
+  console.error(`briefing render-QC drift-lint FAILED: ${result.failures.length} drift issue(s):`);
   for (const f of result.failures) console.error('  - ' + f);
   process.exit(1);
 }
