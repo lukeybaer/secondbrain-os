@@ -2424,6 +2424,8 @@ const NEWS_TRAILING_PUBLISHER_RE =
   /\s+(?:-|[|])\s+(?:ABC News|AP News|Associated Press|BBC News|CBS News|NBC News|NPR|PBS NewsHour|Reuters|SCOTUSblog|Sahan Journal|Spotlight PA|The Guardian|The National Law Review|Immigration Blog|[A-Z][A-Za-z0-9&.' ]{2,70}(?:News|Journal|Times|Post|Review|Blog|Press|Wire|Tribune|Herald))$/;
 const NEWS_ARTICLE_META_PROSE_RE =
   /\b(?:the|this|housingwires?)\s+(?:article|story|report|author|reporter|piece|column|op-?ed|analysis)\s+(?:centers?|centres?|focus(?:es|ed)?|reports?|says|said|argues?|notes?|points?)\b/i;
+const NEWS_HANGING_TITLE_END_RE =
+  /\b(?:the|a|an|its|their|this|that|these|those|to|of|for|with|without|as|if|when|while|because|about|from|into|over|under|and|or|companies|announced|language)\s*$/i;
 
 function stripLeadingNewsCategoryLabels(text) {
   let s = String(text || '').trim();
@@ -2459,6 +2461,65 @@ function stripNewsDateline(text) {
     )
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function titleCaseNewsSlug(slug) {
+  const specials = new Map([
+    ['ai', 'AI'],
+    ['api', 'API'],
+    ['ar', 'AR'],
+    ['arr', 'ARR'],
+    ['ceo', 'CEO'],
+    ['dm', 'DM'],
+    ['gpt', 'GPT'],
+    ['gpu', 'GPU'],
+    ['idc', 'IDC'],
+    ['llm', 'LLM'],
+    ['pc', 'PC'],
+    ['smb', 'SMB'],
+    ['tv', 'TV'],
+    ['us', 'US'],
+    ['vr', 'VR'],
+    ['x', 'X'],
+  ]);
+  return String(slug || '')
+    .replace(/\.(?:html?|amp)$/i, '')
+    .replace(/^\d+[-_]?/, '')
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((word) => {
+      const lower = word.toLowerCase();
+      if (specials.has(lower)) return specials.get(lower);
+      if (/^\d+m$/i.test(word)) return word.toUpperCase();
+      if (/^\d+b$/i.test(word)) return word.toUpperCase();
+      if (/^\d+$/.test(word)) return word;
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(' ')
+    .replace(/\bArent\b/g, "Aren't")
+    .replace(/\bWont\b/g, "Won't")
+    .replace(/\bDont\b/g, "Don't")
+    .replace(/\bCant\b/g, "Can't")
+    .replace(/\bWouldve\b/g, "Would've")
+    .replace(/\bIts\b/g, "It's")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function titleFromNewsUrl(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    const parts = parsed.pathname
+      .split('/')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .filter((part) => !/^\d+$/.test(part));
+    const slug = [...parts].reverse().find((part) => /[a-z]/i.test(part) && part.length >= 10);
+    const title = cleanNewsFragment(titleCaseNewsSlug(slug || ''), { max: 145 });
+    return title && !newsTitleLooksLikeBodyFragment(title) ? title : '';
+  } catch {
+    return '';
+  }
 }
 
 function newsTitleLooksLikeBodyFragment(title) {
@@ -2503,6 +2564,7 @@ function newsTitleLooksLikeBodyFragment(title) {
   )
     return true;
   if (/^Updated\b/i.test(s) && !/^Updated\s+\d{4}[-\s]\d{4}\s+COVID/i.test(s)) return true;
+  if (s.length > 60 && NEWS_HANGING_TITLE_END_RE.test(s) && !/[.!?]$/.test(s)) return true;
   if (
     /\b(?:AP Photo|Getty Images|Heard on\s+[A-Z][A-Za-z]+|\[deltaMinutes\]|more coverage)\b/i.test(
       s,
@@ -2613,25 +2675,27 @@ function normalizeHealedNewsItem(item) {
     explicitSource || (parts.length > 1 ? parts[parts.length - 1] : domain),
     { max: 70 },
   );
-  const explicitTitle = cleanNewsFragment(item && item.title, { max: 145 });
-  const titleCandidate =
-    explicitTitle || (parts.length > 1 ? parts.slice(0, -1).join(' - ') : rawExcerpt);
-  const title =
-    explicitTitle && !newsTitleLooksLikeBodyFragment(explicitTitle)
-      ? explicitTitle
-      : crispNewsRenderTitle(titleCandidate, rawSourceText, rawExcerpt, explicitTitle);
-  const excerpt = cleanNewsFragment(rawExcerpt || explicitTitle, { max: 220 });
-  const sourceText = cleanNewsFragment(rawSourceText || rawExcerpt || explicitTitle, { max: 2200 });
-  const published =
-    item && item.publishedAtIso ? formatShortDate(String(item.publishedAtIso).slice(0, 10)) : '';
   const url =
     cleanPublicUrl(item && item.url) ||
     cleanPublicUrl(
       item && (item.link || item.sourceUrl || item.source_url || item.sourceId || item.guid),
       { allowGoogleNews: true },
     );
+  const urlTitle = titleFromNewsUrl(url);
+  const explicitTitle = cleanNewsFragment(item && item.title, { max: 145 });
+  const titleCandidate =
+    explicitTitle || urlTitle || (parts.length > 1 ? parts.slice(0, -1).join(' - ') : rawExcerpt);
+  const title =
+    explicitTitle && !newsTitleLooksLikeBodyFragment(explicitTitle)
+      ? explicitTitle
+      : crispNewsRenderTitle(titleCandidate, urlTitle, rawSourceText, rawExcerpt, explicitTitle);
+  const excerpt = cleanNewsFragment(rawExcerpt || explicitTitle, { max: 220 });
+  const sourceText = cleanNewsFragment(rawSourceText || rawExcerpt || explicitTitle, { max: 2200 });
+  const published =
+    item && item.publishedAtIso ? formatShortDate(String(item.publishedAtIso).slice(0, 10)) : '';
   return {
     title,
+    _urlTitle: urlTitle,
     excerpt,
     sourceText,
     source: source || domain || sourceLabelFromUrl(url),
@@ -3401,6 +3465,8 @@ function newsRenderTitleLooksJumbled(title) {
   if (NEWS_ARTICLE_META_PROSE_RE.test(s)) return true;
   if (/\b(?:line|quote)\s+was\b/i.test(s)) return true;
   if (newsTitleLooksLikeBodyFragment(s)) return true;
+  if (s.trim().length > 60 && NEWS_HANGING_TITLE_END_RE.test(s.trim()) && !/[.!?]$/.test(s.trim()))
+    return true;
   const hits = NEWS_RENDER_TITLE_JUMBLE_TOKENS.filter((rx) => rx.test(s)).length;
   if (hits >= 2) return true;
   const words = s.split(/\s+/).filter(Boolean);
@@ -3437,10 +3503,21 @@ function firstSentenceForDisplayTitle(text) {
   return trimNewsDisplayTitle(m ? m[1] : s, 112);
 }
 
+function newsTitleLooksLikeArticleOpeningTitle(title, summaryParas = [], item = {}) {
+  const t = cleanNewsFragment(title, { max: 160 }).toLowerCase();
+  if (!t || t.length < 36) return false;
+  const firstPara = cleanNewsFragment(
+    (Array.isArray(summaryParas) && summaryParas[0]) || item.sourceText || item.excerpt || '',
+    { max: 500 },
+  ).toLowerCase();
+  return Boolean(firstPara && firstPara.startsWith(t) && firstPara.length > t.length + 35);
+}
+
 function newsTitleNeedsReplacement(title) {
   const s = String(title || '').trim();
   if (!s) return true;
   if (s.length > 112) return true;
+  if (s.length > 60 && NEWS_HANGING_TITLE_END_RE.test(s) && !/[.!?]$/.test(s)) return true;
   if (
     /\b(?:Updated\s+)?(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|January|February|March|April|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s+(?:AM|PM)\s+ET\b/i.test(
       s,
@@ -3454,12 +3531,17 @@ function newsTitleNeedsReplacement(title) {
 function renderNewsDisplayTitle(item = {}) {
   const rawOriginal = cleanNewsFragment(stripNewsDateline(item.title), { max: 260 });
   const original = trimNewsDisplayTitle(rawOriginal, 112);
+  const urlTitle = cleanNewsFragment(item._urlTitle || titleFromNewsUrl(item.url), { max: 145 });
   const summaryParas =
     item._summaryParas || buildRenderableNewsSummaryParas(item.summary, item) || [];
   const candidates = [];
-  if (!newsTitleNeedsReplacement(original)) {
+  if (
+    !newsTitleNeedsReplacement(original) &&
+    !newsTitleLooksLikeArticleOpeningTitle(original, summaryParas, item)
+  ) {
     candidates.push(original);
   }
+  if (urlTitle) candidates.push(urlTitle);
   if (summaryParas.length) candidates.push(firstSentenceForDisplayTitle(summaryParas[0]));
   candidates.push(firstCrispNewsSentence(item.summary, item.sourceText, item.excerpt));
   candidates.push(original);
@@ -3504,7 +3586,9 @@ function newsItemCanRenderAsNewsRow(item = {}) {
   ) {
     return true;
   }
-  return item._requiresInaccessibleProof ? item._summaryFailureRecent === true : true;
+  const substantialEvidence = rawEvidenceText.replace(/\s+/g, ' ').trim().length >= 220;
+  if (substantialEvidence && !item._summaryFailureRecent) return false;
+  return item._requiresInaccessibleProof ? item._summaryFailureRecent === true : false;
 }
 
 function dedupeNewsRenderRows(rows) {

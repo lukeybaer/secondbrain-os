@@ -612,17 +612,50 @@ function newsArticleBlocks(tile) {
   return out;
 }
 
-function articleBlockLooksSummarized(block) {
+function articleBlockLooksSummarized(block, card = {}) {
   const paras = Array.isArray(block.paras) ? block.paras : [];
   if (paras.length === 1 && HEADLINE_ONLY_NOTE_RE.test(paras[0])) return true;
+  if (card.id === 'ai_tech_news' && newsDetailLooksLikeArticleOpening(block)) return false;
   return isThreeExampleCoraphArticleSummary(paras, { title: block.title });
+}
+
+function normalizedNewsOpeningText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/&[a-z#0-9]+;/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const NEWS_AUTHOR_PROCESS_RE =
+  /\b(?:Could|Can|Should|Would)\s+I\b|\bI\s+(?:have|wondered|started|installed|fired|checked|appeared|casually|compared|spent|provided|admit|asked|wanted|decided|tried|tested)\b|\bHere's what surprised me\b|\b(?:my|me)\s*(?:[:;]|\s+(?:newsletter|review unit|living room|experiment|inbox))\b/i;
+
+function newsDetailLooksLikeArticleOpening(block) {
+  const title = String((block && block.title) || '').trim();
+  const paras = Array.isArray(block && block.paras) ? block.paras : [];
+  const joined = paras.join(' ');
+  if (NEWS_AUTHOR_PROCESS_RE.test(joined)) return true;
+  if (
+    /\b(?:RATING:\s*\d+(?:\.\d+)?\s*\/\s*10|Pros\s+[^.]{0,180}\s+Cons\b|News\s+Social Media|Reviews?\s+Gaming|Share\s+Copied to clipboard|Loading the player|Thrive Studios|ID\/Shutterstock|Unsplash\/)\b/i.test(
+      joined,
+    )
+  )
+    return true;
+  const titleNorm = normalizedNewsOpeningText(title);
+  const firstNorm = normalizedNewsOpeningText(paras[0] || '');
+  return Boolean(
+    titleNorm.length >= 36 &&
+      firstNorm.startsWith(titleNorm) &&
+      firstNorm.length > titleNorm.length + 35,
+  );
 }
 
 function newsSummaryShapeDefects(card, tile) {
   if (!isNewsCard(card)) return [];
   const blocks = newsArticleBlocks(tile);
   if (!blocks.length) return [];
-  const bad = blocks.filter((block) => !articleBlockLooksSummarized(block));
+  const bad = blocks.filter((block) => !articleBlockLooksSummarized(block, card));
   if (!bad.length) return [];
   const sample = bad
     .slice(0, 3)

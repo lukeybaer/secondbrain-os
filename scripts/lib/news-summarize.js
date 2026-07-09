@@ -184,6 +184,53 @@ function newsSummaryHasBodySpecifics(paras, item = {}) {
   return count >= NEWS_MIN_BODY_SPECIFICS;
 }
 
+function normalizeNewsOpeningText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/&[a-z#0-9]+;/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const NEWS_AUTHOR_PROCESS_RE =
+  /\b(?:Could|Can|Should|Would)\s+I\b|\bI\s+(?:have|wondered|started|installed|fired|checked|appeared|casually|compared|spent|provided|admit|asked|wanted|decided|tried|tested)\b|\bHere's what surprised me\b|\b(?:my|me)\s*(?:[:;]|\s+(?:newsletter|review unit|living room|experiment|inbox))\b/i;
+
+// A fallback summary must not be the article opening pasted into three
+// ExampleCoraphs. This catches the "modal shows the start of the article" class:
+// exact source-prefix excerpts, first-person author process prose, and review
+// metadata pasted as detail. LLM summaries can still use article facts, but if
+// the rendered text is just the body prefix, it is not an executive summary.
+function newsSummaryLooksLikeArticleOpening(paras, item = {}) {
+  const list = Array.isArray(paras) ? paras.map((p) => String(p || '').trim()).filter(Boolean) : [];
+  if (!list.length) return false;
+  const body = newsGroundingBody(item);
+  if (!body) return false;
+  const joined = list.join(' ');
+  if (NEWS_AUTHOR_PROCESS_RE.test(joined)) return true;
+  if (
+    /\b(?:RATING:\s*\d+(?:\.\d+)?\s*\/\s*10|Pros\s+[^.]{0,180}\s+Cons\b|News\s+Social Media|Reviews?\s+Gaming|Share\s+Copied to clipboard|Loading the player)\b/i.test(
+      joined,
+    )
+  )
+    return true;
+  const bodyNorm = normalizeNewsOpeningText(body);
+  const summaryNorm = normalizeNewsOpeningText(joined);
+  if (bodyNorm.length < 300 || summaryNorm.length < 220) return false;
+  const prefix = summaryNorm.slice(0, Math.min(420, summaryNorm.length));
+  if (prefix.length >= 220 && bodyNorm.startsWith(prefix)) return true;
+  const bodySentences = articleSentences(body)
+    .map(normalizeNewsOpeningText)
+    .filter((s) => s.length >= 45)
+    .slice(0, 4);
+  if (bodySentences.length < 3) return false;
+  const summaryStart = normalizeNewsOpeningText(list.slice(0, 2).join(' '));
+  const matchingOpeningSentences = bodySentences.filter((s) =>
+    summaryStart.includes(s.slice(0, Math.min(90, s.length))),
+  ).length;
+  return matchingOpeningSentences >= 2;
+}
+
 function newsSummarySentences(ExampleCoraph) {
   return String(ExampleCoraph || '').match(/[.!?]["']?(?=\s|$)/g) || [];
 }
@@ -213,6 +260,7 @@ function isThreeExampleCoraphArticleSummary(paras, item = {}) {
   // "technically 3 ExampleCoraphs that don't really say anything" summary is rejected
   // here so the caller regenerates or falls back to the honest headline-only note.
   if (!newsSummaryHasBodySpecifics(list, item)) return false;
+  if (newsSummaryLooksLikeArticleOpening(list, item)) return false;
   const terms = articleSummaryTerms(item);
   if (terms.length < 2) return true;
   const hasExpandedMetadata = Boolean(item.excerpt || item.summaryText || item.sourceText);
@@ -1656,20 +1704,133 @@ function articleSentences(text) {
   return out;
 }
 
-function buildExtractiveSummary(item, sourceText) {
-  const sentences = articleSentences(sourceText).slice(0, 12);
-  if (sentences.length < 3) return null;
-  for (let size = 1; size <= 4; size++) {
-    if (sentences.length < size * 3) break;
-    const paras = [
-      sentences.slice(0, size).join(' '),
-      sentences.slice(size, size * 2).join(' '),
-      sentences.slice(size * 2, size * 3).join(' '),
-    ].map((p) => trimToSentenceBoundary(p, ExampleCoRAPH_RICH_MAX_CHARS));
-    const summary = normalizeSummary(paras.join('\n\n'), item, sourceText);
-    if (summary) return summary;
+function cleanExtractiveNewsSentence(sentence) {
+  return stripPublisherChrome(String(sentence || ''))
+    .replace(/&mdash;|&#8212;|[\u2013\u2014]/g, ' - ')
+    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractiveSentenceLooksLikeChrome(sentence) {
+  const s = String(sentence || '').trim();
+  if (!s) return true;
+  if (NEWS_AUTHOR_PROCESS_RE.test(s)) return true;
+  if (
+    /^(?:News|Reviews?|Gaming|Computing|Social Media|Tech|Mobile)\s+[A-Z][A-Za-z ]{3,80}\s+/i.test(
+      s,
+    )
+  )
+    return true;
+  if (
+    /\b(?:Loading the player|RATING:\s*\d+(?:\.\d+)?\s*\/\s*10|Pros\s+[^.]{0,180}\s+Cons\b|Share Copied to clipboard|Thrive Studios|Unsplash\/|ID\/Shutterstock)\b/i.test(
+      s,
+    )
+  )
+    return true;
+  return false;
+}
+
+function extractiveSentenceScore(sentence, index, total) {
+  const s = String(sentence || '');
+  let score = 0;
+  if (/\$?\b\d[\d,.]*%?\b/.test(s)) score += 5;
+  if (/[A-Z][A-Za-z0-9&.'-]+(?:\s+[A-Z][A-Za-z0-9&.'-]+){1,4}/.test(s)) score += 2;
+  if (/"[^"]{12,}"/.test(s)) score += 2;
+  if (
+    /\b(?:raised|released|announced|launched|found|reported|said|told|published|introduced|acquired|appointed|valued|valuation|study|researchers|customers|subscribers|revenue|shipments|market share|model|platform)\b/i.test(
+      s,
+    )
+  )
+    score += 3;
+  if (index === 0 && total > 4) score -= 4;
+  if (index > 0 && index < total - 1) score += 1;
+  if (s.length >= 110) score += 1;
+  return score;
+}
+
+function extractiveSummaryCandidates(sourceText) {
+  const raw = articleSentences(stripPublisherChrome(sourceText));
+  return raw
+    .map((sentence, index) => ({
+      index,
+      text: cleanExtractiveNewsSentence(sentence),
+    }))
+    .filter((candidate) => candidate.text.length >= 55)
+    .filter((candidate) => !extractiveSentenceLooksLikeChrome(candidate.text))
+    .map((candidate, _idx, list) => ({
+      ...candidate,
+      score: extractiveSentenceScore(candidate.text, candidate.index, raw.length || list.length),
+    }));
+}
+
+function buildExtractiveExampleCoraph(seed, candidates, used) {
+  const selected = [seed];
+  used.add(seed.index);
+  const nearest = candidates
+    .filter((candidate) => !used.has(candidate.index))
+    .sort(
+      (a, b) =>
+        Math.abs(a.index - seed.index) - Math.abs(b.index - seed.index) ||
+        b.score - a.score ||
+        a.index - b.index,
+    );
+  for (const candidate of nearest) {
+    const joined = selected
+      .concat(candidate)
+      .sort((a, b) => a.index - b.index)
+      .map((entry) => entry.text)
+      .join(' ');
+    if (joined.length > ExampleCoRAPH_RICH_MAX_CHARS) continue;
+    selected.push(candidate);
+    used.add(candidate.index);
+    if (isSubstantialNewsExampleCoraph(joined) && endsAsProse(joined)) break;
   }
-  return null;
+  const ExampleCoraph = selected
+    .sort((a, b) => a.index - b.index)
+    .map((entry) => entry.text)
+    .join(' ');
+  return trimToSentenceBoundary(ExampleCoraph, ExampleCoRAPH_RICH_MAX_CHARS);
+}
+
+function buildExtractiveSummary(item, sourceText) {
+  const candidates = extractiveSummaryCandidates(sourceText).slice(0, 18);
+  if (candidates.length < 3) return null;
+  const openingSafe = candidates.filter((candidate) => !(candidate.index === 0 && candidates.length > 4));
+  const pool = openingSafe.length >= 3 ? openingSafe : candidates;
+  const thirds = [
+    pool.filter((candidate) => candidate.index <= Math.max(2, Math.floor(candidates.length / 3))),
+    pool.filter(
+      (candidate) =>
+        candidate.index > Math.floor(candidates.length / 3) &&
+        candidate.index <= Math.floor((candidates.length * 2) / 3),
+    ),
+    pool.filter((candidate) => candidate.index > Math.floor((candidates.length * 2) / 3)),
+  ];
+  const used = new Set();
+  const seeds = thirds.map((group, idx) => {
+    const source = group.length ? group : pool;
+    return source
+      .filter((candidate) => !used.has(candidate.index))
+      .sort((a, b) => b.score - a.score || a.index - b.index)[0];
+  });
+  const paras = [];
+  for (const seed of seeds) {
+    if (!seed) continue;
+    if (used.has(seed.index)) continue;
+    const para = buildExtractiveExampleCoraph(seed, pool, used);
+    if (para) paras.push(para);
+  }
+  if (paras.length < 3) {
+    for (const seed of pool.sort((a, b) => b.score - a.score || a.index - b.index)) {
+      if (paras.length >= 3) break;
+      if (used.has(seed.index)) continue;
+      const para = buildExtractiveExampleCoraph(seed, pool, used);
+      if (para) paras.push(para);
+    }
+  }
+  if (paras.length < 3) return null;
+  return normalizeSummary(paras.slice(0, 3).join('\n\n'), item, sourceText);
 }
 
 // Summarize a single substantial body with retry-with-backoff. The body has
@@ -1899,6 +2060,7 @@ module.exports = {
   isThreeExampleCoraphArticleSummary,
   countNewsBodySpecifics,
   newsSummaryHasBodySpecifics,
+  newsSummaryLooksLikeArticleOpening,
   NEWS_MIN_BODY_SPECIFICS,
   trimToSentenceBoundary,
   ExampleCoraphWordCount,
