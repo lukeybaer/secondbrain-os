@@ -4602,19 +4602,40 @@ function readDevOpsSnapshot(dataDir, now = Date.now()) {
   const generated = snapshot.generated_at || snapshot.generatedAt;
   const generatedMs = generated ? new Date(generated).getTime() : NaN;
   if (!Number.isFinite(generatedMs)) {
-    return { status: 'red', detail: 'shared checkout snapshot has no timestamp' };
+    return { status: 'red', detail: 'Shared checkout cleanliness: snapshot has no timestamp' };
   }
   const ageHours = Math.max(0, (now - generatedMs) / 3600000);
   if (ageHours > DEVOPS_SNAPSHOT_MAX_AGE_HOURS) {
     return {
       status: 'red',
-      detail: `shared checkout snapshot is stale: last captured ${relativeAgo(generated, now)}`,
+      detail: `Shared checkout cleanliness: snapshot is stale: last captured ${relativeAgo(
+        generated,
+        now,
+      )}`,
     };
   }
   const status = snapshot.result.status === 'green' ? 'green' : 'red';
+  const metric = snapshot.result?.metrics?.sharedCheckoutCleanliness;
+  const metricDetail =
+    metric?.detail ||
+    (snapshot.result?.sharedCheckout
+      ? `Shared checkout cleanliness: ${
+          Number(snapshot.result.sharedCheckout.dirty || 0) === 0
+            ? 'clean'
+            : `${Number(snapshot.result.sharedCheckout.dirty || 0)} dirty item(s)`
+        }`
+      : '');
+  const resultDetail = String(snapshot.result.detail || '');
+  const combinedDetail =
+    metricDetail && !resultDetail.includes(metricDetail)
+      ? `${metricDetail}; ${resultDetail}`
+      : resultDetail;
   return {
     status,
-    detail: `${snapshot.result.detail}; shared checkout snapshot captured ${relativeAgo(generated, now)}`,
+    detail: `${combinedDetail}; shared checkout snapshot captured ${relativeAgo(generated, now)}`,
+    metrics: snapshot.result.metrics || null,
+    snapshotGeneratedAt: generated,
+    snapshotAgeHours: ageHours,
   };
 }
 
@@ -4626,18 +4647,35 @@ function readDevOpsSnapshot(dataDir, now = Date.now()) {
 // Never throws: a probe error falls back to the captured shared-checkout
 // snapshot, then to an honest RED. ExampleCo 2026-06-29 green-tomorrow WAVE 1.
 function computeDevOpsHealthVerdict(dataDir) {
+  const onEc2 = runningOnEc2(dataDir);
+  const snapshot = onEc2 ? readDevOpsSnapshot(dataDir) : null;
+  if (onEc2 && snapshot && snapshot.status !== 'green') return snapshot;
+  if (onEc2 && !snapshot) {
+    return {
+      status: 'red',
+      detail:
+        'Shared checkout cleanliness: fresh desktop checkout snapshot missing; cloud file-deploy cannot prove whether the Windows shared checkout is clean',
+    };
+  }
   try {
     const devops = probeDevOpsHealth({
       mainRoot: REPO_ROOT,
-      cloudHost: runningOnEc2(dataDir),
+      cloudHost: onEc2,
     });
-    return { status: devops.status, detail: devops.detail };
+    if (onEc2 && snapshot) {
+      return {
+        status: devops.status === 'green' && snapshot.status === 'green' ? 'green' : 'red',
+        detail: `${snapshot.detail}; cloud deploy guard: ${devops.detail}`,
+        metrics: snapshot.metrics || devops.metrics || null,
+      };
+    }
+    return { status: devops.status, detail: devops.detail, metrics: devops.metrics || null };
   } catch (e) {
-    const snapshot = readDevOpsSnapshot(dataDir);
-    if (snapshot) return { status: snapshot.status, detail: snapshot.detail };
+    const fallbackSnapshot = readDevOpsSnapshot(dataDir);
+    if (fallbackSnapshot) return fallbackSnapshot;
     return {
       status: 'red',
-      detail: `shared checkout snapshot missing, and cloud host is not a git checkout (${String(
+      detail: `Shared checkout cleanliness: snapshot missing, and cloud host is not a git checkout (${String(
         (e && e.message) || e,
       ).slice(0, 100)})`,
     };

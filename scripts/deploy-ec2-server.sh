@@ -96,6 +96,10 @@ LIVE_DEPS=(
   # filter (isInternalIdOrMetadataLine); ship it so the /opt copy never drifts behind
   # a land and a UUID cannot leak back onto the face (feedback_ec2_build_path_silent_revert).
   "scripts/snapshot-people-and-memory-delta.js"
+  # Otter call-history title/summary helper (2026-07-09): deployed
+  # refresh-briefing-generated-sections.js imports this directly for generated
+  # call display titles, so it must ship with the refresh entrypoint.
+  "scripts/otter-call-exec-summaries.js"
 )
 
 echo "[deploy] syntax-checking repo ec2-server.js"

@@ -38,6 +38,58 @@ function classifyStatusPorcelain(raw) {
   };
 }
 
+function sharedCheckoutCleanlinessMetric(status, options = {}) {
+  const dirty = Number(status?.dirty || 0);
+  const ahead = Number(status?.ahead || 0);
+  const behind = Number(status?.behind || 0);
+  const source = Number(status?.source || 0);
+  const memory = Number(status?.memory || 0);
+  const data = Number(status?.data || 0);
+  const untracked = Number(status?.untracked || 0);
+  const branch = String(status?.branch || '').replace(/^##\s*/, '').trim();
+  const sync = ahead || behind ? `ahead ${ahead}, behind ${behind}` : 'synced with origin';
+  if (options.gitUnavailable) {
+    return {
+      name: 'Shared checkout cleanliness',
+      status: 'ExampleCo',
+      clean: null,
+      dirty,
+      source,
+      memory,
+      data,
+      untracked,
+      ahead,
+      behind,
+      branch,
+      detail:
+        'Shared checkout cleanliness: not measured on this host; requires a fresh desktop checkout snapshot',
+    };
+  }
+  const clean = dirty === 0 && ahead === 0 && behind === 0;
+  const dirtyDetail =
+    dirty > 0
+      ? `${dirty} dirty (${source} source, ${memory} memory, ${data} data, ${untracked} untracked)`
+      : '0 dirty';
+  return {
+    name: 'Shared checkout cleanliness',
+    status: clean ? 'green' : 'red',
+    clean,
+    dirty,
+    source,
+    memory,
+    data,
+    untracked,
+    ahead,
+    behind,
+    branch,
+    detail: clean
+      ? `Shared checkout cleanliness: clean and ${sync}${branch ? ` on ${branch}` : ''}`
+      : `Shared checkout cleanliness: DIRTY - ${dirtyDetail}; ${sync}${
+          branch ? ` on ${branch}` : ''
+        }`,
+  };
+}
+
 function matcherHasTool(matcher, tool) {
   return String(matcher || '')
     .split('|')
@@ -169,6 +221,7 @@ function probeDevOpsHealth({
     gitUnavailable = true;
   }
   const status = classifyStatusPorcelain(gitStatus);
+  const sharedCheckoutMetric = sharedCheckoutCleanlinessMetric(status, { gitUnavailable });
   const repoSettings = classifySettings(
     readSettings(repoSettingsPath || path.join(root, '.claude', 'settings.json'), readFile),
   );
@@ -182,9 +235,8 @@ function probeDevOpsHealth({
   const guard = checkGuardPolicy(root);
   const matrix = validateMutationSurfaceMatrix();
   const problems = [];
-  if (status.dirty > 0) problems.push(`${status.dirty} dirty shared-checkout item(s)`);
-  if (status.ahead > 0 || status.behind > 0) {
-    problems.push(`shared checkout ahead ${status.ahead}, behind ${status.behind}`);
+  if (!gitUnavailable && sharedCheckoutMetric.status === 'red') {
+    problems.push(sharedCheckoutMetric.detail);
   }
   if (!guard.ok) {
     if (guard.failedWrites.length)
@@ -246,7 +298,7 @@ function probeDevOpsHealth({
   const detail =
     healthStatus === 'green'
       ? [
-          'shared checkout clean/synced; write guard blocks shared paths; repo and user hooks wired; integration bypass requires a live lease; mutation surface matrix valid',
+          `${sharedCheckoutMetric.detail}; write guard blocks shared paths; repo and user hooks wired; integration bypass requires a live lease; mutation surface matrix valid`,
           ...cloudNotes,
         ].join('; ')
       : problems.join('; ');
@@ -254,6 +306,9 @@ function probeDevOpsHealth({
     status: healthStatus,
     detail,
     sharedCheckout: status,
+    metrics: {
+      sharedCheckoutCleanliness: sharedCheckoutMetric,
+    },
     guard,
     matrix,
     repoSettings,
@@ -265,6 +320,7 @@ function probeDevOpsHealth({
 module.exports = {
   parseAheadBehind,
   classifyStatusPorcelain,
+  sharedCheckoutCleanlinessMetric,
   hookCommands,
   settingsHasHook,
   classifySettings,

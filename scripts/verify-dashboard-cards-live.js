@@ -1564,6 +1564,7 @@ function otterCallHistoryContentDefects(card, tile) {
     );
   }
   defects.push(...otterFutureTimestampDefects(card, tile));
+  defects.push(...otterCallTitleDefects(card, tile));
   defects.push(...otterSpeakerMismatchDefects(card, tile));
   defects.push(...otterRollingWindowDefects(card, tile));
   return defects;
@@ -1621,6 +1622,76 @@ function callHistoryRows(tile) {
   return rows;
 }
 
+function otterCallTitleCore(title) {
+  return String(title || '')
+    .replace(/^(?:[A-Z][a-z]{2}\s+\d{1,2}\s+)?\d{1,2}:\d{2}\s*(?:AM|PM)?\s*-\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function otterCallTitleLooksRawOrGeneric(title) {
+  const core = otterCallTitleCore(title);
+  if (!core || /^[-]+$/.test(core) || /^No calls$/i.test(core)) return false;
+  if (
+    !/\s/.test(core) &&
+    core.length >= 12 &&
+    /[A-Z]/.test(core) &&
+    /[a-z]/.test(core) &&
+    /[0-9_-]/.test(core)
+  ) {
+    return true;
+  }
+  const words = core.split(/\s+/).filter(Boolean);
+  if (/needing title review/i.test(core)) return true;
+  if (words.length <= 5 && /\b(?:meeting|call|session)$/i.test(core)) return true;
+  if (
+    words.length <= 6 &&
+    /\b(?:strategy|analysis|performance|governance|mapping|balance|data|cash|planning)\b/i.test(
+      core,
+    ) &&
+    /\b(?:meeting|call|session)$/i.test(core)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function otterCallTitleDefects(card, tile) {
+  if (!tile || card.id !== 'otter_speaker_pareto') return [];
+  const rows = callHistoryRows(tile).filter((row) => !/No calls in this group/i.test(row.summary));
+  const bad = rows.filter((row) => otterCallTitleLooksRawOrGeneric(row.title));
+  if (!bad.length) return [];
+  return [
+    `OTTER-CALL-TITLE: ${card.id} (${tile.name}) ${bad.length} call title(s) are raw or generic calendar labels; titles must say what the meeting accomplished or decided: ${bad
+      .slice(0, 4)
+      .map((row) => otterCallTitleCore(row.title))
+      .join(', ')}`,
+  ];
+}
+
+function summaryNamesPersonAsParticipant(summary, rx) {
+  const text = String(summary || '');
+  const match = text.match(rx);
+  if (!match || match.index == null) return false;
+  const name = match[0];
+  const start = Math.max(0, match.index - 90);
+  const end = Math.min(text.length, match.index + name.length + 90);
+  const context = text.slice(start, end);
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`${escaped}\\s*(?:'s|’s)`, 'i').test(context)) return false;
+  if (/\bmentioned the other day\b/i.test(context)) return false;
+  if (/\b(?:resource|resources|input|caveat|question|feedback|note|thread)s?\b/i.test(context) && !/\bwith\b/i.test(context)) {
+    return false;
+  }
+  const participantPatterns = [
+    new RegExp(`\\b(?:spoke|met|aligned|reviewed|discussed|worked|walked through|clarified|confirmed|decided|agreed)\\b[^.!?]{0,90}\\bwith\\s+${escaped}\\b`, 'i'),
+    new RegExp(`\\bwith\\s+${escaped}\\b[^.!?]{0,90}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed|walked through)\\b`, 'i'),
+    new RegExp(`\\b${escaped}\\b[^.!?]{0,80}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed|joined|asked|said|flagged)\\b`, 'i'),
+    new RegExp(`\\bExampleCo\\s*,[^.!?]{0,120}\\b${escaped}\\b[^.!?]{0,120}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed)\\b`, 'i'),
+  ];
+  return participantPatterns.some((pattern) => pattern.test(context));
+}
+
 function otterSpeakerMismatchDefects(card, tile) {
   if (!tile || card.id !== 'otter_speaker_pareto') return [];
   const rows = callHistoryRows(tile);
@@ -1634,11 +1705,18 @@ function otterSpeakerMismatchDefects(card, tile) {
     ['Zach', /\bZach(?:ary)?\b/i],
     ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
     ['PRIVATE_NAME', /\bExampleCo\s+Walker\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
+    ['PRIVATE_NAME Spillers', /\bPRIVATE_NAME(?:\s+Spillers)?\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
+    ['Phil', /\bPhil\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
   ];
   const knownMissing = [];
   for (const row of rows) {
     for (const [display, rx] of expectedPeople) {
-      if (!rx.test(row.summary)) continue;
+      if (!summaryNamesPersonAsParticipant(row.summary, rx)) continue;
       if (rx.test(row.speakers)) continue;
       knownMissing.push(`${row.title || 'call'}:${display}`);
     }
