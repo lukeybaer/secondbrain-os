@@ -7,9 +7,8 @@ const path = require('path');
 const { findSelfNarration, isRealExampleCoAction } = require('./lib/briefing-clean-contract.js');
 const { resolveDataPath } = require('./lib/resolve-data-path.js');
 const { isHeadlineOnlyExampleCoraphs } = require('./lib/news-summarize.js');
-// ONE shared parser for the non-green SYSTEM HEALTH roster so the cloud briefing
-// generator (which emits a named blocker per non-green row) and this validator
-// (which enforces the health<->blockers set-diff) can never count a different set.
+// ONE shared parser for the non-green SYSTEM HEALTH roster so the dashboard
+// count and validator dedupe checks can never count a different set.
 const { nonGreenSubsystems, presentSubsystems } = require('./lib/system-health-nongreen.js');
 
 const REPO = path.resolve(__dirname, '..');
@@ -331,13 +330,10 @@ function allNonGreenSubsystems(markdown) {
   return Array.from(names);
 }
 
-// (a) SYSTEM-HEALTH <-> BLOCKERS coverage SET-DIFF. Every non-green subsystem
-// (probe rows AND Life:* backup rows, including yellow/question, not just red)
-// must be named in the BLOCKERS body. FAIL listing every non-green subsystem
-// missing from BLOCKERS even when OTHER blockers already exist -- the old
-// "non-green AND blockers-empty" gate let a real defect hide behind unrelated
-// blockers (2026-06-01 incident category: any non-green subsystem absent from
-// BLOCKERS, not the literal Gmail/Tests trigger).
+// (a) SYSTEM HEALTH <-> BLOCKERS dedupe. System Health owns health-check
+// details and remediation. The top Blockers card may count System Health
+// failures, but it must not repeat the named health-check rows. Otherwise the
+// same defect reads as two defects.
 function checkHealthBlockersConsistency(markdown) {
   const fails = [];
   const blockersBody =
@@ -346,10 +342,8 @@ function checkHealthBlockersConsistency(markdown) {
     extractSection(markdown, 'BLOCKERS');
   const nonGreen = allNonGreenSubsystems(markdown);
   if (!nonGreen.length) return fails;
-  // The empty "No hard blockers" form can never satisfy any non-green name.
-  const emptyBlockers = blockersIsEmpty(blockersBody);
   const haystack = String(blockersBody || '').toLowerCase();
-  const missing = nonGreen.filter((name) => {
+  const duplicated = nonGreen.filter((name) => {
     // Normalize: strip the "Life: " prefix, case-insensitive word-boundary
     // contains on the bare name.
     const bare = String(name)
@@ -357,13 +351,12 @@ function checkHealthBlockersConsistency(markdown) {
       .trim()
       .toLowerCase();
     if (!bare) return false;
-    if (emptyBlockers) return true;
     const re = new RegExp(`\\b${escapeRe(bare)}\\b`, 'i');
-    return !re.test(haystack);
+    return re.test(haystack);
   });
-  if (missing.length) {
+  if (duplicated.length) {
     fails.push(
-      `non-green subsystem(s) [${missing.join(', ')}] are not named in BLOCKERS; every non-green subsystem (System Health probes AND Life:* backup rows, including yellow) must appear in BLOCKERS even when other blockers exist`,
+      `non-green subsystem(s) [${duplicated.join(', ')}] are repeated in BLOCKERS; health-check details belong only in SYSTEM HEALTH`,
     );
   }
   return fails;
@@ -590,8 +583,9 @@ function buildCardStatusMap(failures) {
 }
 
 // (b) Tests-truth. If data/agent/tests-blocked.json shows failures or is stale,
-// the SYSTEM HEALTH Tests row must be non-green AND BLOCKERS must carry a Tests
-// entry. A briefing must never show tests clean while the recorded run failed.
+// the SYSTEM HEALTH Tests row must be non-green. A briefing must never show
+// tests clean while the recorded run failed. Blockers must not duplicate the
+// Tests row because System Health owns health-check remediation details.
 function checkTestsTruth(markdown, testsBlocked, opts = {}) {
   const fails = [];
   const freshnessHours = opts.freshnessHours == null ? 14 : opts.freshnessHours;
@@ -611,12 +605,7 @@ function checkTestsTruth(markdown, testsBlocked, opts = {}) {
   const testsInformational =
     /Tests[^\n]*(not evaluated|run on the desktop|desktop, not|informational)/i.test(healthBody);
   if (failedCount === 0 && stale && testsInformational) return fails;
-  const blockersBody =
-    extractSection(markdown, 'BLOCKERS - briefing quality gates') ||
-    extractSection(markdown, 'BLOCKERS / NEEDS FROM ExampleCo') ||
-    extractSection(markdown, 'BLOCKERS');
   const testsNonGreen = nonGreenSubsystems(healthBody).some((name) => /^Tests\b/i.test(name));
-  const blockersHasTests = !blockersIsEmpty(blockersBody) && /\btests?\b/i.test(blockersBody);
 
   const reason =
     failedCount > 0
@@ -624,9 +613,6 @@ function checkTestsTruth(markdown, testsBlocked, opts = {}) {
       : `tests-blocked.json is stale (ranAt older than ${freshnessHours}h)`;
   if (!testsNonGreen) {
     fails.push(`${reason} but SYSTEM HEALTH Tests row is not marked non-green`);
-  }
-  if (!blockersHasTests) {
-    fails.push(`${reason} but BLOCKERS ExampleCos no Tests entry`);
   }
   return fails;
 }
@@ -704,16 +690,15 @@ function checkTokenFreshness(markdown, planUsage, opts = {}) {
   return fails;
 }
 
-// (c3) OTTER SPEAKER staleness must be a SURFACED DEFECT, not a silent note
+// (c3) OTTER SPEAKER staleness must be a SURFACED HEALTH DEFECT, not a silent note
 // (ExampleCo 2026-06-22: "that should be a defect to report, not a silent note").
 // When the OTTER SPEAKER PARETO card trails (>= 2 days behind) or hard-blocks,
 // the staleness must appear as a non-green SYSTEM HEALTH "Otter speaker
-// enrichment" row AND be named on the BLOCKERS card, so the render-QC counts it.
+// enrichment" row. The Blockers card may count that health failure but must not
+// repeat the remediation detail.
 // Category, not the literal "3 days behind" trigger: any trailing/blocked speaker
-// roster that renders without the matching health row + blocker is a hidden
-// defect. The health<->blockers set-diff (checkHealthBlockersConsistency) then
-// enforces the row/blocker pairing once the row exists; this check guarantees the
-// row exists in the first place.
+// roster that renders without the matching health row is a hidden defect. The
+// Blockers card may count the health failure, but must not duplicate the row.
 const SPEAKER_DEFECT_MIN_LAG_DAYS = 2;
 function checkOtterSpeakerStaleness(markdown) {
   const fails = [];
@@ -731,12 +716,6 @@ function checkOtterSpeakerStaleness(markdown) {
 
   const healthRows = nonGreenSubsystems(extractSection(markdown, 'SYSTEM HEALTH'));
   const healthHasSpeaker = healthRows.some((name) => /otter speaker enrichment/i.test(name));
-  const blockersBody =
-    extractSection(markdown, 'BLOCKERS - briefing quality gates') ||
-    extractSection(markdown, 'BLOCKERS / NEEDS FROM ExampleCo') ||
-    extractSection(markdown, 'BLOCKERS');
-  const blockersHasSpeaker =
-    !blockersIsEmpty(blockersBody) && /otter speaker enrichment/i.test(blockersBody || '');
 
   const trailingWord = hardBlocked
     ? 'is blocked (roster empty or too far behind to trust)'
@@ -744,11 +723,6 @@ function checkOtterSpeakerStaleness(markdown) {
   if (!healthHasSpeaker) {
     fails.push(
       `OTTER SPEAKER PARETO ${trailingWord} but SYSTEM HEALTH ExampleCos no non-green "Otter speaker enrichment" row; a trailing/blocked speaker roster must be a surfaced defect, not a silent note`,
-    );
-  }
-  if (!blockersHasSpeaker) {
-    fails.push(
-      `OTTER SPEAKER PARETO ${trailingWord} but BLOCKERS does not name "Otter speaker enrichment"; the staleness defect must be surfaced on the top BLOCKERS card`,
     );
   }
   return fails;
@@ -1515,8 +1489,8 @@ function checkDashboardCardCompleteness(markdown, dateStr) {
 }
 
 // ── New consistency assertions (clean cannot contradict the cards) ────────
-// (a) System-Health <-> Blockers coverage set-diff: every non-green subsystem
-// (probes AND Life:* rows, yellow included) must be named in BLOCKERS.
+// (a) System-Health <-> Blockers dedupe: health-check details live in SYSTEM
+// HEALTH, not repeated in BLOCKERS.
 for (const f of checkHealthBlockersConsistency(md)) fail(f);
 // (a-reverse) The other direction: a BLOCKERS entry that names a SYSTEM HEALTH
 // subsystem as non-green must find that subsystem present + non-green in SYSTEM
@@ -1532,8 +1506,8 @@ for (const f of checkHealthBlockersReverseConsistency(md)) fail(f);
 // says "the owning card must repair the source system" is an Amy-fixable defect,
 // never a ExampleCo blocker. -> feedback_clean_means_dashboard_card_data_complete_not_validator_pass
 for (const f of checkDashboardCardCompleteness(md, date)) fail(f);
-// (b) Tests-truth: recorded test failures/staleness must surface as RED + a
-// Tests blocker, never as a clean briefing.
+// (b) Tests-truth: recorded test failures/staleness must surface as RED in
+// SYSTEM HEALTH, never as a clean briefing.
 for (const f of checkTestsTruth(md, readJson('data/agent/tests-blocked.json'))) fail(f);
 // (c) Token-freshness: stale source data cannot render as a current percentage
 // without an explicit staleness acknowledgment or a token blocker.
@@ -1544,8 +1518,8 @@ for (const f of checkTokenFreshness(md, readJson('data/agent/claude-plan-usage.j
 // render at least N source provenance rows and name the keywords/queries.
 for (const f of checkReputationScan(md)) fail(f);
 // (c3) Otter speaker staleness: a trailing/blocked speaker roster must surface as
-// a non-green SYSTEM HEALTH "Otter speaker enrichment" row AND a named BLOCKERS
-// entry, never a silent in-card note (ExampleCo 2026-06-22).
+// a non-green SYSTEM HEALTH "Otter speaker enrichment" row, never a silent
+// in-card note and never duplicated in BLOCKERS.
 for (const f of checkOtterSpeakerStaleness(md)) fail(f);
 // (d) GLOBAL one-Amy self-narration ban over the ENTIRE briefing body (System
 // Health Attention + BLOCKERS + every card). Subsumes the old BLOCKERS-only
@@ -1555,7 +1529,7 @@ for (const f of checkNoSelfNarration(md)) fail(f);
 // non-empty, in-window evidence items OR a named wall, not a raw count.
 for (const f of checkContentHealEvidence(readJson(`data/agent/content-heal-${date}.json`))) fail(f);
 // (f) Per-card honest-state: a failing card must not render a fake-clean line.
-// Built from the failures accumulated so far plus the structural set-diff.
+// Built from the failures accumulated so far plus the structural dedupe checks.
 for (const f of checkHonestState(md, { cards: buildCardStatusMap(failures) })) fail(f);
 
 const jsonMode = process.argv.includes('--json');

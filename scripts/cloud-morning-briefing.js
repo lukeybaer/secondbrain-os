@@ -1093,11 +1093,9 @@ function addBlocker(blockers, { title, evidence, need, category }) {
   });
 }
 
-// Every card that honest-blocks in its OWN body (OTTER/VOICE "BLOCKER: roster
-// empty", LINKEDIN "hard blocker: scan stale") must ALSO be named on the top
-// BLOCKERS card, or the defect is hidden at the top. ExampleCo 2026-06-22: "Otter is
-// stale in the card, but that defect is not surfaced at the top." Returns one
-// deduped blocker entry per blocked card; pure + exported for tests.
+// Every card that hard-blocks in its own body and is not already covered by
+// System Health should be named on the top Blockers card. Health-owned cards are
+// skipped by caller-provided skipIds so the same issue is not listed twice.
 // Kept identical to the render-QC's marker (verify-dashboard-cards-live.js
 // HARD_BLOCKER_MARKER) so the builder surfaces EXACTLY the cards the QC flags as
 // blocked -- no drift between "what we add to Blockers" and "what the QC demands".
@@ -1137,10 +1135,8 @@ function blockedCardEntries(realById = {}, skipIds = new Set()) {
   const seen = new Set();
   for (const [id, section] of Object.entries(realById)) {
     if (id === 'blockers' || !section) continue;
-    // A card whose hard-block is ALREADY surfaced as a dedicated, named blocker
-    // (e.g. otter_speaker_pareto -> the "Otter speaker enrichment" staleness
-    // blocker) is skipped here so the top BLOCKERS card does not carry two
-    // entries for the same root cause (which would inflate the BLOCKERS-FLOOR).
+    // A health-owned card is skipped here so Blockers does not repeat System
+    // Health remediation detail.
     if (skipIds.has(id)) continue;
     const text = String(section);
     if (!HARD_BLOCK_MARKER.test(text)) continue;
@@ -1191,6 +1187,9 @@ function escapeForRegExp(s) {
 // missing and never duplicate one already present. Evidence/need are DERIVED
 // from the row's own text (no fabrication). Mutates and returns `blockers`.
 function deriveNonGreenSubsystemBlockers(systemHealthSection, blockers, fullLifeSection = '') {
+  void systemHealthSection;
+  void fullLifeSection;
+  return blockers;
   const body = String(systemHealthSection || '').replace(/^SYSTEM HEALTH[^\n]*\n?/, '');
   const lines = body.split(/\r?\n/);
   // (name -> evidence-detail) so each derived blocker quotes the row's own text.
@@ -4524,12 +4523,11 @@ function readDevOpsSnapshot(dataDir, now = Date.now()) {
   };
 }
 
-// ONE source of truth for the Dev Ops verdict consumed by BOTH the SYSTEM
-// HEALTH "Dev Ops" row (buildEc2SubsystemHealthRows) and the matching BLOCKERS
-// entry, so a non-green row can never lack a named blocker (the QC
-// health<->blockers set-diff requires the literal "Dev Ops" in BLOCKERS). On
-// the cloud host the probe is told it is the file-deploy so a non-repo git
-// status and a missing ~/.claude/settings.json are informational, not RED.
+// ONE source of truth for the Dev Ops verdict consumed by the SYSTEM HEALTH
+// "Dev Ops" row (buildEc2SubsystemHealthRows). Blockers counts health failures
+// separately and must not repeat this row's remediation detail. On the cloud
+// host the probe is told it is the file-deploy so a non-repo git status and a
+// missing ~/.claude/settings.json are informational, not RED.
 // Never throws: a probe error falls back to the captured shared-checkout
 // snapshot, then to an honest RED. ExampleCo 2026-06-29 green-tomorrow WAVE 1.
 function computeDevOpsHealthVerdict(dataDir) {
@@ -5974,10 +5972,8 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
 
   // Tests: deliberately NOT run live here (full suite would slow/hang the 5:30am
   // build). This is an INFORMATIONAL row, not a failing subsystem: tests run on
-  // the desktop and in CI, so the cloud build cannot evaluate them and they must
-  // NOT be counted as a non-green subsystem requiring a BLOCKERS entry (ExampleCo
-  // 2026-06-20 #gap: the internal QC failed because the "?" Tests row was treated
-  // as non-green with no matching blocker). The validator's nonGreenSubsystems
+  // the desktop and in CI, so the cloud build cannot evaluate them. The
+  // validator's nonGreenSubsystems
   // excludes a Tests row whose text explicitly says "not evaluated on the cloud
   // build" -- keep that phrasing in sync with the exclusion regex.
   //
@@ -5994,7 +5990,7 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
   }
 
   // The Dev Ops verdict is computed via the shared helper so the row glyph and
-  // the BLOCKERS entry below come from the SAME verdict (no divergence).
+  // the System Health row comes from the same verdict used by the probe helper.
   const devopsVerdict = computeDevOpsHealthVerdict(dataDir);
   push(devopsVerdict.status === 'green' ? OK : BAD, `Dev Ops: ${devopsVerdict.detail}.`);
 
@@ -6063,10 +6059,6 @@ function formatSystemHealthSection({
   );
   const calendarConnected = !calendarOmitted && !scheduleSourceMissing;
   const gmailBlocked = Boolean(actionSourceStatus && actionSourceStatus.blocked);
-  const contentReadiness =
-    incomplete.length > 0
-      ? `Content readiness: ${requiredStates.length - incomplete.length}/${requiredStates.length} required cards complete. Remaining source gaps continue retrying unless a login or approval is named above.`
-      : `Content readiness: ${requiredStates.length}/${requiredStates.length} required cards complete.`;
   const lines = [
     row(OK, 'Cloud briefing: ready. The desktop was not required for this run.'),
     row(serviceOk ? OK : BAD, `Telegram and phone intake: ${service.state}. ${service.detail}`),
@@ -6096,14 +6088,11 @@ function formatSystemHealthSection({
           : 'current enough for this run'
       }.`,
     ),
-    row(incomplete.length > 0 ? BAD : OK, contentReadiness),
   ];
   // Otter speaker enrichment freshness (ExampleCo 2026-06-22): a trailing speaker
   // roster (>= 2 days behind) or an empty/blocked one is a SURFACED DEFECT, not
-  // a silent note. Render a non-green row whose bare subsystem name matches the
-  // BLOCKERS entry (computeSpeakerFreshness.subsystemLabel) so the QC set-diff
-  // (checkHealthBlockersConsistency) counts it. When fresh, render a green row so
-  // the subsystem is always self-describing.
+  // a silent note. System Health owns the detail and remediation for this
+  // health-check row. Blockers only counts it in the issue equation.
   // ONE consolidated "Otter speaker enrichment" row (ExampleCo 2026-06-24): the
   // end-to-end coverage verdict on EC2 (audio/enriched/named/lock/freshness),
   // with a freshness-only fallback off-EC2 where the coverage artifacts + EFS
@@ -6705,6 +6694,8 @@ function computeTestsHealthForHealth(dataDir) {
 // staleness blocker shape so checkHealthBlockersConsistency + checkTestsTruth
 // both find a named Tests entry. Returns null when there is nothing to block on.
 function testsBlockedToBlocker(testsBlocked) {
+  void testsBlocked;
+  return null;
   const health = computeTestsHealth(testsBlocked);
   if (!health.defect) return null;
   return {
@@ -8565,18 +8556,13 @@ function buildCloudMorningBriefing({
     });
   }
 
-  // Otter speaker enrichment staleness is a SURFACED DEFECT, not a silent note
-  // (ExampleCo 2026-06-22). Refresh the pareto first so the freshness read is current,
-  // then escalate any defect (>= 2 days behind, or empty/blocked) to BOTH a
-  // non-green SYSTEM HEALTH row (added in formatSystemHealthSection via
-  // speakerFreshness) AND a named BLOCKERS entry. The shared subsystemLabel keeps
-  // the health row and the blocker title matched so the QC set-diff counts it.
+  // Otter speaker enrichment staleness is a surfaced health defect, not a silent
+  // note (ExampleCo 2026-06-22). Refresh the pareto first so the freshness read is
+  // current, then let System Health own the detail and remediation.
   if (buildTargeted('otter_speaker_pareto')) maybeRegenSpeakerPareto(dataDir);
   const speakerFreshness = computeSpeakerFreshnessForHealth(dataDir);
-  const speakerStalenessSurfaced = Boolean(speakerFreshness && speakerFreshness.defect);
   // Freshness is now folded into the consolidated "Otter speaker enrichment"
-  // coverage verdict + blocker below (ExampleCo 2026-06-24); no separate freshness row.
-  // speakerStalenessSurfaced is still used downstream to skip the pareto regen.
+  // coverage verdict below (ExampleCo 2026-06-24); no separate freshness row.
 
   // Otter speaker enrichment health = the END-TO-END voice processing inspection
   // (ExampleCo 2026-06-24): not "is the roster fresh" but is the whole pipeline
@@ -8584,8 +8570,8 @@ function buildCloudMorningBriefing({
   // voiceprints, and the processing lock not orphaned. The old freshness-only
   // check went GREEN while audio was 23%, naming 13%, and an orphaned EFS lock
   // had stalled everything. This merges freshness + coverage + lock liveness into
-  // ONE row, emits a rich "Probe detail" funnel for the drill-down, and surfaces a
-  // matching blocker. EC2-only (artifacts + EFS lock live there); lazy require +
+  // ONE row and emits a rich "Probe detail" funnel for the drill-down.
+  // EC2-only (artifacts + EFS lock live there); lazy require +
   // full try/catch so a probe error can never break the briefing build.
   let voiceCoverage = null;
   let otterCoverageRebuildFailure = null;
@@ -8714,39 +8700,11 @@ function buildCloudMorningBriefing({
       };
     }
   }
-  if (voiceCoverage && voiceCoverage.defect) {
-    addBlocker(blockers, {
-      title: voiceCoverage.blockerTitle,
-      evidence: voiceCoverage.blockerEvidence,
-      need: voiceCoverage.blockerNeed,
-    });
-  } else if (!voiceCoverage && speakerFreshness && speakerFreshness.defect) {
-    // Off-EC2 (desktop/test): coverage probe unavailable; keep the freshness
-    // blocker so a stale roster still surfaces consistently with its fallback row.
-    addBlocker(blockers, {
-      title: speakerFreshness.blockerTitle,
-      evidence: speakerFreshness.blockerEvidence,
-      need: speakerFreshness.blockerNeed,
-    });
-  }
+  // Otter health defects are rendered in System Health. Blockers counts them in
+  // the issue equation but does not duplicate the remediation details.
 
-  // Dev Ops health is a non-green SYSTEM HEALTH row on EC2 when the shared
-  // checkout is dirty/diverged or the hooks are mis-wired. The row alone is not
-  // enough: the QC health<->blockers set-diff requires every non-green subsystem
-  // to be NAMED in BLOCKERS. Emit a matching blocker whose title contains the
-  // literal "Dev Ops" so the row and the blocker reconcile. EC2-only (the row is
-  // EC2-only); the shared helper applies the cloud file-deploy carve-outs so an
-  // expected non-repo/missing-home-config no longer trips this. ExampleCo 2026-06-29.
-  if (runningOnEc2(dataDir)) {
-    const devopsHealth = computeDevOpsHealthVerdict(dataDir);
-    if (devopsHealth.status !== 'green') {
-      addBlocker(blockers, {
-        title: 'Dev Ops checkout or hooks need repair',
-        evidence: `Dev Ops probe failed: ${devopsHealth.detail}.`,
-        need: 'Repair: Amy must reconcile the shared checkout (clean/sync) and rewire any missing hooks, then rerun the Dev Ops probe.',
-      });
-    }
-  }
+  // Dev Ops health is an EC2 System Health row. Do not duplicate it as a
+  // Blockers row.
 
   // Tests-truth is HONEST SURFACING of real failures, not hiding them (build QC
   // 2026-06-23). When data/agent/tests-blocked.json records failing assertions,
@@ -8754,14 +8712,8 @@ function buildCloudMorningBriefing({
   // AND a named Tests BLOCKERS entry so the briefing can never claim tests are
   // fine while a recorded run failed.
   const testsHealth = computeTestsHealthForHealth(dataDir);
-  if (testsHealth.defect) {
-    const testsBlocker = testsBlockedToBlocker({
-      failed: testsHealth.failed,
-      total: testsHealth.total,
-      items: testsHealth.names.map((name) => ({ name })),
-    });
-    if (testsBlocker) addBlocker(blockers, testsBlocker);
-  }
+  // Test failures are rendered in System Health. Blockers counts them in the
+  // issue equation but does not duplicate the remediation details.
 
   const cyberCabOfficialEvidence =
     buildTargeted('tesla_cybercab') && shouldRunCyberCabOfficialCheck(dataDir)
@@ -8963,24 +8915,20 @@ function buildCloudMorningBriefing({
   // surface each card-level hard-block on the top BLOCKERS card and re-render it.
   // A blocked card that is absent from the Blockers card is a hidden defect; the
   // render-QC BLOCKERS-UNDER-REPORT + BLOCKERS-FLOOR checks both enforce this.
-  // When the Otter speaker staleness is already surfaced as the dedicated
-  // "Otter speaker enrichment" blocker (matching the SYSTEM HEALTH row name),
-  // skip the generic otter_speaker_pareto hard-block entry so the same root
-  // cause is not double-counted on the BLOCKERS card.
-  const blockedSkipIds = new Set();
-  if (speakerStalenessSurfaced) blockedSkipIds.add('otter_speaker_pareto');
+  // Cards whose blocked state is already represented inside System Health should
+  // not also become visible Blockers rows. The Blockers card counts health
+  // failures separately in its issue equation.
+  const blockedSkipIds = new Set([
+    'system_health',
+    'otter_speaker_pareto',
+    'covid_news',
+    'content_pipeline',
+    'video_approval_queue',
+  ]);
   for (const entry of blockedCardEntries(realById, blockedSkipIds)) addBlocker(blockers, entry);
 
-  // SYSTEM HEALTH <-> BLOCKERS set-diff (validate-briefing-quality.js
-  // checkHealthBlockersConsistency): EVERY non-green (red OR yellow) SYSTEM
-  // HEALTH subsystem row must be NAMED in the BLOCKERS body, even when other
-  // blockers already exist. The card-level loop above only covers cards that
-  // hard-block in their own body; aggregate health rows like "Content readiness"
-  // and per-source rows like "US immigration news" / "COVID treatments" live
-  // only in SYSTEM HEALTH with no owning card, so they slipped past it and
-  // tripped the gate. deriveNonGreenSubsystemBlockers names every non-green
-  // subsystem (incl Life:* backup rows) not already named, satisfying the gate.
-  deriveNonGreenSubsystemBlockers(realById.system_health, blockers, realById.full_life_backup);
+  // System Health owns health-check details and remediation. Do not derive
+  // Blockers rows from non-green System Health rows.
   realById.blockers = renderBlockersSection(blockers, { dataDir });
 
   // ---- NEVER-DROP CHOKEPOINT: assemble from the canonical manifest ----

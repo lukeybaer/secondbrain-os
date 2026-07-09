@@ -1921,6 +1921,19 @@ function cardIdForTile(tile) {
   return card ? card.id : '';
 }
 
+const SYSTEM_HEALTH_COVERED_CARD = {
+  system_health: /./i,
+  otter_speaker_pareto: /Otter speaker enrichment/i,
+  covid_news: /COVID treatments/i,
+  content_pipeline: /Content readiness/i,
+  video_approval_queue: /Content readiness/i,
+};
+
+function isCoveredBySystemHealth(cardId, systemHealthText) {
+  const re = SYSTEM_HEALTH_COVERED_CARD[cardId];
+  return Boolean(re && re.test(String(systemHealthText || '')));
+}
+
 function dashboardCardOrderDefects(tiles) {
   const indexes = new Map();
   tiles.forEach((tile, idx) => {
@@ -2243,6 +2256,8 @@ function blockersNamedCardDefects(tiles, defectsByCard) {
 function blockersUnderReportDefects(tiles) {
   const blockersTile = tiles.find((t) => /^BLOCKERS\b/i.test(t.name));
   if (!blockersTile) return [];
+  const systemHealthTile = tiles.find((t) => /^SYSTEM HEALTH\b/i.test(t.name));
+  const systemHealthText = systemHealthTile ? `${systemHealthTile.body || ''} ${systemHealthTile.inner || ''}` : '';
 
   const body = String(blockersTile.body || '');
   // The Blockers card "names" blockers when it lists rows; treat it as empty for
@@ -2259,6 +2274,7 @@ function blockersUnderReportDefects(tiles) {
     if (!isBlocked) continue;
     // Blocked card is fine as long as the Blockers card actually names it.
     const card = cardIdForTile(t);
+    if (isCoveredBySystemHealth(card, systemHealthText)) continue;
     if (!blockersLooksEmpty && isNamedInBlockers(t, body, card)) continue;
     const reason = blockersLooksEmpty
       ? 'the Blockers card renders empty/"Clear: no owner decision"'
