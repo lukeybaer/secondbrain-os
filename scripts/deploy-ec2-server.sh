@@ -100,6 +100,13 @@ LIVE_DEPS=(
   # refresh-briefing-generated-sections.js imports this directly for generated
   # call display titles, so it must ship with the refresh entrypoint.
   "scripts/otter-call-exec-summaries.js"
+  # Voice confirmation queue/review helpers (2026-07-09): deployed
+  # refresh-briefing-generated-sections.js imports the queue builder directly,
+  # and ec2-server.js opens the review-clips page through the sequence renderer.
+  # Ship them with the refresh/server path so recurring acoustic ExampleCos cannot
+  # silently fall back to stale /opt copies.
+  "scripts/voice-confirmation-queue-build.js"
+  "scripts/voice-sample-sequence-review-html.js"
 )
 
 echo "[deploy] syntax-checking repo ec2-server.js"
