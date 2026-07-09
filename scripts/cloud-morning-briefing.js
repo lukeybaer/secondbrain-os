@@ -5976,18 +5976,17 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
     push(ExampleCo, 'Life-archive backup: snapshot could not be read on this host.');
   }
 
-  // Tests: deliberately NOT run live here (full suite would slow/hang the 5:30am
-  // build). This is an INFORMATIONAL row, not a failing subsystem: tests run on
-  // the desktop and in CI, so the cloud build cannot evaluate them. The
-  // validator's nonGreenSubsystems
-  // excludes a Tests row whose text explicitly says "not evaluated on the cloud
-  // build" -- keep that phrasing in sync with the exclusion regex.
+  // Automated regression suite: deliberately NOT run live here (full suite would
+  // slow/hang the 5:30am build). This is an INFORMATIONAL row, not a failing
+  // subsystem: tests run on the desktop and in CI, so the cloud build cannot
+  // evaluate them. The validator's nonGreenSubsystems excludes this row when
+  // its text says it is informational/no-current-proof.
   //
   // EXCEPTION (build QC 2026-06-23): when data/agent/tests-blocked.json records
-  // real failures, the caller renders an honest ✗ Tests row in
+  // real failures, the caller renders honest product-area rows in
   // formatSystemHealthSection and sets skipTestsRow so we do NOT also emit this
-  // informational "?" row -- the section must carry exactly one Tests row, and a
-  // recorded failure is a real failing subsystem, not "not evaluated".
+  // informational "?" row. Recorded failures are real failing product-area
+  // subsystems, not "not evaluated".
   if (!opts.skipTestsRow) {
     rows.push(INFORMATIONAL_TESTS_ROW);
   }
@@ -6126,12 +6125,12 @@ function formatSystemHealthSection({
     const fleetOk = scheduleFleet && scheduleFleet.ok;
     lines.push(row(fleetOk ? OK : BAD, fleetLine));
   }
-  // Tests-truth (build QC: when data/agent/tests-blocked.json records failing
-  // assertions, the Tests row MUST be non-green with a factual Status line and
-  // be named in BLOCKERS). When there ARE failures we render the honest ✗ Tests
-  // row here and tell buildEc2SubsystemHealthRows to drop its informational "?"
-  // Tests row so the section never ExampleCos two conflicting Tests rows. When
-  // there are NO failures we leave the informational row to the EC2 probe set.
+  // Tests-truth (build QC): when data/agent/tests-blocked.json records failing
+  // assertions, product-area rows MUST be non-green with factual Status lines.
+  // When there ARE failures we render those rows here and tell
+  // buildEc2SubsystemHealthRows to drop its informational automated-regression
+  // row so the section never ExampleCos conflicting test-health rows. When there
+  // are NO failures we leave the informational row to the EC2 probe set.
   const testsDefect = Boolean(testsHealth && testsHealth.defect);
   if (testsDefect) {
     for (const testsRow of testsHealth.rows || []) lines.push(testsRow);
@@ -6172,10 +6171,14 @@ function formatSystemHealthSection({
     if (!m) continue;
     const name = m[2].trim();
     const detail = m[3].trim();
-    // Skip the informational Tests row (not evaluated on the cloud build).
+    // Skip the informational automated-regression row. It is a fact about where
+    // tests run, not a failing subsystem, so it must not create a hard-blocker
+    // marker via the Attention block.
     if (
-      /\bTests\b/i.test(name) &&
-      /not evaluated on the cloud build|run on the desktop/i.test(detail)
+      /\b(?:Tests|Automated regression suite)\b/i.test(name) &&
+      /not evaluated on the cloud build|run on the desktop|desktop and in CI|no current runtime proof|informational/i.test(
+        detail,
+      )
     )
       continue;
     attention.push({ glyph: m[1], name, status: detail });
