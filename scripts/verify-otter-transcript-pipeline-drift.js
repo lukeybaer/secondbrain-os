@@ -30,6 +30,7 @@ const STAGE_FILES = [
   'scripts/otter-post-ingest-voice-intelligence.js',
   'scripts/otter-diarized-segment-backfill.js',
   'scripts/otter-wavlm-speaker-resolver.js',
+  'scripts/voice-sample-sequence-review-html.js',
   'scripts/otter-life-relevance-enricher.js',
   'deploy/voice-fargate/taskdef.json',
 ];
@@ -61,6 +62,21 @@ const MUST_CONTAIN = [
     'scripts/otter-post-ingest-voice-intelligence.js',
     'diarized',
     'orchestrator runs the diarized step',
+  ],
+  [
+    'scripts/otter-post-ingest-voice-intelligence.js',
+    "SPEAKER_MATCH_SCORE: process.env.SPEAKER_MATCH_SCORE || '0.56'",
+    'live post-ingest voice matching defaults to the calibrated 0.56 acoustic threshold',
+  ],
+  [
+    'scripts/voice-sample-sequence-review-html.js',
+    'This page is voice-only',
+    'voice review clip membership is acoustic, not text/context alias expansion',
+  ],
+  [
+    'scripts/voice-sample-sequence-review-html.js',
+    'distinct_calls_found',
+    'recurring ExampleCo review can prove consistency across multiple calls',
   ],
 ];
 
@@ -109,6 +125,9 @@ function checkDrift(repoRoot) {
   const doc = read(DOC) || '';
   if (doc && !/NOT from Otter|Gmail-derived|not a wired output/i.test(doc)) {
     failures.push('doc no longer states that action items are Gmail-derived, not an Otter stage');
+  }
+  if (doc && !/SPEAKER_MATCH_SCORE=0\.56|voice-only review page|distinct calls/i.test(doc)) {
+    failures.push('doc no longer states the voice-only review and 0.56 acoustic matching standard');
   }
 
   return { failures, warnings };
