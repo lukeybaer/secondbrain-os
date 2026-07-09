@@ -172,6 +172,15 @@ for libdir in "scripts/lib" "scripts/self-heal"; do
   fi
 done
 
+if [ -f "$ROOT/data/agent/devops-health-latest.json" ]; then
+  echo "[deploy] pushing fresh Dev Ops desktop checkout snapshot"
+  scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/data/agent/devops-health-latest.json" "$HOST:/tmp/devops-health-latest.json"
+  ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+    "sudo mkdir -p /opt/secondbrain/data/agent && sudo cp /tmp/devops-health-latest.json /opt/secondbrain/data/agent/devops-health-latest.json && sudo chown ec2-user:ec2-user /opt/secondbrain/data/agent/devops-health-latest.json && rm -f /tmp/devops-health-latest.json"
+else
+  echo "[deploy] WARNING: no data/agent/devops-health-latest.json snapshot to ship; EC2 Dev Ops health will red-line snapshot proof."
+fi
+
 # Require-resolution gate (2026-07-06): BEFORE pm2 restart, statically walk the
 # relative-require closure of the just-deployed server.js on EC2 and abort if
 # anything is missing. `node -c` only syntax-checks; it never resolves
