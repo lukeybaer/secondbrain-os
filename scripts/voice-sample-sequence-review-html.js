@@ -11,7 +11,6 @@ const limitIndex = process.argv.indexOf('--limit');
 const limit = limitIndex >= 0 ? Number(process.argv[limitIndex + 1] || '20') : 20;
 const repo = process.cwd();
 const enrichedDir = path.join(repo, 'data', 'otter', 'enriched');
-const paretoPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'speaker-pareto-latest.json');
 const probeIndexPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'track-probe-index-latest.json');
 const callRostersPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'otter-call-speaker-rosters-latest.json');
 const reportDir = path.join(repo, 'reports');
@@ -67,6 +66,13 @@ function normalizeId(value) {
   return String(value || '').replace(/^(ExampleCo|known):/, '');
 }
 
+function targetAliases() {
+  const aliases = new Set([String(target), normalizeId(target)]);
+  const person = String(target || '').match(/^person:(.+)$/);
+  if (person) aliases.add(person[1]);
+  return aliases;
+}
+
 function segmentText(segments) {
   return segments
     .map((segment) => String(segment.text || segment.transcript || '').replace(/\s+/g, ' ').trim())
@@ -76,47 +82,21 @@ function segmentText(segments) {
 }
 
 function trackMatches(track, label) {
+  const aliases = targetAliases();
   const candidates = [
     track.acoustic_ExampleCo_id,
     track.voice_cluster_id,
     track.ExampleCo_speaker_id,
     track.person_id,
+    track.confirmed_person_id,
+    track.person_id ? `person:${track.person_id}` : '',
+    track.confirmed_person_id ? `person:${track.confirmed_person_id}` : '',
     track.resolved_person,
     track?.resolved_speaker?.person_id,
+    track?.resolved_speaker?.person_id ? `person:${track.resolved_speaker.person_id}` : '',
     label,
   ].filter(Boolean).map(String);
-  return candidates.includes(String(target));
-}
-
-function targetAliases() {
-  const aliases = new Set([String(target), normalizeId(target)]);
-  const pareto = readJson(paretoPath, {});
-  const arrays = [
-    pareto.known,
-    pareto.acoustic_ExampleCo,
-    pareto.context_or_no_audio_ExampleCo,
-    pareto.priority_ExampleCo_relationships,
-    pareto.all_unresolved_relationships,
-    pareto.recurring_unnamed_relationships,
-    pareto.all_pareto,
-  ].filter(Array.isArray);
-  for (const rows of arrays) {
-    for (const row of rows) {
-      const ids = [
-        row.label,
-        row.speaker_key,
-        normalizeId(row.speaker_key),
-        row.person_id,
-        row.display_name,
-      ].filter(Boolean).map(String);
-      if (!ids.includes(String(target)) && !ids.includes(normalizeId(target))) continue;
-      aliases.add(String(row.label || ''));
-      aliases.add(String(row.speaker_key || ''));
-      aliases.add(normalizeId(row.speaker_key));
-      for (const id of row.voice_cluster_ids || row.relationship_dossier?.voice_cluster_ids || []) aliases.add(String(id));
-    }
-  }
-  return aliases;
+  return candidates.some((id) => aliases.has(id) || aliases.has(normalizeId(id)));
 }
 
 function loadRosterByOtid() {
@@ -213,14 +193,14 @@ function rowsFromEnriched() {
   return out;
 }
 
-// Acoustic ExampleCo IDs are the durable cross-call grouping key. Do not expand
-// them through bare `speaker_##########` aliases from the probe index: older
-// artifacts can reuse a speaker cluster id across different calls, which makes
-// a review page show an out-of-group track. For ExampleCo voice groups, trust the
-// current enriched transcript's `acoustic_ExampleCo_id` membership exactly.
+// This page is voice-only. Do not expand targets through Pareto rows, names,
+// topics, or relationship dossiers: those are useful context, but not acoustic
+// membership. Exact person/voice ids and current enriched speaker tracks are the
+// only source of truth for review clips.
 const acousticExampleCoTarget = /^ExampleCo_voice_/.test(String(target || ''));
-const rows = acousticExampleCoTarget ? rowsFromEnriched() : rowsFromProbeIndex();
-if (!rows.length && !acousticExampleCoTarget) rows.push(...rowsFromEnriched());
+const personTarget = /^person:/.test(String(target || ''));
+const rows = acousticExampleCoTarget || personTarget ? rowsFromEnriched() : rowsFromProbeIndex();
+if (!rows.length && !acousticExampleCoTarget && !personTarget) rows.push(...rowsFromEnriched());
 
 rows.sort((a, b) => (
   String(b.date).localeCompare(String(a.date)) ||
@@ -229,15 +209,17 @@ rows.sort((a, b) => (
 ));
 
 const byDay = [];
-const seenDates = new Set();
+const seenCalls = new Set();
 for (const row of rows) {
-  if (seenDates.has(row.date)) continue;
-  seenDates.add(row.date);
+  const callKey = row.otid || `${row.date}|${row.title}`;
+  if (seenCalls.has(callKey)) continue;
+  seenCalls.add(callKey);
   byDay.push(row);
   if (byDay.length >= limit) break;
 }
 
 const playable = byDay.filter((row) => row.audioExists).length;
+const selectedDays = new Set(byDay.map((row) => row.date));
 const reviewSlug = slug(target);
 const outPath = path.join(reportDir, `life-archive-voice-sequence-${reviewSlug}.html`);
 const legacyOutPath = path.join(reportDir, `life-archive-voice-sequence-${reviewSlug}-${byDay.length}.html`);
@@ -250,7 +232,8 @@ const manifest = {
   target,
   requested_limit: limit,
   total_tracks_found: rows.length,
-  distinct_days_found: seenDates.size,
+  distinct_calls_found: seenCalls.size,
+  distinct_days_found: new Set(rows.map((row) => row.date)).size,
   samples_selected: byDay.length,
   playable_samples: playable,
   samples: byDay,
@@ -519,11 +502,11 @@ const html = `<!doctype html>
       <div>
         <h1>Voice Sequence Review</h1>
         <div class="meta">Target: <code>${esc(target)}</code></div>
-        <div class="subtle">Most recent ${byDay.length} calls from ${byDay.length} different days. Use Next to pause the current clip and immediately start the next one.</div>
+        <div class="subtle">Most recent ${byDay.length} call clips from ${selectedDays.size} different days. Use Next to pause the current clip and immediately start the next one.</div>
       </div>
       <div class="stats">
         <div class="stat"><strong>${rows.length}</strong><span>matched tracks</span></div>
-        <div class="stat"><strong>${seenDates.size}</strong><span>distinct days</span></div>
+        <div class="stat"><strong>${seenCalls.size}</strong><span>distinct calls</span></div>
         <div class="stat"><strong>${playable}/${byDay.length}</strong><span>playable selected</span></div>
       </div>
     </header>
