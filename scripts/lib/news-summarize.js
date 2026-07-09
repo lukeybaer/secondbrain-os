@@ -737,6 +737,8 @@ const CLAUSE_START = '(?<=^|[.!?]\\s)';
 const NEWS_PUBLISHER_CHROME_LABELS = [
   'Image source',
   'Image caption',
+  'Image credit',
+  'Image credits',
   'Courtesy photo',
   'Business reporter',
   'BBC Verify',
@@ -800,6 +802,7 @@ const NEWS_PUBLISHER_CHROME_PATTERNS = [
   String.raw`\bbroadcast on (?:the )?CBS\b`,
   String.raw`\bstreams on (?:the )?CBS\b`,
   String.raw`\bwatch CBS News\b`,
+  String.raw`:\s*(?:Image|Photo)\s+Credits?:\s*[^.!?\n]{1,120}?(?=\s+[A-Z][a-z])`,
   String.raw`\[?deltaMinutes?\]?`,
 ];
 
@@ -837,6 +840,11 @@ function newsPublisherChromeSource() {
 // stripper with the detector's literal-label set.
 const SHARED_LABEL_CHROME_RE = new RegExp(
   CLAUSE_START + '(?:' + newsChromeLabelAlternationSource() + ')[.!?]?',
+  'g',
+);
+
+const EMBEDDED_IMAGE_CREDIT_RE = new RegExp(
+  String.raw`:\s*(?:Image|Photo)\s+Credits?:\s*[^.!?\n]{1,120}?(?=\s+[A-Z][a-z])`,
   'g',
 );
 
@@ -1046,6 +1054,7 @@ function stripPublisherChrome(text) {
   // break ("Real sentence.\n\nHeard on ..."). Without this a chrome label that
   // leads a ExampleCoraph escapes the clause anchor (Codex review 2026-06-23).
   let s = String(text || '').replace(/\s+/g, ' ');
+  s = s.replace(EMBEDDED_IMAGE_CREDIT_RE, '. ');
   // Collapse whitespace BETWEEN each rule so the clause-start lookbehind always
   // sees a single space: an earlier rule that replaces a chrome run with a space
   // can leave ". <space><space>Sponsor Message ...", and a multi-space gap would
