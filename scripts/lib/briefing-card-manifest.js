@@ -242,6 +242,15 @@ const CARD_DEFINITIONS = [
     match: /^REPUTATION RISK SCAN\b/i,
     always: true,
     condition: 'Always: reputation risk scan tile.',
+    // BLOCKED-TILE fix (live-render-qc-blocked-tile-on-reputation-risk 2026-07-10):
+    // When the morning EC2 Google News scan fails (all queries timeout), no artifact
+    // is written and the card stays red. Without a heal entry the mechanical runbook
+    // has nothing to run -- "No repair attempt was recorded". refresh-card.js re-runs
+    // the scan (runningOnEc2 true for /opt/secondbrain/data) and splices the result.
+    heal: {
+      command: ['node', 'scripts/refresh-card.js', 'reputation_risk', '--publish'],
+      timeoutMs: 120000,
+    },
   },
   {
     id: 'amy_projects',
