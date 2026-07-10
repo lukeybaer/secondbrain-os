@@ -113,8 +113,8 @@ const MUST_CONTAIN = [
   ],
   [
     'ec2-server.js',
-    'const matchedPeople = actionPerson || artifactPerson;',
-    'voice confirmation UI cannot preselect a people file from a heard-name/context guess',
+    'const matchedPeople = actionPerson;',
+    'voice confirmation UI preselects a people file only after a ExampleCo-confirmed action',
   ],
   [
     'scripts/voice-confirmation-queue-build.js',
