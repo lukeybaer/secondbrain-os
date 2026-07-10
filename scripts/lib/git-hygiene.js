@@ -312,9 +312,45 @@ function inspectWorktreeCleanliness(worktreePath, opts = {}) {
   }
 }
 
+// A session lease is an ownership proof, not cleanup metadata. A branch may
+// already be landed and its worktree may currently be clean, but it is still
+// active until the owning session finishes. Keep it visible without offering it
+// to the janitor or presenting it as safe cleanup.
+function classifyLandedWorktreeSafety(landedBranches, opts = {}) {
+  const liveWorktrees = opts.liveWorktrees || new Set();
+  const isLive = (worktreePath) =>
+    Boolean(worktreePath && liveWorktrees.has(path.resolve(worktreePath)));
+  const withLeaseState = landedBranches.map((branch) => ({
+    ...branch,
+    worktreeLive: isLive(branch.worktree),
+  }));
+  const lockedLandedBranches = withLeaseState.filter((branch) => branch.worktreeLocked);
+  const liveLandedBranches = withLeaseState.filter(
+    (branch) => !branch.worktreeLocked && branch.worktreeLive,
+  );
+  const inspectedLandedBranches = withLeaseState
+    .filter((branch) => !branch.worktreeLocked && !branch.worktreeLive)
+    .map((branch) => {
+      const inspection = inspectWorktreeCleanliness(branch.worktree, {
+        cwd: opts.cwd,
+        probeWorktreeStatus: opts.probeWorktreeStatus,
+      });
+      return { ...branch, worktreeState: inspection.state, worktreeClean: inspection.clean };
+    });
+  return {
+    lockedLandedBranches,
+    liveLandedBranches,
+    reapableLandedBranches: inspectedLandedBranches.filter((branch) => branch.worktreeClean),
+    dirtyLandedBranches: inspectedLandedBranches.filter((branch) => branch.worktreeState === 'dirty'),
+    unverifiedLandedBranches: inspectedLandedBranches.filter(
+      (branch) => branch.worktreeState === 'unverified',
+    ),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // classifyGitState -- the full snapshot. Core metadata is a handful of Git
-// calls; attached landed worktrees are also checked so "safe to clear" remains honest.
+// calls; attached landed worktrees are checked so "safe to clear" remains honest.
 // ---------------------------------------------------------------------------
 
 function classifyGitState(opts = {}) {
@@ -390,6 +426,13 @@ function classifyGitState(opts = {}) {
   // worktree map: branch -> worktree path
   const wtRaw = safe(['worktree', 'list', '--porcelain'], '');
   const { worktrees, branchToWorktree } = parseWorktreeList(wtRaw);
+  const liveWorktrees =
+    opts.liveWorktrees ||
+    readLiveWorktrees({
+      tasksDir: opts.tasksDir,
+      nowMs: opts.nowMs || Date.now(),
+      maxAgeHours: opts.maxAgeHours,
+    });
 
   // all local branches
   const branchRaw = safe(
@@ -444,21 +487,17 @@ function classifyGitState(opts = {}) {
   const protectedBranches = branches.filter((b) => b.category === 'protected');
   const parkedBranches = branches.filter((b) => b.category === 'parked');
   const landedBranches = branches.filter((b) => b.category === 'landed');
-  const lockedLandedBranches = landedBranches.filter((b) => b.worktreeLocked);
-  const inspectedLandedBranches = landedBranches
-    .filter((b) => !b.worktreeLocked)
-    .map((branch) => {
-      const inspection = inspectWorktreeCleanliness(branch.worktree, {
-        cwd: repoRoot,
-        probeWorktreeStatus: opts.probeWorktreeStatus,
-      });
-      return { ...branch, worktreeState: inspection.state, worktreeClean: inspection.clean };
-    });
-  const reapableLandedBranches = inspectedLandedBranches.filter((b) => b.worktreeClean);
-  const dirtyLandedBranches = inspectedLandedBranches.filter((b) => b.worktreeState === 'dirty');
-  const unverifiedLandedBranches = inspectedLandedBranches.filter(
-    (b) => b.worktreeState === 'unverified',
-  );
+  const {
+    lockedLandedBranches,
+    liveLandedBranches,
+    reapableLandedBranches,
+    dirtyLandedBranches,
+    unverifiedLandedBranches,
+  } = classifyLandedWorktreeSafety(landedBranches, {
+    liveWorktrees,
+    cwd: repoRoot,
+    probeWorktreeStatus: opts.probeWorktreeStatus,
+  });
   const strayBranches = branches.filter((b) => b.category === 'stray');
 
   const parkedStashes = stashes.filter((s) => s.parked);
@@ -482,6 +521,7 @@ function classifyGitState(opts = {}) {
       landedReapable: reapableLandedBranches.length,
       landedDirty: dirtyLandedBranches.length,
       landedUnverified: unverifiedLandedBranches.length,
+      landedLive: liveLandedBranches.length,
       landedLocked: lockedLandedBranches.length,
       lockedWorktrees: worktrees.filter((w) => w.locked).length,
       stray: strayBranches.length,
@@ -508,6 +548,9 @@ function classifyGitState(opts = {}) {
       dirtyLanded: { branches: dirtyLandedBranches },
       // A timed-out or unreadable worktree is not evidence of cleanliness.
       unverifiedLanded: { branches: unverifiedLandedBranches },
+      // A live session owns this landed worktree. It is informational, not a
+      // cleanup candidate, until the session completes or its lease expires.
+      activeLanded: { branches: liveLandedBranches },
       // LOCKED LANDED: already in master but Git has an explicit lock. This is
       // not safe-cleanup work and must never be presented as auto-reapable.
       locked: { branches: lockedLandedBranches },
@@ -535,6 +578,7 @@ module.exports = {
   categorizeBranch,
   parseWorktreeList,
   inspectWorktreeCleanliness,
+  classifyLandedWorktreeSafety,
   classifyGitState,
   readLiveWorktrees,
   PROTECTED_PATTERNS,

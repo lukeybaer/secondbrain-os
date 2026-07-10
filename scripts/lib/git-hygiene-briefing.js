@@ -148,6 +148,8 @@ function decisionAdvice(kind, label) {
     return `Advice: this branch is landed, but its worktree has later edits. Do not auto-remove it. Land, Park, or Drop the edits after review. Summary: ${label}.`;
   if (kind === 'unverified-landed')
     return `Advice: this branch is landed, but its worktree could not be verified clean. Do not auto-remove it. Restore access or review it before cleanup. Summary: ${label}.`;
+  if (kind === 'live-landed')
+    return `Advice: this branch is landed but actively leased by a running session. Do not clear it until the session finishes or the lease expires. Summary: ${label}.`;
   if (kind === 'protected')
     return `Advice: preserve this rescue snapshot; use it only as evidence or recovery material. Summary: ${label}.`;
   return `Advice: choose Land if this belongs in the product now, Park if it is still valuable but blocked, or Drop if it no longer fits ExampleCo's priorities. Summary: ${label}.`;
@@ -187,6 +189,7 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   const safeToClear = buckets.safeToClear || {};
   const dirtyLanded = buckets.dirtyLanded || {};
   const unverifiedLanded = buckets.unverifiedLanded || {};
+  const activeLanded = buckets.activeLanded || {};
   const locked = buckets.locked || {};
   const protectedBucket = buckets.protected || {};
 
@@ -197,6 +200,7 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   const safeBranches = asArray(safeToClear.branches);
   const dirtyLandedBranches = asArray(dirtyLanded.branches);
   const unverifiedLandedBranches = asArray(unverifiedLanded.branches);
+  const activeLandedBranches = asArray(activeLanded.branches);
   const lockedBranches = asArray(locked.branches);
   const protectedBranches = asArray(protectedBucket.branches);
   const strayItems =
@@ -319,6 +323,20 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
     ),
   );
   if (safeBranches.length > maxRows) lines.push(`  ... +${safeBranches.length - maxRows} more`);
+  lines.push('');
+
+  lines.push(
+    ...formatRows(
+      'Active landed worktrees protected by a live session',
+      activeLandedBranches
+        .slice(0, maxRows)
+        .map((branch) => decisionAdvice('live-landed', branchLabel(branch))),
+      'none',
+    ),
+  );
+  if (activeLandedBranches.length > maxRows) {
+    lines.push(`  ... +${activeLandedBranches.length - maxRows} more`);
+  }
   lines.push('');
 
   lines.push(

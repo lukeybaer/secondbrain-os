@@ -217,6 +217,20 @@ function runJanitor(opts = {}) {
     if (done >= cap) break;
     try {
       gh.assertSafeToClean(manifest.repoRoot, item.branch); // re-check at apply time
+      const liveAtApply = (opts.readLiveWorktrees || gh.readLiveWorktrees)({
+        nowMs: opts.nowMs || Date.now(),
+        tasksDir: opts.tasksDir,
+      });
+      if (item.worktree && liveAtApply.has(path.resolve(item.worktree))) {
+        actions.push({
+          branch: item.branch,
+          worktree: item.worktree,
+          ok: false,
+          skipped: 'live',
+          error: `refuse: ${item.branch} acquired a live session lease after planning`,
+        });
+        continue;
+      }
       if (!isStillLanded(manifest.repoRoot, item.branch)) {
         throw new Error(`refuse: ${item.branch} is no longer an ancestor of origin/master`);
       }
