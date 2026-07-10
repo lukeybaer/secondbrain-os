@@ -136,7 +136,7 @@ function pullEc2CreatedContacts() {
 function runPeopleSync() {
   // The two people-sync steps, run directly against the git checkout.
   const a = sh(process.execPath, ['scripts/sync-otter-speaker-intelligence-to-people-files.js', '--write']);
-  const b = sh(process.execPath, ['scripts/sync-voiceprints-to-people-files.js', '--write', '--all-contacts', '--json']);
+  const b = sh(process.execPath, ['scripts/sync-voiceprints-to-people-files.js', '--write', '--json']);
   return { speaker_people_sync_ok: a.status === 0, voiceprint_people_sync_ok: b.status === 0,
     stderr: [String(a.stderr || '').slice(-300), String(b.stderr || '').slice(-300)].filter(Boolean).join(' | ') };
 }
@@ -210,10 +210,8 @@ function main() {
 
   const noPull = process.argv.includes('--no-pull');
   const noPublish = process.argv.includes('--no-publish');
-  // Default to NOT committing: --all-contacts regenerates "Last synced" blocks
-  // across hundreds of files, and this repo is a multi-session shared tree.
-  // Bulk-committing would sweep in peers' uncommitted work. Pass --commit to
-  // opt in (the nightly people-sync job owns the routine bulk commit).
+  // Default to NOT committing: even semantic people-file updates need an owned
+  // landing decision in a multi-session repository. Pass --commit to opt in.
   const noCommit = !process.argv.includes('--commit');
   const report = { schema: 'life_archive_voice_git_people_sync.v1', generated_at: new Date().toISOString() };
   report.pull = noPull ? { skipped: true } : pullArtifacts();
