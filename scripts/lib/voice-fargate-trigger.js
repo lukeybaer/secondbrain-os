@@ -15,6 +15,12 @@ const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+const VOICE_TASK_STANDARD_ENV = Object.freeze({
+  VOICE_SPEAKER_BACKEND: 'ecapa',
+  SPEAKER_MATCH_SCORE: '0.56',
+  SPEAKER_MATCH_MARGIN: '0.06',
+});
+
 // Stage the raw transcript(s) for these otids from the local raw dir onto the
 // EFS mount so the Fargate container (which reads raw from EFS) can find them.
 // Without this the container has no raw to download/diarize and no-ops "green".
@@ -116,6 +122,14 @@ function countActiveVoiceTasks(region, cluster) {
   }
 }
 
+function voiceTaskEnvironment(ids, opts = {}) {
+  return [
+    { name: 'OTIDS', value: ids.join(',') },
+    { name: 'VOICE_REASON', value: opts.reason || 'otter-ingest-watch' },
+    ...Object.entries(VOICE_TASK_STANDARD_ENV).map(([name, value]) => ({ name, value })),
+  ];
+}
+
 function launchVoiceTask(otids, opts = {}) {
   const ids = [...new Set((otids || []).filter(Boolean))];
   if (!ids.length) return { launched: false, reason: 'no_otids' };
@@ -163,10 +177,7 @@ function launchVoiceTask(otids, opts = {}) {
     containerOverrides: [
       {
         name: containerName,
-        environment: [
-          { name: 'OTIDS', value: ids.join(',') },
-          { name: 'VOICE_REASON', value: opts.reason || 'otter-ingest-watch' },
-        ],
+        environment: voiceTaskEnvironment(ids, opts),
       },
     ],
   });
@@ -209,4 +220,10 @@ function launchVoiceTask(otids, opts = {}) {
   return { launched: true, otids: ids, taskArn, staged };
 }
 
-module.exports = { launchVoiceTask, stageRawToEfs, countActiveVoiceTasks };
+module.exports = {
+  launchVoiceTask,
+  stageRawToEfs,
+  countActiveVoiceTasks,
+  voiceTaskEnvironment,
+  VOICE_TASK_STANDARD_ENV,
+};

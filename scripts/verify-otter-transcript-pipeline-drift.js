@@ -41,6 +41,12 @@ const RUNTIME_FILES = [
   ['data/life-archive/voice-identity-registry.json', '64 enrolled voiceprints'],
 ];
 
+const FARGATE_VOICE_STANDARD_ENV = Object.freeze({
+  VOICE_SPEAKER_BACKEND: 'ecapa',
+  SPEAKER_MATCH_SCORE: '0.56',
+  SPEAKER_MATCH_MARGIN: '0.06',
+});
+
 // [file, token, why] -- the token must be present (an invariant the doc relies on).
 const MUST_CONTAIN = [
   [
@@ -68,6 +74,11 @@ const MUST_CONTAIN = [
     'scripts/otter-post-ingest-voice-intelligence.js',
     "SPEAKER_MATCH_SCORE: process.env.SPEAKER_MATCH_SCORE || '0.56'",
     'live post-ingest voice matching defaults to the calibrated 0.56 acoustic threshold',
+  ],
+  [
+    'scripts/lib/voice-fargate-trigger.js',
+    'VOICE_TASK_STANDARD_ENV',
+    'Fargate voice launches use one pinned acoustic standard object instead of inheriting a stale image default',
   ],
   [
     'scripts/voice-sample-sequence-review-html.js',
@@ -100,6 +111,22 @@ const MUST_CONTAIN = [
 const MUST_NOT_CONTAIN = [
   ['scripts/otter-ingest-watch.js', 'audio-full', 'ingest is transcript-only by design'],
 ];
+
+function jsObjectValue(src, name) {
+  const re = new RegExp(`${name}\\s*:\\s*['"]([^'"]+)['"]`);
+  return src.match(re)?.[1] || null;
+}
+
+function taskdefEnvironment(src) {
+  try {
+    const parsed = JSON.parse(src);
+    const containers = parsed.containerDefinitions || [parsed];
+    const voice = containers.find((container) => container.name === 'voice') || containers[0] || {};
+    return Object.fromEntries((voice.environment || parsed.environment || []).map((item) => [item.name, item.value]));
+  } catch (err) {
+    return { __parse_error: err.message };
+  }
+}
 
 function checkDrift(repoRoot) {
   const failures = [];
@@ -135,6 +162,34 @@ function checkDrift(repoRoot) {
       failures.push(
         `invariant broken in ${rel}: found "${token}" (${why}) -- update the doc if intentional`,
       );
+  }
+
+  const triggerSrc = read('scripts/lib/voice-fargate-trigger.js');
+  const taskdefSrc = read('deploy/voice-fargate/taskdef.json');
+  if (triggerSrc && taskdefSrc) {
+    const taskEnv = taskdefEnvironment(taskdefSrc);
+    if (taskEnv.__parse_error) {
+      failures.push(`invalid deploy/voice-fargate/taskdef.json: ${taskEnv.__parse_error}`);
+    }
+    for (const [name, expected] of Object.entries(FARGATE_VOICE_STANDARD_ENV)) {
+      const triggerValue = jsObjectValue(triggerSrc, name);
+      const taskValue = taskEnv[name] || null;
+      if (triggerValue !== expected) {
+        failures.push(
+          `Fargate launch standard drifted: scripts/lib/voice-fargate-trigger.js ${name}=${triggerValue || '<missing>'}, expected ${expected}`,
+        );
+      }
+      if (taskValue !== expected) {
+        failures.push(
+          `Fargate task definition standard drifted: deploy/voice-fargate/taskdef.json ${name}=${taskValue || '<missing>'}, expected ${expected}`,
+        );
+      }
+      if (triggerValue && taskValue && triggerValue !== taskValue) {
+        failures.push(
+          `Fargate launch/taskdef mismatch: ${name} launch=${triggerValue}, taskdef=${taskValue}`,
+        );
+      }
+    }
   }
 
   // The doc must not silently drop the correction that action items are Gmail, not Otter.
