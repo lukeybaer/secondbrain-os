@@ -144,6 +144,10 @@ function decisionAdvice(kind, label) {
     return `Advice: let the janitor clear this unless you need the branch for audit. Summary: ${label}.`;
   if (kind === 'locked')
     return `Advice: do not force-remove a Git-locked worktree. Confirm its owner and lock reason, then unlock before the bounded janitor runs. Summary: ${label}.`;
+  if (kind === 'dirty-landed')
+    return `Advice: this branch is landed, but its worktree has later edits. Do not auto-remove it. Land, Park, or Drop the edits after review. Summary: ${label}.`;
+  if (kind === 'unverified-landed')
+    return `Advice: this branch is landed, but its worktree could not be verified clean. Do not auto-remove it. Restore access or review it before cleanup. Summary: ${label}.`;
   if (kind === 'protected')
     return `Advice: preserve this rescue snapshot; use it only as evidence or recovery material. Summary: ${label}.`;
   return `Advice: choose Land if this belongs in the product now, Park if it is still valuable but blocked, or Drop if it no longer fits ExampleCo's priorities. Summary: ${label}.`;
@@ -181,6 +185,8 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   const parked = buckets.parked || {};
   const needsDecision = buckets.needsDecision || {};
   const safeToClear = buckets.safeToClear || {};
+  const dirtyLanded = buckets.dirtyLanded || {};
+  const unverifiedLanded = buckets.unverifiedLanded || {};
   const locked = buckets.locked || {};
   const protectedBucket = buckets.protected || {};
 
@@ -189,6 +195,8 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   const strayStashes = asArray(needsDecision.stashes);
   const uncommittedEdits = asArray(needsDecision.uncommittedEdits);
   const safeBranches = asArray(safeToClear.branches);
+  const dirtyLandedBranches = asArray(dirtyLanded.branches);
+  const unverifiedLandedBranches = asArray(unverifiedLanded.branches);
   const lockedBranches = asArray(locked.branches);
   const protectedBranches = asArray(protectedBucket.branches);
   const strayItems =
@@ -198,7 +206,14 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   // tree says so outright; otherwise the parked-item count leads (the number ExampleCo
   // cares about), then the rest of the counts. ExampleCo 2026-06-20 #gap: the face led
   // with "Status: git hygiene ..." which is log-speak, not an answer.
-  const anyWork = parkedRecords.length + strayItems + safeBranches.length + lockedBranches.length > 0;
+  const anyWork =
+    parkedRecords.length +
+      strayItems +
+      safeBranches.length +
+      dirtyLandedBranches.length +
+      unverifiedLandedBranches.length +
+      lockedBranches.length >
+    0;
   // Timed-out classifier calls mean the snapshot is INCOMPLETE: empty buckets
   // may be missing data, not cleanliness. Never render "Clean" from a degraded
   // snapshot (Codex review 2026-07-06); name the defect and keep trailing data.
@@ -208,11 +223,20 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   const degradedLine = degradedCalls.length
     ? `DEFECT (red): git snapshot INCOMPLETE, ${plural(degradedCalls.length, 'classifier call')} timed out under shared-.git contention (${degradedShown}${degradedSuffix}). Counts below may be undercounts. Repair: retry once contention clears, or raise SB_GIT_TIMEOUT_MS.`
     : '';
-  const lockedSuffix = lockedBranches.length
-    ? `, ${plural(lockedBranches.length, 'locked landed worktree')} requiring an attended unlock decision`
-    : '';
+  const verdictParts = [
+    plural(parkedRecords.length, 'parked item'),
+    `${plural(strayItems, 'stray item')} needing a decision`,
+    `${plural(dirtyLandedBranches.length, 'landed worktree')} with uncommitted edits`,
+    ...(unverifiedLandedBranches.length
+      ? [`${plural(unverifiedLandedBranches.length, 'landed worktree')} unverified`]
+      : []),
+    `${plural(safeBranches.length, 'landed leftover')} safe to clear`,
+    ...(lockedBranches.length
+      ? [`${plural(lockedBranches.length, 'locked landed worktree')} requiring an attended unlock decision`]
+      : []),
+  ];
   const verdictLead = anyWork
-    ? `${plural(parkedRecords.length, 'parked item')}: ${plural(strayItems, 'stray item')} needing a decision, ${plural(safeBranches.length, 'landed leftover')} safe to clear${lockedSuffix}.`
+    ? `${verdictParts.join(', ')}.`
     : degradedLine
       ? 'Unverified: cannot confirm clean, the git snapshot is incomplete (see defect below).'
       : 'Clean: no parked work, no stray branches, nothing to decide.';
@@ -253,6 +277,34 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   const hiddenStray =
     Math.max(0, strayBranches.length - maxRows) + Math.max(0, strayStashes.length - remainingRows);
   if (hiddenStray > 0) lines.push(`  ... +${hiddenStray} more`);
+  lines.push('');
+
+  lines.push(
+    ...formatRows(
+      'Landed worktrees with uncommitted edits',
+      dirtyLandedBranches
+        .slice(0, maxRows)
+        .map((branch) => decisionAdvice('dirty-landed', branchLabel(branch))),
+      'none',
+    ),
+  );
+  if (dirtyLandedBranches.length > maxRows) {
+    lines.push(`  ... +${dirtyLandedBranches.length - maxRows} more`);
+  }
+  lines.push('');
+
+  lines.push(
+    ...formatRows(
+      'Landed worktrees not yet verified clean',
+      unverifiedLandedBranches
+        .slice(0, maxRows)
+        .map((branch) => decisionAdvice('unverified-landed', branchLabel(branch))),
+      'none',
+    ),
+  );
+  if (unverifiedLandedBranches.length > maxRows) {
+    lines.push(`  ... +${unverifiedLandedBranches.length - maxRows} more`);
+  }
   lines.push('');
 
   lines.push(

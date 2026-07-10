@@ -4,8 +4,8 @@
 //
 // Implements the three-state model from
 // dev-plans/git-hygiene-clean-branches-2026-06-13.html:
-//   LANDED   = commits are in origin/master. The branch/worktree is leftover and
-//              safe to reap. (git-observable slice of "done".)
+//   LANDED   = commits are in origin/master. A branch is safe to reap only when
+//              its attached worktree is also clean, unlocked, and inactive.
 //   PARKED   = intentional WIP, registered in the PARKED registry with a reason
 //              and an expiry. Protected from all cleanup.
 //   STRAY    = uncommitted/unmerged with no PARKED record. A defect. Needs a
@@ -293,8 +293,28 @@ function parseWorktreeList(raw) {
   return { worktrees, branchToWorktree };
 }
 
+// Committed ancestry proves that a branch landed. It does not prove that its
+// checked-out worktree has no later edits. Unreadable worktrees are unverified,
+// never clean, so the dashboard cannot overstate what the janitor may remove.
+function inspectWorktreeCleanliness(worktreePath, opts = {}) {
+  if (!worktreePath) return { state: 'no_worktree', clean: true, known: true };
+  try {
+    const raw =
+      typeof opts.probeWorktreeStatus === 'function'
+        ? opts.probeWorktreeStatus(worktreePath)
+        : git(['-C', worktreePath, 'status', '--porcelain'], opts.cwd);
+    if (raw == null) return { state: 'unverified', clean: false, known: false };
+    return String(raw).trim()
+      ? { state: 'dirty', clean: false, known: true }
+      : { state: 'clean', clean: true, known: true };
+  } catch {
+    return { state: 'unverified', clean: false, known: false };
+  }
+}
+
 // ---------------------------------------------------------------------------
-// classifyGitState -- the full snapshot. ~6 git calls, all read-only.
+// classifyGitState -- the full snapshot. Core metadata is a handful of Git
+// calls; attached landed worktrees are also checked so "safe to clear" remains honest.
 // ---------------------------------------------------------------------------
 
 function classifyGitState(opts = {}) {
@@ -425,7 +445,20 @@ function classifyGitState(opts = {}) {
   const parkedBranches = branches.filter((b) => b.category === 'parked');
   const landedBranches = branches.filter((b) => b.category === 'landed');
   const lockedLandedBranches = landedBranches.filter((b) => b.worktreeLocked);
-  const reapableLandedBranches = landedBranches.filter((b) => !b.worktreeLocked);
+  const inspectedLandedBranches = landedBranches
+    .filter((b) => !b.worktreeLocked)
+    .map((branch) => {
+      const inspection = inspectWorktreeCleanliness(branch.worktree, {
+        cwd: repoRoot,
+        probeWorktreeStatus: opts.probeWorktreeStatus,
+      });
+      return { ...branch, worktreeState: inspection.state, worktreeClean: inspection.clean };
+    });
+  const reapableLandedBranches = inspectedLandedBranches.filter((b) => b.worktreeClean);
+  const dirtyLandedBranches = inspectedLandedBranches.filter((b) => b.worktreeState === 'dirty');
+  const unverifiedLandedBranches = inspectedLandedBranches.filter(
+    (b) => b.worktreeState === 'unverified',
+  );
   const strayBranches = branches.filter((b) => b.category === 'stray');
 
   const parkedStashes = stashes.filter((s) => s.parked);
@@ -447,6 +480,8 @@ function classifyGitState(opts = {}) {
       stashes: stashes.length,
       parkedRecords: parked.length,
       landedReapable: reapableLandedBranches.length,
+      landedDirty: dirtyLandedBranches.length,
+      landedUnverified: unverifiedLandedBranches.length,
       landedLocked: lockedLandedBranches.length,
       lockedWorktrees: worktrees.filter((w) => w.locked).length,
       stray: strayBranches.length,
@@ -469,6 +504,10 @@ function classifyGitState(opts = {}) {
       },
       // LANDED leftovers: already in master, safe to reap
       safeToClear: { branches: reapableLandedBranches },
+      // LANDED commits with later worktree edits: recover the edits before cleanup.
+      dirtyLanded: { branches: dirtyLandedBranches },
+      // A timed-out or unreadable worktree is not evidence of cleanliness.
+      unverifiedLanded: { branches: unverifiedLandedBranches },
       // LOCKED LANDED: already in master but Git has an explicit lock. This is
       // not safe-cleanup work and must never be presented as auto-reapable.
       locked: { branches: lockedLandedBranches },
@@ -495,6 +534,7 @@ module.exports = {
   assertSafeToClean,
   categorizeBranch,
   parseWorktreeList,
+  inspectWorktreeCleanliness,
   classifyGitState,
   readLiveWorktrees,
   PROTECTED_PATTERNS,
