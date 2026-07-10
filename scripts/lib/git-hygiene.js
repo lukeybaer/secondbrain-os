@@ -203,7 +203,10 @@ function readLiveWorktrees(opts = {}) {
   const live = new Set();
   for (const f of files) {
     try {
-      const t = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      // Desktop task stores may serialize UTF-8 JSON with a BOM. It is still a
+      // valid task record, not a reason to silently drop its live-worktree lease.
+      const raw = fs.readFileSync(path.join(dir, f), 'utf8').replace(/^\uFEFF/, '');
+      const t = JSON.parse(raw);
       if (t.status !== 'running') continue;
       if (nowMs && t.updatedAt) {
         const age = nowMs - Date.parse(t.updatedAt);
