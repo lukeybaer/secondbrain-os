@@ -30,6 +30,7 @@ const STAGE_FILES = [
   'scripts/otter-post-ingest-voice-intelligence.js',
   'scripts/otter-diarized-segment-backfill.js',
   'scripts/otter-wavlm-speaker-resolver.js',
+  'scripts/otter-speaker-pareto-report.js',
   'scripts/voice-sample-sequence-review-html.js',
   'scripts/voice-confirmation-queue-build.js',
   'scripts/otter-life-relevance-enricher.js',
@@ -86,9 +87,34 @@ const MUST_CONTAIN = [
     'voice review clip membership is acoustic, not text/context alias expansion',
   ],
   [
+    'scripts/otter-speaker-pareto-report.js',
+    'speaker-pareto-latest.json',
+    'Pareto report writes the recurring acoustic voice rows consumed by the review surface',
+  ],
+  [
+    'scripts/otter-speaker-pareto-report.js',
+    'voice_cluster_ids: row.voice_cluster_ids || []',
+    'Pareto rows carry their member acoustic speaker clusters for review expansion',
+  ],
+  [
+    'scripts/voice-sample-sequence-review-html.js',
+    'speaker-pareto-latest.json',
+    'voice review can resolve a Pareto acoustic arc to its member acoustic ids',
+  ],
+  [
+    'scripts/voice-sample-sequence-review-html.js',
+    'row?.voice_cluster_ids',
+    'voice review expands Pareto arcs only through acoustic member ids',
+  ],
+  [
     'scripts/voice-sample-sequence-review-html.js',
     'distinct_calls_found',
     'recurring ExampleCo review can prove consistency across multiple calls',
+  ],
+  [
+    'ec2-server.js',
+    'const matchedPeople = actionPerson || artifactPerson;',
+    'voice confirmation UI cannot preselect a people file from a heard-name/context guess',
   ],
   [
     'scripts/voice-confirmation-queue-build.js',
@@ -197,8 +223,8 @@ function checkDrift(repoRoot) {
   if (doc && !/NOT from Otter|Gmail-derived|not a wired output/i.test(doc)) {
     failures.push('doc no longer states that action items are Gmail-derived, not an Otter stage');
   }
-  if (doc && !/SPEAKER_MATCH_SCORE=0\.56|voice-only review page|distinct calls/i.test(doc)) {
-    failures.push('doc no longer states the voice-only review and 0.56 acoustic matching standard');
+  if (doc && !/SPEAKER_MATCH_SCORE=0\.56|voice-only review page|distinct calls|voice_cluster_ids/i.test(doc)) {
+    failures.push('doc no longer states the voice-only review, Pareto voice_cluster_ids, and 0.56 acoustic matching standard');
   }
   if (
     doc

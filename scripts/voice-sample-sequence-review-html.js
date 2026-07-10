@@ -13,6 +13,7 @@ const repo = process.cwd();
 const enrichedDir = path.join(repo, 'data', 'otter', 'enriched');
 const probeIndexPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'track-probe-index-latest.json');
 const callRostersPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'otter-call-speaker-rosters-latest.json');
+const speakerParetoPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'speaker-pareto-latest.json');
 const reportDir = path.join(repo, 'reports');
 const forceServerUrls = process.argv.includes('--server-url') || process.argv.includes('--web');
 const localFileMode = !forceServerUrls && (process.argv.includes('--local-file') || !fs.existsSync('/opt/secondbrain'));
@@ -66,10 +67,46 @@ function normalizeId(value) {
   return String(value || '').replace(/^(ExampleCo|known):/, '');
 }
 
+let targetAliasesCache = null;
+
+function paretoVoiceAliases(targetValue) {
+  const pareto = readJson(speakerParetoPath, {});
+  const rows = [
+    ...(Array.isArray(pareto?.all_unresolved_relationships) ? pareto.all_unresolved_relationships : []),
+    ...(Array.isArray(pareto?.priority_ExampleCo_relationships) ? pareto.priority_ExampleCo_relationships : []),
+    ...(Array.isArray(pareto?.unresolved) ? pareto.unresolved : []),
+  ];
+  const wanted = new Set([String(targetValue || ''), normalizeId(targetValue)]);
+  const out = new Set();
+  for (const row of rows) {
+    const rowIds = [
+      row?.speaker_key,
+      row?.label,
+      row?.display_name,
+      row?.acoustic_ExampleCo_id,
+      row?.ExampleCo_speaker_id,
+      row?.voice_cluster_id,
+    ].filter(Boolean).map(String);
+    const isTarget = rowIds.some((id) => wanted.has(id) || wanted.has(normalizeId(id)));
+    if (!isTarget) continue;
+    for (const id of rowIds) {
+      out.add(id);
+      out.add(normalizeId(id));
+    }
+    for (const id of row?.voice_cluster_ids || []) out.add(String(id));
+    for (const id of row?.ExampleCo_speaker_ids || []) out.add(String(id));
+    for (const id of row?.acoustic_ExampleCo_ids || []) out.add(String(id));
+  }
+  return out;
+}
+
 function targetAliases() {
+  if (targetAliasesCache) return targetAliasesCache;
   const aliases = new Set([String(target), normalizeId(target)]);
   const person = String(target || '').match(/^person:(.+)$/);
   if (person) aliases.add(person[1]);
+  for (const alias of paretoVoiceAliases(target)) aliases.add(alias);
+  targetAliasesCache = aliases;
   return aliases;
 }
 
@@ -193,14 +230,26 @@ function rowsFromEnriched() {
   return out;
 }
 
-// This page is voice-only. Do not expand targets through Pareto rows, names,
-// topics, or relationship dossiers: those are useful context, but not acoustic
-// membership. Exact person/voice ids and current enriched speaker tracks are the
-// only source of truth for review clips.
+// This page is voice-only. Pareto may contribute only its own acoustic
+// membership ids (voice_cluster_ids); names, topics, and relationship dossiers
+// are useful context, but never clip membership.
 const acousticExampleCoTarget = /^ExampleCo_voice_/.test(String(target || ''));
 const personTarget = /^person:/.test(String(target || ''));
-const rows = acousticExampleCoTarget || personTarget ? rowsFromEnriched() : rowsFromProbeIndex();
+const rows = [];
+if (acousticExampleCoTarget || personTarget) rows.push(...rowsFromEnriched());
+if (acousticExampleCoTarget || (!acousticExampleCoTarget && !personTarget)) rows.push(...rowsFromProbeIndex());
 if (!rows.length && !acousticExampleCoTarget && !personTarget) rows.push(...rowsFromEnriched());
+
+const dedupedRows = [];
+const seenRows = new Set();
+for (const row of rows) {
+  const key = `${row.otid}|${row.label}|${row.audio || row.voiceClusterId || row.ExampleCoSpeakerId}`;
+  if (seenRows.has(key)) continue;
+  seenRows.add(key);
+  dedupedRows.push(row);
+}
+rows.length = 0;
+rows.push(...dedupedRows);
 
 rows.sort((a, b) => (
   String(b.date).localeCompare(String(a.date)) ||
