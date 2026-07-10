@@ -121,6 +121,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const {
   buildCloudMorningBriefing,
   MANIFEST_CARD_RENDER,
+  summarizeCloudNews,
   writeTextAtomic,
   DEFAULT_DATA_DIR,
 } = require('./cloud-morning-briefing.js');
@@ -204,6 +205,48 @@ function parseArgs(argv) {
 // realById/blockers state -- rather than leaving them untouched -- is what
 // keeps checkHealthBlockersConsistency / Reverse green after the splice.
 const DERIVED_CARD_IDS = ['blockers', 'system_health'];
+const NEWS_SUMMARY_CARD_BY_TARGET = {
+  ai_tech_news: 'aitech',
+  us_news: 'us',
+  world_news: 'world',
+  us_immigration_news: 'immigration',
+  mortgage_industry_news: 'mortgage',
+  covid_news: 'covid',
+};
+const NEWS_SUMMARY_REFRESH_DEADLINE_MS = 120000;
+const NEWS_SUMMARY_REFRESH_MAX_ITEMS = 80;
+
+function normalizeRefreshTargetId(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+function newsSummaryCardKeyForTarget(cardId) {
+  return NEWS_SUMMARY_CARD_BY_TARGET[normalizeRefreshTargetId(cardId)] || null;
+}
+
+async function prepareTargetedRebuild({
+  dataDir,
+  date,
+  now,
+  cardId,
+  summarizeNews = summarizeCloudNews,
+} = {}) {
+  const cardKey = newsSummaryCardKeyForTarget(cardId);
+  if (!cardKey || typeof summarizeNews !== 'function') return { skipped: true };
+  return summarizeNews({
+    dataDir,
+    date,
+    now,
+    cardKeys: [cardKey],
+    selfHealRefresh: true,
+    maxItemsPerCard: NEWS_SUMMARY_REFRESH_MAX_ITEMS,
+    maxTotalItems: NEWS_SUMMARY_REFRESH_MAX_ITEMS,
+    deadlineMs: NEWS_SUMMARY_REFRESH_DEADLINE_MS,
+  });
+}
 
 // Split a full briefing markdown into { preambleLines, sections } where each
 // section is { lines, titleText }. Boundaries are heading LINES (dual
@@ -770,6 +813,7 @@ async function refreshCard({
   // scoped QC gate, receipt fields, QC-failure-blocks-write)
   // without paying for a real multi-minute build.
   buildFn = buildTargetedRebuild,
+  prepareFn = prepareTargetedRebuild,
 } = {}) {
   const card = getCardById(cardId);
   if (!card) {
@@ -802,7 +846,8 @@ async function refreshCard({
   // window between our read and our write; spliceCard would then be computed
   // against a stale base and our locked write would clobber the newer
   // content. Taking the lock before the read closes that race.
-  const doRefresh = () => {
+  const doRefresh = async () => {
+    await prepareFn({ dataDir, date, now, cardId });
     const existingMarkdown = fs.readFileSync(markdownPath, 'utf8');
 
     console.log(`[refresh-card] rebuilding card='${cardId}' date=${date} dataDir=${dataDir}`);
@@ -1019,6 +1064,8 @@ module.exports = {
   refreshPublishedBlockersReconciliationLine,
   spliceCard,
   buildTargetedRebuild,
+  prepareTargetedRebuild,
+  newsSummaryCardKeyForTarget,
   withSharedBriefingLock,
   refreshCard,
   runVerify,

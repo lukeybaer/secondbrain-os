@@ -29,6 +29,7 @@ LIVE_DEPS=(
   "scripts/lib/briefing-markdown-sections.js"
   "scripts/lib/briefing-news-reader.js"
   "scripts/cloud-morning-briefing.js"
+  "scripts/content-heal.js"
   "scripts/health-self-heal.js"
   "scripts/refresh-briefing-generated-sections.js"
   "scripts/lib/vapi-live-assistant.js"

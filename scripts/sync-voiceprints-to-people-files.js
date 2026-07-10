@@ -9,7 +9,9 @@
  */
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { evaluateSharedTreeWrite } = require('./lib/shared-tree-write-guard.js');
 
 const REPO = path.resolve(__dirname, '..');
 const CONTACTS_ROOT = path.join(REPO, 'memory', 'contacts');
@@ -23,6 +25,32 @@ const START = '<!-- voiceprint-identity:start -->';
 const END = '<!-- voiceprint-identity:end -->';
 const GENERATED_BLOCK_RE = new RegExp(`${START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'm');
 const CONTACT_INDEX_PATH = path.join(CONTACTS_ROOT, 'INDEX.md');
+
+function resolveSharedMainRoot(env = process.env, platform = process.platform) {
+  if (env.SECONDBRAIN_MAIN_ROOT) return path.resolve(env.SECONDBRAIN_MAIN_ROOT);
+  if (platform !== 'win32') return '';
+  const home = env.USERPROFILE || env.HOME || os.homedir();
+  return home ? path.resolve(home, 'secondbrain') : '';
+}
+
+function assertPeopleFileWriteAllowed(options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  const repo = path.resolve(options.repo || REPO);
+  const mainRoot = options.mainRoot || resolveSharedMainRoot(env, platform);
+  if (!mainRoot) return { blocked: false, reason: 'shared Windows checkout is not present on this host' };
+
+  const verdict = evaluateSharedTreeWrite({
+    filePath: path.join(repo, 'memory', 'contacts'),
+    cwd: options.cwd || process.cwd(),
+    mainRoot,
+    env,
+  });
+  if (verdict.blocked) {
+    throw new Error(`Refusing voiceprint people-file sync: ${verdict.reason}`);
+  }
+  return verdict;
+}
 
 function parseArgs(argv) {
   const args = {
@@ -331,6 +359,7 @@ function renderExampleCoFile(row, generatedAt) {
 }
 
 function buildSync(args) {
+  if (args.write) assertPeopleFileWriteAllowed();
   const generatedAt = new Date().toISOString();
   const contacts = loadContacts();
   const registry = loadJson(VOICE_IDENTITY_REGISTRY_PATH, { people: {}, enrollments: [] });
@@ -525,6 +554,7 @@ if (require.main === module) {
 
 module.exports = {
   buildSync,
+  assertPeopleFileWriteAllowed,
   replaceGeneratedBlock,
   renderPersonBlock,
   groupHasConfirmedVoiceprintEvidence,

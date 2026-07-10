@@ -248,6 +248,51 @@ function categorizeBranch({ name, merged, isCurrent, parked }) {
   return 'stray'; // ExampleCos unique commits, needs a decision
 }
 
+// Parse `git worktree list --porcelain` once so every consumer sees the lock
+// state Git itself will enforce. A locked worktree is never "safe to clear"
+// until an attended unlock decision is made.
+function parseWorktreeList(raw) {
+  const worktrees = [];
+  const branchToWorktree = new Map();
+  let current = null;
+
+  const flush = () => {
+    if (!current || !current.path) {
+      current = null;
+      return;
+    }
+    const worktree = {
+      path: current.path,
+      branch: current.branch || null,
+      locked: Boolean(current.locked),
+      lockReason: current.lockReason || '',
+    };
+    worktrees.push(worktree);
+    if (worktree.branch) branchToWorktree.set(worktree.branch, worktree);
+    current = null;
+  };
+
+  for (const line of String(raw || '').split('\n')) {
+    if (line.startsWith('worktree ')) {
+      flush();
+      current = { path: line.slice('worktree '.length), locked: false, lockReason: '' };
+    } else if (!current) {
+      continue;
+    } else if (line.startsWith('branch ')) {
+      current.branch = line.slice('branch '.length).replace('refs/heads/', '');
+    } else if (line === 'locked') {
+      current.locked = true;
+    } else if (line.startsWith('locked ')) {
+      current.locked = true;
+      current.lockReason = line.slice('locked '.length);
+    } else if (line === '') {
+      flush();
+    }
+  }
+  flush();
+  return { worktrees, branchToWorktree };
+}
+
 // ---------------------------------------------------------------------------
 // classifyGitState -- the full snapshot. ~6 git calls, all read-only.
 // ---------------------------------------------------------------------------
@@ -324,23 +369,7 @@ function classifyGitState(opts = {}) {
 
   // worktree map: branch -> worktree path
   const wtRaw = safe(['worktree', 'list', '--porcelain'], '');
-  const worktrees = [];
-  const branchToWorktree = new Map();
-  {
-    let cur = {};
-    for (const line of wtRaw.split('\n')) {
-      if (line.startsWith('worktree ')) cur = { path: line.slice('worktree '.length) };
-      else if (line.startsWith('branch ')) {
-        const short = line.slice('branch '.length).replace('refs/heads/', '');
-        cur.branch = short;
-        branchToWorktree.set(short, cur.path);
-      } else if (line === '') {
-        if (cur.path) worktrees.push(cur);
-        cur = {};
-      }
-    }
-    if (cur.path) worktrees.push(cur);
-  }
+  const { worktrees, branchToWorktree } = parseWorktreeList(wtRaw);
 
   // all local branches
   const branchRaw = safe(
@@ -358,6 +387,7 @@ function classifyGitState(opts = {}) {
     const parkedHit = parkedRefs.has(name);
     const merged = mergedSet.has(name);
     const isCurrent = name === currentBranch;
+    const worktreeInfo = branchToWorktree.get(name) || null;
     branches.push({
       name,
       tip,
@@ -366,7 +396,9 @@ function classifyGitState(opts = {}) {
       merged,
       isCurrent,
       parked: parkedHit,
-      worktree: branchToWorktree.get(name) || null,
+      worktree: worktreeInfo ? worktreeInfo.path : null,
+      worktreeLocked: Boolean(worktreeInfo && worktreeInfo.locked),
+      worktreeLockReason: (worktreeInfo && worktreeInfo.lockReason) || '',
       category: categorizeBranch({ name, merged, isCurrent, parked: parkedHit }),
     });
   }
@@ -392,6 +424,8 @@ function classifyGitState(opts = {}) {
   const protectedBranches = branches.filter((b) => b.category === 'protected');
   const parkedBranches = branches.filter((b) => b.category === 'parked');
   const landedBranches = branches.filter((b) => b.category === 'landed');
+  const lockedLandedBranches = landedBranches.filter((b) => b.worktreeLocked);
+  const reapableLandedBranches = landedBranches.filter((b) => !b.worktreeLocked);
   const strayBranches = branches.filter((b) => b.category === 'stray');
 
   const parkedStashes = stashes.filter((s) => s.parked);
@@ -412,7 +446,9 @@ function classifyGitState(opts = {}) {
       worktrees: worktrees.length,
       stashes: stashes.length,
       parkedRecords: parked.length,
-      landedReapable: landedBranches.length,
+      landedReapable: reapableLandedBranches.length,
+      landedLocked: lockedLandedBranches.length,
+      lockedWorktrees: worktrees.filter((w) => w.locked).length,
       stray: strayBranches.length,
       protected: protectedBranches.length,
       uncommittedEdits: uncommittedEdits.length,
@@ -432,7 +468,10 @@ function classifyGitState(opts = {}) {
         uncommittedEdits,
       },
       // LANDED leftovers: already in master, safe to reap
-      safeToClear: { branches: landedBranches },
+      safeToClear: { branches: reapableLandedBranches },
+      // LOCKED LANDED: already in master but Git has an explicit lock. This is
+      // not safe-cleanup work and must never be presented as auto-reapable.
+      locked: { branches: lockedLandedBranches },
       // PROTECTED: rescue snapshots, untouchable
       protected: { branches: protectedBranches },
     },
@@ -455,6 +494,7 @@ module.exports = {
   isExpired,
   assertSafeToClean,
   categorizeBranch,
+  parseWorktreeList,
   classifyGitState,
   readLiveWorktrees,
   PROTECTED_PATTERNS,

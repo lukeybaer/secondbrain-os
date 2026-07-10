@@ -98,6 +98,7 @@ function main(argv = process.argv.slice(2)) {
   console.error(`[integration-session] reason: ${lease.reason}`);
   try {
     const child = spawnSync(args.command[0], args.command.slice(1), {
+      cwd: mainRoot,
       stdio: 'inherit',
       shell: process.platform === 'win32',
       env: {

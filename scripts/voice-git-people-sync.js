@@ -19,6 +19,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { ensureCodexWorktree, isSharedCheckout } = require('./lib/codex-worktree.js');
 
 const REPO = path.resolve(__dirname, '..');
 const EC2 = process.env.EC2_HOST || 'ec2-user@ExampleCo';
@@ -39,6 +40,68 @@ const PULL = [
 
 function sh(cmd, args, opts = {}) {
   return spawnSync(cmd, args, { cwd: REPO, encoding: 'utf8', timeout: 120000, ...opts });
+}
+
+function runIsolatedPeopleSync(argv = process.argv.slice(2)) {
+  const isolation = ensureCodexWorktree({
+    repoRoot: REPO,
+    purpose: 'voice-git-people-sync',
+    branchPrefix: 'codex/voice-people-sync',
+  });
+  const script = path.join(isolation.cwd, 'scripts', 'voice-git-people-sync.js');
+  const forwarded = argv.filter((arg) => !['--isolated-child', '--publish-only', '--no-publish', '--commit'].includes(arg));
+  const child = spawnSync(
+    process.execPath,
+    [script, ...forwarded, '--isolated-child', '--commit', '--no-publish'],
+    {
+      cwd: isolation.cwd,
+      encoding: 'utf8',
+      timeout: 30 * 60 * 1000,
+      env: { ...process.env, SECONDBRAIN_MAIN_ROOT: REPO },
+    },
+  );
+  const report = {
+    schema: 'life_archive_voice_git_people_sync_isolated.v1',
+    generated_at: new Date().toISOString(),
+    worktree: isolation.cwd,
+    branch: isolation.branch,
+    child_status: child.status,
+    child_stdout: String(child.stdout || '').slice(-12000),
+    child_stderr: String(child.stderr || '').slice(-2000),
+  };
+  if (child.status !== 0) return { ...report, ok: false, stage: 'sync_and_commit' };
+
+  let childReport = null;
+  try {
+    childReport = JSON.parse(String(child.stdout || ''));
+  } catch {
+    // The child status is still authoritative; parsing only avoids a no-op land.
+  }
+  const noPeopleChanges = childReport?.commit?.reason === 'no_people_changes';
+  const land = noPeopleChanges
+    ? { status: 0, stdout: '', stderr: '', skipped: 'no_people_changes' }
+    : spawnSync(process.execPath, ['scripts/land.js', '--apply'], {
+        cwd: isolation.cwd,
+        encoding: 'utf8',
+        timeout: 30 * 60 * 1000,
+      });
+  report.land_status = land.status;
+  report.land_stdout = String(land.stdout || '').slice(-8000);
+  report.land_stderr = String(land.stderr || '').slice(-2000);
+  report.land_skipped = land.skipped || null;
+  if (land.status !== 0) return { ...report, ok: false, stage: 'land' };
+
+  const publishArgs = ['--isolated-child', '--publish-only'];
+  const publish = spawnSync(process.execPath, [script, ...publishArgs], {
+    cwd: isolation.cwd,
+    encoding: 'utf8',
+    timeout: 15 * 60 * 1000,
+    env: { ...process.env, SECONDBRAIN_MAIN_ROOT: REPO },
+  });
+  report.publish_status = publish.status;
+  report.publish_stdout = String(publish.stdout || '').slice(-4000);
+  report.publish_stderr = String(publish.stderr || '').slice(-2000);
+  return { ...report, ok: publish.status === 0, stage: publish.status === 0 ? 'complete' : 'publish' };
 }
 
 function pullArtifacts() {
@@ -121,17 +184,32 @@ function publishCanonicalContactsToEc2() {
 }
 
 function commitPeopleChanges() {
-  const status = sh('git', ['status', '--porcelain', 'memory/contacts']);
+  const ownedPaths = ['memory/contacts', 'memory/user_profile.md'];
+  const status = sh('git', ['status', '--porcelain', '--', ...ownedPaths]);
   const changed = String(status.stdout || '').trim();
   if (!changed) return { committed: false, reason: 'no_people_changes' };
-  sh('git', ['add', 'memory/contacts']);
+  sh('git', ['add', '--', ...ownedPaths]);
   const msg = `chore(contacts): voice people-file sync from Fargate-resolved artifacts ${new Date().toISOString().slice(0, 10)}\n\nno-test-justification: generated people-file content from voice resolution, no code change`;
   const c = sh('git', ['commit', '-m', msg]);
   return { committed: c.status === 0, files: changed.split('\n').length, stderr: String(c.stderr || '').slice(-300) };
 }
 
 function main() {
+  if (process.argv.includes('--publish-only')) {
+    const publish = publishCanonicalContactsToEc2();
+    process.stdout.write(`${JSON.stringify({ publish_canonical_contacts: publish }, null, 2)}\n`);
+    process.exitCode = publish.ok ? 0 : 1;
+    return;
+  }
+  if (!process.argv.includes('--isolated-child') && isSharedCheckout(REPO)) {
+    const isolated = runIsolatedPeopleSync();
+    process.stdout.write(`${JSON.stringify(isolated, null, 2)}\n`);
+    process.exitCode = isolated.ok ? 0 : 1;
+    return;
+  }
+
   const noPull = process.argv.includes('--no-pull');
+  const noPublish = process.argv.includes('--no-publish');
   // Default to NOT committing: --all-contacts regenerates "Last synced" blocks
   // across hundreds of files, and this repo is a multi-session shared tree.
   // Bulk-committing would sweep in peers' uncommitted work. Pass --commit to
@@ -141,12 +219,26 @@ function main() {
   report.pull = noPull ? { skipped: true } : pullArtifacts();
   report.ec2_created_contacts = noPull ? { skipped: true } : pullEc2CreatedContacts();
   report.sync = runPeopleSync();
-  report.publish_canonical_contacts = publishCanonicalContactsToEc2();
   report.commit = noCommit ? { skipped: true } : commitPeopleChanges();
+  const syncOk = report.sync.voiceprint_people_sync_ok && report.sync.speaker_people_sync_ok;
+  const commitOk = noCommit || report.commit.committed || report.commit.reason === 'no_people_changes';
+  report.publish_canonical_contacts = noPublish
+    ? { skipped: true }
+    : syncOk && commitOk
+      ? publishCanonicalContactsToEc2()
+      : { skipped: 'sync_or_commit_failed' };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  process.exitCode = (report.sync.voiceprint_people_sync_ok && report.sync.speaker_people_sync_ok) ? 0 : 1;
+  const publishOk = noPublish || report.publish_canonical_contacts.ok;
+  process.exitCode = syncOk && commitOk && publishOk ? 0 : 1;
 }
 
 if (require.main === module) main();
 
-module.exports = { pullArtifacts, pullEc2CreatedContacts, runPeopleSync, publishCanonicalContactsToEc2, commitPeopleChanges };
+module.exports = {
+  pullArtifacts,
+  pullEc2CreatedContacts,
+  runPeopleSync,
+  publishCanonicalContactsToEc2,
+  commitPeopleChanges,
+  runIsolatedPeopleSync,
+};

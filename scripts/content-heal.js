@@ -991,7 +991,10 @@ function collectNewsEvidence(card, articles, { now, windowHours } = {}) {
 
     const item = {
       sourceId: url,
+      title: cleanText(a.title || '').slice(0, 240),
+      source: cleanText(a.source || a.sourceName || a.feed || '').slice(0, 90),
       url,
+      link: url,
       domain: domainOf(url),
       publishedAtIso: hasDate ? new Date(t).toISOString() : null,
       excerpt: excerpt.slice(0, 400),

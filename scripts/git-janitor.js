@@ -9,8 +9,10 @@
 //   - CAPPED. --apply reaps at most --cap=N (default 20) per run, never 141 in
 //     one pass, so a logic bug has a small blast radius.
 //   - SAFE PRIMITIVES ONLY. `git worktree remove` (no --force) refuses a dirty
-//     worktree; `git branch -d` (safe delete) refuses an unmerged branch and a
-//     branch checked out in any worktree. We never rm -rf a directory.
+//     worktree. A final `merge-base --is-ancestor <branch> origin/master` check
+//     precedes the local branch delete, so an upstream tracking ref can never
+//     make an already-landed branch look unsafe or cause a forced delete of
+//     unmerged work. We never rm -rf a directory.
 //   - HARD SKIPS: protected (codex/rescue*), parked (registry), the checked-out
 //     branch, unmerged branches, worktrees with a live session lease, dirty
 //     worktrees, and all stashes. assertSafeToClean() is the last gate.
@@ -55,6 +57,15 @@ function isWorktreeClean(wtPath) {
   }
 }
 
+function isStillLanded(repoRoot, branch) {
+  try {
+    git(['merge-base', '--is-ancestor', branch, 'origin/master'], repoRoot);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Grace period (incident: the janitor reaped a just-created worktree
 // mid-setup). A brand-new session has not registered a spine-session lease
 // yet -- the lease write happens after the worktree exists -- and the
@@ -92,7 +103,7 @@ function buildManifest(opts = {}) {
   const nowMs = opts.nowMs || Date.now();
 
   const reap = [];
-  const skipped = { live: 0, dirty: 0, protected: 0, parked: 0, notMerged: 0, young: 0 };
+  const skipped = { live: 0, dirty: 0, locked: 0, protected: 0, parked: 0, notMerged: 0, young: 0 };
 
   for (const br of state.branches) {
     if (br.category === 'protected') {
@@ -110,6 +121,10 @@ function buildManifest(opts = {}) {
     }
     // category 'landed' = commits already in origin/master, candidate to reap
     const wt = br.worktree ? path.resolve(br.worktree) : null;
+    if (br.worktreeLocked) {
+      skipped.locked++;
+      continue;
+    }
     if (wt && live.has(wt)) {
       skipped.live++;
       continue;
@@ -202,11 +217,17 @@ function runJanitor(opts = {}) {
     if (done >= cap) break;
     try {
       gh.assertSafeToClean(manifest.repoRoot, item.branch); // re-check at apply time
+      if (!isStillLanded(manifest.repoRoot, item.branch)) {
+        throw new Error(`refuse: ${item.branch} is no longer an ancestor of origin/master`);
+      }
       if (item.worktree) {
         stripJunctions(item.worktree); // never let `worktree remove` follow a junction into the main checkout
         git(['worktree', 'remove', item.worktree], manifest.repoRoot); // no --force
       }
-      git(['branch', '-d', item.branch], manifest.repoRoot); // safe delete, refuses unmerged
+      // Git's `branch -d` also consults a branch's configured upstream, which
+      // can differ from master and falsely refuse a branch already landed in
+      // origin/master. The just-run ancestry check is the safety condition.
+      git(['branch', '-D', item.branch], manifest.repoRoot);
       actions.push({ branch: item.branch, worktree: item.worktree, ok: true });
       done += 1;
     } catch (e) {
@@ -240,7 +261,7 @@ if (require.main === module) {
     const m = res.manifest;
     console.log(
       `[git-janitor] DRY-RUN. ${m.counts.candidates} leftover branches safe to reap; ` +
-        `skipped live=${m.counts.live} dirty=${m.counts.dirty} young=${m.counts.young || 0} ` +
+        `skipped live=${m.counts.live} dirty=${m.counts.dirty} locked=${m.counts.locked || 0} young=${m.counts.young || 0} ` +
         `parked=${m.counts.parked} protected=${m.counts.protected} unmerged=${m.counts.notMerged}.`,
     );
     for (const r of m.reap.slice(0, 50)) {
@@ -270,5 +291,6 @@ module.exports = {
   writeManifest,
   stripJunctions,
   isWorktreeYoungerThan,
+  isStillLanded,
   WORKTREE_GRACE_MS,
 };

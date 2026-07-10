@@ -142,6 +142,8 @@ function decisionAdvice(kind, label) {
     return `Advice: keep parked until the stated review date unless it is clearly obsolete. Summary: ${label}.`;
   if (kind === 'landed')
     return `Advice: let the janitor clear this unless you need the branch for audit. Summary: ${label}.`;
+  if (kind === 'locked')
+    return `Advice: do not force-remove a Git-locked worktree. Confirm its owner and lock reason, then unlock before the bounded janitor runs. Summary: ${label}.`;
   if (kind === 'protected')
     return `Advice: preserve this rescue snapshot; use it only as evidence or recovery material. Summary: ${label}.`;
   return `Advice: choose Land if this belongs in the product now, Park if it is still valuable but blocked, or Drop if it no longer fits ExampleCo's priorities. Summary: ${label}.`;
@@ -179,6 +181,7 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   const parked = buckets.parked || {};
   const needsDecision = buckets.needsDecision || {};
   const safeToClear = buckets.safeToClear || {};
+  const locked = buckets.locked || {};
   const protectedBucket = buckets.protected || {};
 
   const parkedRecords = asArray(parked.records || (snapshot && snapshot.parkedRecords));
@@ -186,6 +189,7 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   const strayStashes = asArray(needsDecision.stashes);
   const uncommittedEdits = asArray(needsDecision.uncommittedEdits);
   const safeBranches = asArray(safeToClear.branches);
+  const lockedBranches = asArray(locked.branches);
   const protectedBranches = asArray(protectedBucket.branches);
   const strayItems =
     strayBranches.length + strayStashes.length + (uncommittedEdits.length > 0 ? 1 : 0);
@@ -194,8 +198,7 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   // tree says so outright; otherwise the parked-item count leads (the number ExampleCo
   // cares about), then the rest of the counts. ExampleCo 2026-06-20 #gap: the face led
   // with "Status: git hygiene ..." which is log-speak, not an answer.
-  const anyWork =
-    parkedRecords.length + strayItems + safeBranches.length + protectedBranches.length > 0;
+  const anyWork = parkedRecords.length + strayItems + safeBranches.length + lockedBranches.length > 0;
   // Timed-out classifier calls mean the snapshot is INCOMPLETE: empty buckets
   // may be missing data, not cleanliness. Never render "Clean" from a degraded
   // snapshot (Codex review 2026-07-06); name the defect and keep trailing data.
@@ -205,8 +208,11 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   const degradedLine = degradedCalls.length
     ? `DEFECT (red): git snapshot INCOMPLETE, ${plural(degradedCalls.length, 'classifier call')} timed out under shared-.git contention (${degradedShown}${degradedSuffix}). Counts below may be undercounts. Repair: retry once contention clears, or raise SB_GIT_TIMEOUT_MS.`
     : '';
+  const lockedSuffix = lockedBranches.length
+    ? `, ${plural(lockedBranches.length, 'locked landed worktree')} requiring an attended unlock decision`
+    : '';
   const verdictLead = anyWork
-    ? `${plural(parkedRecords.length, 'parked item')}: ${plural(strayItems, 'stray item')} needing a decision, ${plural(safeBranches.length, 'landed leftover')} safe to clear, ${plural(protectedBranches.length, 'protected rescue snapshot')}.`
+    ? `${plural(parkedRecords.length, 'parked item')}: ${plural(strayItems, 'stray item')} needing a decision, ${plural(safeBranches.length, 'landed leftover')} safe to clear${lockedSuffix}.`
     : degradedLine
       ? 'Unverified: cannot confirm clean, the git snapshot is incomplete (see defect below).'
       : 'Clean: no parked work, no stray branches, nothing to decide.';
@@ -265,6 +271,23 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
 
   lines.push(
     ...formatRows(
+      'Locked landed worktrees',
+      lockedBranches
+        .slice(0, maxRows)
+        .map((branch) =>
+          decisionAdvice(
+            'locked',
+            `${branchLabel(branch)} - ${clean(branch.worktreeLockReason || 'Git lock present', 120)}`,
+          ),
+        ),
+      'none',
+    ),
+  );
+  if (lockedBranches.length > maxRows) lines.push(`  ... +${lockedBranches.length - maxRows} more`);
+  lines.push('');
+
+  lines.push(
+    ...formatRows(
       'Protected',
       protectedBranches
         .slice(0, maxRows)
@@ -276,6 +299,12 @@ function renderGitHygieneSnapshot(snapshot, opts = {}) {
   );
   if (protectedBranches.length > maxRows) {
     lines.push(`  ... +${protectedBranches.length - maxRows} more`);
+  }
+  if (protectedBranches.length) {
+    lines.push('');
+    lines.push(
+      `Preserved evidence: ${plural(protectedBranches.length, 'protected rescue snapshot')} retained. This is not an active-work or shared-checkout defect.`,
+    );
   }
 
   return lines.join('\n');
