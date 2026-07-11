@@ -20,7 +20,6 @@ const DEFAULT_DATA_DIR =
 // scheduled SKILL.md work so PC-off nights still leave receipts.
 const DEFAULT_CLOUD_SCHEDULED_SKILLS = Object.freeze([
   { skill: 'secondbrain-nightly-enhancement', cadence: 'daily', preBriefingRequired: true },
-  { skill: 'video-quality-research', cadence: 'daily', preBriefingRequired: true },
   { skill: 'daily-birthday-check', cadence: 'daily', preBriefingRequired: true },
   { skill: 'daily-gmail-scan', cadence: 'daily', preBriefingRequired: true },
   { skill: 'daily-otter-sweep', cadence: 'daily', preBriefingRequired: true },
@@ -47,7 +46,6 @@ const DEFAULT_CLOUD_SCHEDULED_SKILLS = Object.freeze([
     disabledReason:
       'proposal-only unless ExampleCo explicitly enables autonomous research with AMY_ENABLE_AUTONOMOUS_RESEARCH=1',
   },
-  { skill: 'video-quality-tools', cadence: 'daily', preBriefingRequired: true },
   { skill: 'weekly-warmth-audit', cadence: 'weekly', dayOfWeek: 'MON', preBriefingRequired: true },
   {
     skill: 'weekly-backup-health-check',

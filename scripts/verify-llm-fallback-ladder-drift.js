@@ -53,7 +53,7 @@ const RUNTIME_FILES = [
   ['data/agent/ask-ai-rungs.jsonl', 'per-attempt ladder log, appended at call time'],
   [
     'data/agent/openai-api-spend.json',
-    'hard-cap OpenAI floor ledger (month + CT-day buckets), written on paid-rung spend',
+    'hard-cap OpenAI floor ledger (month + night buckets), written on paid-rung spend',
   ],
 ];
 

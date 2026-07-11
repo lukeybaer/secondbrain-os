@@ -184,6 +184,15 @@ const CARD_DEFINITIONS = [
       'Always: communication coaching tile. It must be grounded in ExampleCo quotes and vetted sources, or render as a defect.',
   },
   {
+    id: 'big_decisions',
+    match: /^BIG DECISIONS\b/i,
+    always: true,
+    condition:
+      'Always: big decisions tile (ExampleCo voice dispatch 2026-07-11, answer 19). Reads data/agent/big-decisions.jsonl ' +
+      '(scripts/lib/big-decisions.js) and shows the last 7 days of rule supersessions/policy/architecture calls, ' +
+      'newest first. Renders an explicit "no big decisions in the last 7 days" placeholder rather than vanishing when the window is empty.',
+  },
+  {
     id: 'aws_costs',
     match: /^AWS COSTS\b/i,
     always: true,
@@ -388,6 +397,7 @@ const CARD_PRIORITY_IDS = [
   'meetings',
   'kingdom_equipping',
   'communication_coaching',
+  'big_decisions',
   'otter_speaker_pareto',
   'people_files_changes',
   'tesla_cybercab',

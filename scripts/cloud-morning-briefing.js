@@ -32,6 +32,10 @@ const {
 } = require('./kingdom-equipping-ideas.js');
 const { formatUncommittedParkedWorkSection } = require('./lib/git-hygiene-briefing.js');
 const { generateSelfHealHealthCard } = require('./self-heal/self-heal-health-card.js');
+const {
+  buildBigDecisionsSection,
+  renderBigDecisionsMarkdown,
+} = require('./lib/big-decisions-card.js');
 const { probeDevOpsHealth } = require('./lib/devops-health.js');
 // Deploy-parity row (Codex amendment 3, item W3a): the artifact is written by
 // scripts/verify-deploy-parity.js, a separate probe process (not required
@@ -1397,6 +1401,7 @@ const MANIFEST_CARD_RENDER = {
   shorts_proposals: { title: "TODAY'S 10 SHORTS PROPOSALS" },
   kingdom_equipping: { title: 'KINGDOM EQUIPPING IDEAS' },
   communication_coaching: { title: 'COMMUNICATION COACHING' },
+  big_decisions: { title: 'BIG DECISIONS' },
   aws_costs: {
     title: 'AWS COSTS',
     blockerDetail:
@@ -8937,6 +8942,17 @@ function buildCloudMorningBriefing({
       const body = formatCommCoachingSection(dataDir, date);
       return body ? legacySection('COMMUNICATION COACHING', body) : null;
     })(),
+    // BIG DECISIONS reads data/agent/big-decisions.jsonl (git-tracked curated
+    // state, written by interactive sessions via appendBigDecision -- never
+    // by a scheduled cloud job) through the ONE shared formatter both
+    // generators call (scripts/lib/big-decisions-card.js), so this build and
+    // manual-briefing-v3.js never render two independently-drifting copies of
+    // the same ledger. renderBigDecisionsMarkdown never returns null for a
+    // readable ledger (an empty last-7-days window still renders the honest
+    // "no big decisions" placeholder body) -- null here means the ledger read
+    // itself failed, which falls through to the never-drop manifest loop's
+    // honest blocker rather than a fabricated card.
+    big_decisions: renderBigDecisionsMarkdown(buildBigDecisionsSection()),
     // aws_costs / reputation_risk / full_life_backup: real ONLY when the
     // generator proved real content. Otherwise leave unset -> honest blocker.
     aws_costs: awsCostsCard.real ? legacySection(awsCostsCard.title, awsCostsCard.body) : null,

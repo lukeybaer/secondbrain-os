@@ -114,7 +114,6 @@ Bat-Task 'SecondBrain-DailyBriefing' "$root\scripts\daily-briefing.bat" '04:35'
 # must all finish before the 04:35 daily build / 05:30 briefing reads their
 # output.
 Skill-Task 'SecondBrain-NightlyEnhancement'   'secondbrain-nightly-enhancement'  '00:00'  # concurrent
-Skill-Task 'SecondBrain-VideoQualityResearch' 'video-quality-research'            '00:00'  # concurrent
 Skill-Task 'SecondBrain-BirthdayCheck'        'daily-birthday-check'              '00:00'  # concurrent
 Skill-Task 'SecondBrain-GmailScan'            'daily-gmail-scan'                  '00:00'  # concurrent
 Skill-Task 'SecondBrain-OtterSweep'           'daily-otter-sweep'                 '00:00'  # concurrent
@@ -122,10 +121,11 @@ Skill-Task 'SecondBrain-LinkedInScan'         'daily-linkedin-scan'             
 Skill-Task 'SecondBrain-KingdomEquipping'     'kingdom-equipping-ideas'           '00:00'  # concurrent
 Skill-Task 'SecondBrain-AmyResearchSkill'     'amy-research-skill'                '00:00'  # concurrent
 
-# video-quality-tools depends on video-quality-research finishing first: both
-# pick the 3 lowest-coverage rubric criteria, so research must mark its 3 before
-# tools picks the next 3. 45 minute gap is conservative.
-Skill-Task 'SecondBrain-VideoQualityTools'    'video-quality-tools'               '00:45'
+# video-quality-research and video-quality-tools RETIRED 2026-07-11: 172
+# straight no-op nights, the saturation guard (audit-tool-sprawl.py) blocks
+# further work, superseded by the QC-fix mission. See
+# scheduled-tasks/video-quality-research/SKILL.md and
+# scheduled-tasks/video-quality-tools/SKILL.md.
 
 # ── Pre-briefing diagnostic + health heal ─────────────────────────────────────
 # These stay in their late slots: they read the night's accumulated state and
@@ -135,7 +135,11 @@ Bat-Task 'SecondBrain-HealthSelfHeal' "$root\scripts\health-self-heal.bat" '03:0
 # Provider canaries (2026-06-11 ladder plan P4): prove every LLM rung daily,
 # BEFORE the diagnostic reads the ledger at 02:45.
 Bat-Task 'SecondBrain-ProviderCanaries' "$root\scripts\provider-canary.bat" '02:30'
-Bat-Task 'SecondBrain-LifeArchiveSmsBackfill' "$root\scripts\life-archive-sms-backfill.bat" '03:18'
+# SecondBrain-LifeArchiveSmsBackfill DEREGISTERED 2026-07-11: scripts\life-archive-sms-backfill.bat
+# does not exist, so this task only ever failed. SMS backfill maps to a real
+# requirement (AMY_REQUIREMENTS.md section 1, SMS channel) and needs a proper
+# rebuild before it is re-registered. Tracked as a standing reminder:
+# data/standing-reminders.json id sms-backfill-rebuild-2026-07.
 
 # Clicked LinkedIn sends are approved user actions and must not sit in a
 # dashboard-only queue. The local authenticated browser owns the actual send,
@@ -149,7 +153,10 @@ Bat-Minute-Task 'SecondBrain-LifeArchiveGmailBackfill' "$root\scripts\life-archi
 Bat-Minute-Task 'SecondBrain-LifeArchiveIndex' "$root\scripts\life-archive-index.bat" 5
 Bat-Minute-Task 'SecondBrain-LifeArchiveHealth' "$root\scripts\life-archive-health.bat" 60
 Bat-Minute-Task 'SecondBrain-LifeArchiveS3Sync' "$root\scripts\life-archive-sync-s3.bat" 60
-Bat-Minute-Task 'SecondBrain-ConversationCacheArchiveSync' "$root\scripts\publish-conversation-cache.bat" 60
+# SecondBrain-ConversationCacheArchiveSync DEREGISTERED 2026-07-11:
+# scripts\publish-conversation-cache.bat does not exist, so this task only ever
+# failed. No requirement currently maps to it; re-register only if the script
+# is built and a real need is identified.
 Bat-Minute-Task 'SecondBrain-GraphitiRealtimeMaintenance' "$root\scripts\graphiti-realtime-maintenance.bat" 15
 
 # Keep the Claude Max-plan OAuth token warm for EC2 dispatches without flashing

@@ -51,8 +51,25 @@ function readAll(opts) {
   return rows;
 }
 
-// Newest first. days limits how far back to look (CT dates are stored on the
-// entry at write time, so no timezone math is needed at read time).
+// The CT date (yyyy-mm-dd) to measure the window from: opts.now as a yyyy-mm-dd
+// string or Date, else the current America/Chicago day.
+function refDateString(now) {
+  if (typeof now === 'string' && /^\d{4}-\d{2}-\d{2}/.test(now)) return now.slice(0, 10);
+  const d = now instanceof Date ? now : new Date();
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(d);
+}
+
+// yyyy-mm-dd shifted by deltaDays (string arithmetic on the calendar date).
+function shiftDateString(day, deltaDays) {
+  const [y, m, d] = String(day).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + deltaDays)).toISOString().slice(0, 10);
+}
+
+// Newest first. `days` is a TRUE calendar cutoff ending at the reference day
+// (opts.now, default the current CT day): entries dated within the last `days`
+// calendar days are kept. It is NOT "the N most recent dates that have
+// entries" (that older reading resurfaced weeks-old decisions as current
+// during a sparse period, bug found 2026-07-11 building the briefing card).
 function readBigDecisions(opts) {
   const rows = readAll(opts);
   const days = opts && opts.days;
@@ -60,9 +77,8 @@ function readBigDecisions(opts) {
     .slice()
     .sort((a, b) => String(b.date).localeCompare(String(a.date)) || (b.seq || 0) - (a.seq || 0));
   if (!days) return sorted;
-  const dates = [...new Set(sorted.map((r) => r.date))].slice(0, days);
-  const keep = new Set(dates);
-  return sorted.filter((r) => keep.has(r.date));
+  const cutoff = shiftDateString(refDateString(opts && opts.now), -(days - 1));
+  return sorted.filter((r) => String(r.date) >= cutoff);
 }
 
 function appendBigDecision(entry, opts) {
