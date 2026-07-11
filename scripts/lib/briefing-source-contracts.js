@@ -47,24 +47,26 @@ function readJson(file) {
 }
 
 function fileEvidence(file) {
-  const json = readJson(file);
   let stat = null;
   try {
     stat = fs.statSync(file);
   } catch {
     // Missing is an honest source condition, not an exception.
   }
+  const isFile = Boolean(stat && stat.isFile());
+  const json = isFile ? readJson(file) : null;
   const generatedAt =
     (json && (json.generated_at || json.generatedAt || json.ts || json.updatedAt)) ||
-    (stat && stat.mtime.toISOString()) ||
+    (isFile && stat.mtime.toISOString()) ||
     null;
   const substance = json && typeof json === 'object' ? Object.keys(json).length : 0;
   const detail = {
     file,
-    exists: !!stat,
+    exists: isFile,
+    kind: !stat ? 'missing' : isFile ? 'file' : 'directory',
     generatedAt,
     substance,
-    bytes: stat ? stat.size : 0,
+    bytes: isFile ? stat.size : 0,
   };
   return { digest: sha256(JSON.stringify(detail)), facts: detail };
 }
@@ -334,6 +336,24 @@ function simpleEvidence(parts) {
   return ({ dataDir }) => evidenceForFiles(dataDir, parts);
 }
 
+function datedArtifactEvidence(partsForDate) {
+  return ({ dataDir, date }) => {
+    const normalizedDate = String(date || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) {
+      const facts = [{
+        file: dataFile(dataDir, 'agent', 'missing-briefing-date'),
+        exists: false,
+        kind: 'missing-date',
+        generatedAt: null,
+        substance: 0,
+        bytes: 0,
+      }];
+      return { digest: sha256(JSON.stringify(facts)), facts };
+    }
+    return evidenceForFiles(dataDir, partsForDate(normalizedDate));
+  };
+}
+
 function previousIsoDate(isoDate) {
   const [year, month, day] = String(isoDate || '').split('-').map(Number);
   const value = new Date(Date.UTC(year || 1970, (month || 1) - 1, (day || 1) - 1, 12));
@@ -388,11 +408,12 @@ async function refreshTokenUsage({ dataDir, date, runCommand, node, cwd }) {
   });
 }
 
-function simpleProducer({ family, cards, command, timeoutMs, artifacts, extraEnv } = {}) {
+function simpleProducer({ family, cards, command, timeoutMs, artifacts, evidence, extraEnv } = {}) {
+  const contractEvidence = evidence || simpleEvidence(artifacts);
   return {
     family,
     cards,
-    evidence: simpleEvidence(artifacts),
+    evidence: contractEvidence,
     refresh: ({ dataDir, date, runCommand, node, cwd }) => refreshCommandSet({
       family,
       dataDir,
@@ -401,7 +422,7 @@ function simpleProducer({ family, cards, command, timeoutMs, artifacts, extraEnv
       node,
       cwd,
       commands: [[command(date, dataDir), timeoutMs, extraEnv]],
-      evidence: simpleEvidence(artifacts),
+      evidence: contractEvidence,
     }),
   };
 }
@@ -430,21 +451,22 @@ const CONTRACTS = {
     cards: ['mortgage_rate_indexes'],
     command: (date) => ['scripts/mortgage-rate-indexes.js', '--date', date],
     timeoutMs: 6 * 60 * 1000,
-    artifacts: [['agent', 'mortgage-rates']],
+    evidence: datedArtifactEvidence((date) => [['agent', 'mortgage-rates', `${date}.json`]]),
   }),
   shorts: simpleProducer({
     family: 'shorts',
     cards: ['shorts_proposals'],
     command: (date) => ['scripts/morning-shorts-proposals.js', '--date', date],
     timeoutMs: 18 * 60 * 1000,
-    artifacts: [['agent', 'shorts-proposals']],
+    evidence: datedArtifactEvidence((date) => [['agent', 'shorts-proposals', `${date}.json`]]),
   }),
   'aws-costs': simpleProducer({
     family: 'aws-costs',
     cards: ['aws_costs'],
     command: (date) => ['scripts/aws-cost-section.js', '--date', date],
     timeoutMs: 5 * 60 * 1000,
-    artifacts: [['agent', 'aws-costs-latest.json']],
+    // The live card reads the dated markdown snapshot, not a legacy JSON alias.
+    evidence: datedArtifactEvidence((date) => [['agent', `aws-costs-${date}.md`]]),
   }),
   'token-usage': {
     family: 'token-usage',
@@ -457,14 +479,14 @@ const CONTRACTS = {
     cards: ['kingdom_equipping'],
     command: (date, dataDir) => ['scripts/kingdom-equipping-ideas.js', '--date', date, '--data-dir', dataDir],
     timeoutMs: 4 * 60 * 1000,
-    artifacts: [['agent', 'kingdom-equipping-ideas.json']],
+    evidence: datedArtifactEvidence((date) => [['agent', 'kingdom-equipping', `${date}.json`]]),
   }),
   'communication-coaching': simpleProducer({
     family: 'communication-coaching',
     cards: ['communication_coaching'],
     command: (date) => ['scripts/comm-coaching-card.js', '--date', date],
     timeoutMs: 4 * 60 * 1000,
-    artifacts: [['agent', 'communication-coaching-latest.json']],
+    evidence: datedArtifactEvidence((date) => [['agent', 'comm-coaching', `${date}.json`]]),
   }),
   linkedin: { family: 'linkedin', cards: ['linkedin'], evidence: simpleEvidence([['agent', 'linkedin-scan-status.json']]) },
   'card-local': { family: 'card-local', cards: [], evidence: () => ({ digest: 'card-local', facts: {} }) },
