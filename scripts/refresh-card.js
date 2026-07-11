@@ -127,6 +127,7 @@ const {
   checkHealthBlockersConsistency,
   checkHealthBlockersReverseConsistency,
 } = require('./validate-briefing-quality.js');
+const { numericFaceNeedsDateStamp } = require('./lib/briefing-date-stamp.js');
 
 // The delimiter buildCloudMorningBriefing joins its own fresh output with
 // (`qcSections.join('\n\n---\n\n')`). Still exported for fixture-building,
@@ -287,6 +288,28 @@ function splitTrailingChrome(lines) {
     else break;
   }
   return { contentLines: lines.slice(0, end), chromeLines: lines.slice(end) };
+}
+
+function firstVisibleBodyLine(contentLines) {
+  return (contentLines || [])
+    .slice(1)
+    .map((line) => String(line || '').trim())
+    .find((line) => line && !/^-{3,}$/.test(line));
+}
+
+function withNumericCardAsOfStamp(contentLines, asOfDate) {
+  const normalizedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(asOfDate || ''))
+    ? String(asOfDate)
+    : '';
+  if (!normalizedDate) return contentLines;
+  const body = (contentLines || [])
+    .slice(1)
+    .map((line) => String(line || '').trim())
+    .filter((line) => line && !/^-{3,}$/.test(line))
+    .join('\n');
+  if (!body) return contentLines;
+  if (!numericFaceNeedsDateStamp({ face: body, body })) return contentLines;
+  return [...contentLines, '', `As of: ${normalizedDate}.`];
 }
 
 function sectionTitleLine(section) {
@@ -718,7 +741,7 @@ function scopedRefreshFailures(markdown, cardIds) {
 // live state, and must not leak into the board. Returns { markdown,
 // replacedIds } or throws on any A1 boundary violation. Exported (as
 // spliceCard) so tests exercise this without touching the filesystem.
-function spliceCard(existingMarkdown, freshMarkdown, cardId) {
+function spliceCard(existingMarkdown, freshMarkdown, cardId, opts = {}) {
   const card = getCardById(cardId);
   if (!card) {
     throw new Error(
@@ -761,7 +784,7 @@ function spliceCard(existingMarkdown, freshMarkdown, cardId) {
     const { chromeLines } = splitTrailingChrome(sections[existingIdx].lines);
     const { contentLines } = splitTrailingChrome(freshSection.lines);
     sections[existingIdx] = {
-      lines: [...contentLines, ...chromeLines],
+      lines: [...withNumericCardAsOfStamp(contentLines, opts.asOfDate), ...chromeLines],
       titleText: freshSection.titleText,
     };
     replacedIds.push(id);
@@ -843,7 +866,7 @@ async function refreshCard({
 
     let spliced;
     try {
-      spliced = spliceCard(existingMarkdown, fresh.markdown, cardId);
+      spliced = spliceCard(existingMarkdown, fresh.markdown, cardId, { asOfDate: date });
     } catch (e) {
       console.error((e && e.message) || String(e));
       process.exitCode = 1;
@@ -1037,6 +1060,8 @@ module.exports = {
   splitDocument,
   joinDocument,
   splitTrailingChrome,
+  firstVisibleBodyLine,
+  withNumericCardAsOfStamp,
   headingTitleText,
   sectionTitleLine,
   findMatchingSectionIndices,

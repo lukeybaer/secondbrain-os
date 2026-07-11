@@ -62,6 +62,7 @@ const { loadOperatorIdentity } = require('./lib/operator-identity.js');
 const { ARTIFACT_REL_PATH, buildLiveBoardArtifact } = require('./lib/live-board-truth.js');
 const { resolveDataArtifact, writeDataArtifact } = require('./lib/data-root.js');
 const { ctDayKeyForInstant } = require('./lib/ct-day.js');
+const { numericFaceNeedsDateStamp } = require('./lib/briefing-date-stamp.js');
 
 // Operator-specific tokens (employer name + username) are PII and load from
 // memory/ at runtime, never hardcoded in source. The private tree resolves the
@@ -558,10 +559,6 @@ const ANSWER_FIRST_WINDOW = 40;
 // 3. SOURCE+DATE -- if a face asserts a number/dollar/percent, the card must
 // carry a date token somewhere (full card body, since the stamp may be below the
 // fold). Softer defect: a numeric claim with no "as of" date is undated copy.
-const FACE_HAS_NUMBER = /(?:\$\s?\d|\d+\s?%|\b\d+\b)/;
-const DATE_TOKEN =
-  /(?:\b\d{4}-\d{2}-\d{2}\b|\bas of\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}\b)/i;
-
 // 4. STALENESS ALARM -- monitor cards (cybercab, news) that declare a
 // last-checked / as-of stamp must be fresh. If the most recent declared date is
 // older than 48h relative to the run date, the monitor is stale.
@@ -885,7 +882,7 @@ function execCrispnessDefects(card, tile, runDate) {
   }
 
   // 3. SOURCE+DATE on numbers (softer defect, still hard-gated but distinct id).
-  if (FACE_HAS_NUMBER.test(face) && !DATE_TOKEN.test(body)) {
+  if (numericFaceNeedsDateStamp({ face, body })) {
     defects.push(
       `EXEC-CRISPNESS(soft): ${card.id} (${tile.name}) face asserts a number/$/% but the card ExampleCos no date/"as of" stamp`,
     );
