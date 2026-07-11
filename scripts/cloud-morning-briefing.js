@@ -6828,8 +6828,8 @@ function testsBlockedToBlocker(testsBlocked) {
   return null;
 }
 
-function buildFullLifeBackupCard(dataDir) {
-  maybeRegenLifeArchiveHealth(dataDir);
+function buildFullLifeBackupCard(dataDir, { allowLiveRefresh = true } = {}) {
+  if (allowLiveRefresh) maybeRegenLifeArchiveHealth(dataDir);
   const report = readJson(path.join(dataDir, 'life-archive', 'health-latest.json'), null);
   if (!report || !Array.isArray(report.sources) || !report.sources.length) {
     return {
@@ -7026,8 +7026,9 @@ function materializeEc2ReputationArtifact(dataDir, date) {
 // writes, so a clean 0 is backed by a real scan. If the scan cannot run (all
 // feeds down) or no artifact lands, it emits an honest blocker that NAMES the
 // missing capability. Never a fake clean zero.
-function buildReputationCard(dataDir, date) {
+function buildReputationCard(dataDir, date, { allowLiveRefresh = true } = {}) {
   if (
+    allowLiveRefresh &&
     runningOnEc2(dataDir) &&
     (!isSelfHealRefreshMode() || selfHealRefreshTargets().has('reputation_risk'))
   ) {
@@ -8087,7 +8088,7 @@ function formatTeslaWatchSection(date, options = {}) {
   ].join('\n');
 }
 
-function buildAwsCostsCard(dataDir, date) {
+function buildAwsCostsCard(dataDir, date, { allowLiveRefresh = true } = {}) {
   // On EC2 the instance IAM role can run a live Cost Explorer query (default
   // credential chain, no named profile -- the PC's aws-cost-section.buildSection
   // always passes --profile and so cannot run against the bare role). Attempt it
@@ -8102,7 +8103,7 @@ function buildAwsCostsCard(dataDir, date) {
   // deterministically testable without a real aws CLI on the host.
   if (process.env.AMY_BRIEFING_SIMULATE_AWS_LIVE_ERROR) {
     liveError = String(process.env.AMY_BRIEFING_SIMULATE_AWS_LIVE_ERROR).slice(0, 200);
-  } else if (runningOnEc2(dataDir)) {
+  } else if (allowLiveRefresh && runningOnEc2(dataDir)) {
     try {
       const materialized = materializeEc2AwsCostsArtifact(dataDir, date);
       if (!materialized.ok) liveError = materialized.error || 'live cost query failed';
@@ -8602,7 +8603,9 @@ function buildCloudMorningBriefing({
   // health note and is no longer allowed to blank the calendar.
   const calendarOmitted = false;
   const scheduleLines = extractScheduleLines(dataDir, date);
-  const awsCostsCard = buildAwsCostsCard(dataDir, date);
+  const awsCostsCard = buildAwsCostsCard(dataDir, date, {
+    allowLiveRefresh: buildTargeted('aws_costs'),
+  });
   const scheduleSourceMissing = scheduleLines.some((line) => /No cloud schedule feed/i.test(line));
   const queueRows = normalizeCommandQueue(
     readJson(path.join(dataDir, 'agent', 'command-queue.json'), []),
@@ -8709,10 +8712,12 @@ function buildCloudMorningBriefing({
       // swallowed, so the health row can say WHY it is still showing an old
       // reading instead of silently rendering stale numbers as if current.
       // ExampleCo 2026-07-05 otter-metric-mismatch #gap.
-      const { rebuildOtterCoverageArtifactsIfStale } = require('./lib/otter-coverage-rebuild.js');
-      const rebuildResult = rebuildOtterCoverageArtifactsIfStale(dataDir);
-      if (rebuildResult && rebuildResult.error) {
-        otterCoverageRebuildFailure = rebuildResult.error;
+      if (buildTargeted('otter_speaker_pareto')) {
+        const { rebuildOtterCoverageArtifactsIfStale } = require('./lib/otter-coverage-rebuild.js');
+        const rebuildResult = rebuildOtterCoverageArtifactsIfStale(dataDir);
+        if (rebuildResult && rebuildResult.error) {
+          otterCoverageRebuildFailure = rebuildResult.error;
+        }
       }
       const { computeVerdict } = require('./otter-processing-coverage-probe');
       const vpDir = path.join(dataDir, 'life-archive', 'voiceprints');
@@ -8854,8 +8859,12 @@ function buildCloudMorningBriefing({
   // The honest-block stubs (aws/reputation/full-life) return {real, body|detail};
   // when real is false we leave the id unset so the manifest loop emits the
   // honest blocker. Everything else maps its generator output to its id.
-  const reputationCard = buildReputationCard(dataDir, date);
-  const fullLifeCard = buildFullLifeBackupCard(dataDir);
+  const reputationCard = buildReputationCard(dataDir, date, {
+    allowLiveRefresh: buildTargeted('reputation_risk'),
+  });
+  const fullLifeCard = buildFullLifeBackupCard(dataDir, {
+    allowLiveRefresh: buildTargeted('full_life_backup'),
+  });
   if (buildTargeted('token_usage'))
     refreshTokenUsageArtifacts(dataDir, date, forceTokenArtifactRefresh);
   const realById = {
@@ -8933,7 +8942,11 @@ function buildCloudMorningBriefing({
     // renders a real (zero-state) card rather than vanishing.
     self_heal_health: (() => {
       try {
-        return generateSelfHealHealthCard({ dataDir, date }).section;
+        return generateSelfHealHealthCard({
+          dataDir,
+          date,
+          write: buildTargeted('self_heal_health'),
+        }).section;
       } catch (e) {
         // NEVER swallow silently: a hidden throw here is exactly what let the
         // useless "artifact unusable" fallback render for days. Log the real
