@@ -135,7 +135,11 @@ async function main() {
     process.exit(2);
   }
   let raw;
-  try { raw = await fetchUsageWithRetry(token); }
+  const configuredAttempts = Number(process.env.CLAUDE_PLAN_USAGE_ATTEMPTS || 4);
+  const attempts = Number.isFinite(configuredAttempts)
+    ? Math.max(1, Math.min(4, Math.floor(configuredAttempts)))
+    : 4;
+  try { raw = await fetchUsageWithRetry(token, { attempts }); }
   catch (e) {
     console.error(`[collect-claude-plan-usage] ${e.message}`);
     process.exit(1);

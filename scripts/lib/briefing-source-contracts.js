@@ -97,7 +97,12 @@ async function runNodeCommand({ node = process.execPath, cwd = REPO_ROOT, args, 
 }
 
 function controllerSourceEnv(dataDir, extra = {}) {
-  const env = { ...process.env, ...extra, SECONDBRAIN_DATA_DIR: dataDir };
+  const env = {
+    ...process.env,
+    ...extra,
+    SECONDBRAIN_DATA_DIR: dataDir,
+    BRIEFING_CARD_CONTROLLER: '1',
+  };
   // The controller never gains a paid API lane by inheriting a stray key. The
   // established ask-ai subscription ladder remains available where a producer
   // genuinely needs it, but its paid fallback stays gated elsewhere.
@@ -329,6 +334,60 @@ function simpleEvidence(parts) {
   return ({ dataDir }) => evidenceForFiles(dataDir, parts);
 }
 
+function previousIsoDate(isoDate) {
+  const [year, month, day] = String(isoDate || '').split('-').map(Number);
+  const value = new Date(Date.UTC(year || 1970, (month || 1) - 1, (day || 1) - 1, 12));
+  return value.toISOString().slice(0, 10);
+}
+
+function tokenUsageArtifactParts(date) {
+  return [
+    ['agent', `token-usage-${previousIsoDate(date)}.json`],
+    ['agent', 'claude-plan-usage.json'],
+    ['agent', 'codex-token-usage-week.json'],
+    ['agent', 'bedrock-budget-usage.json'],
+  ];
+}
+
+function planUsageIsCurrent({ dataDir, date, now = Date.now() }) {
+  const plan = readJson(dataFile(dataDir, 'agent', 'claude-plan-usage.json'));
+  const generatedAt = Date.parse(plan && plan.generated_at);
+  const resetDate = String(plan && plan.weekly_all_models_resets_at || '').slice(0, 10);
+  return Number.isFinite(generatedAt)
+    && now - generatedAt <= 24 * 60 * 60 * 1000
+    && (!resetDate || resetDate >= String(date || ''));
+}
+
+function tokenUsageEvidence({ dataDir, date }) {
+  return evidenceForFiles(dataDir, tokenUsageArtifactParts(date));
+}
+
+async function refreshTokenUsage({ dataDir, date, runCommand, node, cwd }) {
+  const commands = [
+    [['scripts/collect-daily-token-usage.js', '--date', previousIsoDate(date)], 4 * 60 * 1000],
+    [['scripts/collect-codex-token-usage.js'], 4 * 60 * 1000],
+  ];
+  // The Claude plan endpoint is Cloudflare-protected. A current durable
+  // snapshot is already the authoritative proof the card renders, so do not
+  // spend a second bounded attempt on it. When it is genuinely stale, one
+  // controller-owned attempt is useful; a retry storm is not.
+  if (!planUsageIsCurrent({ dataDir, date })) {
+    commands.unshift([['scripts/collect-claude-plan-usage.js'], 45 * 1000, {
+      CLAUDE_PLAN_USAGE_ATTEMPTS: '1',
+    }]);
+  }
+  return refreshCommandSet({
+    family: 'token-usage',
+    dataDir,
+    date,
+    runCommand,
+    node,
+    cwd,
+    commands,
+    evidence: tokenUsageEvidence,
+  });
+}
+
 function simpleProducer({ family, cards, command, timeoutMs, artifacts, extraEnv } = {}) {
   return {
     family,
@@ -390,21 +449,8 @@ const CONTRACTS = {
   'token-usage': {
     family: 'token-usage',
     cards: ['token_usage'],
-    evidence: simpleEvidence([['agent', 'token-usage-latest.json']]),
-    refresh: ({ dataDir, date, runCommand, node, cwd }) => refreshCommandSet({
-      family: 'token-usage',
-      dataDir,
-      date,
-      runCommand,
-      node,
-      cwd,
-      commands: [
-        [['scripts/collect-daily-token-usage.js', '--date', date], 4 * 60 * 1000],
-        [['scripts/collect-claude-plan-usage.js', '--date', date], 4 * 60 * 1000],
-        [['scripts/collect-codex-token-usage.js', '--date', date], 4 * 60 * 1000],
-      ],
-      evidence: simpleEvidence([['agent', 'token-usage-latest.json']]),
-    }),
+    evidence: tokenUsageEvidence,
+    refresh: refreshTokenUsage,
   },
   'kingdom-equipping': simpleProducer({
     family: 'kingdom-equipping',
@@ -439,6 +485,11 @@ module.exports = {
   refreshOtter,
   refreshContent,
   refreshActionItems,
+  previousIsoDate,
+  tokenUsageArtifactParts,
+  tokenUsageEvidence,
+  planUsageIsCurrent,
+  refreshTokenUsage,
   refreshCommandSet,
   controllerSourceEnv,
   fileEvidence,

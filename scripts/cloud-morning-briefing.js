@@ -8485,6 +8485,10 @@ function refreshTokenUsageArtifacts(
   date = new Date().toISOString().slice(0, 10),
   forceSpawn = false,
 ) {
+  // The card controller owns this producer family in a separate bounded lane.
+  // A targeted card rebuild must only render that freshly collected evidence,
+  // never invoke the same collectors again or multiply a Cloudflare retry.
+  if (process.env.BRIEFING_CARD_CONTROLLER === '1') return;
   const env = { ...process.env, SECONDBRAIN_DATA_DIR: dataDir };
   // token-usage collectors skipped under test: each is a real child-process spawn
   // that ETIMEDOUTs (30s) under VITEST/NODE_ENV=test, the same real-spawn cost the

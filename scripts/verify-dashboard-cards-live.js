@@ -1377,7 +1377,13 @@ function communicationCoachingDefects(card, tile) {
 }
 
 function ownerlessRepairLanguageDefects(card, tile) {
-  if (!tile) return [];
+  // This is a repair-copy rule, not a ban on ordinary quoted evidence. A
+  // coaching or call quote can honestly contain "Nothing" without making its
+  // green content card ownerless. Only the two summary/proof surfaces own
+  // unresolved-repair language.
+  if (!tile || !['blockers', 'system_health'].includes(String(card && card.id || '').toLowerCase())) {
+    return [];
+  }
   const text = `${tile.body || ''} ${tile.inner || ''}`;
   if (
     !/(?:\bSee the card\b|\bNo ExampleCo action\b|\bNothing for you to do\b|\bNothing\.|\bno action needed\b|\brequired unless\b)/i.test(

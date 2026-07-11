@@ -191,7 +191,7 @@ function controllerImplementationDigest(contract = {}) {
     __filename,
     path.join(REPO_ROOT, 'scripts', 'refresh-card.js'),
   ];
-  if (contract && contract.family === 'otter') {
+  if (contract && typeof contract.refresh === 'function') {
     files.push(path.join(REPO_ROOT, 'scripts', 'lib', 'briefing-source-contracts.js'));
   }
   const parts = files.map((file) => {
@@ -454,7 +454,7 @@ function currentEvidence(contract, dataDir, date) {
   }
 }
 
-function attemptDefects(artifact, cardId) {
+function verificationInputsForCard(artifact, cardId) {
   const found = defectCodesForCard(artifact, cardId);
   return found.length ? found : ['REFRESH-VERIFY'];
 }
@@ -634,44 +634,101 @@ async function runCardController(options = {}, injected = {}) {
       options.sourceConcurrency || DEFAULT_SOURCE_CONCURRENCY,
       async ({ contract, cardIds }) => {
         const beforeEvidence = currentEvidence(contract, dataDir, date);
-      let result;
-      let error = null;
-      try {
-        result = await contract.refresh({
-          dataDir,
-          date,
-          cardIds,
-          cwd: REPO_ROOT,
-          node: process.execPath,
-          runCommand: commandRunner,
+        const implementationDigest = controllerImplementationDigest(contract);
+        const humanActionToken = options.humanActionToken ? String(options.humanActionToken) : '';
+        const tactic = `source:${contract.family || 'card-local'}`;
+        const tacticInputHash = hashTacticInput({
+          family: contract.family || 'card-local',
+          cardIds: [...cardIds].sort(),
+          evidenceDigest: beforeEvidence.digest,
+          implementationDigest,
+          humanActionToken: humanActionToken || null,
+          mode,
         });
-      } catch (caught) {
-        error = String((caught && caught.message) || caught);
-        result = { ok: false, error };
-      }
-      const afterEvidence = currentEvidence(contract, dataDir, date);
-      return {
-        family: contract.family,
-        cardIds,
-        ok: !!(result && result.ok),
-        beforeEvidence,
-        afterEvidence,
-        error,
-        // Keep the durable receipt inspectable without accidentally storing a
-        // multi-megabyte child-process transcript on every overnight run.
-        commands: Array.isArray(result && result.results)
-          ? result.results.map((row) => ({
-            args: row.args || [],
-            ok: !!row.ok,
-            exitCode: Number(row.result && row.result.exitCode),
-            timedOut: !!(row.result && row.result.timedOut),
-            stderr: String(row.result && row.result.stderr || '').slice(-2000),
-          }))
-          : [],
-      };
+        const noSpin = cardIds.every((cardId) => tacticAlreadyFailed(
+          date,
+          defectKey({ cardId, defectType: 'SOURCE-REFRESH' }),
+          tactic,
+          tacticInputHash,
+          { dataDir },
+        ));
+        if (noSpin) {
+          return {
+            family: contract.family,
+            cardIds,
+            ok: false,
+            noSpin: true,
+            tactic,
+            tacticInputHash,
+            implementationDigest,
+            beforeEvidence,
+            afterEvidence: beforeEvidence,
+            error: 'The identical source refresh already failed with unchanged source evidence today.',
+            commands: [],
+          };
+        }
+        let result;
+        let error = null;
+        try {
+          result = await contract.refresh({
+            dataDir,
+            date,
+            cardIds,
+            cwd: REPO_ROOT,
+            node: process.execPath,
+            runCommand: commandRunner,
+          });
+        } catch (caught) {
+          error = String((caught && caught.message) || caught);
+          result = { ok: false, error };
+        }
+        const afterEvidence = currentEvidence(contract, dataDir, date);
+        return {
+          family: contract.family,
+          cardIds,
+          ok: !!(result && result.ok),
+          noSpin: false,
+          tactic,
+          tacticInputHash,
+          implementationDigest,
+          beforeEvidence,
+          afterEvidence,
+          error: error || String(result && result.error || ''),
+          // Keep the durable receipt inspectable without accidentally storing a
+          // multi-megabyte child-process transcript on every overnight run.
+          commands: Array.isArray(result && result.results)
+            ? result.results.map((row) => ({
+              args: row.args || [],
+              ok: !!row.ok,
+              exitCode: Number(row.result && row.result.exitCode),
+              timedOut: !!(row.result && row.result.timedOut),
+              stderr: String(row.result && row.result.stderr || '').slice(-2000),
+            }))
+            : [],
+        };
       },
     );
     receipt.sourceFamilies = sourceResults;
+    for (const source of sourceResults) {
+      if (source.ok || source.noSpin) continue;
+      for (const cardId of source.cardIds) {
+        recordAttempt(date, {
+          defect: { cardId, defectType: 'SOURCE-REFRESH' },
+          tactic: source.tactic,
+          tacticInputHash: source.tacticInputHash,
+          repairImplementationDigest: source.implementationDigest,
+          humanActionToken: options.humanActionToken ? String(options.humanActionToken) : null,
+          ownerCardId: cardId,
+          affectedCardIds: [cardId],
+          dependentCardIds: [],
+          sourceHashes: { [source.family || 'card-local']: source.beforeEvidence.digest },
+          qcScope: [],
+          qcResult: 'source-failed',
+          fix: 'source-failed',
+          reflection: source.error || `Source family '${source.family}' failed before target render.`,
+        }, { dataDir });
+      }
+    }
     persist();
 
     const sourceByCard = new Map();
@@ -692,7 +749,8 @@ async function runCardController(options = {}, injected = {}) {
       const source = sourceByCard.get(cardId);
       const attemptBefore = readArtifact();
       const evidence = currentEvidence(contract, dataDir, date);
-      const defects = attemptDefects(attemptBefore, cardId);
+      const defects = defectCodesForCard(attemptBefore, cardId);
+      const verificationInputs = verificationInputsForCard(attemptBefore, cardId);
       const tactic = source && typeof contract.refresh === 'function'
         ? `source:${contract.family}+targeted-refresh`
         : `targeted-refresh:${contract.family || 'card-local'}`;
@@ -700,7 +758,7 @@ async function runCardController(options = {}, injected = {}) {
       const humanActionToken = options.humanActionToken ? String(options.humanActionToken) : '';
       const tacticInput = {
         cardId,
-        defects: [...defects].sort(),
+        defects: [...verificationInputs].sort(),
         liveTs: attemptBefore.ts || null,
         evidenceDigest: evidence.digest,
         implementationDigest,
@@ -708,7 +766,7 @@ async function runCardController(options = {}, injected = {}) {
         mode,
       };
       const tacticInputHash = hashTacticInput(tacticInput);
-      const noSpin = defects.every((code) => tacticAlreadyFailed(
+      const noSpin = verificationInputs.every((code) => tacticAlreadyFailed(
         date,
         defectKey({ cardId, defectType: code }),
         tactic,
@@ -724,12 +782,16 @@ async function runCardController(options = {}, injected = {}) {
         implementationDigest,
         humanActionToken: humanActionToken || null,
         defectsBefore: defects,
+        verificationInputs,
         sourceFamily: contract.family || 'card-local',
         sourceOk: !source || source.ok,
         startedAt: new Date().toISOString(),
       };
 
-      if (source && !source.ok) {
+      if (source && source.noSpin) {
+        cardReceipt.outcome = 'source-no-spin-skip';
+        cardReceipt.reflection = `source family '${contract.family}' already failed with unchanged evidence today; target refresh was not repeated.`;
+      } else if (source && !source.ok) {
         cardReceipt.outcome = 'source-failed';
         cardReceipt.reflection = `source family '${contract.family}' failed before card render; target refresh was not attempted.`;
       } else if (noSpin) {
@@ -790,7 +852,7 @@ async function runCardController(options = {}, injected = {}) {
           stderr: String(command && command.stderr || '').slice(-4000),
         };
         cardReceipt.statusAfter = cardStatus(attemptAfter, cardId);
-        cardReceipt.defectsAfter = attemptDefects(attemptAfter, cardId);
+        cardReceipt.defectsAfter = defectCodesForCard(attemptAfter, cardId);
         cardReceipt.greenRegressions = regressions;
         if (regressions.length) {
           restoreSnapshot(backups.markdown);
@@ -815,22 +877,24 @@ async function runCardController(options = {}, injected = {}) {
       }
 
       const qcResult = cardReceipt.outcome === 'cleared' ? 'cleared' : cardReceipt.outcome;
-      for (const code of defects) {
-        recordAttempt(date, {
-          defect: { cardId, defectType: code },
-          tactic,
-          tacticInputHash,
-          repairImplementationDigest: implementationDigest,
-          humanActionToken: humanActionToken || null,
-          ownerCardId: cardId,
-          affectedCardIds: [cardId],
-          dependentCardIds: DERIVED_CARD_IDS,
-          sourceHashes: { [contract.family || 'card-local']: evidence.digest },
-          qcScope: [cardId],
-          qcResult,
-          fix: cardReceipt.outcome,
-          reflection: cardReceipt.reflection,
-        }, { dataDir });
+      if (cardReceipt.outcome !== 'source-no-spin-skip') {
+        for (const code of verificationInputs) {
+          recordAttempt(date, {
+            defect: { cardId, defectType: code },
+            tactic,
+            tacticInputHash,
+            repairImplementationDigest: implementationDigest,
+            humanActionToken: humanActionToken || null,
+            ownerCardId: cardId,
+            affectedCardIds: [cardId],
+            dependentCardIds: DERIVED_CARD_IDS,
+            sourceHashes: { [contract.family || 'card-local']: evidence.digest },
+            qcScope: [cardId],
+            qcResult,
+            fix: cardReceipt.outcome,
+            reflection: cardReceipt.reflection,
+          }, { dataDir });
+        }
       }
       cardReceipt.finishedAt = new Date().toISOString();
       receipt.cards.push(cardReceipt);
