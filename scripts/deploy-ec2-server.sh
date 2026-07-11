@@ -34,6 +34,11 @@ LIVE_DEPS=(
   # narrow Otter producers on /opt; libs ship in full below.
   "scripts/card-controller.js"
   "scripts/refresh-card.js"
+  # Controller source contracts spawn these top-level token collectors. They
+  # are not visible to require-scan, so deploy and hash them explicitly.
+  "scripts/collect-daily-token-usage.js"
+  "scripts/collect-claude-plan-usage.js"
+  "scripts/collect-codex-token-usage.js"
   "scripts/ec2-card-controller-run.sh"
   "scripts/ec2-morning-briefing-run.sh"
   "scripts/install-ec2-card-controller-cron.sh"
@@ -153,6 +158,9 @@ LIVE_DEPS=(
 CONTROLLER_RUNTIME_FILES=(
   "scripts/card-controller.js"
   "scripts/refresh-card.js"
+  "scripts/collect-daily-token-usage.js"
+  "scripts/collect-claude-plan-usage.js"
+  "scripts/collect-codex-token-usage.js"
   "scripts/verify-dashboard-cards-live.js"
   "scripts/ec2-card-controller-run.sh"
   "scripts/ec2-morning-briefing-run.sh"
