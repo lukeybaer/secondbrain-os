@@ -510,7 +510,7 @@ function cardShellTitle(cardId) {
   return String(cardId || '').replace(/_/g, ' ').toUpperCase();
 }
 
-function controllerShellMarkdown({ date, now = new Date() }) {
+function controllerShellMarkdown({ date, now = new Date(), mode = 'overnight' }) {
   const displayDate = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Chicago',
     weekday: 'long',
@@ -518,9 +518,12 @@ function controllerShellMarkdown({ date, now = new Date() }) {
     day: 'numeric',
   }).format(now);
   const lines = [
-    `# DAILY BRIEFING - ${displayDate}`,
+    // The bootstrap is a real briefing shell, not a private controller format.
+    // Its heading must satisfy the same scoped card QC that subsequent refreshes use.
+    `# Daily Briefing - ${displayDate}`,
     '',
-    'Briefing mode: cloud card-controller bootstrap.',
+    `Briefing mode: ${mode === 'overnight' ? 'overnight' : 'off-cycle'}`,
+    'Controller state: cloud card-controller bootstrap.',
     `Freshness: new ${date} board opened ${now.toISOString()}; each card must earn clean through its own scoped refresh and live QC.`,
     '',
   ];
@@ -539,21 +542,14 @@ function controllerShellMarkdown({ date, now = new Date() }) {
   return `${lines.join('\n').replace(/\n---\n\s*$/, '\n')}`;
 }
 
-function bootstrapBriefingShell({ dataDir, date, now = new Date() } = {}) {
-  const markdown = markdownPathFor(dataDir, date);
-  if (fs.existsSync(markdown)) return { created: false, markdownPath: markdown, reason: 'already-exists' };
-  fs.mkdirSync(path.dirname(markdown), { recursive: true });
-  const shell = controllerShellMarkdown({ date, now });
-  const temp = `${markdown}.${process.pid}.${Date.now()}.bootstrap`;
-  fs.writeFileSync(temp, shell);
-  fs.renameSync(temp, markdown);
+function bootstrapArtifact({ date, now }) {
   const cardTitles = Object.fromEntries(CARDS.map((card) => [card.id, cardShellTitle(card.id)]));
   const pending = CARDS.map((card) => ({
     id: card.id,
     title: cardShellTitle(card.id),
     defects: [`BOOTSTRAP-PENDING: ${card.id} requires scoped refresh and live QC`],
   }));
-  const artifact = {
+  return {
     ...buildLiveBoardArtifact({
       dashQc: { ran: true, ok: false, retry: false, cardStatuses: pending },
       date,
@@ -563,8 +559,53 @@ function bootstrapBriefingShell({ dataDir, date, now = new Date() } = {}) {
     defects: pending.map((card) => card.defects[0]),
     bootstrap: true,
   };
-  writeJsonAtomic(path.join(dataDir, 'agent', 'dashboard-qc-result.json'), artifact);
-  return { created: true, markdownPath: markdown, artifact };
+}
+
+function isFullyUnverifiedBootstrap({ markdown, artifact, date }) {
+  const hasBootstrapMarker =
+    /^Briefing mode:\s*cloud card-controller bootstrap\./m.test(String(markdown || '')) ||
+    /^Controller state:\s*cloud card-controller bootstrap\./m.test(String(markdown || ''));
+  const hasCanonicalHeading = /^# Daily Briefing\b/m.test(String(markdown || ''));
+  const hasCanonicalMode = /^Briefing mode:\s*(?:overnight|off-cycle)\s*$/m.test(String(markdown || ''));
+  const cards = Array.isArray(artifact && artifact.cards) ? artifact.cards : [];
+  const defects = Array.isArray(artifact && artifact.defects) ? artifact.defects : [];
+  const expectedPending = new Set(
+    CARDS.map((card) => `BOOTSTRAP-PENDING: ${card.id} requires scoped refresh and live QC`),
+  );
+  return (
+    hasBootstrapMarker &&
+    (!hasCanonicalHeading || !hasCanonicalMode) &&
+    artifact &&
+    artifact.bootstrap === true &&
+    String(artifact.date || '') === String(date || '') &&
+    cards.length === CARDS.length &&
+    cards.every((card) => card && card.status === 'defect') &&
+    defects.length === expectedPending.size &&
+    defects.every((defect) => expectedPending.has(String(defect || '')))
+  );
+}
+
+function bootstrapBriefingShell({ dataDir, date, now = new Date(), mode = 'overnight' } = {}) {
+  const markdown = markdownPathFor(dataDir, date);
+  const artifactPath = path.join(dataDir, 'agent', 'dashboard-qc-result.json');
+  const existingMarkdown = fs.existsSync(markdown) ? fs.readFileSync(markdown, 'utf8') : '';
+  const existingArtifact = readJson(artifactPath, null);
+  const replaceUnverified = isFullyUnverifiedBootstrap({
+    markdown: existingMarkdown,
+    artifact: existingArtifact,
+    date,
+  });
+  if (fs.existsSync(markdown) && !replaceUnverified) {
+    return { created: false, replaced: false, markdownPath: markdown, reason: 'already-exists' };
+  }
+  fs.mkdirSync(path.dirname(markdown), { recursive: true });
+  const shell = controllerShellMarkdown({ date, now, mode });
+  const temp = `${markdown}.${process.pid}.${Date.now()}.bootstrap`;
+  fs.writeFileSync(temp, shell);
+  fs.renameSync(temp, markdown);
+  const artifact = bootstrapArtifact({ date, now });
+  writeJsonAtomic(artifactPath, artifact);
+  return { created: true, replaced: replaceUnverified, markdownPath: markdown, artifact };
 }
 
 async function runCardController(options = {}, injected = {}) {
@@ -649,9 +690,10 @@ async function runCardController(options = {}, injected = {}) {
       persist();
     }
     if (options.bootstrap) {
-      const bootstrap = bootstrapBriefingShell({ dataDir, date, now });
+      const bootstrap = bootstrapBriefingShell({ dataDir, date, now, mode });
       receipt.bootstrap = {
         created: bootstrap.created,
+        replaced: !!bootstrap.replaced,
         markdownPath: bootstrap.markdownPath,
         reason: bootstrap.reason || null,
       };
