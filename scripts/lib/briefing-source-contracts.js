@@ -10,6 +10,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { summaryNamesPersonAsParticipant } = require('../verify-dashboard-cards-live.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -209,7 +210,7 @@ function otterSpeakerMismatchOtids({ dataDir, date }) {
     const row = line.match(/^\s*-\s+([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*(.+)$/);
     if (!row) continue;
     const [, when, title, , speakers, summary] = row;
-    if (!/\bExampleCo\b/i.test(summary) || /\bExampleCo\b/i.test(speakers)) continue;
+    if (!summaryNamesPersonAsParticipant(summary, /\bExampleCo\b/i) || /\bExampleCo\b/i.test(speakers)) continue;
     candidates.push({ title: title.trim(), titleKey: titleKey(title), dateHint: dateHintFromCallRow(when, date), summary: summary.trim() });
   }
   if (!candidates.length) return [];

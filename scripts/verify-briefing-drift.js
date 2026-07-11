@@ -134,7 +134,7 @@ const MUST_CONTAIN = [
   [
     'scripts/refresh-card.js',
     'function scopedRefreshFailures',
-    'single-card refresh pre-write gate must be scoped to the target plus companion labels',
+    'single-card refresh pre-write gate must be scoped to the named target only',
   ],
   [
     'scripts/lib/briefing-card-controller.js',

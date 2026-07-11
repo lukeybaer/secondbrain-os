@@ -7,8 +7,8 @@
 // WHY: verifying a single-card fix today means a full cloud-morning-briefing.js
 // rebuild (10-40 minutes: every news card re-summarizes, every generator
 // re-runs). Most fixes touch exactly one card. This tool narrows the rebuild to
-// the target card (plus the cards that must always move with it) and reuses
-// the SAME assembly/QC/lock/write machinery the full build uses, so a
+// the target card and reuses the SAME assembly/QC/lock/write machinery the
+// full build uses, so a
 // single-card verification takes about 2 minutes instead.
 //
 // DESIGN (published-file-as-source-of-truth):
@@ -28,11 +28,11 @@
 //      narrowed to the target card id (the SAME narrowing mechanism the
 //      self-heal refresh path already uses -- see refreshTargetAllows /
 //      SELF_HEAL_REFRESH_CARDS in cloud-morning-briefing.js). This produces a
-//      full assembled markdown where only the target card (plus the
-//      ALWAYS_REFRESH_FLOOR cards and the two derived cards below) has fresh
-//      content; every other card falls through to ITS OWN honest blocker
-//      inside that throwaway build -- we never use those honest-blocker
-//      fallbacks, only the ONE section we asked for.
+//      full assembled markdown where only the target card has fresh content;
+//      every other card falls through to its own honest fallback inside that
+//      throwaway build. The refresh path extracts only the requested target
+//      from it. It must never splice those fallback-derived sections into the
+//      live briefing.
 //   3. Extract the target card's section from the targeted build's output by
 //      matching the manifest's own `match` regex against each section's
 //      title text AND its raw heading line (never a loose all-caps heading
@@ -49,22 +49,18 @@
 //      aborted on both sides because the published file (and the fresh
 //      build) legitimately ExampleCod CONTENT PIPELINE instead. One-way merges
 //      (full_life_backup -> system_health) never swap.
-//   4. ALSO extract + replace the two DERIVED sections that must move with any
-//      target: BLOCKERS (renderBlockersSection / blockedCardEntries /
-//      deriveNonGreenSubsystemBlockers already ran inside the targeted build,
-//      keyed off ITS OWN realById -- see caveat below) and SYSTEM HEALTH, so
-//      the two-way health/blockers consistency invariant
-//      (checkHealthBlockersConsistency + reverse) stays green after the
-//      splice.
+//   4. Do not import the throwaway build's derived BLOCKERS or SYSTEM HEALTH
+//      sections. They describe the throwaway fallback board, not the live
+//      board. The only derived write after target proof is the Blockers
+//      reconciliation line from the canonical scoped artifact.
 //   5. Splice: keep every OTHER existing section byte-for-byte; replace the
-//      target + derived sections' CONTENT with the freshly built ones while
+//      target section's CONTENT with the freshly built one while
 //      preserving each replaced section's own trailing separator chrome
 //      (blank lines + `---` lines), so the published file's real separator
 //      shape survives the splice byte-for-byte outside the new content.
 //   6. Scoped card QC gate (ExampleCo 2026-07-08): this is a card-by-card repair
 //      loop, not a whole-document recertification. After the splice, pre-write
-//      QC runs only on the target card plus the companion labels this tool
-//      rewrites (`blockers`, `system_health`). Unrelated card failures remain
+//      QC runs only on the target card this tool writes. Unrelated card failures remain
 //      visible in the dashboard artifact and the broader live QC result, but
 //      they do not veto this card's independent publish. The companion
 //      health/blockers checks use the current dedupe contract: System Health
@@ -77,8 +73,8 @@
 //      the publish receipt fields the full build derives (publishState,
 //      degradedNotice, renderQcDefectCards), release the lock.
 //   8. --verify: after publish, fetch the live rendered dashboard, merge a
-//      scoped target+derived-card result into the canonical dashboard artifact,
-//      patch Blockers' reconciliation line from that fresh artifact, and fail
+//      scoped target result into the canonical dashboard artifact, patch
+//      Blockers' reconciliation line from that fresh artifact, and fail
 //      the command only when the target card itself is still not clean.
 //
 // CODEX AMENDMENTS applied (binding, from the 2026-07 design review):
@@ -90,9 +86,9 @@
 //       (SECONDBRAIN_DATA_DIR / /opt/secondbrain/data / APPDATA fallback).
 //       NEVER a REPO_ROOT/data hardcode (the refresh-news-only.js anti-
 //       pattern).
-//   A4. Publish gate is scoped card QC (qcBriefingMarkdown plus the
-//       health/blockers dedupe checks) against the target card and the derived
-//       cards this tool rewrites, not a whole-document recertification. This
+//   A4. Publish gate is scoped card QC (qcBriefingMarkdown plus applicable
+//       health/blockers dedupe checks) against the target card only, not a
+//       whole-document recertification. This
 //       keeps the repair loop surgical: unrelated defects stay visible, but
 //       cannot block an independent card refresh.
 //   A5. Never call notifyBriefingPublished from this tool; never touch the
@@ -110,14 +106,10 @@ const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 
 // NOTE: assembleManifestSections/renderBlockersSection/blockedCardEntries/
-// deriveNonGreenSubsystemBlockers are NOT imported here even though the
-// design notes above reference them: this tool never calls them directly.
-// The BLOCKERS and SYSTEM HEALTH derived sections are instead extracted
-// verbatim from the targeted rebuild's OWN output (buildTargetedRebuild ->
-// buildCloudMorningBriefing, which already re-derives them internally via
-// those functions keyed off its own realById) -- see extractFreshSection /
-// DERIVED_CARD_IDS below. Only MANIFEST_CARD_RENDER is needed directly, to
-// assert a card id has a real render mapping before attempting a refresh.
+// deriveNonGreenSubsystemBlockers are intentionally NOT imported here. They
+// operate over a full board and a narrow target build marks every other card
+// as a fallback. Only MANIFEST_CARD_RENDER is needed directly, to assert a
+// card id has a real render mapping before attempting a refresh.
 const {
   buildCloudMorningBriefing,
   MANIFEST_CARD_RENDER,
@@ -198,13 +190,10 @@ function parseArgs(argv) {
   return opts;
 }
 
-// The two cards that must ALWAYS re-derive alongside any target: BLOCKERS
-// (every card-level hard-block + non-green-subsystem blocker must reflect the
-// freshly rebuilt target) and SYSTEM HEALTH (the roster the blockers set-diff
-// is checked against). Re-deriving them from the SAME targeted build's own
-// realById/blockers state -- rather than leaving them untouched -- is what
-// keeps checkHealthBlockersConsistency / Reverse green after the splice.
-const DERIVED_CARD_IDS = ['blockers', 'system_health'];
+// Summary/projection cards are not independent all-card controller targets.
+// They remain ledger dependencies, but a refresh of another card must not
+// splice their fallback content from the narrow throwaway build.
+const DERIVED_CARD_IDS = Object.freeze(['blockers', 'system_health']);
 const NEWS_SUMMARY_CARD_BY_TARGET = {
   ai_tech_news: 'aitech',
   us_news: 'us',
@@ -653,11 +642,12 @@ function refreshPublishedBlockersReconciliationLine({ markdownPath, artifact }) 
 // Scoped QC gate helpers (pure; exported for tests).
 //
 // WHY SCOPED (2026-07-08): a targeted card refresh is not a full briefing
-// recertification. The gate is the target card plus the derived companion cards
-// this tool rewrites (`blockers`, `system_health`). Unrelated cards can remain
-// red in the canonical live artifact, but they cannot veto a clean independent
-// publish. This is the same repair unit the self-heal loop must reason about:
-// one card, one refresh, one card-level live QC result.
+// recertification. The gate is exactly the target this tool writes. Blockers
+// receives its canonical reconciliation line only after scoped live proof;
+// System Health is its own target when it needs a repair. Unrelated cards can
+// remain red in the canonical live artifact, but they cannot veto a clean
+// independent publish. This is the repair unit the self-heal loop reasons
+// about: one card, one refresh, one card-level live QC result.
 // ---------------------------------------------------------------------------
 
 // Normalize a failure message into a comparison key: digit runs collapse to
@@ -684,7 +674,7 @@ function newFailuresAfterSplice(beforeFailures, afterFailures) {
 function scopedCardIdsForRefresh(cardId) {
   const card = getCardById(cardId);
   const targetId = card ? card.id : String(cardId || '');
-  return [...new Set([targetId, ...DERIVED_CARD_IDS].filter(Boolean))];
+  return targetId ? [targetId] : [];
 }
 
 function scopedMarkdownForCardIds(markdown, cardIds) {
@@ -723,10 +713,11 @@ function scopedRefreshFailures(markdown, cardIds) {
 }
 
 // Pure core: given the EXISTING markdown and a targeted rebuild's fresh
-// markdown, splice the target card + derived cards (blockers, system_health)
-// into the existing document. Returns { markdown, replacedIds } or throws on
-// any A1 boundary violation. Exported (as spliceCard) so tests exercise this
-// without touching the filesystem.
+// markdown, splice exactly the requested card into the existing document.
+// The narrow builder's other sections are fallback projections, not current
+// live state, and must not leak into the board. Returns { markdown,
+// replacedIds } or throws on any A1 boundary violation. Exported (as
+// spliceCard) so tests exercise this without touching the filesystem.
 function spliceCard(existingMarkdown, freshMarkdown, cardId) {
   const card = getCardById(cardId);
   if (!card) {
@@ -751,15 +742,13 @@ function spliceCard(existingMarkdown, freshMarkdown, cardId) {
     throw new Error('ABORT: the targeted rebuild produced no recognizable sections.');
   }
 
-  // Target + derived ids, deduped, target first so its own abort (if any)
-  // reports first.
-  const idsToSplice = scopedCardIdsForRefresh(card.id);
+  const idsToSplice = [card.id];
 
   const sections = [...existing.sections];
   const replacedIds = [];
   for (const id of idsToSplice) {
     const targetCard = getCardById(id);
-    if (!targetCard) continue; // DERIVED_CARD_IDS are always valid; defensive only.
+    if (!targetCard) continue; // defensive only; card.id was validated above.
     const existingIdx = requireExactlyOneSection(sections, targetCard, {
       where: 'the existing published briefing',
     });
@@ -786,9 +775,8 @@ function spliceCard(existingMarkdown, freshMarkdown, cardId) {
 // the full build calls, with selfHealRefresh + refreshTargets narrowed to the
 // one card id via the EXISTING self-heal-refresh gating mechanism
 // (refreshTargetAllows / SELF_HEAL_REFRESH_CARDS), so only the target card's
-// real generator runs; every other card falls to ITS OWN honest blocker
-// inside this throwaway build (never used -- we only read the target +
-// derived sections out of it).
+// real generator runs; every other card falls to its own honest fallback
+// inside this throwaway build. The splice reads only the requested target.
 function buildTargetedRebuild({ dataDir, date, now, cardId }) {
   return buildCloudMorningBriefing({
     dataDir,

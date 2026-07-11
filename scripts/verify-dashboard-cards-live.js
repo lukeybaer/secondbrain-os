@@ -1697,7 +1697,7 @@ function otterSpeakerMismatchDefects(card, tile) {
   const rows = callHistoryRows(tile);
   if (!rows.length) return [];
   const ExampleCoMissing = rows.filter(
-    (row) => /\bExampleCo\b/i.test(row.summary) && !/\bExampleCo\b/i.test(row.speakers),
+    (row) => summaryNamesPersonAsParticipant(row.summary, /\bExampleCo\b/i) && !/\bExampleCo\b/i.test(row.speakers),
   );
   const expectedPeople = [
     ['Ed', /\bEd(?:\s+Evans)?\b/i],
@@ -1724,7 +1724,7 @@ function otterSpeakerMismatchDefects(card, tile) {
   const defects = [];
   if (ExampleCoMissing.length) {
     defects.push(
-      `OTTER-SPEAKER-MISMATCH: ${card.id} (${tile.name}) ${ExampleCoMissing.length} call(s) mention ExampleCo in the executive summary but do not list ExampleCo as a detected speaker`,
+      `OTTER-SPEAKER-MISMATCH: ${card.id} (${tile.name}) ${ExampleCoMissing.length} call(s) identify ExampleCo as a participant in the executive summary but do not list ExampleCo as a detected speaker`,
     );
   }
   if (knownMissing.length) {
@@ -2860,6 +2860,7 @@ module.exports = {
   mergeScopedArtifact,
   parseCardScope,
   scopeDashboardResult,
+  summaryNamesPersonAsParticipant,
   FACE_DENYLIST,
   EMPTY_BODY_FLOOR,
   STALE_HOURS,
