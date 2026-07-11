@@ -34,6 +34,9 @@ LIVE_DEPS=(
   # narrow Otter producers on /opt; libs ship in full below.
   "scripts/card-controller.js"
   "scripts/refresh-card.js"
+  "scripts/ec2-card-controller-run.sh"
+  "scripts/ec2-morning-briefing-run.sh"
+  "scripts/install-ec2-card-controller-cron.sh"
   "scripts/otter-call-speaker-rosters.js"
   "scripts/otter-call-completeness-report.js"
   "scripts/otter-text-audio-coverage-report.js"
@@ -143,6 +146,21 @@ LIVE_DEPS=(
   "scripts/voice-sample-sequence-review-html.js"
 )
 
+# The cloud card controller must execute the same deployed source that this
+# script verifies. Keep this closure explicit and hash-check it below: a
+# healthy /opt server paired with a stale /home build-path controller is a
+# split-brain deployment, not a successful release.
+CONTROLLER_RUNTIME_FILES=(
+  "scripts/card-controller.js"
+  "scripts/refresh-card.js"
+  "scripts/verify-dashboard-cards-live.js"
+  "scripts/ec2-card-controller-run.sh"
+  "scripts/ec2-morning-briefing-run.sh"
+  "scripts/install-ec2-card-controller-cron.sh"
+  "scripts/lib/briefing-card-controller.js"
+  "scripts/lib/briefing-source-contracts.js"
+)
+
 echo "[deploy] syntax-checking repo ec2-server.js"
 node -c "$SRC"
 
@@ -213,6 +231,19 @@ for libdir in "scripts/lib" "scripts/self-heal"; do
   fi
 done
 
+echo "[deploy] verifying deployed card-controller runtime closure"
+for dep in "${CONTROLLER_RUNTIME_FILES[@]}"; do
+  [ -f "$ROOT/$dep" ] || { echo "[deploy] CONTROLLER RUNTIME MISSING LOCAL: $dep" >&2; exit 1; }
+  local_hash="$(sha256sum "$ROOT/$dep" | awk '{print $1}')"
+  remote_hash="$(ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "sha256sum /opt/secondbrain/$dep 2>/dev/null | cut -d ' ' -f1")"
+  if [ "$local_hash" != "$remote_hash" ]; then
+    echo "[deploy] CONTROLLER RUNTIME PARITY FAIL: $dep" >&2
+    echo "  local=$local_hash remote=${remote_hash:-missing}" >&2
+    exit 1
+  fi
+done
+echo "[deploy] card-controller runtime closure: OK (/opt/secondbrain)"
+
 if [ -f "$ROOT/data/agent/devops-health-latest.json" ]; then
   echo "[deploy] pushing fresh Dev Ops desktop checkout snapshot"
   scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/data/agent/devops-health-latest.json" "$HOST:/tmp/devops-health-latest.json"
@@ -238,6 +269,15 @@ echo "[deploy] require-scan gate: resolving server.js's require closure on EC2 (
 if ! ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
   'node /opt/secondbrain/scripts/require-scan-check.js --root /opt/secondbrain server.js'; then
   echo "[deploy] REQUIRE-SCAN FAIL: server.js requires a module that is missing on EC2. Rolling back the on-disk file (PM2 was never restarted, so the old process was already still running; this just keeps the ON-DISK copy consistent with it too, so the deploy-parity probe and the nightly canary do not false-red against a half-deployed file). See MISSING lines above; add the module to LIVE_DEPS (or scripts/lib or scripts/self-heal, which ship in full) and redeploy."
+  ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+    'cp "$(ls -t /opt/secondbrain/server.js.bak-* | head -1)" /opt/secondbrain/server.js; cp "$(ls -t /opt/secondbrain/ec2-server.js.bak-* | head -1)" /opt/secondbrain/ec2-server.js'
+  exit 1
+fi
+
+echo "[deploy] require-scan gate: resolving deployed card-controller closure"
+if ! ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  'node /opt/secondbrain/scripts/require-scan-check.js --root /opt/secondbrain scripts/card-controller.js scripts/refresh-card.js scripts/verify-dashboard-cards-live.js'; then
+  echo "[deploy] CONTROLLER REQUIRE-SCAN FAIL: the deployed controller closure is incomplete. Restoring server twins before PM2 restart." >&2
   ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
     'cp "$(ls -t /opt/secondbrain/server.js.bak-* | head -1)" /opt/secondbrain/server.js; cp "$(ls -t /opt/secondbrain/ec2-server.js.bak-* | head -1)" /opt/secondbrain/ec2-server.js'
   exit 1

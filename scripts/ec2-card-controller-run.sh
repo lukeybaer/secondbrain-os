@@ -10,7 +10,10 @@
 # controller itself observes the run budget rather than this wrapper killing it.
 set -euo pipefail
 
-ROOT="${SECONDBRAIN_ROOT:-/home/ec2-user/secondbrain-current}"
+# The controller is a deployed cloud runtime, not a Git checkout job. Never
+# inherit the legacy SECONDBRAIN_ROOT default here: it can point at a stale
+# build path after a successful /opt deploy.
+ROOT="${SECONDBRAIN_CONTROLLER_ROOT:-/opt/secondbrain}"
 DATA_DIR="${SECONDBRAIN_DATA_DIR:-/opt/secondbrain/data}"
 LOG_DIR="${BRIEFING_LOG_DIR:-/opt/secondbrain/logs}"
 LOCK="/tmp/secondbrain-card-controller-run.lock"

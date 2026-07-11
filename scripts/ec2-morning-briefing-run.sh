@@ -36,6 +36,9 @@
 set -uo pipefail
 
 ROOT="${SECONDBRAIN_ROOT:-/home/ec2-user/secondbrain-current}"
+# Under controller authority, execute the same deployed runtime as the 11 PM
+# runner. ROOT remains the legacy full-build path only while authority is off.
+CONTROLLER_ROOT="${SECONDBRAIN_CONTROLLER_ROOT:-/opt/secondbrain}"
 DATA_DIR="${SECONDBRAIN_DATA_DIR:-/opt/secondbrain/data}"
 LOG_DIR="${BRIEFING_LOG_DIR:-/opt/secondbrain/logs}"
 LOCK="/tmp/secondbrain-morning-briefing-run.lock"
@@ -104,10 +107,10 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # No legacy mechanical pass under card-controller authority. It has a
   # different fan-out model and would become a competing writer again.
   if [ "$TEST_MODE" = "1" ]; then
-    echo "[morning-briefing-run] DRY-RUN (card-controller authority): would run: (cd $ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR ${CONTROLLER_CMD[*]})"
+    echo "[morning-briefing-run] DRY-RUN (card-controller authority): would run: (cd $CONTROLLER_ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR ${CONTROLLER_CMD[*]})"
     exit 0
   fi
-  cd "$ROOT" || { echo "[morning-briefing-run] cannot cd to $ROOT" >&2; exit 1; }
+  cd "$CONTROLLER_ROOT" || { echo "[morning-briefing-run] cannot cd to deployed controller runtime $CONTROLLER_ROOT" >&2; exit 1; }
   mkdir -p "$LOG_DIR"
   unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
   flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" "${CONTROLLER_CMD[@]}"
