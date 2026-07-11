@@ -56,6 +56,12 @@ function defaultDataDir(opts = {}) {
   if (opts.dataDir) return opts.dataDir;
   if (process.env.SECONDBRAIN_DATA_DIR) return process.env.SECONDBRAIN_DATA_DIR;
   if (process.env.SB_DATA_DIR) return process.env.SB_DATA_DIR;
+  // Desktop runtime state belongs in the application data root, never in the
+  // shared Git checkout. EC2 retains its explicit /opt cloud authority below.
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    return path.join(appData, 'secondbrain', 'data');
+  }
   if (process.platform === 'linux' && fs.existsSync('/opt/secondbrain')) {
     return '/opt/secondbrain/data';
   }
