@@ -44,9 +44,37 @@ NODE_BIN="${NODE_BIN:-/usr/bin/node}"
 # Cron has a minimal env: pin HOME so buildClaudeCliEnv's default token path resolves.
 HOME="${HOME:-/home/ec2-user}"
 TOKEN_PATH="${CLAUDE_OAUTH_TOKEN_PATH:-$HOME/.claude-oauth-token}"
+# This durable cloud marker is intentionally shared with the 5:30 runner. Cron
+# has no inherited terminal environment, so both wrappers must read the same
+# persisted authority decision after restart. An explicit env value is an
+# emergency one-run override.
+AUTHORITY_FILE="${BRIEFING_CARD_CONTROLLER_AUTHORITY_FILE:-$DATA_DIR/agent/briefing-card-controller-authority}"
+if [ -n "${BRIEFING_CARD_CONTROLLER_AUTHORITY:-}" ]; then
+  CONTROLLER_AUTHORITY="$BRIEFING_CARD_CONTROLLER_AUTHORITY"
+elif [ -r "$AUTHORITY_FILE" ]; then
+  CONTROLLER_AUTHORITY="$(tr -d '[:space:]' < "$AUTHORITY_FILE")"
+else
+  CONTROLLER_AUTHORITY="0"
+fi
+case "$CONTROLLER_AUTHORITY" in
+  0|1) ;;
+  *)
+    echo "[self-heal-run] WARNING: invalid controller authority '$CONTROLLER_AUTHORITY' in $AUTHORITY_FILE; keeping legacy fan-out available."
+    CONTROLLER_AUTHORITY="0"
+    ;;
+esac
 
 STAMP="$(date -u +%FT%TZ)"
 echo "[self-heal-run] $STAMP root=$ROOT data_dir=$DATA_DIR token_path=$TOKEN_PATH"
+
+# Once the card-controller is the explicitly enabled overnight authority, this
+# legacy fan-out launcher becomes an attended no-op. The 11 PM controller and
+# the 5:30 final pass use the same card graph, ledger, scoped QC, and recovery
+# journal; running both systems would reintroduce competing writers.
+if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
+  echo "[self-heal-run] card-controller authority enabled; legacy fan-out self-heal is intentionally skipped."
+  exit 0
+fi
 
 # Export the Max-plan OAuth token for the spawned heal workers. buildClaudeCliEnv
 # also reads the file directly, but exporting here covers a minimal-cron env and

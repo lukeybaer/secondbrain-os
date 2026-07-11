@@ -29,7 +29,40 @@ LIVE_DEPS=(
   "scripts/lib/briefing-markdown-sections.js"
   "scripts/lib/briefing-news-reader.js"
   "scripts/cloud-morning-briefing.js"
+  # The shared card-controller entrypoint backs both in-briefing ExampleCo-action
+  # buttons and the cloud overnight runner. Its source adapters need the same
+  # narrow Otter producers on /opt; libs ship in full below.
+  "scripts/card-controller.js"
+  "scripts/refresh-card.js"
+  "scripts/otter-call-speaker-rosters.js"
+  "scripts/otter-call-completeness-report.js"
+  "scripts/otter-text-audio-coverage-report.js"
+  # Targeted Otter speaker-mismatch source rung. The controller invokes this
+  # only for a specific mismatched call and disables its broad briefing /
+  # people-file writers. Keep the full local acoustic chain on /opt so an
+  # in-briefing scoped refresh does not depend on a stale build-path sync.
+  "scripts/otter-post-ingest-voice-intelligence.js"
+  "scripts/otter-full-audio-backfill.js"
+  "scripts/otter-diarized-segment-backfill.js"
+  "scripts/otter-track-probe-builder.js"
+  "scripts/otter-wavlm-speaker-resolver.js"
+  "scripts/voice-embedding-ecapa.js"
+  "scripts/apply-voice-cluster-resolutions.js"
+  "scripts/otter-speaker-identity-completeness.js"
+  "scripts/voice-confirmed-match-sanity-check.js"
+  "scripts/voice-promote-confirmed-acoustic-matches.js"
+  "scripts/otter-life-relevance-enricher.js"
+  "scripts/otter-speaker-intelligence-report.js"
+  "scripts/sync-otter-speaker-intelligence-to-people-files.js"
+  "scripts/sync-voiceprints-to-people-files.js"
   "scripts/content-heal.js"
+  "scripts/regenerate-action-items.js"
+  "scripts/aws-cost-section.js"
+  "scripts/mortgage-rate-indexes.js"
+  "scripts/morning-shorts-proposals.js"
+  "scripts/viral-tech-clip-proposals.js"
+  "scripts/kingdom-equipping-ideas.js"
+  "scripts/comm-coaching-card.js"
   "scripts/health-self-heal.js"
   "scripts/refresh-briefing-generated-sections.js"
   "scripts/lib/vapi-live-assistant.js"

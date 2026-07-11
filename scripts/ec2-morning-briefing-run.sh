@@ -46,6 +46,24 @@ HOME="${HOME:-/home/ec2-user}"
 TOKEN_PATH="${CLAUDE_OAUTH_TOKEN_PATH:-$HOME/.claude-oauth-token}"
 # Briefing date = today in Central Time (the briefing's canonical day).
 DATE="${BRIEFING_DATE:-$(TZ=America/Chicago date +%F)}"
+# Cron does not inherit a terminal's environment. The production authority
+# switch therefore lives beside other durable cloud runtime state. An explicit
+# environment value remains an emergency override for a single invocation.
+AUTHORITY_FILE="${BRIEFING_CARD_CONTROLLER_AUTHORITY_FILE:-$DATA_DIR/agent/briefing-card-controller-authority}"
+if [ -n "${BRIEFING_CARD_CONTROLLER_AUTHORITY:-}" ]; then
+  CONTROLLER_AUTHORITY="$BRIEFING_CARD_CONTROLLER_AUTHORITY"
+elif [ -r "$AUTHORITY_FILE" ]; then
+  CONTROLLER_AUTHORITY="$(tr -d '[:space:]' < "$AUTHORITY_FILE")"
+else
+  CONTROLLER_AUTHORITY="0"
+fi
+case "$CONTROLLER_AUTHORITY" in
+  0|1) ;;
+  *)
+    echo "[morning-briefing-run] WARNING: invalid controller authority '$CONTROLLER_AUTHORITY' in $AUTHORITY_FILE; using legacy path."
+    CONTROLLER_AUTHORITY="0"
+    ;;
+esac
 
 STAMP="$(date -u +%FT%TZ)"
 echo "[morning-briefing-run] $STAMP root=$ROOT data_dir=$DATA_DIR date=$DATE token_path=$TOKEN_PATH"
@@ -65,6 +83,13 @@ export HOME
 # scripts/lib/briefing-notify.js dedupes one message per publish state per day.
 CMD=("$NODE_BIN" scripts/cloud-morning-briefing.js --date "$DATE" --publish --notify)
 
+# The card-controller authority is deliberately reversible. It is enabled only
+# after a supervised all-card proof run. Once enabled, 5:30 is NOT a second
+# full build: it does a final pass over only red/unverified cards on the board
+# opened at 11 PM and then sends the ordinary briefing link. This prevents the
+# old whole-document writer from overwriting card-level proof overnight.
+CONTROLLER_CMD=("$NODE_BIN" scripts/card-controller.js --mode overnight --date "$DATE" --bootstrap --notify)
+
 # Mechanical-pass command, built once for the same reason. `--mechanical-only` is
 # W2a's flag on the orchestrator (coordinated, landing on another branch); this
 # runner calls it opportunistically and tolerates its absence (see header).
@@ -73,6 +98,26 @@ MECH_CMD=("$NODE_BIN" scripts/overnight-self-heal-orchestrator.js --mechanical-o
 TEST_MODE=0
 if [ "${NODE_ENV:-}" = "test" ] || [ "${VITEST:-}" = "true" ] || [ "${BRIEFING_DRY_RUN:-}" = "1" ]; then
   TEST_MODE=1
+fi
+
+if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
+  # No legacy mechanical pass under card-controller authority. It has a
+  # different fan-out model and would become a competing writer again.
+  if [ "$TEST_MODE" = "1" ]; then
+    echo "[morning-briefing-run] DRY-RUN (card-controller authority): would run: (cd $ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR ${CONTROLLER_CMD[*]})"
+    exit 0
+  fi
+  cd "$ROOT" || { echo "[morning-briefing-run] cannot cd to $ROOT" >&2; exit 1; }
+  mkdir -p "$LOG_DIR"
+  unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+  flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" "${CONTROLLER_CMD[@]}"
+  status=$?
+  if [ "$status" = "0" ]; then
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) card-controller final pass completed."
+  else
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) card-controller final pass exit=$status; briefing remains honestly labeled until its scoped repairs pass."
+  fi
+  exit 0
 fi
 
 # PRE-BRIEFING MECHANICAL PASS: runs (or is described, under dry-run) BEFORE the

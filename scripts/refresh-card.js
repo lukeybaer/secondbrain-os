@@ -1071,6 +1071,7 @@ module.exports = {
   runVerify,
   markdownPathFor,
   receiptPathFor,
+  MANIFEST_CARD_RENDER,
   SECTION_DELIMITER,
   SHARED_LOCK_PATH,
   DERIVED_CARD_IDS,

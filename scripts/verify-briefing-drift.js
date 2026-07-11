@@ -45,6 +45,11 @@ const KEY_FILES = [
   'scripts/verify-dashboard-cards-live.js',
   'scripts/verify-briefing-cards-live.js',
   'scripts/refresh-card.js',
+  'scripts/card-controller.js',
+  'scripts/lib/briefing-card-controller.js',
+  'scripts/lib/briefing-source-contracts.js',
+  'scripts/ec2-card-controller-run.sh',
+  'scripts/install-ec2-card-controller-cron.sh',
   'scripts/overnight-self-heal-orchestrator.js',
   'scripts/health-self-heal.js',
   'scripts/overnight-briefing-orchestrator.js',
@@ -130,6 +135,51 @@ const MUST_CONTAIN = [
     'scripts/refresh-card.js',
     'function scopedRefreshFailures',
     'single-card refresh pre-write gate must be scoped to the target plus companion labels',
+  ],
+  [
+    'scripts/lib/briefing-card-controller.js',
+    'function runCardController',
+    'one controller entrypoint drives scoped card repairs across overnight, midday, and ExampleCo-action modes',
+  ],
+  [
+    'scripts/lib/briefing-card-controller.js',
+    'unrelatedGreenRegressions',
+    'a scoped repair must detect and roll back any unrelated formerly-green card regression',
+  ],
+  [
+    'scripts/lib/briefing-card-controller.js',
+    'recoverIncompleteTransaction',
+    'an interrupted scoped write must be restored before another card is planned',
+  ],
+  [
+    'scripts/lib/briefing-card-controller.js',
+    'hasVerifiedScopedLiveResult',
+    'a target write must have fresh scoped live-QC proof or rollback before it can remain published',
+  ],
+  [
+    'scripts/lib/briefing-card-controller.js',
+    'controllerImplementationDigest',
+    'a real code repair is material input and may retry once without reviving unchanged spins',
+  ],
+  [
+    'scripts/lib/briefing-card-controller.js',
+    'mapWithConcurrency',
+    'source producers run through bounded parallel lanes rather than unbounded fan-out',
+  ],
+  [
+    'scripts/lib/briefing-source-contracts.js',
+    "VOICE_SKIP_BRIEFING_REFRESH: '1'",
+    'Otter source repair may not invoke the broad generated-section briefing writer inside a card controller lane',
+  ],
+  [
+    'scripts/lib/briefing-source-contracts.js',
+    'controllerSourceEnv',
+    'controller source producers must strip direct paid API credentials before running',
+  ],
+  [
+    'scripts/lib/briefing-source-contracts.js',
+    "'scripts/content-heal.js'",
+    'content source refresh must be an explicit data producer, not the retired generic scheduled-skill fleet',
   ],
   [
     'scripts/refresh-card.js',
@@ -238,6 +288,15 @@ function checkDrift(repoRoot) {
   }
   if (doc && !/scopedRefreshFailures/.test(doc)) {
     failures.push('doc no longer names scopedRefreshFailures as the refresh-card gate');
+  }
+  if (doc && !/scripts\/card-controller\.js/.test(doc)) {
+    failures.push('doc no longer names scripts/card-controller.js as the unified overnight/midday/button card controller');
+  }
+  if (doc && !/one serialized publish lane/i.test(doc)) {
+    failures.push('doc no longer states the one serialized publish lane required by shared briefing markdown writes');
+  }
+  if (doc && !/interrupted process restores that transaction/i.test(doc)) {
+    failures.push('doc no longer states interrupted card transactions restore before future repair work');
   }
 
   // The doc must still state the Otter card-identity boundary: the call-history

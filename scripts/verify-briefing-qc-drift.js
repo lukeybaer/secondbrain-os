@@ -224,6 +224,7 @@ function checkWiredIntoPublish(repoRoot) {
 const CANONICAL_COUNT_LIB = 'scripts/lib/live-board-truth.js';
 const CANONICAL_COUNT_CONSUMERS = ['ec2-server.js', 'cloud-morning-briefing.js'];
 const REFRESH_CARD = 'scripts/refresh-card.js';
+const CARD_CONTROLLER = 'scripts/lib/briefing-card-controller.js';
 const MANUAL_BRIEFING = 'scripts/manual-briefing-v3.js';
 
 // 3. The design doc exists and names the render-QC as THE one QC.
@@ -340,6 +341,33 @@ function checkScopedRefreshGate(repoRoot) {
   return { failures };
 }
 
+function checkCardController(repoRoot) {
+  const failures = [];
+  const src = readFileSafe(path.join(repoRoot, CARD_CONTROLLER));
+  if (!src) {
+    failures.push(`${CARD_CONTROLLER} is missing or unreadable; the common overnight/midday/button repair graph cannot be linted.`);
+    return { failures };
+  }
+  for (const required of [
+    'function runCardController',
+    'unrelatedGreenRegressions',
+    'recoverIncompleteTransaction',
+    'hasVerifiedScopedLiveResult',
+    'controllerImplementationDigest',
+    'mapWithConcurrency',
+    "'--publish'",
+    "'--verify'",
+  ]) {
+    if (!src.includes(required)) {
+      failures.push(`${CARD_CONTROLLER} lost ${required}; controller must preserve scoped publish/verify plus green rollback and interrupted-write recovery.`);
+    }
+  }
+  if (/cloud-morning-briefing\.js[^\n]{0,180}--publish/.test(src)) {
+    failures.push(`${CARD_CONTROLLER} invokes a full cloud-morning publish; all-card practice must be the sum of scoped target refreshes.`);
+  }
+  return { failures };
+}
+
 function checkNoManualHealthMirrors(repoRoot) {
   const failures = [];
   const src = readFileSafe(path.join(repoRoot, MANUAL_BRIEFING));
@@ -365,6 +393,7 @@ function runDrift(repoRoot = REPO_ROOT) {
   failures.push(...checkDesignDoc(repoRoot).failures);
   failures.push(...checkCanonicalCountLib(repoRoot).failures);
   failures.push(...checkScopedRefreshGate(repoRoot).failures);
+  failures.push(...checkCardController(repoRoot).failures);
   failures.push(...checkNoManualHealthMirrors(repoRoot).failures);
   return { ok: failures.length === 0, failures, renderQcFound: single.found };
 }
@@ -390,6 +419,7 @@ module.exports = {
   checkDesignDoc,
   checkCanonicalCountLib,
   checkScopedRefreshGate,
+  checkCardController,
   checkNoManualHealthMirrors,
   hasRealLiveBoardTruthWiring,
   stripComments,
@@ -400,6 +430,7 @@ module.exports = {
   CANONICAL_COUNT_LIB,
   CANONICAL_COUNT_CONSUMERS,
   REFRESH_CARD,
+  CARD_CONTROLLER,
   MANUAL_BRIEFING,
 };
 
