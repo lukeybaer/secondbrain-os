@@ -1,7 +1,8 @@
 // scripts/lib/ask-ai.js
 //
 // THE universal LLM ladder for all Amy text processing (ExampleCo's 2026-06-11
-// policy, plan: dev-plans/llm-fallback-ladder-2026-06-11.html, Codex-reviewed).
+// policy, plan: dev-plans/llm-fallback-ladder-2026-06-11.html, Codex-reviewed;
+// charged-floor policy updated per ExampleCo's 2026-07-11 voice dispatch).
 //
 // Rung order (defaultRungOrder):
 //   1. codex         -- OpenAI subscription (Codex CLI), independent vendor
@@ -9,14 +10,22 @@
 //   3. claude-cli    -- Claude Max via the local `claude -p` CLI
 //   4. bedrock       -- AWS Bedrock funded $20/mo lane (only where configured)
 //   5. anthropic-api -- Anthropic API key floor (only if key set)
-//   6. openai-api    -- OpenAI API key floor, ExampleCo-approved charged floor
+//   6. openai-api    -- OpenAI API key floor, standing-authorized charged floor
 //
 // Hard requirement: no surface dead when the Claude subscription is down.
 // Therefore: every rung failure (null, throw, or sentinel auth-error output)
-// DESCENDS to the next rung; BrainUnreachable throws only when ALL rungs fail;
-// and charged API floors are blocked unless (a) Codex has already failed in
-// this call path and (b) ExampleCo explicitly approved charged extra usage for this
-// call. The OpenAI provider canary is the separate approved diagnostic probe;
+// DESCENDS to the next rung; BrainUnreachable throws only when ALL rungs fail.
+// Charged floor policy (ExampleCo 2026-07-11 voice dispatch, "if it costs $10 to
+// get the daily briefing, then do it"):
+//   - openai-api runs under STANDING authorization once Codex is proven down
+//     in this call path. Per-call approval (opts.allowChargedLlmApi) is
+//     RETIRED for this rung (still accepted for backward compat, no longer
+//     gates it); it is superseded by HARD caps enforced before the call:
+//     $30 per CT month and $10 per night, night = the America/Chicago
+//     calendar day (OPENAI_API_MONTHLY_CAP_USD / OPENAI_API_NIGHTLY_CAP_USD).
+//   - anthropic-api and bedrock keep the old contract: Codex-down proof AND
+//     per-call ExampleCo approval (opts.allowChargedLlmApi === true).
+// The OpenAI provider canary is the separate approved diagnostic probe;
 // answer generation is never allowed to burn paid API usage silently.
 //
 // Runs on EC2 and the PC (pure Node builtins). Surfaces inject per-call
@@ -35,8 +44,13 @@ const { withCodexAmyPrelude } = require('./codex-amy-prelude.js');
 const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..', '..');
 const ATTEMPT_LOG = path.join(REPO, 'data', 'agent', 'ask-ai-rungs.jsonl');
 const SPEND_FILE = path.join(REPO, 'data', 'agent', 'openai-api-spend.json');
-const OPENAI_SOFT_CAP_USD = Number(process.env.OPENAI_API_SOFT_CAP_USD || 20);
+const OPENAI_MONTHLY_CAP_USD = Number(process.env.OPENAI_API_MONTHLY_CAP_USD || 30);
+const OPENAI_NIGHTLY_CAP_USD = Number(process.env.OPENAI_API_NIGHTLY_CAP_USD || 10);
 const OPENAI_WARN_USD = Number(process.env.OPENAI_API_WARN_USD || 15);
+// Conservative per-call estimate recorded when the API response has no usage
+// block: overcounting toward the caps beats silently recording zero and
+// letting an untelemetered loop burn past them.
+const DEFAULT_OPENAI_CALL_EST_USD = 0.02;
 const CHARGED_API_RUNGS = new Set(['openai-api', 'anthropic-api', 'bedrock']);
 
 class BrainUnreachable extends Error {
@@ -56,42 +70,124 @@ function appendJsonl(file, obj) {
   }
 }
 
-// ---- soft rolling monthly budget for the OpenAI API floor -----------------
+// ---- hard-capped spend ledger for the OpenAI API floor ---------------------
+//
+// State file shape: { month, spentUsd, calls, day, daySpentUsd, dayCalls,
+// updatedAt }. Both buckets key off the America/Chicago calendar, not UTC:
+// month is the yyyy-mm of the CT date, day is the CT date itself (the
+// "night" of the nightly cap).
 
-function readSpend() {
-  try {
-    const j = JSON.parse(fs.readFileSync(SPEND_FILE, 'utf8'));
-    const month = new Date().toISOString().slice(0, 7);
-    if (j.month !== month) return { month, spentUsd: 0, calls: 0 };
-    return j;
-  } catch {
-    return { month: new Date().toISOString().slice(0, 7), spentUsd: 0, calls: 0 };
-  }
+// CT calendar-day string (yyyy-mm-dd) for the given instant. The single place
+// the CT boundary is computed, exported so tests can pin the boundary.
+function ctDateString(d = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(d);
 }
 
-function recordSpend(estUsd) {
-  const s = readSpend();
-  s.spentUsd = Math.round((s.spentUsd + estUsd) * 10000) / 10000;
-  s.calls += 1;
-  s.updatedAt = new Date().toISOString();
-  try {
-    fs.mkdirSync(path.dirname(SPEND_FILE), { recursive: true });
-    fs.writeFileSync(SPEND_FILE, JSON.stringify(s, null, 1));
-  } catch {
-    /* never block */
+// The spend ledger path. opts.spendFile (tests) beats the env override beats
+// the repo default, mirroring how REPO resolves via SECONDBRAIN_ROOT.
+function resolveSpendFile(opts) {
+  return (opts && opts.spendFile) || process.env.OPENAI_API_SPEND_FILE || SPEND_FILE;
+}
+
+// Normalize a raw ledger object onto the current CT buckets: a month change
+// resets both buckets, a day change inside the same month resets only the
+// day bucket.
+function rollSpendState(raw, now = new Date()) {
+  const day = ctDateString(now);
+  const month = day.slice(0, 7);
+  const s = {
+    month: raw.month,
+    spentUsd: Number(raw.spentUsd) || 0,
+    calls: Number(raw.calls) || 0,
+    day: raw.day,
+    daySpentUsd: Number(raw.daySpentUsd) || 0,
+    dayCalls: Number(raw.dayCalls) || 0,
+    updatedAt: raw.updatedAt,
+  };
+  if (s.month !== month) {
+    s.month = month;
+    s.spentUsd = 0;
+    s.calls = 0;
+  }
+  if (s.day !== day) {
+    s.day = day;
+    s.daySpentUsd = 0;
+    s.dayCalls = 0;
   }
   return s;
 }
 
-// Soft check: returns a warning string when past thresholds, never blocks.
+// Strict read for the cap gate. Distinguishes "no file yet" (first run, zero
+// spend) from "file exists but is unreadable" (ExampleCo spend -> the caller
+// blocks the openai-api rung, and ONLY that rung).
+function loadSpendState(file, now = new Date()) {
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { ok: true, state: rollSpendState({}, now) };
+    return { ok: false };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return { ok: false };
+    return { ok: true, state: rollSpendState(parsed, now) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+// Lenient read kept for existing callers (ec2-server health display): any
+// unreadable state degrades to a zero counter instead of throwing. The cap
+// gate uses loadSpendState() instead so corruption blocks spend, not reads.
+function readSpend(file = resolveSpendFile()) {
+  const loaded = loadSpendState(file);
+  return loaded.ok ? loaded.state : rollSpendState({});
+}
+
+function recordSpend(estUsd, file = resolveSpendFile()) {
+  const s = readSpend(file);
+  s.spentUsd = Math.round((s.spentUsd + estUsd) * 10000) / 10000;
+  s.calls += 1;
+  s.daySpentUsd = Math.round((s.daySpentUsd + estUsd) * 10000) / 10000;
+  s.dayCalls += 1;
+  s.updatedAt = new Date().toISOString();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(s, null, 1));
+  } catch (e) {
+    // The answer was already paid for: a lost ledger write must not crash the
+    // caller, but it can never be silent either.
+    appendJsonl(ATTEMPT_LOG, {
+      ts: new Date().toISOString(),
+      level: 'error',
+      rung: 'openai-api',
+      spendFile: file,
+      error: 'spend-write-failed:' + String(e && e.message).slice(0, 80),
+    });
+  }
+  return s;
+}
+
+// Settle one successful openai-api call into BOTH buckets (month + CT day).
+// A response with no usage block records DEFAULT_OPENAI_CALL_EST_USD instead
+// of zero so missing telemetry cannot starve the caps.
+function settleOpenAiSpend(usage, opts = {}) {
+  const estUsd = usage ? estimateOpenAiCostUsd(usage) : DEFAULT_OPENAI_CALL_EST_USD;
+  const state = recordSpend(estUsd, resolveSpendFile(opts));
+  return { estUsd, state };
+}
+
+// Warn-only visibility: returns a warning string past the warn threshold or
+// the cap, never blocks. Blocking lives in chargedLlmApiGate.
 function budgetWarning(budget) {
   const spent = budget.spentUsd;
   const cap = budget.capUsd;
   if (spent >= cap) {
-    return `OpenAI API floor spend $${spent.toFixed(2)} is OVER the soft cap $${cap} this month (call allowed -- resilience beats the cap; investigate why the subs are failing).`;
+    return `OpenAI API floor spend $${spent.toFixed(2)} has reached the hard $${cap} monthly cap; the gate blocks further paid-floor calls until the CT month rolls.`;
   }
   if (spent >= (budget.warnUsd ?? OPENAI_WARN_USD)) {
-    return `OpenAI API floor spend $${spent.toFixed(2)} approaching the $${cap} soft cap.`;
+    return `OpenAI API floor spend $${spent.toFixed(2)} approaching the $${cap} monthly cap.`;
   }
   return null;
 }
@@ -101,7 +197,7 @@ function isChargedApiRung(rung) {
   return rung.paid === true || CHARGED_API_RUNGS.has(String(rung.name || ''));
 }
 
-function chargedLlmApiGate(opts, attempts) {
+function chargedLlmApiGate(opts, attempts, rungName) {
   const terminalCodexAttempt = attempts
     .slice()
     .reverse()
@@ -116,8 +212,37 @@ function chargedLlmApiGate(opts, attempts) {
   if (!codexDown) {
     return { ok: false, outcome: 'charged-api-blocked:codex-not-proven-down' };
   }
-  if (opts.allowChargedLlmApi !== true) {
-    return { ok: false, outcome: 'charged-api-blocked:ExampleCo-approval-required' };
+  if (rungName !== 'openai-api') {
+    // anthropic-api / bedrock (and any unnamed paid rung, fail-closed):
+    // ExampleCo's 2026-07-11 standing authorization covers ONLY the OpenAI floor,
+    // so these keep the per-call approval requirement.
+    if (opts.allowChargedLlmApi !== true) {
+      return { ok: false, outcome: 'charged-api-blocked:ExampleCo-approval-required' };
+    }
+    return { ok: true };
+  }
+  // openai-api: standing authorization (ExampleCo 2026-07-11) under HARD caps.
+  // opts.allowChargedLlmApi is still accepted but no longer gates this rung.
+  const file = resolveSpendFile(opts);
+  const loaded = loadSpendState(file);
+  if (!loaded.ok) {
+    // Fail-closed for spend (ExampleCo ledger = no paid call), fail-safe for
+    // the surface (only THIS rung is blocked; the ladder keeps descending).
+    appendJsonl(ATTEMPT_LOG, {
+      ts: new Date().toISOString(),
+      surface: opts.surface || 'ExampleCo',
+      level: 'error',
+      rung: rungName,
+      spendFile: file,
+      error: 'spend-state-unreadable',
+    });
+    return { ok: false, outcome: 'charged-api-blocked:spend-state-unreadable' };
+  }
+  if (loaded.state.spentUsd >= OPENAI_MONTHLY_CAP_USD) {
+    return { ok: false, outcome: 'charged-api-blocked:monthly-cap-exhausted' };
+  }
+  if (loaded.state.daySpentUsd >= OPENAI_NIGHTLY_CAP_USD) {
+    return { ok: false, outcome: 'charged-api-blocked:nightly-cap-exhausted' };
   }
   return { ok: true };
 }
@@ -277,9 +402,9 @@ function runOpenAiApiRung(question, opts) {
           try {
             const parsed = JSON.parse(raw);
             const text = String(parsed.choices?.[0]?.message?.content || '').trim();
-            // Rough cost estimate from usage (gpt-4o-mini: ~$0.15/M in, $0.60/M out)
-            const est = estimateOpenAiCostUsd(parsed.usage);
-            const s = recordSpend(est);
+            // Settle the actual estimated cost into BOTH cap buckets (month +
+            // CT day); a missing usage block records the conservative default.
+            const { estUsd: est, state: s } = settleOpenAiSpend(parsed.usage, opts);
             // Attribute the estimated dollar cost to the calling surface so the
             // ladder observability rollup can answer "which surface burned the
             // paid floor, and for how much" -- not just the reliance rate. A
@@ -294,7 +419,7 @@ function runOpenAiApiRung(question, opts) {
                 estUsd: est,
               });
             }
-            const warn = budgetWarning({ spentUsd: s.spentUsd, capUsd: OPENAI_SOFT_CAP_USD });
+            const warn = budgetWarning({ spentUsd: s.spentUsd, capUsd: OPENAI_MONTHLY_CAP_USD });
             if (warn)
               appendJsonl(ATTEMPT_LOG, { ts: new Date().toISOString(), budgetWarning: warn });
             resolve(text || null);
@@ -337,6 +462,8 @@ function builtinRungs(opts) {
 //   opts.system      optional system prompt
 //   opts.onAttempt   callback per attempt {rung, outcome, latencyMs}
 //   opts.budget      inject {spentUsd, capUsd, warnUsd, warn(msg)} (tests)
+//   opts.spendFile   inject the spend ledger path (tests); defaults to the
+//                    OPENAI_API_SPEND_FILE env override, then SPEND_FILE
 //   opts.silent      return null instead of throwing BrainUnreachable
 //   opts.rungRetries extra same-rung retries on a TRANSIENT throw before
 //                    descending (default 1). A blip on the Claude rung must not
@@ -351,7 +478,7 @@ async function askAI(question, opts = {}) {
     let text = null;
     let outcome = 'null';
     if (isChargedApiRung(r)) {
-      const gate = chargedLlmApiGate(opts, attempts);
+      const gate = chargedLlmApiGate(opts, attempts, r.name);
       if (!gate.ok) {
         const attempt = { rung: r.name, outcome: gate.outcome, latencyMs: 0 };
         attempts.push(attempt);
@@ -364,9 +491,13 @@ async function askAI(question, opts = {}) {
         continue;
       }
     }
-    // Soft budget: warn before an approved paid rung when over thresholds.
+    // Warn-only visibility before a paid rung; the HARD caps were already
+    // enforced by the gate above.
     if (isChargedApiRung(r)) {
-      const b = opts.budget || { spentUsd: readSpend().spentUsd, capUsd: OPENAI_SOFT_CAP_USD };
+      const b = opts.budget || {
+        spentUsd: readSpend(resolveSpendFile(opts)).spentUsd,
+        capUsd: OPENAI_MONTHLY_CAP_USD,
+      };
       const warn = budgetWarning(b);
       if (warn) {
         if (typeof b.warn === 'function') b.warn(warn);
@@ -432,8 +563,12 @@ module.exports = {
   defaultRungOrder,
   budgetWarning,
   chargedLlmApiGate,
+  ctDateString,
   estimateOpenAiCostUsd,
   readSpend,
+  recordSpend,
+  settleOpenAiSpend,
+  DEFAULT_OPENAI_CALL_EST_USD,
   ATTEMPT_LOG,
   SPEND_FILE,
 };

@@ -5,13 +5,15 @@
  * Keeps dev-plans/core/llm-fallback-ladder.md equal to the code: every
  * load-bearing file the doc names must still exist, and the design
  * invariants the doc asserts (subscription rungs before paid floors, the
- * failure guard fronting every rung, the charged API approval gate, honest
+ * failure guard fronting every rung, the charged API gate, honest
  * proxy /health) must still hold. If the code moves and the doc does not,
  * this fails loud so the doc gets fixed instead of rotting into fiction.
  *
  * Scoped per review: the rung order, the failure-detection guard, the charged
- * API approval contract, and the proxy health honesty -- NOT every rung's HTTP
- * implementation detail.
+ * API gate contract (Codex-down proof on every charged floor; per ExampleCo's
+ * 2026-07-11 dispatch the OpenAI floor runs under standing authorization with
+ * hard caps while anthropic/bedrock keep per-call approval), and the proxy
+ * health honesty -- NOT every rung's HTTP implementation detail.
  *
  * No dev-plans/core/llm-fallback-ladder.LESSONS.md exists yet (the doc's own
  * section 5 says so). This lint therefore checks the doc only for now: it
@@ -51,7 +53,7 @@ const RUNTIME_FILES = [
   ['data/agent/ask-ai-rungs.jsonl', 'per-attempt ladder log, appended at call time'],
   [
     'data/agent/openai-api-spend.json',
-    'soft monthly OpenAI floor budget, written on paid-rung spend',
+    'hard-cap OpenAI floor ledger (month + CT-day buckets), written on paid-rung spend',
   ],
 ];
 
@@ -75,7 +77,7 @@ const MUST_CONTAIN = [
   [
     'scripts/lib/ask-ai.js',
     'allowChargedLlmApi',
-    'ExampleCo approval is an explicit per-call option, not an implicit budget descent',
+    'per-call ExampleCo approval still fronts the anthropic-api and bedrock floors (the OpenAI floor runs under standing authorization with hard caps)',
   ],
   [
     'scripts/lib/ask-ai.js',
@@ -180,21 +182,18 @@ function checkDrift(repoRoot) {
   }
 
   // The doc must still state the Codex-down plus ExampleCo-approval policy for charged floors.
-  if (
-    doc &&
-    !/Codex has already failed|Codex-down proof|Codex is down too/i.test(doc)
-  ) {
+  if (doc && !/Codex has already failed|Codex-down proof|Codex is down too/i.test(doc)) {
     failures.push('doc no longer states charged API floors require Codex-down proof');
   }
   if (doc && !/ExampleCo explicitly approved|ExampleCo approval|approved charged extra usage/i.test(doc)) {
-    failures.push('doc no longer states charged API floors require ExampleCo approval');
+    failures.push(
+      'doc no longer states charged API floors require ExampleCo approval (per-call contract for anthropic/bedrock)',
+    );
   }
 
   // The doc must still state the core requirement: subscription rungs first.
   if (doc && !/subscription rungs (?:are tried )?first|subscription rungs first/i.test(doc)) {
-    failures.push(
-      'doc no longer states the hard requirement that subscription rungs run first',
-    );
+    failures.push('doc no longer states the hard requirement that subscription rungs run first');
   }
 
   return { failures, warnings };
