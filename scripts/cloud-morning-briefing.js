@@ -1119,7 +1119,11 @@ function blockedCardRepairNeed(id, cardName, reason, text = '') {
     return 'Repair: rebuild COVID source discovery and article extraction until five valid source-backed rows render, then rerun live QC.';
   }
   if (/linkedin/i.test(haystack)) {
-    if (/blocked on ExampleCo|li_at|auth cookie|login|captcha|2fa|mfa|authwall|checkpoint|re-auth/i.test(haystack)) {
+    if (
+      /blocked on ExampleCo|li_at|auth cookie|login|captcha|2fa|mfa|authwall|checkpoint|re-auth/i.test(
+        haystack,
+      )
+    ) {
       return 'Next step ExampleCo: open C:\\Users\\ExampleCod\\secondbrain\\scripts\\linkedin-bulk-scan-login.cmd, complete LinkedIn login/CAPTCHA/2FA, stay on the signed-in feed for about one minute, then click "I finished LinkedIn login - refresh LinkedIn".';
     }
     return 'Repair: rerun the authenticated LinkedIn scanner; if login or CAPTCHA blocks it, name that exact access wall here.';
@@ -2454,7 +2458,10 @@ function stripNewsDateline(text) {
   return stripTrailingNewsPublisherSuffix(stripLeadingNewsCategoryLabels(String(text || '')))
     .replace(/&mdash;|&#8212;|[\u2013\u2014]/g, '-')
     .replace(/\s+-\s+[A-Z][A-Za-z .&'-]{2,60}\s+-\s+Breaking News$/i, '')
-    .replace(/^[A-Z][A-Za-z .'-]+,\s+[A-Z][A-Za-z .'-]+\s+-\s+/, '')
+    .replace(
+      /^[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2},\s+[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2}\s+-\s+/,
+      '',
+    )
     .replace(
       /^(?:[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,4})\s+-\s+(?=(?:Former|President|The|A|An|[A-Z]))/,
       '',
@@ -2509,6 +2516,12 @@ function titleCaseNewsSlug(slug) {
 function titleFromNewsUrl(url) {
   try {
     const parsed = new URL(String(url || ''));
+    if (
+      /^news\.google\.com$/i.test(parsed.hostname) &&
+      /^\/rss\/articles\//i.test(parsed.pathname)
+    ) {
+      return '';
+    }
     const parts = parsed.pathname
       .split('/')
       .map((part) => part.trim())
@@ -3340,9 +3353,7 @@ function newsTitleSummaryCoherent(summary, item = {}) {
   if (newsTitleLooksLikeBodyFragment(rawTitle) || newsRenderTitleLooksJumbled(rawTitle)) {
     return true;
   }
-  const title = rawTitle
-    .replace(/\s+-\s+[A-Z][A-Za-z0-9 .&'-]{2,70}$/g, '')
-    .toLowerCase();
+  const title = rawTitle.replace(/\s+-\s+[A-Z][A-Za-z0-9 .&'-]{2,70}$/g, '').toLowerCase();
   const terms = [
     ...new Set(
       (title.match(/\b[a-z][a-z0-9-]{3,}\b/g) || []).filter(
@@ -3478,6 +3489,14 @@ function trimNewsDisplayTitle(text, max = 112) {
   const clean = cleanNewsFragment(stripNewsDateline(text), { max: max + 40 });
   if (!clean) return '';
   if (clean.length <= max) return clean;
+  // "Main headline: subtitle" long titles (common in journal/RSS headlines)
+  // should drop the subtitle at the colon rather than hard-slice into a hanging
+  // fragment. Only when the pre-colon headline is itself substantial (>=40 chars)
+  // so we never reduce a title to a short label like "Analysis" or "Breaking".
+  const colonHead = clean.split(/:\s/)[0].trim();
+  if (colonHead.length >= 40 && colonHead.length <= max && colonHead.length < clean.length) {
+    return colonHead;
+  }
   const clause = clean
     .replace(/,\s+(?:as|though|while|with|after|because)\b[\s\S]*$/i, '')
     .replace(/\s+(?:as|though|while|after|because)\b[\s\S]*$/i, '')
@@ -6158,9 +6177,7 @@ function formatSystemHealthSection({
     refreshTargets instanceof Set ? refreshTargets : normalizedRefreshTargetSet(refreshTargets);
   const incomplete = requiredStates.filter(
     (state) =>
-      state &&
-      state.ok === false &&
-      (!narrowSelfHealRefresh || refreshTargetSet.has(state.id)),
+      state && state.ok === false && (!narrowSelfHealRefresh || refreshTargetSet.has(state.id)),
   );
   const labels = {
     ai_tech_news: 'AI & tech news',
@@ -8228,7 +8245,9 @@ function readLinkedInScanStatus(dataDir = DEFAULT_DATA_DIR) {
 
 function linkedInAuthWallInfo(status) {
   if (!status || String(status.status || '').toLowerCase() !== 'red') return null;
-  const detail = String(status.detail || '').replace(/\s+/g, ' ').trim();
+  const detail = String(status.detail || '')
+    .replace(/\s+/g, ' ')
+    .trim();
   const signal = [status.status, status.script, detail].filter(Boolean).join(' ');
   if (
     !/\b(li_at|auth cookie|login|log in|captcha|checkpoint|2fa|mfa|authwall|signed-in|not logged in|session expired|re-authorize|reauth)\b/i.test(
@@ -9719,6 +9738,8 @@ module.exports = {
   extractScheduleLines,
   formatExampleCoNewsSection,
   formatHealedNewsSection,
+  stripNewsDateline,
+  renderNewsDisplayTitle,
   summarizeCloudNews,
   selfHealNewsSummaryBudget,
   newsSummaryRescueLimit,
