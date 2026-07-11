@@ -5,7 +5,7 @@
 // reads as current evidence, not floating copy.
 const FACE_HAS_NUMBER = /(?:\$\s?\d|\d+\s?%|\b\d+\b)/;
 const DATE_TOKEN =
-  /(?:\b\d{4}-\d{2}-\d{2}\b|\bas of\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}\b)/i;
+  /(?:\b\d{4}-\d{2}-\d{2}(?:T[\d:.+-]+Z?)?(?!\d)|\bas of\b|\blast\s+\d+\s*(?:h|hr|hrs|hour|hours|d|day|days)\b|\btoday\b|\byesterday\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}\b)/i;
 
 function numericFaceNeedsDateStamp({ face, body } = {}) {
   return FACE_HAS_NUMBER.test(String(face || '')) && !DATE_TOKEN.test(String(body || ''));
