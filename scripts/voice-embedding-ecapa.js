@@ -130,6 +130,36 @@ function embedManyAsync(audioPaths, opts = {}) {
   });
 }
 
+// Fast backend availability check (Phase A1 of the 2026-07-11 voiceprint
+// audit): confirms the venv interpreter exists and the python side can import
+// its runtime (torch/speechbrain/torchaudio) WITHOUT embedding anything. The
+// resolver calls this before grinding through per-chunk errors on a host where
+// ECAPA cannot run at all (e.g. EC2 without speechbrain).
+function preflight() {
+  if (!fs.existsSync(PYTHON)) {
+    return { ok: false, reason: `ECAPA Python runtime not found: ${PYTHON}` };
+  }
+  const timeoutMs = Number(process.env.VOICE_ECAPA_PREFLIGHT_TIMEOUT_MS || '180000') || 180000;
+  const run = spawnSync(PYTHON, [SCRIPT, '--preflight'], {
+    cwd: REPO,
+    encoding: 'utf8',
+    env: { ...process.env },
+    timeout: timeoutMs,
+  });
+  if (run.status !== 0) {
+    const detail = run.error?.message || run.stderr || run.stdout || '';
+    return { ok: false, reason: `ECAPA preflight failed: ${String(detail).slice(0, 2000)}` };
+  }
+  try {
+    const lines = String(run.stdout || '').trim().split(/\r?\n/);
+    const parsed = JSON.parse(lines[lines.length - 1]);
+    if (parsed.ok === true) return { ok: true };
+    return { ok: false, reason: parsed.error || 'ECAPA preflight returned not-ok' };
+  } catch {
+    return { ok: false, reason: 'ECAPA preflight output unparseable' };
+  }
+}
+
 function hasArg(name) {
   return process.argv.includes(name);
 }
@@ -172,4 +202,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { embedOne, embedMany, embedManyAsync };
+module.exports = { embedOne, embedMany, embedManyAsync, preflight };

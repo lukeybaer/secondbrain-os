@@ -8,6 +8,25 @@ audio windows into normalized speaker embeddings.
 
 from __future__ import annotations
 
+# --preflight answers "can this host run ECAPA at all" BEFORE the heavy imports
+# below, so an unavailable runtime reports {"ok": false} in milliseconds instead
+# of stack-ExampleCong (Phase A1 fail-fast contract; the resolver reads this).
+import sys as _sys
+import json as _json
+
+if "--preflight" in _sys.argv:
+    try:
+        import torch  # noqa: F401
+        import torchaudio  # noqa: F401
+        import soundfile  # noqa: F401
+        from speechbrain.inference.speaker import EncoderClassifier  # noqa: F401
+
+        print(_json.dumps({"ok": True}))
+        _sys.exit(0)
+    except Exception as exc:  # noqa: BLE001 - surfaced to the JS caller.
+        print(_json.dumps({"ok": False, "error": str(exc)}))
+        _sys.exit(1)
+
 import argparse
 import json
 import math

@@ -8752,6 +8752,10 @@ function buildCloudMorningBriefing({
         textAudio: readJ('otter-text-audio-coverage-latest.json'),
         rosters: readJ('otter-call-speaker-rosters-latest.json'),
         vpHealth: readJ('voiceprint-health-latest.json'),
+        // Phase A2 probe-backfill ledger: computeVerdict grades a missing
+        // ledger RED ("backfill never ran"), so the live row must read the
+        // real file or it would stay falsely RED after the backfill runs.
+        probeEligibility: readJ('probe-eligibility-latest.json'),
         callSummaries: (() => {
           try {
             return JSON.parse(
