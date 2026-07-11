@@ -11,6 +11,7 @@
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
@@ -316,10 +317,38 @@ function recoverIncompleteTransaction(dataDir) {
   }
 }
 
-function acquireLease({ dataDir, runId, mode, date, now = Date.now(), leaseMs = DEFAULT_LEASE_MS }) {
+function leaseOwnerAlive(lease, {
+  hostname = os.hostname(),
+  pidAlive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return !!(error && error.code === 'EPERM');
+    }
+  },
+} = {}) {
+  const pid = Number(lease && lease.pid);
+  const ownerHost = String(lease && lease.hostname || '');
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (ownerHost && ownerHost !== hostname) return null;
+  return !!pidAlive(pid);
+}
+
+function acquireLease({
+  dataDir,
+  runId,
+  mode,
+  date,
+  now = Date.now(),
+  leaseMs = DEFAULT_LEASE_MS,
+  pid = process.pid,
+  hostname = os.hostname(),
+  pidAlive,
+}) {
   const file = path.join(controllerDir(dataDir), 'active-lease.json');
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const body = { runId, mode, date, acquiredAt: new Date(now).toISOString(), leaseMs };
+  const body = { runId, mode, date, acquiredAt: new Date(now).toISOString(), leaseMs, pid, hostname };
   const tryWrite = () => {
     try {
       fs.writeFileSync(file, `${JSON.stringify(body, null, 2)}\n`, { flag: 'wx' });
@@ -334,13 +363,18 @@ function acquireLease({ dataDir, runId, mode, date, now = Date.now(), leaseMs = 
   const existing = readJson(file, {});
   const acquiredAt = Date.parse(existing && existing.acquiredAt);
   const stale = !Number.isFinite(acquiredAt) || now - acquiredAt > Number(existing.leaseMs || leaseMs);
-  if (!stale) return { acquired: false, file, lease: existing, stale: false };
+  const ownerAlive = leaseOwnerAlive(existing, { hostname, pidAlive });
+  const deadOwner = ownerAlive === false;
+  if (!stale && !deadOwner) return { acquired: false, file, lease: existing, stale: false };
   try {
     fs.unlinkSync(file);
   } catch (error) {
     if (!error || error.code !== 'ENOENT') throw error;
   }
-  return tryWrite() || { acquired: false, file, lease: readJson(file, {}), stale: true };
+  const reclaimed = deadOwner ? 'dead-owner' : 'expired';
+  const recovered = tryWrite();
+  if (recovered) return { ...recovered, reclaimed };
+  return { acquired: false, file, lease: readJson(file, {}), stale: true, reclaimed };
 }
 
 function releaseLease(lease, runId) {
@@ -968,6 +1002,7 @@ module.exports = {
   writeActiveTransaction,
   clearActiveTransaction,
   recoverIncompleteTransaction,
+  leaseOwnerAlive,
   acquireLease,
   releaseLease,
   runProcess,
