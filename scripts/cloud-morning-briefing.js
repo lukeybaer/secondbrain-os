@@ -4144,63 +4144,13 @@ function buildViralTechCard(dataDir, date, blockers, now = new Date()) {
   };
 }
 
-function readMortgageRateSnapshot(dataDir, date) {
-  const exact = readJson(path.join(dataDir, 'agent', 'mortgage-rates', `${date}.json`), null);
-  if (exact && Array.isArray(exact.indexes))
-    return { snapshot: exact, sourceDate: exact.date || date };
-  const latest = findLatestDatedFile(path.join(dataDir, 'agent', 'mortgage-rates'), {
-    prefix: '',
-    ext: 'json',
-    date,
-  });
-  const snapshot = latest ? readJson(latest.file, null) : null;
-  if (snapshot && Array.isArray(snapshot.indexes))
-    return { snapshot, sourceDate: latest.date || snapshot.date };
-  return { snapshot: null, sourceDate: null };
-}
-
-function fmtRateCell(value) {
-  if (value == null || value === '') return 'blocked';
-  if (typeof value === 'number') return `${value.toFixed(2)}%`;
-  const text = cleanExecutiveFragment(value, { max: 24 });
-  return text || 'blocked';
-}
-
-function buildMortgageRateIndexesCard(dataDir, date) {
-  const { snapshot, sourceDate } = readMortgageRateSnapshot(dataDir, date);
-  if (!snapshot) {
-    return {
-      markdown: legacySection(
-        'MORTGAGE RATE INDEXES',
-        'No mortgage-rate index snapshot is ready yet. This card remains unpublished until the source check passes.',
-      ),
-      state: { id: 'mortgage-rates', count: 0, ok: false, source: 'missing' },
-    };
-  }
-  const indexes = (snapshot.indexes || []).filter((row) => row && row.id && row.today != null);
-  const lines = [
-    `Snapshot: ${sourceDate}; indexes are ExampleCod from the latest public readings when markets have not posted a Sunday update.`,
-    '',
-    '| Index | Today | DoD | WoW | MoM | Source |',
-    '| --- | ---: | ---: | ---: | ---: | --- |',
-  ];
-  for (const row of indexes) {
-    const label = cleanExecutiveFragment(row.label || row.id, { max: 60 });
-    const source = cleanPublicUrl(row.source || row.link, { allowGoogleNews: true });
-    lines.push(
-      `| ${label} | ${fmtRateCell(row.today)} | ${fmtRateCell(row.dod)} | ${fmtRateCell(row.wow)} | ${fmtRateCell(row.mom)} | ${source || 'public index'} |`,
-    );
-  }
-  return {
-    markdown: legacySection('MORTGAGE RATE INDEXES', lines.join('\n')),
-    state: {
-      id: 'mortgage-rates',
-      count: indexes.length,
-      ok: indexes.length >= 3,
-      source: sourceDate === date ? 'artifact' : `fallback-${sourceDate}`,
-    },
-  };
-}
+// W6 generator merge, card 1: the MORTGAGE RATE INDEXES builder moved
+// VERBATIM to scripts/lib/briefing-cards/mortgage-rate-indexes-card.js so
+// manual-briefing-v3.js consumes the SAME module (big-decisions-card.js
+// pattern). Output here is byte-identical to the pre-move builder.
+const {
+  buildMortgageRateIndexesCard,
+} = require('./lib/briefing-cards/mortgage-rate-indexes-card.js');
 
 function readVideoManifest(dataDir) {
   const candidates = [
