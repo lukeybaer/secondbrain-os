@@ -40,13 +40,31 @@ const CONFIRM_DOWN_TICKS = Number(process.env.CHANNEL_CONFIRM_DOWN_TICKS) || 3;
 // so ExampleCo knows the channel is unverifiable, but we STILL never auto-reset on
 // inconclusive: the healer principle holds, the human decides.
 const INCONCLUSIVE_ESCALATE_TICKS = Number(process.env.CHANNEL_INCONCLUSIVE_ESCALATE_TICKS) || 12;
-// Laptop-hosted channels (Claude Max proxy, Gmail scan, LinkedIn crawl) run on
-// ExampleCo's laptop, not EC2. EC2 cannot restart them; they recover on their own
-// when his machine is on. They flap whenever the laptop sleeps or the network
-// blips, so only explicitly approved laptop-hosted channels may send a
-// Telegram. Gmail scan freshness belongs in the briefing/System Health
-// surface, never in Telegram.
+// Laptop-hosted channels (Claude Max proxy, Gmail scan, LinkedIn crawl, token
+// push) run on ExampleCo's laptop, not EC2. EC2 cannot restart them; they recover
+// on their own when his machine is on. 2026-07-12 flap fix: a laptop channel
+// being offline is EXPECTED (sleep, lid closed, overnight), not an incident.
+// ExampleCo got 15 offline/recovered notes in one day from ordinary laptop
+// sleep cycles. So laptop-hosted channels never alert on a flap at all; they
+// alert ONLY after being continuously offline for more than
+// LAPTOP_OFFLINE_ALERT_DAYTIME_HOURS counted within CT daytime
+// (LAPTOP_DAYTIME_START_HOUR_CT..LAPTOP_DAYTIME_END_HOUR_CT, 7am-10pm CT).
+// Overnight hours do not count toward the threshold: a laptop that sleeps
+// 10pm-7am is healthy. More than 12 daytime hours means "the channel was dead
+// through essentially a full waking day", which is a real outage worth ExampleCo's
+// pocket, and with the 15h daytime window it can fire the SAME evening
+// instead of waiting for tomorrow.
 const LAPTOP_REALERT_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const LAPTOP_DAYTIME_START_HOUR_CT = 7;
+const LAPTOP_DAYTIME_END_HOUR_CT = 22;
+const LAPTOP_OFFLINE_ALERT_DAYTIME_HOURS =
+  Number(process.env.LAPTOP_OFFLINE_ALERT_DAYTIME_HOURS) || 12;
+// Double-probe rule (2026-07-12 flap fix): NO channel may alert "down" from a
+// single failed probe. Today's false "Telegram is down" alarm was one getMe
+// timeout; the very next probe was green. Every down alert now requires at
+// least this many CONSECUTIVE failed probes; channels that declare a larger
+// confirmDownTicks (backend, pm2) keep their larger gate.
+const MIN_CONFIRM_DOWN_TICKS = Number(process.env.CHANNEL_MIN_CONFIRM_DOWN_TICKS) || 2;
 const PROBE_TIMEOUT_MS = 5000;
 // The backend self-probe races /health against the box being contended, so it
 // gets a longer timeout and retries before it is allowed to conclude anything.
@@ -76,6 +94,38 @@ function classifyProbeFailure(r) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Hours of overlap between [startMs, endMs] and CT daytime windows
+// (LAPTOP_DAYTIME_START_HOUR_CT <= hour < LAPTOP_DAYTIME_END_HOUR_CT in
+// America/Chicago). Sampled in 15-minute steps: precise enough for a
+// 12-hour threshold, cheap enough to run every 5-minute tick, and immune to
+// DST edge math. Capped at 90 days so a wild timestamp cannot spin the loop.
+const CT_HOUR_FORMAT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Chicago',
+  hour: 'numeric',
+  hour12: false,
+});
+function ctDaytimeHoursBetween(
+  startMs,
+  endMs,
+  { startHour = LAPTOP_DAYTIME_START_HOUR_CT, endHour = LAPTOP_DAYTIME_END_HOUR_CT } = {},
+) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return 0;
+  const stepMs = 15 * 60 * 1000;
+  const cappedEnd = Math.min(endMs, startMs + 90 * 24 * 60 * 60 * 1000);
+  let daytimeSteps = 0;
+  for (let t = startMs; t < cappedEnd; t += stepMs) {
+    const hour = Number(CT_HOUR_FORMAT.format(new Date(t))) % 24;
+    if (hour >= startHour && hour < endHour) daytimeSteps += 1;
+  }
+  return (daytimeSteps * stepMs) / 3600000;
+}
+
+// The confirm-down gate every channel gets: its own declared confirmDownTicks
+// (backend/pm2 use 3) floored at the global double-probe minimum.
+function effectiveConfirmDownTicks(def) {
+  return Math.max(Number(def && def.confirmDownTicks) || 0, MIN_CONFIRM_DOWN_TICKS);
 }
 
 function httpGetJson(url, { timeoutMs = PROBE_TIMEOUT_MS } = {}) {
@@ -869,6 +919,9 @@ function createMonitor({
       // matching recovery note, so a suppressed flap does not emit a stray
       // "back online" message.
       laptopAlertOpen: false,
+      // Start of the current continuous non-green episode (ms). Drives the
+      // laptop expected-offline daytime-hours accumulator. Cleared on green.
+      offlineSince: null,
     };
   }
 
@@ -935,9 +988,11 @@ function createMonitor({
     if (result.status === 'green') {
       ch.lastOkAt = now();
       ch.consecutiveRed = 0;
+      ch.offlineSince = null;
     } else {
       ch.lastRedAt = now();
       ch.consecutiveRed += 1;
+      if (!ch.offlineSince) ch.offlineSince = now();
     }
     logEvent({
       ts: new Date(now()).toISOString(),
@@ -960,10 +1015,46 @@ function createMonitor({
       if (t.after.status !== 'red') continue;
       const ch = state.channels[t.def.name];
 
-      // Laptop-hosted channels run on ExampleCo's laptop; EC2 cannot fix them.
-      // Send ONE quiet offline note (no "attempting auto-fix", no heal, no
-      // "manual fix needed"), then stay silent for 4h before re-alerting.
+      // Laptop-hosted channels run on ExampleCo's laptop; EC2 cannot fix them, and
+      // being offline is their EXPECTED state whenever the laptop sleeps
+      // (2026-07-12 flap fix: 15 offline/recovered notes in one day). A flap
+      // never alerts. The channel must be continuously offline for more than
+      // LAPTOP_OFFLINE_ALERT_DAYTIME_HOURS of CT DAYTIME (overnight hours do
+      // not count) before ONE breach note goes out, and the double-probe rule
+      // still applies before the offline episode is even considered real.
       if (t.def.laptopHosted) {
+        const laptopConfirmTicks = effectiveConfirmDownTicks(t.def);
+        if (ch.consecutiveRed < laptopConfirmTicks) {
+          logEvent({
+            ts: new Date(now()).toISOString(),
+            channel: t.def.name,
+            event: 'down-unconfirmed',
+            detail:
+              'laptop channel red ' +
+              ch.consecutiveRed +
+              '/' +
+              laptopConfirmTicks +
+              ' consecutive probes; holding. ' +
+              ch.detail,
+          });
+          continue;
+        }
+        const daytimeHours = ctDaytimeHoursBetween(ch.offlineSince || now(), now());
+        if (daytimeHours <= LAPTOP_OFFLINE_ALERT_DAYTIME_HOURS) {
+          logEvent({
+            ts: new Date(now()).toISOString(),
+            channel: t.def.name,
+            event: 'laptop-offline-expected',
+            detail:
+              ch.friendly +
+              ' offline ' +
+              daytimeHours.toFixed(1) +
+              ' CT daytime hours (threshold ' +
+              LAPTOP_OFFLINE_ALERT_DAYTIME_HOURS +
+              'h); expected-offline, no alert.',
+          });
+          continue;
+        }
         if (!shouldAlertLaptop(t.def.name)) continue;
         if (t.def.telegramAllowed === false) {
           recordAlertSent(t.def.name);
@@ -977,31 +1068,37 @@ function createMonitor({
           continue;
         }
         await sendMessage(
-          'ℹ️ ' +
+          '⚠️ ' +
             ch.friendly +
-            ' is offline. It runs on your laptop and will recover when your machine is on.',
-          { kind: 'health-alert-laptop-offline', extras: { channel: t.def.name } },
+            ' has been offline for over ' +
+            Math.floor(daytimeHours) +
+            ' daytime hours (CT). It runs on your laptop; when you can, check the machine is on and the task is running.',
+          {
+            kind: 'laptop-offline-breach',
+            extras: { channel: t.def.name, daytimeHours: Math.round(daytimeHours * 10) / 10 },
+          },
         );
         recordAlertSent(t.def.name);
         ch.laptopAlertOpen = true;
         logEvent({
           ts: new Date(now()).toISOString(),
           channel: t.def.name,
-          event: 'alert-laptop-offline',
-          detail: ch.detail,
+          event: 'alert-laptop-offline-breach',
+          detail: daytimeHours.toFixed(1) + ' CT daytime hours offline. ' + ch.detail,
         });
         continue;
       }
 
-      // Confirmed-down gate: for channels that carry a confirmDownTicks (the
-      // backend and pm2 crash-loop), do NOT alert or heal until we have seen
-      // this many CONSECUTIVE genuine-red ticks. A single genuine-red between
-      // greens is a blip; a load-induced probe is inconclusive and never even
-      // reaches here. This is the core healer-principle fix: a healthy-but-slow
-      // backend can never be auto-remediated. The FIRST time the streak crosses
-      // the threshold we alert+heal; subsequent reds respect the normal
-      // re-alert interval.
-      if (t.def.confirmDownTicks && ch.consecutiveRed < t.def.confirmDownTicks) {
+      // Confirmed-down gate, now UNIVERSAL (2026-07-12 double-probe rule): no
+      // channel alerts or heals until at least effectiveConfirmDownTicks
+      // CONSECUTIVE genuine-red ticks (minimum 2 everywhere; backend/pm2 keep
+      // their larger declared gate). A single genuine-red between greens is a
+      // blip (today's one-timeout "Telegram is down" false alarm); a
+      // load-induced probe is inconclusive and never even reaches here. The
+      // FIRST time the streak crosses the threshold we alert+heal; subsequent
+      // reds respect the normal re-alert interval.
+      const confirmTicks = effectiveConfirmDownTicks(t.def);
+      if (ch.consecutiveRed < confirmTicks) {
         logEvent({
           ts: new Date(now()).toISOString(),
           channel: t.def.name,
@@ -1010,22 +1107,18 @@ function createMonitor({
             'genuine-down ' +
             ch.consecutiveRed +
             '/' +
-            t.def.confirmDownTicks +
-            ' consecutive ticks; holding before any auto-fix. ' +
+            confirmTicks +
+            ' consecutive ticks; holding before any alert or auto-fix. ' +
             ch.detail,
         });
         continue;
       }
 
-      // The tick where a confirmDownTicks channel first reaches the threshold is
-      // the confirmed-down crossing. It MUST alert+heal exactly once regardless
-      // of a recent lastAlertedAt left over from a prior episode (Codex #3), so
-      // it bypasses the shouldAlert re-alert gate. For channels without a
-      // confirmDownTicks the original isNew/shouldAlert behaviour is unchanged.
-      const justConfirmed =
-        t.def.confirmDownTicks &&
-        !ch.confirmedDownOpen &&
-        ch.consecutiveRed >= t.def.confirmDownTicks;
+      // The tick where a channel first reaches its confirm threshold is the
+      // confirmed-down crossing. It MUST alert+heal exactly once regardless
+      // of a recent lastAlertedAt left over from a prior episode (Codex #3),
+      // so it bypasses the shouldAlert re-alert gate.
+      const justConfirmed = !ch.confirmedDownOpen && ch.consecutiveRed >= confirmTicks;
       if (justConfirmed) {
         ch.confirmedDownOpen = true;
       } else {
@@ -1141,8 +1234,10 @@ function createMonitor({
         // window produces no recovery message (no spam from a quiet flap).
         if (t.def.laptopHosted) {
           if (ch.laptopAlertOpen) {
+            // Rides an egress-allowed kind: ExampleCo heard about the breach, so he
+            // gets the matching all-clear. Silent flaps never reach here.
             await sendMessage('✅ ' + ch.friendly + ' back online.', {
-              kind: 'health-alert-laptop-recovered',
+              kind: 'laptop-offline-recovered',
               extras: { channel: t.def.name },
             });
             ch.laptopAlertOpen = false;
@@ -1156,11 +1251,11 @@ function createMonitor({
           continue;
         }
 
-        // For a confirm-gated channel (backend / pm2) a red episode that never
-        // crossed the confirm-down threshold sent NO down alert, so a recovery
-        // note would be noise about an event ExampleCo never saw (Codex #4). Only
+        // Every channel is confirm-gated now: a red episode that never crossed
+        // the confirm-down threshold sent NO down alert, so a recovery note
+        // would be noise about an event ExampleCo never saw (Codex #4). Only
         // announce self-recovery if a confirmed-down alert was actually open.
-        if (t.def.confirmDownTicks && !ch.confirmedDownOpen) {
+        if (!ch.confirmedDownOpen) {
           logEvent({
             ts: new Date(now()).toISOString(),
             channel: t.def.name,
@@ -1274,6 +1369,12 @@ module.exports = {
   httpGetJson,
   classifyProbeFailure,
   pm2ProcessStatus,
+  ctDaytimeHoursBetween,
+  effectiveConfirmDownTicks,
   CONFIRM_DOWN_TICKS,
   INCONCLUSIVE_ESCALATE_TICKS,
+  MIN_CONFIRM_DOWN_TICKS,
+  LAPTOP_OFFLINE_ALERT_DAYTIME_HOURS,
+  LAPTOP_DAYTIME_START_HOUR_CT,
+  LAPTOP_DAYTIME_END_HOUR_CT,
 };

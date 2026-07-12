@@ -81,6 +81,20 @@ const ALLOWED_KINDS = new Set([
   // (scripts/lib/briefing-notify.js) dedupes one message per publish state per
   // day via a marker file, so this cannot become morning spam.
   'briefing-link',
+  // Briefing genuinely blocked after retries exhausted (ExampleCo 2026-07-12: the
+  // ONE health push he wants). Sent by scripts/lib/briefing-notify.js when a
+  // publish lands blocked (the overnight self-heal + mechanical pass + build
+  // repairs have already run by then, so a blocked publish IS retries
+  // exhausted). Same per-day per-state marker dedupe as briefing-link.
+  'briefing-blocked',
+  // Laptop-hosted channel offline for more than the CT-daytime threshold
+  // (scripts/lib/channel-health-monitor.js, 2026-07-12 flap fix). Ordinary
+  // laptop sleep flaps never send; only a genuine multi-daytime-hour outage
+  // does, and the monitor rate-limits it. The matching all-clear
+  // ('laptop-offline-recovered') is only ever sent after a breach note, so it
+  // cannot become flap noise.
+  'laptop-offline-breach',
+  'laptop-offline-recovered',
 ]);
 
 function telegramKindAllowed(kind, { reactive = false } = {}) {

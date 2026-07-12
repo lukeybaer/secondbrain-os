@@ -30,6 +30,14 @@ const path = require('path');
 const os = require('os');
 const { classifyRunOutput, nextRung } = require('./lib/skill-runner-ladder.js');
 const { ensureCodexWorktree, isSharedCheckout } = require('./lib/codex-worktree.js');
+const { landScanOutputs } = require('./lib/scan-output-lander.js');
+
+// Git-worthy output areas a scheduled skill legitimately produces: its own
+// LESSONS.md / skill files and Tier-2 memory (contact scans, notes). Tracked
+// data ledgers (big-decisions) ride along when a skill touched them. Code
+// changes are NOT auto-landed here; a skill that edits code must land through
+// its own land.js run so the scoped test gate sees intent, not side effects.
+const SKILL_OUTPUT_PATHSPECS = ['scheduled-tasks', 'memory', 'data'];
 
 const skillName = process.argv[2];
 if (!skillName) {
@@ -117,6 +125,57 @@ if (process.env.RUN_SCHEDULED_SKILL_ISOLATED !== '1' && isSharedCheckout(SECONDB
     if (child.error) {
       throw child.error;
     }
+    // LAND STEP (2026-07-12 shared-checkout writer fix): the child ran in an
+    // isolated worktree, so its git-worthy outputs (LESSONS.md append, contact
+    // scan updates, memory notes) live only in that worktree. Without landing
+    // they rot there and the NEXT run reads stale lessons; historically this
+    // is also how the shared checkout accumulated dirt (runs that skipped
+    // isolation). Land the scoped outputs through the normal gate, then reap
+    // the worktree so scheduled runs never leak orphans. A landing failure is
+    // ledgered loudly but never converts the skill's own exit status.
+    try {
+      const landed = landScanOutputs({
+        repoRoot: isolated.cwd,
+        pathspecs: SKILL_OUTPUT_PATHSPECS,
+        message: `chore(scheduled): ${skillName} run outputs`,
+        purpose: `skill-outputs-${skillName}`,
+        log: (line) => fs.appendFileSync(logFile, String(line) + '\n'),
+      });
+      appendOutcome({
+        rung: 'land-outputs',
+        ok: landed.ok,
+        exitCode: landed.ok ? 0 : 1,
+        verdict: landed.landed ? 'landed' : landed.reason || 'clean',
+        files: landed.files,
+      });
+      if (landed.ok) {
+        // Worktree is fully landed (or had nothing to land): reap it so the
+        // sb-sessions dir does not fill with orphans.
+        const st = spawnSync(
+          'git',
+          ['-C', SECONDBRAIN_ROOT, 'worktree', 'remove', '--force', isolated.cwd],
+          {
+            encoding: 'utf8',
+            timeout: 60000,
+          },
+        );
+        if (st.status === 0 && isolated.branch) {
+          spawnSync('git', ['-C', SECONDBRAIN_ROOT, 'branch', '-D', isolated.branch], {
+            encoding: 'utf8',
+            timeout: 60000,
+          });
+        }
+      }
+    } catch (e) {
+      appendOutcome({
+        rung: 'land-outputs',
+        ok: false,
+        exitCode: 1,
+        verdict: 'land-threw',
+        tail: String(e.message || e).slice(-300),
+      });
+      fs.appendFileSync(logFile, `land-outputs failed: ${e.message}\n`);
+    }
     process.exit(Number.isFinite(child.status) ? child.status : 1);
   } catch (e) {
     const output = `Codex isolation failed before scheduled skill could run: ${e.message}`;
@@ -144,10 +203,7 @@ const basePrompt = rawContent.replace(/^---[\s\S]*?---\s*\n/, '').trim();
 const prompt = hooks.buildPromptWithLessons(skillName, basePrompt);
 const lessonInputDescriptor = `scheduled run ${new Date().toISOString()}`;
 
-if (
-  skillName === 'amy-research-skill' &&
-  process.env.AMY_ENABLE_AUTONOMOUS_RESEARCH !== '1'
-) {
+if (skillName === 'amy-research-skill' && process.env.AMY_ENABLE_AUTONOMOUS_RESEARCH !== '1') {
   appendOutcome({
     rung: 'policy',
     ok: true,

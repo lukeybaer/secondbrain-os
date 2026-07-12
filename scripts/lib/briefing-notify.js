@@ -67,11 +67,22 @@ function buildBriefingNotifyText({ clean, blockerCount = 0, url = '', transition
   if (clean) {
     statusLine = transition ? 'Briefing now clean' : 'Briefing ready: clean';
   } else if (blockerCount > 0) {
-    statusLine = `Briefing ready: ${blockerCount} blocker${blockerCount === 1 ? '' : 's'}`;
+    statusLine = `Briefing blocked: ${blockerCount} blocker${blockerCount === 1 ? '' : 's'} after retries exhausted`;
   } else {
-    statusLine = 'Briefing ready: blocked';
+    statusLine = 'Briefing blocked after retries exhausted';
   }
   return [statusLine, url].filter(Boolean).join('\n');
+}
+
+// The Telegram kind for a publish event. A clean publish is the ordinary
+// once-daily link. A BLOCKED publish is the one authorized health push (ExampleCo
+// 2026-07-12): by the time the 5:30 publish lands blocked, the overnight
+// self-heal, the pre-briefing mechanical pass, and the build's own card
+// repairs have all already run, so "published blocked" IS "genuinely blocked
+// after retries exhausted". It rides its own kind so the egress policy can
+// allow it explicitly instead of it drowning under suppressed health noise.
+function briefingNotifyKind(clean) {
+  return clean ? 'briefing-link' : 'briefing-blocked';
 }
 
 // Send the briefing link for a publish event, marker-deduped by date + state.
@@ -103,7 +114,9 @@ async function notifyBriefingPublished({
     };
   }
 
-  const transition = Boolean(clean && prior && prior.state === 'blocked' && prior.status === 'sent');
+  const transition = Boolean(
+    clean && prior && prior.state === 'blocked' && prior.status === 'sent',
+  );
   loadBriefingNotifyEnv(dataDir);
   const text = buildBriefingNotifyText({ clean, blockerCount, url, transition });
   const ts = now().toISOString();
@@ -112,7 +125,7 @@ async function notifyBriefingPublished({
   try {
     const result = await send({
       text,
-      kind: 'briefing-link',
+      kind: briefingNotifyKind(clean),
       source: 'cloud-morning-briefing',
       priority: 'normal',
       // The per-day per-state marker above owns briefing-link dedupe. The
@@ -160,6 +173,7 @@ async function notifyBriefingPublished({
 module.exports = {
   notifyBriefingPublished,
   buildBriefingNotifyText,
+  briefingNotifyKind,
   loadBriefingNotifyEnv,
   briefingNotifyMarkerPath,
 };

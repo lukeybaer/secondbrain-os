@@ -7,6 +7,7 @@ const { execFileSync } = require('node:child_process');
 const { evaluateSharedTreeWrite } = require('./shared-tree-write-guard.js');
 const { evaluateSharedTreeOp } = require('./shared-tree-guard.js');
 const { validateMutationSurfaceMatrix } = require('./mutation-surface-matrix.js');
+const { evaluateSharedDirtTripwire } = require('./shared-dirt-tripwire.js');
 
 function parseAheadBehind(branchLine) {
   const ahead = Number((String(branchLine).match(/ahead (\d+)/) || [])[1] || 0);
@@ -46,7 +47,9 @@ function sharedCheckoutCleanlinessMetric(status, options = {}) {
   const memory = Number(status?.memory || 0);
   const data = Number(status?.data || 0);
   const untracked = Number(status?.untracked || 0);
-  const branch = String(status?.branch || '').replace(/^##\s*/, '').trim();
+  const branch = String(status?.branch || '')
+    .replace(/^##\s*/, '')
+    .trim();
   const sync = ahead || behind ? `ahead ${ahead}, behind ${behind}` : 'synced with origin';
   if (options.gitUnavailable) {
     return {
@@ -187,6 +190,7 @@ function probeDevOpsHealth({
   readFile = fs.readFileSync,
   runGitStatus,
   cloudHost,
+  tripwire,
 } = {}) {
   const root = mainRoot.replace(/\\/g, '/');
   // The EC2 briefing build is a FILE-DEPLOYED copy (not a git checkout) under
@@ -222,6 +226,27 @@ function probeDevOpsHealth({
   }
   const status = classifyStatusPorcelain(gitStatus);
   const sharedCheckoutMetric = sharedCheckoutCleanlinessMetric(status, { gitUnavailable });
+  // Shared-dirt writer tripwire (2026-07-12): a differential, allowlisted view
+  // of the same porcelain data. The cleanliness metric above says "the tree is
+  // dirty"; the tripwire names WHICH paths are new writer violations (vs
+  // landed-awaiting-sync or baselined history) and emits one guard-telemetry
+  // line per new file. Injectable for tests. The REAL tripwire (which runs
+  // git and writes state/telemetry) only runs when this probe is doing real
+  // git itself: a caller that injected runGitStatus is a hermetic test and
+  // must not touch the live repo. Skipped where git is unavailable (EC2
+  // file-deploy) exactly like the cleanliness metric.
+  let dirtTripwire = null;
+  if (!gitUnavailable && (tripwire || !runGitStatus)) {
+    try {
+      dirtTripwire = (tripwire || evaluateSharedDirtTripwire)({ mainRoot: root });
+    } catch (e) {
+      dirtTripwire = {
+        status: 'red',
+        newDirt: [],
+        detail: `Shared-dirt tripwire: failed to evaluate: ${String((e && e.message) || e).slice(0, 160)}`,
+      };
+    }
+  }
   const repoSettings = classifySettings(
     readSettings(repoSettingsPath || path.join(root, '.claude', 'settings.json'), readFile),
   );
@@ -237,6 +262,9 @@ function probeDevOpsHealth({
   const problems = [];
   if (!gitUnavailable && sharedCheckoutMetric.status === 'red') {
     problems.push(sharedCheckoutMetric.detail);
+  }
+  if (dirtTripwire && dirtTripwire.status === 'red') {
+    problems.push(dirtTripwire.detail);
   }
   if (!guard.ok) {
     if (guard.failedWrites.length)
@@ -308,6 +336,7 @@ function probeDevOpsHealth({
     sharedCheckout: status,
     metrics: {
       sharedCheckoutCleanliness: sharedCheckoutMetric,
+      sharedDirtTripwire: dirtTripwire,
     },
     guard,
     matrix,
