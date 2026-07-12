@@ -25,6 +25,9 @@ const {
 const {
   containsRawOperationalLeak,
   scrubExecutiveText,
+  scrubInternalIdsFromFace,
+  faceCopyHasInternalIdLeak,
+  enforceFaceCopyGate,
 } = require('./lib/executive-surface-policy.js');
 const {
   formatKingdomEquippingSection,
@@ -45,7 +48,9 @@ const { computeSpeakerFreshness } = require('./lib/speaker-freshness.js');
 const { resolveDataArtifact } = require('./lib/data-root.js');
 const {
   INFORMATIONAL_TESTS_ROW,
+  formatTestsHealthRow,
   formatTestsHealthRows,
+  isInformationalTestsRowText,
   readFreshestTestsBlocked,
   summarizeTestsByCategory,
 } = require('./lib/system-health-tests-row.js');
@@ -53,6 +58,10 @@ const {
 // blocker we emit per non-green row covers EXACTLY the set the QC counts.
 const { nonGreenSubsystems } = require('./lib/system-health-nongreen.js');
 const { CARDS: BRIEFING_MANIFEST_CARDS } = require('./lib/briefing-card-manifest.js');
+const {
+  readFreshestBacklogReceipt,
+  isBacklogReceiptFresh,
+} = require('./lib/backlog-run-receipt.js');
 const { isTerminallyExcludedFromStuckScan } = require('./lib/video-delete-state.js');
 const {
   summarizeNewsItems,
@@ -76,6 +85,7 @@ const {
   buildLiveBoardArtifact,
   classifyDefectKind,
   defectiveCardCount: liveBoardDefectiveCardCount,
+  perCardCompletionSummary,
   readLiveBoardArtifact,
 } = require('./lib/live-board-truth.js');
 
@@ -1616,18 +1626,46 @@ function renderBlockersSection(blockers, opts = {}) {
     }
     lines.push('');
   }
-  blockers.forEach((item, idx) => {
-    lines.push(`${idx + 1}. ${item.title}`);
-    lines.push(`Evidence: ${item.evidence}`);
-    if (item.need) {
-      const nextStep = String(item.need).match(/^(Next step (?:ExampleCo|Amy)):\s*(.+)$/i);
-      if (nextStep) lines.push(`${nextStep[1]}: ${nextStep[2]}`);
-      else lines.push(`Need from ExampleCo: ${item.need}`);
+  // CREATION-TIME LEAK GATE (ExampleCo wave 3a, 2026-07-12, D1). Every face fragment
+  // (title, evidence, need) routes through the shared internal-id filter as the
+  // card is CREATED, mapping spine-session ids to human task titles from the
+  // spine store. The per-card QC then verifies the assembled body; a failed
+  // check triggers ONE regeneration attempt (line-level hard scrub) before the
+  // residue is flagged as an honest defect note instead of a silent leak.
+  const buildBody = (hardened) => {
+    const bodyLines = [...lines];
+    blockers.forEach((item, idx) => {
+      const title = scrubInternalIdsFromFace(item.title, opts) || `Render QC defect ${idx + 1}`;
+      const evidence = scrubInternalIdsFromFace(item.evidence, opts);
+      bodyLines.push(`${idx + 1}. ${title}`);
+      bodyLines.push(`Evidence: ${evidence || 'evidence redacted (internal id removed)'}`);
+      if (item.need) {
+        const need = scrubInternalIdsFromFace(String(item.need), opts);
+        const nextStep = need.match(/^(Next step (?:ExampleCo|Amy)):\s*(.+)$/i);
+        if (nextStep) bodyLines.push(`${nextStep[1]}: ${nextStep[2]}`);
+        else if (need) bodyLines.push(`Need from ExampleCo: ${need}`);
+      }
+      bodyLines.push('');
+    });
+    if (reconciliation) bodyLines.push(reconciliation, '');
+    let body = bodyLines.join('\n').trim();
+    if (hardened) {
+      body = body
+        .split('\n')
+        .map((line) =>
+          faceCopyHasInternalIdLeak(line) ? scrubInternalIdsFromFace(line, opts) : line,
+        )
+        .join('\n');
     }
-    lines.push('');
-  });
-  if (reconciliation) lines.push(reconciliation, '');
-  return legacySection('BLOCKERS - briefing quality gates', lines.join('\n').trim());
+    return body;
+  };
+  const gated = enforceFaceCopyGate(buildBody, opts);
+  let body = gated.text;
+  if (gated.flagged) {
+    body +=
+      '\n\nOne blocker row was redacted: its evidence ExampleCod an internal id that survived the creation-time filter and one regeneration attempt.';
+  }
+  return legacySection('BLOCKERS - briefing quality gates', body);
 }
 
 function parseIsoDay(value) {
@@ -1918,7 +1956,7 @@ function extractApprovalQueue(raw) {
   return clean.length ? clean : ['- No approval needed right now.'];
 }
 
-function extractProjectBacklog(raw) {
+function extractProjectBacklog(raw, opts = {}) {
   const primary = Array.isArray(raw && raw.features) ? raw.features : [];
   const fallback = Array.isArray(raw && raw.items) ? raw.items : [];
   const rows = (primary.length ? primary : fallback)
@@ -1949,8 +1987,24 @@ function extractProjectBacklog(raw) {
       (Array.isArray(raw && raw.features) ? raw.features.length : 0) ||
       (Array.isArray(raw && raw.items) ? raw.items.length : 0);
     if (!sourceCount) {
+      // Output contract (ExampleCo wave 3a, 2026-07-12, D8): a FRESH receipt with the
+      // explicit no-proposals marker is the ONE honest empty state; the card
+      // renders it clean. A stale receipt cannot vouch for today's empty card
+      // (Codex review: a week-old marker must not mask a missing backlog), and
+      // anything else at zero rows is a contract violation staying a DEFECT.
+      const receipt = opts.receipt;
+      if (
+        receipt &&
+        receipt.noProposals &&
+        receipt.reason &&
+        isBacklogReceiptFresh(receipt, opts.nowMs)
+      ) {
+        return [
+          `- No scored proposals this run (research receipt ${String(receipt.date || '').slice(0, 10) || 'undated'}): ${receipt.reason}`,
+        ];
+      }
       return [
-        '- DEFECT: feature-backlog.json is missing or empty in this cloud run, so no backlog could be rendered. This is a broken population probe, not an empty backlog -- regenerate the backlog snapshot before clearing.',
+        '- DEFECT: feature-backlog.json is missing or empty in this cloud run and the research loop left no no-proposals receipt, so no backlog could be rendered. This is a broken population probe or a research-loop contract violation, not an empty backlog -- regenerate the backlog snapshot before clearing.',
       ];
     }
     return [
@@ -4413,27 +4467,18 @@ function readSnapshotForMarkdown(dataDir, basename) {
 // leaving the drilldown detail intact. Category-based: matches any path shape,
 // not the single incident path.
 function scrubRawPathsFromFace(text) {
-  return (
-    String(text || '')
-      .replace(/\/(?:opt\/secondbrain|life-archive|Users|mnt|home|data\/agent)\/[^\s)]+/gi, '')
-      .replace(/\b[A-Za-z]:\\(?:[^\s\\]+\\?)+/g, '')
-      // Defense-in-depth (2026-07-07): strip internal ids so no UUID / spine-session
-      // / dispatch-N leaks onto a card face even if a snapshot ExampleCos one. This
-      // matches the render-QC internal-id denylist (verify-dashboard-cards-live.js
-      // FACE_DENYLIST). Drop a leading frontmatter key too ("originSessionId:") so
-      // the residue is not a dangling label.
-      .replace(
-        /\b[A-Za-z][A-Za-z0-9]*(?:[_-]?[A-Za-z0-9]+)*\s*:\s*(?=(?:[0-9a-f]{8}-[0-9a-f]{4}-)|spine-session-|dispatch-\d)/gi,
-        '',
-      )
-      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '')
-      .replace(/\bspine-session-[0-9a-z-]+/gi, '')
-      .replace(/\bdispatch-\d+\b/gi, '')
-      .replace(/\s{2,}/g, ' ')
-      .replace(/\(\s*\)/g, '')
-      .replace(/\s+([.,;)])/g, '$1')
-      .trim()
-  );
+  const pathless = String(text || '')
+    .replace(/\/(?:opt\/secondbrain|life-archive|Users|mnt|home|data\/agent)\/[^\s)]+/gi, '')
+    .replace(/\b[A-Za-z]:\\(?:[^\s\\]+\\?)+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\(\s*\)/g, '')
+    .replace(/\s+([.,;)])/g, '$1')
+    .trim();
+  // Internal ids (UUID / spine-session / dispatch-N) route through the ONE
+  // shared creation-time filter (scripts/lib/executive-surface-policy.js),
+  // which also maps a spine-session id to its human task title from the spine
+  // store instead of just deleting it (ExampleCo wave 3a, 2026-07-12, D1+D7).
+  return scrubInternalIdsFromFace(pathless);
 }
 
 // Build the MEMORY.MD CHANGES (24H) markdown section from the snapshot the
@@ -6134,10 +6179,13 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
   }
 
   // Automated regression suite: deliberately NOT run live here (full suite would
-  // slow/hang the 5:30am build). This is an INFORMATIONAL row, not a failing
-  // subsystem: tests run on the desktop and in CI, so the cloud build cannot
-  // evaluate them. The validator's nonGreenSubsystems excludes this row when
-  // its text says it is informational/no-current-proof.
+  // slow/hang the 5:30am build). D9 (ExampleCo wave 3a, 2026-07-12): the row now
+  // reads the last LAND-GATE receipt (data/agent/land-gate-receipt.json,
+  // written by scripts/land.js on every apply-mode gate run and shipped to
+  // /opt by the deploy) so it renders a factual timestamped status instead of
+  // the bare "no current runtime proof" line. With no valid receipt it falls
+  // back to the informational line; either way the row stays informational,
+  // never an Attention/Blockers entry.
   //
   // EXCEPTION (build QC 2026-06-23): when data/agent/tests-blocked.json records
   // real failures, the caller renders honest product-area rows in
@@ -6145,7 +6193,7 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
   // informational "?" row. Recorded failures are real failing product-area
   // subsystems, not "not evaluated".
   if (!opts.skipTestsRow) {
-    rows.push(INFORMATIONAL_TESTS_ROW);
+    rows.push(formatTestsHealthRow(null, { dataDir }));
   }
 
   // The Dev Ops verdict is computed via the shared helper so the row glyph and
@@ -6337,14 +6385,9 @@ function formatSystemHealthSection({
     const detail = m[3].trim();
     // Skip the informational automated-regression row. It is a fact about where
     // tests run, not a failing subsystem, so it must not create a hard-blocker
-    // marker via the Attention block.
-    if (
-      /\b(?:Tests|Automated regression suite)\b/i.test(name) &&
-      /not evaluated on the cloud build|run on the desktop|desktop and in CI|no current runtime proof|informational/i.test(
-        detail,
-      )
-    )
-      continue;
+    // marker via the Attention block. ONE shared predicate with the validator
+    // and non-green parser (D9, wave 3a 2026-07-12).
+    if (isInformationalTestsRowText(line)) continue;
     attention.push({ glyph: m[1], name, status: detail });
   }
   if (attention.length) {
@@ -8606,6 +8649,9 @@ function buildCloudMorningBriefing({
   const businessLines = businessPulse.lines;
   const projectBacklogLines = extractProjectBacklog(
     readJson(path.join(dataDir, 'agent', 'feature-backlog.json'), null),
+    // D8 output contract: the research receipt distinguishes "no proposals this
+    // run" (honest, clean) from a broken population probe (defect).
+    { receipt: readFreshestBacklogReceipt({ dataDir }) },
   );
   const contentPipelineLines = summarizeContentPipeline(
     readJson(path.join(dataDir, 'youtube', 'queue.json'), null),
@@ -9678,6 +9724,16 @@ function parseArgs(argv) {
 async function main() {
   const opts = parseArgs(process.argv);
   const result = await runCloudBriefing(opts);
+  // PER-CARD COMPLETION LINE (ExampleCo wave 3a, 2026-07-12): the completion log
+  // enumerates per-card outcomes from the canonical artifact instead of a
+  // scalar verdict ("published-blocked"). Printed on BOTH exit paths so the
+  // morning log always ExampleCos per-card state.
+  const artifact =
+    (result.receipt && result.receipt.dashboardQcArtifact) ||
+    (readLiveBoardArtifact({ dataDir: opts.dataDir || DEFAULT_DATA_DIR }) || {}).artifact ||
+    null;
+  const completion = perCardCompletionSummary(artifact);
+  console.log(`[cloud-briefing] completion: ${completion.line}`);
   if (!result.ok) {
     console.error('[cloud-briefing] QC failed:', result.qc.failures.join('; '));
     process.exit(1);

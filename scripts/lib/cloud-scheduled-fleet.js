@@ -38,6 +38,21 @@ const DEFAULT_CLOUD_SCHEDULED_SKILLS = Object.freeze([
     script: 'scripts/comm-coaching-card.js',
     args: ['--date', '$DATE'],
   },
+  // Shorts proposals reinstated as their OWN job (ExampleCo wave 3a, 2026-07-12).
+  // They previously rode the video-quality loops; retiring those (ExampleCo's D2
+  // decision covered only the research/tools loops) silently took the daily
+  // 10-proposal producer with them. The producer rides subscription LLM rungs
+  // only (claude CLI, codex fallback -- no charged spend) and writes
+  // data/agent/shorts-proposals/<date>.json, the artifact the TODAY'S 10
+  // SHORTS PROPOSALS card reads (10-item card contract unchanged).
+  {
+    skill: 'morning-shorts-proposals',
+    cadence: 'daily',
+    preBriefingRequired: true,
+    script: 'scripts/morning-shorts-proposals.js',
+    args: ['--date', '$DATE'],
+    timeoutMs: 18 * 60 * 1000,
+  },
   {
     skill: 'amy-research-skill',
     cadence: 'daily',
@@ -193,7 +208,12 @@ function defaultRunSkill(
     const result = spawnSync(process.execPath, [scriptPath, ...args], {
       cwd: REPO,
       encoding: 'utf8',
-      timeout: Number(process.env.AMY_CLOUD_DIRECT_TASK_TIMEOUT_MS || 10 * 60 * 1000),
+      // Per-task timeoutMs beats the fleet default: the shorts producer's X
+      // scrape + subscription LLM judging legitimately needs more than 10 min
+      // (its source contract already budgets 18).
+      timeout:
+        Number(task.timeoutMs) ||
+        Number(process.env.AMY_CLOUD_DIRECT_TASK_TIMEOUT_MS || 10 * 60 * 1000),
       env: {
         ...process.env,
         SECONDBRAIN_DATA_DIR: dataDir,

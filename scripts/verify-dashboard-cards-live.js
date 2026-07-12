@@ -242,20 +242,14 @@ function mergeScopedArtifact(existing, scopedArtifact, scopeCardIds) {
   const keptDefects = Array.isArray(base.defects)
     ? base.defects.filter((defect) => {
         const lower = String(defect || '').toLowerCase();
-        if (
-          replaceBlockersAccounting &&
-          /^BLOCKERS-(?:COUNT|FLOOR):/i.test(String(defect || ''))
-        ) {
+        if (replaceBlockersAccounting && /^BLOCKERS-(?:COUNT|FLOOR):/i.test(String(defect || ''))) {
           return false;
         }
         if (replaceBlockersOnly && /^BLOCKERS-/i.test(String(defect || ''))) return false;
         return !scopedNeedles.some((id) => lower.includes(id));
       })
     : [];
-  const defects = [...keptDefects, ...((scopedArtifact.defects || []).slice(0, 200))].slice(
-    0,
-    200,
-  );
+  const defects = [...keptDefects, ...(scopedArtifact.defects || []).slice(0, 200)].slice(0, 200);
   const defectiveCardCount = cards.filter((card) => card && card.status !== 'clean').length;
   return {
     ...base,
@@ -377,17 +371,16 @@ function parseTiles(html) {
 }
 
 function extractLiveBoardBadgeText(html) {
-  return [...String(html || '').matchAll(/<div\s+class="tile-defect-badge"[^>]*>([\s\S]*?)<\/div>/gi)]
+  return [
+    ...String(html || '').matchAll(/<div\s+class="tile-defect-badge"[^>]*>([\s\S]*?)<\/div>/gi),
+  ]
     .map((match) => strip(match[1]))
     .filter(Boolean)
     .join(' ');
 }
 
 function stripLiveBoardBadges(html) {
-  return String(html || '').replace(
-    /<div\s+class="tile-defect-badge"[^>]*>[\s\S]*?<\/div>/gi,
-    ' ',
-  );
+  return String(html || '').replace(/<div\s+class="tile-defect-badge"[^>]*>[\s\S]*?<\/div>/gi, ' ');
 }
 
 function extractFace(inner) {
@@ -498,8 +491,12 @@ const FACE_DENYLIST = [
     re: /\b(?=[0-9a-f]{0,17}[a-f])[0-9a-f]{8}-[0-9a-f]{4}-/i,
     label: 'internal id (UUID)',
   },
-  { re: /\bspine-session-/i, label: 'internal id ("spine-session-")' },
-  { re: /\bdispatch-\d+\b/i, label: 'internal id ("dispatch-N")' },
+  // The labels deliberately avoid quoting the raw matchable token: a defect
+  // message that ExampleCos the literal token would itself trip this detector on
+  // the next pass once the Blockers card quotes it (the 2026-07-12
+  // "spine-session-" self-reinforcing loop, wave 3a D1).
+  { re: /\bspine-session-/i, label: 'internal id (spine session id)' },
+  { re: /\bdispatch-\d+\b/i, label: 'internal id (dispatch ledger id)' },
 ];
 
 // Scan a string against FACE_DENYLIST, returning [{ label, match }] for each
@@ -528,12 +525,26 @@ const PATH_LEAK_RES = FACE_DENYLIST.filter((e) => PATH_LEAK_LABELS.has(e.label))
   (e) => new RegExp(e.re.source, e.re.flags.includes('g') ? e.re.flags : e.re.flags + 'g'),
 );
 
+// Internal-id denylist entries get the same treatment (wave 3a D1, 2026-07-12):
+// quoting a matched "spine-session-..." / UUID / dispatch id verbatim in a
+// defect message made the Blockers card re-trip the internal-id detector on
+// every later pass. Redact the match to "<internal-id>" at defect-creation.
+const INTERNAL_ID_LEAK_RES = FACE_DENYLIST.filter((e) => /^internal id/i.test(e.label)).map(
+  (e) => new RegExp(e.re.source, e.re.flags.includes('g') ? e.re.flags : e.re.flags + 'g'),
+);
+
 // Replace every raw filesystem path in an evidence snippet with a redacted
 // "<path>" token so the snippet cannot itself trip the path-leak detector on a
 // later scan. Idempotent and deterministic; non-path text is untouched.
+// Internal-id matches redact to "<internal-id>" for the same reason: an
+// evidence snippet must never be able to re-trip its own detector.
 function redactPathsInEvidence(snippet) {
   let out = String(snippet || '');
   for (const re of PATH_LEAK_RES) out = out.replace(re, '<path>');
+  for (const re of INTERNAL_ID_LEAK_RES) out = out.replace(re, '<internal-id>');
+  // The prefix-shaped internal-id matchers leave the id tail behind; consume it
+  // so the redacted token reads clean ("<internal-id>" not "<internal-id>4f2a").
+  out = out.replace(/<internal-id>[0-9a-z-]+/gi, '<internal-id>');
   return out;
 }
 
@@ -643,8 +654,8 @@ function newsDetailLooksLikeArticleOpening(block) {
   const firstNorm = normalizedNewsOpeningText(paras[0] || '');
   return Boolean(
     titleNorm.length >= 36 &&
-      firstNorm.startsWith(titleNorm) &&
-      firstNorm.length > titleNorm.length + 35,
+    firstNorm.startsWith(titleNorm) &&
+    firstNorm.length > titleNorm.length + 35,
   );
 }
 
@@ -1313,7 +1324,11 @@ function awsCostsIsCleanThresholdAlert(card, tile) {
   const projBody = body.match(/Projected monthly \(from 72h avg\):\s*\$([\d,]+(?:\.\d+)?)/i);
   const projected =
     projTitle || projBody ? parseFloat((projTitle || projBody)[1].replace(/,/g, '')) : NaN;
-  const alarmBasis = Number.isFinite(current) ? current : Number.isFinite(projected) ? projected : total;
+  const alarmBasis = Number.isFinite(current)
+    ? current
+    : Number.isFinite(projected)
+      ? projected
+      : total;
   if (!Number.isFinite(alarmBasis) || alarmBasis <= AWS_COST_RED_THRESHOLD_FLOOR) return false;
   return true;
 }
@@ -1378,7 +1393,10 @@ function ownerlessRepairLanguageDefects(card, tile) {
   // coaching or call quote can honestly contain "Nothing" without making its
   // green content card ownerless. Only the two summary/proof surfaces own
   // unresolved-repair language.
-  if (!tile || !['blockers', 'system_health'].includes(String(card && card.id || '').toLowerCase())) {
+  if (
+    !tile ||
+    !['blockers', 'system_health'].includes(String((card && card.id) || '').toLowerCase())
+  ) {
     return [];
   }
   const text = `${tile.body || ''} ${tile.inner || ''}`;
@@ -1500,7 +1518,11 @@ function otterCallHistoryContentDefects(card, tile) {
       `OTTER-CALL-SUMMARY: ${card.id} (${tile.name}) renders generic fallback prose instead of what happened, decisions made, and ExampleCo next actions`,
     );
   }
-  if (/Summary unavailable:\s*the processed transcript did not yield a coherent exec summary/i.test(text)) {
+  if (
+    /Summary unavailable:\s*the processed transcript did not yield a coherent exec summary/i.test(
+      text,
+    )
+  ) {
     defects.push(
       `OTTER-CALL-SUMMARY-MISSING: ${card.id} (${tile.name}) has a failed executive summary; missing call summaries are blockers, not clean content`,
     );
@@ -1683,14 +1705,29 @@ function summaryNamesPersonAsParticipant(summary, rx) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   if (new RegExp(`${escaped}\\s*(?:'s|’s)`, 'i').test(context)) return false;
   if (/\bmentioned the other day\b/i.test(context)) return false;
-  if (/\b(?:resource|resources|input|caveat|question|feedback|note|thread)s?\b/i.test(context) && !/\bwith\b/i.test(context)) {
+  if (
+    /\b(?:resource|resources|input|caveat|question|feedback|note|thread)s?\b/i.test(context) &&
+    !/\bwith\b/i.test(context)
+  ) {
     return false;
   }
   const participantPatterns = [
-    new RegExp(`\\b(?:spoke|met|aligned|reviewed|discussed|worked|walked through|clarified|confirmed|decided|agreed)\\b[^.!?]{0,90}\\bwith\\s+${escaped}\\b`, 'i'),
-    new RegExp(`\\bwith\\s+${escaped}\\b[^.!?]{0,90}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed|walked through)\\b`, 'i'),
-    new RegExp(`\\b${escaped}\\b[^.!?]{0,80}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed|joined|asked|said|flagged)\\b`, 'i'),
-    new RegExp(`\\bExampleCo\\s*,[^.!?]{0,120}\\b${escaped}\\b[^.!?]{0,120}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed)\\b`, 'i'),
+    new RegExp(
+      `\\b(?:spoke|met|aligned|reviewed|discussed|worked|walked through|clarified|confirmed|decided|agreed)\\b[^.!?]{0,90}\\bwith\\s+${escaped}\\b`,
+      'i',
+    ),
+    new RegExp(
+      `\\bwith\\s+${escaped}\\b[^.!?]{0,90}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed|walked through)\\b`,
+      'i',
+    ),
+    new RegExp(
+      `\\b${escaped}\\b[^.!?]{0,80}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed|joined|asked|said|flagged)\\b`,
+      'i',
+    ),
+    new RegExp(
+      `\\bExampleCo\\s*,[^.!?]{0,120}\\b${escaped}\\b[^.!?]{0,120}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed)\\b`,
+      'i',
+    ),
   ];
   return participantPatterns.some((pattern) => pattern.test(context));
 }
@@ -1700,7 +1737,8 @@ function otterSpeakerMismatchDefects(card, tile) {
   const rows = callHistoryRows(tile);
   if (!rows.length) return [];
   const ExampleCoMissing = rows.filter(
-    (row) => summaryNamesPersonAsParticipant(row.summary, /\bExampleCo\b/i) && !/\bExampleCo\b/i.test(row.speakers),
+    (row) =>
+      summaryNamesPersonAsParticipant(row.summary, /\bExampleCo\b/i) && !/\bExampleCo\b/i.test(row.speakers),
   );
   const expectedPeople = [
     ['Ed', /\bEd(?:\s+Evans)?\b/i],
@@ -2396,7 +2434,9 @@ function blockersUnderReportDefects(tiles) {
   const blockersTile = tiles.find((t) => /^BLOCKERS\b/i.test(t.name));
   if (!blockersTile) return [];
   const systemHealthTile = tiles.find((t) => /^SYSTEM HEALTH\b/i.test(t.name));
-  const systemHealthText = systemHealthTile ? `${systemHealthTile.body || ''} ${systemHealthTile.inner || ''}` : '';
+  const systemHealthText = systemHealthTile
+    ? `${systemHealthTile.body || ''} ${systemHealthTile.inner || ''}`
+    : '';
 
   const body = String(blockersTile.body || '');
   // The Blockers card "names" blockers when it lists rows; treat it as empty for

@@ -29,6 +29,7 @@ const path = require('path');
 const fs = require('fs');
 
 const landGate = require('./lib/land-gate.js');
+const { buildLandGateReceipt, writeLandGateReceipt } = require('./lib/land-gate-receipt.js');
 
 const REMOTE = 'origin';
 const TARGET = 'master';
@@ -181,11 +182,11 @@ function changedFiles() {
     .filter(Boolean);
 }
 
-// Run the scoped tests. Returns true on green, false on red.
+// Run the scoped tests. Returns { green, ranCount }.
 function runScopedTests(scope) {
   if (scope.length === 0) {
     log('no scoped tests resolved; running core guards only is already in scope, continuing.');
-    return true;
+    return { green: true, ranCount: 0 };
   }
   log('running scoped tests:');
   for (const f of scope) log('  -', f);
@@ -200,7 +201,7 @@ function runScopedTests(scope) {
   const existing = scope.filter((f) => fs.existsSync(path.join(root, f)));
   if (existing.length === 0) {
     log('none of the scoped test files exist on disk; nothing to run, treating as green.');
-    return true;
+    return { green: true, ranCount: 0 };
   }
 
   const nodeModuleDirs = dependencyNodeModules(root);
@@ -226,9 +227,9 @@ function runScopedTests(scope) {
     log(`scoped tests exceeded ${testTimeout}ms wall-clock and were killed.`);
     log('likely shared-.git contention (concurrent sessions), not necessarily a red test.');
     log('retry land shortly; raise SB_LAND_TEST_TIMEOUT_MS if this scope is legitimately slow.');
-    return false;
+    return { green: false, ranCount: existing.length };
   }
-  return res.status === 0;
+  return { green: res.status === 0, ranCount: existing.length };
 }
 
 function pushFastForward(branch) {
@@ -269,16 +270,44 @@ function main() {
   for (const f of files) log('  *', f);
 
   const scope = landGate.affectedTestScope(files);
-  const green = runScopedTests(scope);
+  const scopedRun = runScopedTests(scope);
 
-  if (!green) {
+  // D9 land-gate receipt (ExampleCo wave 3a, 2026-07-12): publish the scoped-test
+  // result as a small durable receipt on EVERY apply-mode gate run, green or
+  // red. The System Health "Automated regression suite" row reads the freshest
+  // copy (scripts/lib/system-health-tests-row.js) and deploy-ec2-server.sh
+  // ships it to the cloud. The receipt lands in the SHARED main checkout's
+  // data/agent (worktrees are ephemeral) plus SECONDBRAIN_DATA_DIR when set.
+  // Dry runs do not write: they prove nothing about a land.
+  const receiptTargets = {
+    repoRoot: process.env.SB_MAIN_CHECKOUT || commonMainRoot(root) || root,
+    dataDir: process.env.SECONDBRAIN_DATA_DIR || '',
+  };
+  const writeReceipt = (status, landed) => {
+    if (!APPLY) return;
+    writeLandGateReceipt(
+      buildLandGateReceipt({
+        status,
+        branch,
+        commit: gitSafe(['rev-parse', 'HEAD']),
+        changedFileCount: files.length,
+        scopedTestFileCount: scopedRun.ranCount,
+        landed,
+      }),
+      receiptTargets,
+    );
+  };
+
+  if (!scopedRun.green) {
     // Never push on red, and never even take the lock -- a red change has no
     // business serializing everyone behind it.
+    writeReceipt('red', false);
     log('SCOPED TESTS RED. Not landing. Fix the change and re-run.');
     process.exitCode = 1;
     return;
   }
   log('scoped tests GREEN.');
+  writeReceipt('green', false);
 
   // Serialize the actual master push. Acquire the cross-session merge lock so
   // two landers never push master at the same instant.
@@ -293,6 +322,7 @@ function main() {
 
   try {
     pushFastForward(branch);
+    writeReceipt('green', APPLY);
   } finally {
     landGate.releaseLandLock(dir, lock.token);
     log('land lock released.');

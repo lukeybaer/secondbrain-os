@@ -126,6 +126,13 @@ Skill-Task 'SecondBrain-AmyResearchSkill'     'amy-research-skill'              
 # further work, superseded by the QC-fix mission. See
 # scheduled-tasks/video-quality-research/SKILL.md and
 # scheduled-tasks/video-quality-tools/SKILL.md.
+#
+# SHORTS PROPOSALS survive that retirement (ExampleCo wave 3a, 2026-07-12): the
+# daily 10-proposal producer (scripts/morning-shorts-proposals.js) previously
+# rode the video loops and went dark as collateral. It is now its OWN daily
+# job in the CLOUD scheduled fleet (scripts/lib/cloud-scheduled-fleet.js,
+# skill 'morning-shorts-proposals'), which runs pre-briefing on EC2, so it is
+# deliberately NOT re-registered as a Windows task here.
 
 # ── Pre-briefing diagnostic + health heal ─────────────────────────────────────
 # These stay in their late slots: they read the night's accumulated state and

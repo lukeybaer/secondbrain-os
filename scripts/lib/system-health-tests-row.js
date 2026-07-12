@@ -1,8 +1,26 @@
 const fs = require('fs');
 const path = require('path');
 
+const { readFreshestLandGateReceipt, isLandGateReceiptFresh } = require('./land-gate-receipt.js');
+
 const INFORMATIONAL_TESTS_ROW =
   '? Automated regression suite: run on the desktop and in CI; no current runtime proof was found for this build.';
+
+// ONE predicate for "this Automated regression suite / Tests row is an
+// informational fact, not a failing subsystem". The generator's Attention
+// block, the markdown validator, and the non-green parser all consume this so
+// a row rename can never desynchronize them again (the 2026-07-12 D9 defect:
+// the validator's local carve-out still required the literal word "Tests" and
+// hard-failed the renamed row).
+function isInformationalTestsRowText(line) {
+  const s = String(line || '');
+  return (
+    /\b(?:Tests|Automated regression suite)\b/i.test(s) &&
+    /(not evaluated on the cloud build|run on the desktop and in ci|desktop and in CI|not (?:run|evaluated|measured) (?:live |on )|informational, not a failure|no current runtime proof|land gate)/i.test(
+      s,
+    )
+  );
+}
 
 const TEST_CATEGORY_LABELS = Object.freeze({
   briefing: 'Briefing render + sections',
@@ -35,7 +53,10 @@ const TEST_CATEGORY_RULES = [
   ['vapi', /\bvapi\b|caller-id|voice call|phone assistant|twilio/i],
   ['ingest', /\bingest\b|otter|gmail|linkedin|archive|scanner|scan/i],
   ['studio', /\bstudio\b|obs|camera|recording|ExampleCo/i],
-  ['devops', /devops|deploy|release|git hygiene|sync-build|pii-screen|public-sync|shared checkout/i],
+  [
+    'devops',
+    /devops|deploy|release|git hygiene|sync-build|pii-screen|public-sync|shared checkout/i,
+  ],
 ];
 
 function firstErrorLine(item) {
@@ -163,17 +184,47 @@ function summarizeFailingTests(tests) {
   const buckets = summarizeTestsByCategory(tests);
   const failed =
     buckets.reduce((sum, bucket) => sum + bucket.count, 0) || Number((tests && tests.failed) || 0);
-  const names = buckets.flatMap((bucket) =>
-    bucket.names.map((name) => `${bucket.label}: ${name}`),
-  );
+  const names = buckets.flatMap((bucket) => bucket.names.map((name) => `${bucket.label}: ${name}`));
   const shown = names.slice(0, 3);
   const more = Math.max(0, names.length - shown.length);
   const list = shown.length ? `: ${shown.join('; ')}${more ? `; +${more} more` : ''}` : '';
   return `${failed} failing test${failed === 1 ? '' : 's'}${list}.`;
 }
 
-function formatTestsHealthRows(tests) {
-  if (!tests || typeof tests !== 'object') return [INFORMATIONAL_TESTS_ROW];
+// D9 (ExampleCo wave 3a, 2026-07-12): when there is no fresh desktop/CI test-run
+// artifact, the row reads the LAST LAND-GATE RECEIPT as its runtime proof.
+// The land gate runs the scoped suite green on every land (scripts/land.js
+// writes data/agent/land-gate-receipt.json; the deploy ships it to /opt), so
+// this is a factual, timestamped status instead of the bare "no current
+// runtime proof" line. A red land-gate receipt is still informational -- a
+// rejected session branch never landed, so master is unchanged -- and a stale
+// receipt is shown as dated context, never as a live green claim.
+function formatLandGateTestsRow(receipt, now = Date.now()) {
+  if (!receipt) return null;
+  const ranAt = String(receipt.ranAt || '');
+  const commit = String(receipt.commit || '').slice(0, 8);
+  const files = Number(receipt.scopedTestFileCount) || 0;
+  const scopeText = files
+    ? `${files} scoped test file${files === 1 ? '' : 's'}`
+    : 'core guards only';
+  if (receipt.status === 'green' && isLandGateReceiptFresh(receipt, now)) {
+    return `✓ Automated regression suite: land gate green at ${ranAt}: ${scopeText} passed on ${receipt.branch || 'a session branch'}${commit ? ` (commit ${commit})` : ''}; full suite runs on the desktop and in CI.`;
+  }
+  if (receipt.status === 'red' && isLandGateReceiptFresh(receipt, now)) {
+    return `? Automated regression suite: last land gate ran RED at ${ranAt} on ${receipt.branch || 'a session branch'} and did not land, so master is unchanged; full suite runs on the desktop and in CI.`;
+  }
+  return `? Automated regression suite: last land gate ${receipt.status} at ${ranAt} (older than the freshness window); no current runtime proof for this build. Full suite runs on the desktop and in CI.`;
+}
+
+function formatTestsHealthRows(tests, opts = {}) {
+  if (!tests || typeof tests !== 'object') {
+    const receipt =
+      opts.landReceipt !== undefined
+        ? opts.landReceipt
+        : readFreshestLandGateReceipt({ dataDir: opts.dataDir, repoRoot: opts.repoRoot });
+    const landRow = formatLandGateTestsRow(receipt, opts.now || Date.now());
+    return [landRow || INFORMATIONAL_TESTS_ROW];
+  }
   const failed = Number(tests.failed || 0);
   if (failed > 0) {
     return summarizeTestsByCategory(tests).map((bucket) => {
@@ -188,8 +239,8 @@ function formatTestsHealthRows(tests) {
   ];
 }
 
-function formatTestsHealthRow(tests) {
-  return formatTestsHealthRows(tests)[0];
+function formatTestsHealthRow(tests, opts = {}) {
+  return formatTestsHealthRows(tests, opts)[0];
 }
 
 module.exports = {
@@ -198,8 +249,10 @@ module.exports = {
   artifactTimeMs,
   categoryLabelForKey,
   firstErrorLine,
+  formatLandGateTestsRow,
   formatTestsHealthRow,
   formatTestsHealthRows,
+  isInformationalTestsRowText,
   parseJsonFileMaybe,
   readFreshestTestsBlocked,
   summarizeFailingTests,

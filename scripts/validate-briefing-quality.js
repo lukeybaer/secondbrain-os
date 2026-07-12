@@ -7,7 +7,23 @@ const path = require('path');
 const { findSelfNarration, isRealExampleCoAction } = require('./lib/briefing-clean-contract.js');
 const { resolveDataPath } = require('./lib/resolve-data-path.js');
 const { isHeadlineOnlyExampleCoraphs } = require('./lib/news-summarize.js');
-const { TEST_CATEGORY_LABELS } = require('./lib/system-health-tests-row.js');
+const {
+  TEST_CATEGORY_LABELS,
+  isInformationalTestsRowText,
+} = require('./lib/system-health-tests-row.js');
+const {
+  readFreshestBacklogReceipt,
+  isBacklogReceiptFresh,
+} = require('./lib/backlog-run-receipt.js');
+// FEATURE BACKLOG output-contract shapes (wave 3a D8). Kept as named
+// constants and exported so the contract test locks the exact category.
+const FEATURE_SCORED_ASK_RE = new RegExp('^' + String.raw`\s+\d+\.\s+\[\d+\]\s+`, 'm');
+const FEATURE_NO_PROPOSALS_MARKER_RE = new RegExp(
+  String.raw`No scored proposals this run \(research receipt [0-9-]+\)`,
+  'i',
+)
+const FEATURE_ALL_APPROVED_RE = /already approved or shipped; nothing is awaiting a new decision/i;
+
 // ONE shared parser for the non-green SYSTEM HEALTH roster so the dashboard
 // count and validator dedupe checks can never count a different set.
 const { nonGreenSubsystems, presentSubsystems } = require('./lib/system-health-nongreen.js');
@@ -294,13 +310,13 @@ function isNonBlockingFileChurnLine(line) {
   return /\bFileChurn\b/i.test(text) && /watch alert,\s*not a failure/i.test(text);
 }
 
+// D9 (wave 3a, 2026-07-12): the local carve-out still required the literal
+// word "Tests" after the row was renamed to "Automated regression suite", so
+// the informational row hard-failed the validator ("missing a factual Status:
+// line"). The carve-out is now the ONE shared predicate the generator and the
+// non-green parser also use, so a rename can never desynchronize them again.
 function isInformationalNotEvaluatedRow(line) {
-  return (
-    /\bTests\b/i.test(line) &&
-    /(not evaluated on the cloud build|run on the desktop and in ci|not (?:run|evaluated|measured) (?:live |on )|informational, not a failure)/i.test(
-      line,
-    )
-  );
+  return isInformationalTestsRowText(line);
 }
 
 // nonGreenSubsystems is the shared parser (./lib/system-health-nongreen.js),
@@ -604,7 +620,7 @@ function checkTestsTruth(markdown, testsBlocked, opts = {}) {
   // defect, when the Tests row is rendered as informational/not-evaluated. Real
   // test FAILURES (failedCount > 0) are still enforced below.
   const testsInformational =
-    /(Tests|Automated regression suite)[^\n]*(not evaluated|run on the desktop|desktop, not|informational|no current runtime proof)/i.test(
+    /(Tests|Automated regression suite)[^\n]*(not evaluated|run on the desktop|desktop, not|informational|no current runtime proof|land gate)/i.test(
       healthBody,
     );
   if (failedCount === 0 && stale && testsInformational) return fails;
@@ -1220,8 +1236,30 @@ if (
     fail('FEATURE BACKLOG weak-suggestions quality gate is not surfaced in top blockers');
   }
 }
-if (!/^\s+\d+\.\s+\[\d+\]\s+/m.test(featureBody)) {
-  fail('FEATURE BACKLOG has no current scored approval asks');
+// D8 output contract (ExampleCo wave 3a, 2026-07-12): the research loop must emit
+// scored asks OR an explicit receipt-backed no-proposals marker. The card is
+// clean in either state; QC fails ONLY on a contract violation -- a body with
+// neither scored "N. [score]" rows nor the explicit no-proposals line, or one
+// carrying the all-approved/shipped clean note.
+const hasScoredAsks = FEATURE_SCORED_ASK_RE.test(featureBody);
+const hasRunMarker = FEATURE_NO_PROPOSALS_MARKER_RE.test(featureBody);
+const hasAllApprovedNote = FEATURE_ALL_APPROVED_RE.test(featureBody);
+if (!hasScoredAsks && !hasRunMarker && !hasAllApprovedNote) {
+  fail(
+    'FEATURE BACKLOG violates the research output contract: no scored approval asks and no explicit no-proposals receipt marker',
+  );
+}
+// A rendered no-proposals marker must be backed by a REAL, fresh, valid
+// receipt on disk (Codex review, wave 3a): a fabricated or spliced marker
+// line must not satisfy the contract, and a stale receipt cannot vouch for
+// today's empty card.
+if (hasRunMarker && !hasScoredAsks) {
+  const backlogReceipt = readFreshestBacklogReceipt({ dataDir: DATA_DIR, repoRoot: REPO });
+  if (!backlogReceipt || !backlogReceipt.noProposals || !isBacklogReceiptFresh(backlogReceipt)) {
+    fail(
+      'FEATURE BACKLOG shows a no-proposals marker without a fresh backing research receipt (backlog-research-receipt.json); the marker must come from the loop, never from copy',
+    );
+  }
 }
 
 const contentPipelineBody = sectionBody('CONTENT PIPELINE');

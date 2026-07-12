@@ -375,6 +375,37 @@ function cardDefectBadge(liveBoardEnvelope, sectionTitle) {
   };
 }
 
+// PER-CARD COMPLETION SUMMARY (ExampleCo wave 3a, 2026-07-12). The morning runner's
+// completion line must enumerate per-card outcomes ("published X/Y cards;
+// held: [ids]") instead of a scalar verdict like "published-blocked". Every
+// card is always published (publish-then-label); "held" means a card's own
+// gate labeled it defect/blocked on its tile. Pure over the canonical
+// artifact; consumed by cloud-morning-briefing.js main() and
+// scripts/briefing-completion-line.js (the shell runner's reader).
+function perCardCompletionSummary(artifact, nowMs = Date.now()) {
+  const cards = artifact && Array.isArray(artifact.cards) ? artifact.cards : null;
+  if (!cards || !cards.length) {
+    return {
+      published: 0,
+      total: 0,
+      held: [],
+      line: 'per-card state unavailable: no live dashboard QC artifact for this run.',
+    };
+  }
+  const held = cards
+    .filter((c) => c && c.status && c.status !== 'clean')
+    .map((c) => String(c.id || c.title || 'ExampleCo'));
+  const total = cards.length;
+  const clean = total - held.length;
+  const staleNote = isStale(artifact, nowMs)
+    ? ' (artifact stale; last live QC is older than one briefing cycle)'
+    : '';
+  const line = held.length
+    ? `published ${clean}/${total} cards clean; held by their own gates: [${held.join(', ')}]${staleNote}`
+    : `published ${total}/${total} cards clean; held: none${staleNote}`;
+  return { published: clean, total, held, line };
+}
+
 module.exports = {
   ARTIFACT_REL_PATH,
   STALE_AFTER_MS,
@@ -392,4 +423,5 @@ module.exports = {
   blockersTileHeadlineCount,
   blockerIssueSummary,
   blockerMatchesSystemHealthIssue,
+  perCardCompletionSummary,
 };

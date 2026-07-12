@@ -266,6 +266,20 @@ else
   echo "[deploy] WARNING: no data/agent/devops-health-latest.json snapshot to ship; EC2 Dev Ops health will red-line snapshot proof."
 fi
 
+# D9 land-gate receipt (wave 3a, 2026-07-12): the System Health "Automated
+# regression suite" row reads the last land-gate scoped-test result as its
+# runtime proof. scripts/land.js writes the receipt on every apply-mode land;
+# ship the desktop copy so the cloud row renders the same factual timestamped
+# status instead of "no current runtime proof".
+if [ -f "$ROOT/data/agent/land-gate-receipt.json" ]; then
+  echo "[deploy] pushing latest land-gate receipt"
+  scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/data/agent/land-gate-receipt.json" "$HOST:/tmp/land-gate-receipt.json"
+  ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+    "sudo mkdir -p /opt/secondbrain/data/agent && sudo cp /tmp/land-gate-receipt.json /opt/secondbrain/data/agent/land-gate-receipt.json && sudo chown ec2-user:ec2-user /opt/secondbrain/data/agent/land-gate-receipt.json && rm -f /tmp/land-gate-receipt.json"
+else
+  echo "[deploy] NOTE: no data/agent/land-gate-receipt.json to ship yet; the Automated regression suite row will stay informational until the first receipted land."
+fi
+
 # Require-resolution gate (2026-07-06): BEFORE pm2 restart, statically walk the
 # relative-require closure of the just-deployed server.js on EC2 and abort if
 # anything is missing. `node -c` only syntax-checks; it never resolves

@@ -7,6 +7,12 @@
 // validator makes sure Blockers does not duplicate them. Defining the parser once
 // here keeps the two from drifting.
 
+// D9 (wave 3a, 2026-07-12): the informational tests-row carve-out is also ONE
+// shared predicate now (scripts/lib/system-health-tests-row.js), so a row
+// rename or new receipt-backed wording can never desynchronize the parsers
+// from the generator again.
+const { isInformationalTestsRowText } = require('./system-health-tests-row.js');
+
 // Parse the SYSTEM HEALTH section for every non-green subsystem row.
 // A non-green row starts with the cross/X glyph or a question glyph, then the
 // subsystem name. Returns the de-duped list of bare subsystem names.
@@ -24,11 +30,7 @@ function nonGreenSubsystems(systemHealthBody) {
   // mirrors the FileChurn watch-only carve-out above. Category, not literal
   // trigger: any subsystem row that states on its own line that it is not
   // evaluated/measured on this build is informational. ExampleCo 2026-06-20 #gap.
-  const isInformationalNotEvaluatedRow = (line) =>
-    /\b(Tests|Automated regression suite)\b/i.test(line) &&
-    /(not evaluated on the cloud build|run on the desktop and in ci|no current runtime proof|not (?:run|evaluated|measured) (?:live |on )|informational, not a failure)/i.test(
-      line,
-    );
+  const isInformationalNotEvaluatedRow = (line) => isInformationalTestsRowText(line);
   for (const line of lines) {
     // The "Probe detail (proof of health)" funnel is a DRILL-DOWN, not the
     // subsystem roster. Its lines (e.g. "<glyph> Otter speaker enrichment
@@ -69,11 +71,7 @@ function presentSubsystems(systemHealthBody) {
   const out = [];
   const text = String(systemHealthBody || '');
   const lines = text.split(/\r?\n/);
-  const isInformationalNotEvaluatedRow = (line) =>
-    /\b(Tests|Automated regression suite)\b/i.test(line) &&
-    /(not evaluated on the cloud build|run on the desktop and in ci|no current runtime proof|not (?:run|evaluated|measured) (?:live |on )|informational, not a failure)/i.test(
-      line,
-    );
+  const isInformationalNotEvaluatedRow = (line) => isInformationalTestsRowText(line);
   for (const line of lines) {
     if (/^\s*Probe detail \(proof of health\)\s*$/.test(line)) break;
     // Any glyph (green checkmark, cross, question) then the subsystem name, in

@@ -429,6 +429,18 @@ function isHeadlineOnlyExampleCoraphs(paras) {
 }
 
 const FETCH_TIMEOUT_MS = 12000;
+// HARD wall-clock budget for one fetch INCLUDING redirects (ExampleCo wave 3a,
+// 2026-07-12). The 5:30 cloud run hung 26 minutes on two dead HTTPS
+// connections: the socket-idle `timeout` option fired and req.destroy() ran,
+// but destroy-without-error emits no 'error' event once a response stream has
+// started, so the fetch promise never settled and Promise chains upstream
+// hung the whole generator. Every fetch in this file now (1) ExampleCos a hard
+// deadline timer that destroys the request AND settles the promise, (2)
+// settles on 'timeout' directly instead of trusting destroy() to error, and
+// (3) settles on req 'close' / res 'aborted' as the always-settle backstop.
+// A never-responding or died-mid-request host can therefore delay one item by
+// at most this budget, never stall the pipeline.
+const HARD_FETCH_BUDGET_MS = Number(process.env.BRIEFING_FETCH_TIMEOUT_MS) || 20000;
 const MAX_REDIRECTS = 4;
 const MIN_BODY_CHARS = 400; // below this, treat as "no real body" (RSS-only)
 const MIN_EXCERPT_CHARS = 200; // a substantial RSS excerpt we can still summarize
@@ -460,19 +472,57 @@ function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Arm the always-settle guards on a client request: a hard wall-clock timer
+// (destroys the request and settles), settle-on-socket-idle-timeout, settle on
+// 'error', and settle on 'close' as the final backstop. Returns the timer so
+// callers can clear it inside finish(). finish must be idempotent.
+function armAlwaysSettleGuards(req, finish, { remainingMs, url }) {
+  const hardTimer = setTimeout(
+    () => {
+      try {
+        req.destroy(new Error(`hard fetch timeout after ${remainingMs}ms: ${url}`));
+      } catch {
+        /* already destroyed */
+      }
+      finish('');
+    },
+    Math.max(1, remainingMs),
+  );
+  if (hardTimer.unref) hardTimer.unref();
+  req.on('timeout', () => {
+    try {
+      req.destroy(new Error(`socket idle timeout: ${url}`));
+    } catch {
+      /* already destroyed */
+    }
+    finish('');
+  });
+  req.on('error', () => finish(''));
+  req.on('close', () => finish(''));
+  return hardTimer;
+}
+
 // Compact, self-contained article fetch (returns plain text, '' on any failure).
+// opts.deadline ExampleCos ONE wall clock across the whole redirect chain so a
+// looping or slow chain can never outlive the hard budget.
 function fetchArticleText(
   url,
-  { timeoutMs = FETCH_TIMEOUT_MS } = {},
+  { timeoutMs = FETCH_TIMEOUT_MS, deadline } = {},
   redirectsLeft = MAX_REDIRECTS,
 ) {
   return new Promise((resolve) => {
     if (!url || !/^https?:\/\//i.test(url)) return resolve('');
+    const hardDeadline =
+      deadline != null ? deadline : Date.now() + Math.max(timeoutMs, HARD_FETCH_BUDGET_MS);
+    const remainingMs = hardDeadline - Date.now();
+    if (remainingMs <= 0) return resolve('');
     const lib = url.startsWith('https:') ? https : http;
     let done = false;
+    let hardTimer = null;
     const finish = (v) => {
       if (!done) {
         done = true;
+        if (hardTimer) clearTimeout(hardTimer);
         resolve(v);
       }
     };
@@ -486,7 +536,9 @@ function fetchArticleText(
           if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
             res.resume();
             const next = new URL(res.headers.location, url).toString();
-            return finish(fetchArticleText(next, { timeoutMs }, redirectsLeft - 1));
+            return finish(
+              fetchArticleText(next, { timeoutMs, deadline: hardDeadline }, redirectsLeft - 1),
+            );
           }
           if (status !== 200) {
             res.resume();
@@ -499,10 +551,11 @@ function fetchArticleText(
             if (html.length > 3_000_000) req.destroy();
           });
           res.on('end', () => finish(stripHtmlToText(html)));
+          res.on('aborted', () => finish(''));
+          res.on('error', () => finish(''));
         },
       );
-      req.on('timeout', () => req.destroy());
-      req.on('error', () => finish(''));
+      hardTimer = armAlwaysSettleGuards(req, finish, { remainingMs, url });
     } catch {
       finish('');
     }
@@ -521,14 +574,24 @@ function isGoogleNewsArticleUrl(url) {
 // Raw HTTP GET that returns the body string ('' on any failure). Follows
 // redirects. Unlike fetchArticleText this does NOT strip HTML -- the resolver
 // needs the raw interstitial markup to read the signing params out of it.
-function httpGetRaw(url, { timeoutMs = RESOLVE_TIMEOUT_MS } = {}, redirectsLeft = MAX_REDIRECTS) {
+function httpGetRaw(
+  url,
+  { timeoutMs = RESOLVE_TIMEOUT_MS, deadline } = {},
+  redirectsLeft = MAX_REDIRECTS,
+) {
   return new Promise((resolve) => {
     if (!url || !/^https?:\/\//i.test(url)) return resolve('');
+    const hardDeadline =
+      deadline != null ? deadline : Date.now() + Math.max(timeoutMs, HARD_FETCH_BUDGET_MS);
+    const remainingMs = hardDeadline - Date.now();
+    if (remainingMs <= 0) return resolve('');
     const lib = url.startsWith('https:') ? https : http;
     let done = false;
+    let hardTimer = null;
     const finish = (v) => {
       if (!done) {
         done = true;
+        if (hardTimer) clearTimeout(hardTimer);
         resolve(v);
       }
     };
@@ -552,7 +615,9 @@ function httpGetRaw(url, { timeoutMs = RESOLVE_TIMEOUT_MS } = {}, redirectsLeft 
             }
             // A Google-News stub 302s to ITSELF; do not chase the self-loop.
             if (next === url) return finish('');
-            return finish(httpGetRaw(next, { timeoutMs }, redirectsLeft - 1));
+            return finish(
+              httpGetRaw(next, { timeoutMs, deadline: hardDeadline }, redirectsLeft - 1),
+            );
           }
           if (status !== 200) {
             res.resume();
@@ -565,10 +630,11 @@ function httpGetRaw(url, { timeoutMs = RESOLVE_TIMEOUT_MS } = {}, redirectsLeft 
             if (body.length > 3_000_000) req.destroy();
           });
           res.on('end', () => finish(body));
+          res.on('aborted', () => finish(''));
+          res.on('error', () => finish(''));
         },
       );
-      req.on('timeout', () => req.destroy());
-      req.on('error', () => finish(''));
+      hardTimer = armAlwaysSettleGuards(req, finish, { remainingMs, url });
     } catch {
       finish('');
     }
@@ -576,14 +642,20 @@ function httpGetRaw(url, { timeoutMs = RESOLVE_TIMEOUT_MS } = {}, redirectsLeft 
 }
 
 // Raw HTTP POST (form-encoded) that returns the body string ('' on any failure).
-function httpPostForm(url, formBody, { timeoutMs = RESOLVE_TIMEOUT_MS } = {}) {
+// opts.deadline lets a caller share ONE wall clock across a GET+POST pair.
+function httpPostForm(url, formBody, { timeoutMs = RESOLVE_TIMEOUT_MS, deadline } = {}) {
   return new Promise((resolve) => {
     if (!url || !/^https?:\/\//i.test(url)) return resolve('');
+    const remainingMs =
+      deadline != null ? deadline - Date.now() : Math.max(timeoutMs, HARD_FETCH_BUDGET_MS);
+    if (remainingMs <= 0) return resolve('');
     const lib = url.startsWith('https:') ? https : http;
     let done = false;
+    let hardTimer = null;
     const finish = (v) => {
       if (!done) {
         done = true;
+        if (hardTimer) clearTimeout(hardTimer);
         resolve(v);
       }
     };
@@ -615,10 +687,11 @@ function httpPostForm(url, formBody, { timeoutMs = RESOLVE_TIMEOUT_MS } = {}) {
             if (body.length > 3_000_000) req.destroy();
           });
           res.on('end', () => finish(body));
+          res.on('aborted', () => finish(''));
+          res.on('error', () => finish(''));
         },
       );
-      req.on('timeout', () => req.destroy());
-      req.on('error', () => finish(''));
+      hardTimer = armAlwaysSettleGuards(req, finish, { remainingMs, url });
       req.write(formBody);
       req.end();
     } catch {
@@ -698,7 +771,12 @@ async function resolveGoogleNewsUrl(
   try {
     const articleId = String(url).split('/articles/')[1].split('?')[0].split('/')[0];
     if (!articleId) return null;
-    const html = await httpGet(url, { timeoutMs });
+    // ONE wall clock for the whole resolution (Codex review, wave 3a): the
+    // interstitial GET and the batchexecute POST share a single hard deadline
+    // so a slow GET cannot hand the POST a fresh full budget and double the
+    // worst-case stall for one resolution.
+    const deadline = Date.now() + Math.max(timeoutMs, HARD_FETCH_BUDGET_MS);
+    const html = await httpGet(url, { timeoutMs, deadline });
     if (!html) return null;
     const sig = (html.match(/data-n-a-sg="([^"]+)"/) || [])[1];
     const ts = (html.match(/data-n-a-ts="([^"]+)"/) || [])[1];
@@ -706,7 +784,7 @@ async function resolveGoogleNewsUrl(
     const resp = await httpPost(
       'https://news.google.com/_/DotsSplashUi/data/batchexecute',
       buildGarturlBody(articleId, ts, sig),
-      { timeoutMs },
+      { timeoutMs, deadline },
     );
     const real = parseGarturlResponse(resp);
     if (real && /^https?:\/\//i.test(real) && !/news\.google\.com/i.test(real)) return real;
@@ -1796,7 +1874,9 @@ function buildExtractiveExampleCoraph(seed, candidates, used) {
 function buildExtractiveSummary(item, sourceText) {
   const candidates = extractiveSummaryCandidates(sourceText).slice(0, 18);
   if (candidates.length < 3) return null;
-  const openingSafe = candidates.filter((candidate) => !(candidate.index === 0 && candidates.length > 4));
+  const openingSafe = candidates.filter(
+    (candidate) => !(candidate.index === 0 && candidates.length > 4),
+  );
   const pool = openingSafe.length >= 3 ? openingSafe : candidates;
   const thirds = [
     pool.filter((candidate) => candidate.index <= Math.max(2, Math.floor(candidates.length / 3))),
@@ -2039,6 +2119,9 @@ async function summarizeNewsItems(
 
 module.exports = {
   fetchArticleText,
+  httpGetRaw,
+  httpPostForm,
+  HARD_FETCH_BUDGET_MS,
   stripHtmlToText,
   stripPublisherChrome,
   NEWS_PUBLISHER_CHROME_LABELS,

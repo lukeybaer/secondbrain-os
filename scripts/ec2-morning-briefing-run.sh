@@ -209,15 +209,22 @@ mkdir -p "$LOG_DIR"
 flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" "${CMD[@]}"
 status=$?
 
+# PER-CARD COMPLETION (ExampleCo wave 3a, 2026-07-12): the completion line
+# enumerates per-card outcomes from the canonical live-board artifact instead
+# of a scalar verdict ("published-blocked"). Every card is published; "held"
+# means a card's own gate labeled it defect/blocked on its tile.
+COMPLETION="$(/usr/bin/node "$ROOT/scripts/briefing-completion-line.js" --data-dir "$DATA_DIR" 2>/dev/null || true)"
+[ -n "$COMPLETION" ] || COMPLETION="per-card state unavailable: completion reader failed; see $LOG_DIR"
+
 if [ "$status" = "0" ]; then
-  echo "[morning-briefing-run] $(date -u +%FT%TZ) done (exit 0, published)."
+  echo "[morning-briefing-run] $(date -u +%FT%TZ) done (exit 0): $COMPLETION"
 elif [ "$status" = "1" ]; then
   # flock returns 1 when the lock is held -> a prior run is still going. Benign.
   echo "[morning-briefing-run] $(date -u +%FT%TZ) skipped: a briefing run is already going (lock held) OR the briefing reported a fatal; see the run log."
 else
-  # Non-zero from cloud-morning-briefing is typically a blocked publish (published
-  # anyway, labeled). The dashboard still gets a fresh dated briefing.
-  echo "[morning-briefing-run] $(date -u +%FT%TZ) finished with exit $status (likely published-blocked; see $LOG_DIR)."
+  # Non-zero from cloud-morning-briefing means one or more cards were held by
+  # their own gates (still published, labeled). Enumerate them.
+  echo "[morning-briefing-run] $(date -u +%FT%TZ) finished with exit $status: $COMPLETION (see $LOG_DIR)"
 fi
 
 # RUNG 2 (Wave 4): agentic healer, strictly after the briefing flock released.

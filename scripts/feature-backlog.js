@@ -38,6 +38,7 @@ const path = require('path');
 const REPO = process.env.SECONDBRAIN_ROOT || path.join(__dirname, '..');
 const BACKLOG_PATH = path.join(REPO, 'data', 'agent', 'feature-backlog.json');
 const ARCHIVE_PATH = path.join(REPO, 'data', 'agent', 'feature-backlog-archive.jsonl');
+const { deriveBacklogReceipt, writeBacklogReceipt } = require('./lib/backlog-run-receipt.js');
 
 const PAIN_SEVERITY = {
   rejection: 20,
@@ -103,6 +104,16 @@ function saveBacklog(backlog) {
   }
   fs.mkdirSync(path.dirname(BACKLOG_PATH), { recursive: true });
   fs.writeFileSync(BACKLOG_PATH, JSON.stringify(backlog, null, 2) + '\n');
+  // Output contract (ExampleCo wave 3a, 2026-07-12, D8): every backlog save also
+  // writes the research receipt next to it -- scored asks OR an explicit
+  // no-proposals marker. The FEATURE BACKLOG card and its QC read this receipt
+  // so "loop produced nothing" is always distinguishable from "nothing to
+  // propose". Never allowed to fail the save itself.
+  try {
+    writeBacklogReceipt(path.dirname(BACKLOG_PATH), deriveBacklogReceipt(backlog));
+  } catch (e) {
+    console.warn(`[feature-backlog] receipt write failed: ${(e && e.message) || e}`);
+  }
 }
 
 function clampScore(score) {
@@ -121,7 +132,7 @@ function daysSince(dateStr) {
 }
 
 function addPainEvent(backlog, featureId, { source, detail, severity }) {
-  const feature = backlog.features.find(f => f.id === featureId);
+  const feature = backlog.features.find((f) => f.id === featureId);
   if (!feature) return false;
   const delta = PAIN_SEVERITY[severity] || PAIN_SEVERITY.bug_fix_commit;
   const today = todayStamp();
@@ -136,17 +147,24 @@ function addPainEvent(backlog, featureId, { source, detail, severity }) {
 }
 
 function addResearchConfirmation(backlog, featureId, { repo, finding, relevance }) {
-  const feature = backlog.features.find(f => f.id === featureId);
+  const feature = backlog.features.find((f) => f.id === featureId);
   if (!feature) return false;
   const baseDelta = RESEARCH_RELEVANCE[relevance] || RESEARCH_RELEVANCE.medium;
   const today = todayStamp();
   feature.research_confirmations = feature.research_confirmations || [];
 
-  const priorRepos = new Set(feature.research_confirmations.map(r => (r.repo || '').toLowerCase()));
+  const priorRepos = new Set(
+    feature.research_confirmations.map((r) => (r.repo || '').toLowerCase()),
+  );
   const isNewSource = repo && !priorRepos.has(repo.toLowerCase());
   const breadthBonus = isNewSource ? Math.round(baseDelta * 0.5) : 0;
 
-  feature.research_confirmations.push({ date: today, repo, finding, relevance: relevance || 'medium' });
+  feature.research_confirmations.push({
+    date: today,
+    repo,
+    finding,
+    relevance: relevance || 'medium',
+  });
 
   feature.score_history = feature.score_history || [];
   feature.score_history.push({
@@ -245,7 +263,9 @@ function validateProposal(feature) {
   if (!problem) {
     failures.push('problem_statement is missing');
   } else if (problem.length < MIN_PROBLEM_STATEMENT_CHARS) {
-    failures.push(`problem_statement too short (${problem.length} chars, need >=${MIN_PROBLEM_STATEMENT_CHARS})`);
+    failures.push(
+      `problem_statement too short (${problem.length} chars, need >=${MIN_PROBLEM_STATEMENT_CHARS})`,
+    );
   }
 
   const evidence = Array.isArray(f.evidence) ? f.evidence : [];
@@ -257,7 +277,9 @@ function validateProposal(feature) {
   if (!plan) {
     failures.push('implementation_plan is missing');
   } else if (!FILE_PATH_REGEX.test(plan)) {
-    failures.push('implementation_plan names no concrete file path (expect a *.js/*.ts/*.py/*.json/*.md path)');
+    failures.push(
+      'implementation_plan names no concrete file path (expect a *.js/*.ts/*.py/*.json/*.md path)',
+    );
   }
 
   const fluffText = `${f.title || ''} ${f.description || ''}`.toLowerCase();
@@ -306,10 +328,27 @@ function passesQualityGate(feature) {
   return { ok: reasons.length === 0, reasons };
 }
 
-function createFeature(backlog, { id, title, description, category, initialScore, strategicImpact, summaryOneSentence, detailTwoExampleCoraph, problemStatement, evidence, implementationPlan }) {
+function createFeature(
+  backlog,
+  {
+    id,
+    title,
+    description,
+    category,
+    initialScore,
+    strategicImpact,
+    summaryOneSentence,
+    detailTwoExampleCoraph,
+    problemStatement,
+    evidence,
+    implementationPlan,
+  },
+) {
   const today = todayStamp();
   const signalSeed = clampScore(initialScore != null ? initialScore : 10);
-  const strategic = clampScore(strategicImpact != null ? strategicImpact : Math.max(20, signalSeed + 10));
+  const strategic = clampScore(
+    strategicImpact != null ? strategicImpact : Math.max(20, signalSeed + 10),
+  );
   const feature = {
     id,
     title,
@@ -323,7 +362,12 @@ function createFeature(backlog, { id, title, description, category, initialScore
     evidence: Array.isArray(evidence) ? evidence : [],
     implementation_plan: implementationPlan || '',
     score_history: [
-      { date: today, delta: strategic, reason: 'initial: strategic impact set from architectural reasoning', dim: 'strategic' },
+      {
+        date: today,
+        delta: strategic,
+        reason: 'initial: strategic impact set from architectural reasoning',
+        dim: 'strategic',
+      },
       { date: today, delta: signalSeed, reason: 'initial: seed signal', dim: 'signal' },
     ],
     pain_events: [],
@@ -362,10 +406,17 @@ function archiveItem(feature, reason) {
 function loadArchive() {
   try {
     if (!fs.existsSync(ARCHIVE_PATH)) return [];
-    return fs.readFileSync(ARCHIVE_PATH, 'utf8')
+    return fs
+      .readFileSync(ARCHIVE_PATH, 'utf8')
       .split('\n')
       .filter(Boolean)
-      .map(l => { try { return JSON.parse(l); } catch { return null; } })
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return null;
+        }
+      })
       .filter(Boolean);
   } catch {
     return [];
@@ -373,7 +424,7 @@ function loadArchive() {
 }
 
 function rePromoteIfMatched(backlog, featureId) {
-  if (backlog.features.find(f => f.id === featureId)) return null;
+  if (backlog.features.find((f) => f.id === featureId)) return null;
   const archive = loadArchive();
   for (let i = archive.length - 1; i >= 0; i--) {
     const e = archive[i];
@@ -399,8 +450,12 @@ function rankAndTrim(backlog) {
   for (const f of backlog.features) f.priority_score = computePriority(f);
 
   const removed = [];
-  backlog.features = backlog.features.filter(f => {
-    const hasMerit = f.pinned || f.strategic_impact > 0 || (f.research_confirmations || []).length > 0 || (f.pain_events || []).length > 0;
+  backlog.features = backlog.features.filter((f) => {
+    const hasMerit =
+      f.pinned ||
+      f.strategic_impact > 0 ||
+      (f.research_confirmations || []).length > 0 ||
+      (f.pain_events || []).length > 0;
     if (!hasMerit && f.priority_score <= 0) {
       removed.push({ feature: f, reason: 'no merit, no signal' });
       return false;
@@ -413,8 +468,8 @@ function rankAndTrim(backlog) {
   if (backlog.features.length > MAX_ITEMS) {
     const top = backlog.features.slice(0, MAX_ITEMS);
     const overflow = backlog.features.slice(MAX_ITEMS);
-    const pinnedOverflow = overflow.filter(f => f.pinned);
-    for (const f of overflow.filter(f => !f.pinned)) {
+    const pinnedOverflow = overflow.filter((f) => f.pinned);
+    for (const f of overflow.filter((f) => !f.pinned)) {
       removed.push({ feature: f, reason: `below MAX_ITEMS=${MAX_ITEMS} rank cutoff` });
     }
     backlog.features = [...top, ...pinnedOverflow];
@@ -425,19 +480,28 @@ function rankAndTrim(backlog) {
 
 function getBacklogForBriefing(backlog) {
   if (!backlog.features.length) {
-    return { items: [], weakItems: [], weakCount: 0, count: 0, summary: 'Feature backlog is empty.' };
+    return {
+      items: [],
+      weakItems: [],
+      weakCount: 0,
+      count: 0,
+      summary: 'Feature backlog is empty.',
+    };
   }
   const toRow = (f, i) => {
-    const latest = f.score_history && f.score_history.length
-      ? f.score_history[f.score_history.length - 1]
-      : null;
+    const latest =
+      f.score_history && f.score_history.length
+        ? f.score_history[f.score_history.length - 1]
+        : null;
     return {
       rank: i + 1,
       score: f.priority_score,
       strategic_impact: f.strategic_impact,
       signal_score: f.signal_score,
       title: f.title,
-      latestSignal: latest ? `${latest.delta > 0 ? '+' : ''}${latest.delta} ${latest.reason}` : 'none',
+      latestSignal: latest
+        ? `${latest.delta > 0 ? '+' : ''}${latest.delta} ${latest.reason}`
+        : 'none',
       category: f.category,
     };
   };
@@ -463,7 +527,8 @@ function getBacklogForBriefing(backlog) {
   let summary;
   if (items.length) {
     summary = `${items.length} ready item(s), top: ${items[0].title} (${items[0].score})`;
-    if (weakItems.length) summary += `; ${weakItems.length} weak suggestion(s) hidden until they have a concrete problem, evidence, and an implementation plan`;
+    if (weakItems.length)
+      summary += `; ${weakItems.length} weak suggestion(s) hidden until they have a concrete problem, evidence, and an implementation plan`;
   } else {
     summary = weakItems.length
       ? `0 ready items; ${weakItems.length} weak suggestion(s) need a concrete problem, evidence, and an implementation plan before they surface`
@@ -481,10 +546,10 @@ function getBacklogForBriefing(backlog) {
 }
 
 function findFeatureByKeywords(backlog, keywords) {
-  const kw = keywords.map(k => k.toLowerCase());
-  return backlog.features.find(f => {
+  const kw = keywords.map((k) => k.toLowerCase());
+  return backlog.features.find((f) => {
     const text = `${f.id} ${f.title} ${f.description} ${f.category}`.toLowerCase();
-    return kw.some(k => text.includes(k));
+    return kw.some((k) => text.includes(k));
   });
 }
 
