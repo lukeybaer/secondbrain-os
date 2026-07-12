@@ -118,6 +118,51 @@ if [ "${NODE_ENV:-}" = "test" ] || [ "${VITEST:-}" = "true" ] || [ "${BRIEFING_D
   TEST_MODE=1
 fi
 
+# W5 Stage 2 parity snapshot: right after the cloud build, copy the published
+# markdown to a CLOUD-PROVENANCE snapshot the desktop parity runner
+# (scripts/briefing-parity-run.js) compares against. The live
+# briefing-<date>.md is written by BOTH the desktop publish (scp) and this
+# build, so it cannot prove which generator produced it; this snapshot is
+# taken only by THIS runner, only after ITS build, so a morning where the EC2
+# build failed has no snapshot and the parity ledger records an honest skip
+# instead of a false PARITY day. Best-effort: never fails the briefing.
+RUN_START_EPOCH="$(date +%s)"
+snapshot_parity_artifact() {
+  build_exit="$1"
+  src="$DATA_DIR/briefings/briefing-$DATE.md"
+  dir="$DATA_DIR/briefings/parity"
+  if [ "$TEST_MODE" = "1" ]; then
+    echo "[morning-briefing-run] DRY-RUN: would snapshot parity artifact $src -> $dir/cloud-briefing-$DATE.md"
+    return 0
+  fi
+  if [ ! -f "$src" ]; then
+    echo "[morning-briefing-run] parity-snapshot: no $src to snapshot (build exit $build_exit); skipped."
+    return 0
+  fi
+  # Codex 2026-07-12 finding 4 (adopted): only snapshot a file THIS run wrote.
+  # The desktop publish scp's onto the same path, so an mtime older than this
+  # run's start means the on-disk copy is not provably cloud-built (e.g. the
+  # controller final pass had nothing to splice). Also require the briefing
+  # date inside the file so a mislabeled artifact cannot masquerade.
+  src_mtime="$(stat -c %Y "$src" 2>/dev/null || echo 0)"
+  if [ "$src_mtime" -lt "$RUN_START_EPOCH" ]; then
+    echo "[morning-briefing-run] parity-snapshot: $src predates this run (mtime $src_mtime < start $RUN_START_EPOCH); provenance unproven, skipped."
+    return 0
+  fi
+  if ! grep -q "$DATE" "$src" 2>/dev/null; then
+    echo "[morning-briefing-run] parity-snapshot: $src does not carry date $DATE; skipped."
+    return 0
+  fi
+  mkdir -p "$dir" 2>/dev/null || true
+  if cp "$src" "$dir/cloud-briefing-$DATE.md" 2>/dev/null; then
+    printf '{"ts":"%s","date":"%s","generator":"ec2-morning-briefing-run","buildExit":%s}\n' \
+      "$(date -u +%FT%TZ)" "$DATE" "${build_exit:-0}" > "$dir/cloud-briefing-$DATE.provenance.json" 2>/dev/null || true
+    echo "[morning-briefing-run] parity-snapshot: wrote $dir/cloud-briefing-$DATE.md"
+  else
+    echo "[morning-briefing-run] parity-snapshot: copy failed (non-fatal)."
+  fi
+}
+
 if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # No legacy mechanical pass under card-controller authority. It has a
   # different fan-out model and would become a competing writer again.
@@ -128,6 +173,7 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
     else
       echo "[morning-briefing-run] DRY-RUN (card-controller authority): agentic-healer rung 2 would run after the controller pass: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
     fi
+    snapshot_parity_artifact 0
     exit 0
   fi
   cd "$CONTROLLER_ROOT" || { echo "[morning-briefing-run] cannot cd to deployed controller runtime $CONTROLLER_ROOT" >&2; exit 1; }
@@ -153,6 +199,10 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
     healer_status=$?
     echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: finished with exit $healer_status (receipt: $DATA_DIR/agent/overnight-agentic-healer-runs.jsonl)."
   fi
+  # W5 parity snapshot AFTER the healer: the healer may have repaired cards
+  # and republished the markdown, so the snapshot captures the finished
+  # cloud-built board.
+  snapshot_parity_artifact "$status"
   exit 0
 fi
 
@@ -198,6 +248,7 @@ if [ "$TEST_MODE" = "1" ]; then
   else
     echo "[morning-briefing-run] DRY-RUN (test mode): agentic-healer rung 2 would run after the briefing: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
   fi
+  snapshot_parity_artifact 0
   exit 0
 fi
 
@@ -236,5 +287,14 @@ else
   BRIEFING_DATE="$DATE" SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" SECONDBRAIN_ROOT="$ROOT" "${HEALER_CMD[@]}"
   healer_status=$?
   echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: finished with exit $healer_status (receipt: $DATA_DIR/agent/overnight-agentic-healer-runs.jsonl)."
+fi
+# W5 parity snapshot AFTER the build. Exit 1 (lock held / fatal) does NOT
+# snapshot: the dated artifact on disk might be the desktop-published copy,
+# and a false cloud-provenance snapshot would fake a PARITY day. The in-flight
+# run that holds the lock takes its own snapshot when it finishes.
+if [ "$status" != "1" ]; then
+  snapshot_parity_artifact "$status"
+else
+  echo "[morning-briefing-run] parity-snapshot: skipped (exit 1: lock held or fatal; provenance unproven)."
 fi
 exit 0
