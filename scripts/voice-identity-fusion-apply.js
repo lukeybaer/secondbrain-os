@@ -20,12 +20,14 @@
 const fs = require('fs');
 const path = require('path');
 const { fuseTrack } = require('./lib/voice-identity-fusion');
+const { logisticProbability } = require('./lib/voice-score-normalization');
 
 const REPO = path.resolve(__dirname, '..');
 const DATA_ROOT = path.resolve(process.env.SECONDBRAIN_DATA_DIR || path.join(REPO, 'data'));
 const ENRICHED_DIR = path.join(DATA_ROOT, 'otter', 'enriched');
 const VP_DIR = path.join(DATA_ROOT, 'life-archive', 'voiceprints');
 const CONTEXT_PRIORS = path.join(VP_DIR, 'context-priors-latest.json');
+const SCORE_CALIBRATION = path.join(VP_DIR, 'score-calibration-latest.json');
 const OUT_PATH = process.env.OTTER_IDENTITY_FUSION_PATH || path.join(VP_DIR, 'identity-fusion-latest.json');
 
 const OPS = {
@@ -69,6 +71,16 @@ function priorsByTrack(artifact) {
 
 function fuseAll({ otids = new Set() } = {}) {
   const priors = priorsByTrack(readJson(CONTEXT_PRIORS, { rows: [] }));
+  // Sequencing fallback (2026-07-12): tracks resolved BEFORE the calibrator
+  // artifact existed carry a raw match score but no per-track calibration.
+  // Derive their probability from the trained global model rather than
+  // degrading every matched track to context-only. No calibrator = no
+  // fabricated probabilities (old behavior stands).
+  const calibration = readJson(SCORE_CALIBRATION, null);
+  const calibratorModel =
+    calibration?.status === 'ok' && calibration.models?.global?.trained
+      ? calibration.models.global
+      : null;
   const decisions = [];
   const tierCounts = { auto: 0, review: 0, ExampleCo: 0 };
   if (!fs.existsSync(ENRICHED_DIR)) {
@@ -91,7 +103,11 @@ function fuseAll({ otids = new Set() } = {}) {
         display_name: track.resolved_person || match.display_name || null,
         score: match.score ?? null,
         margin: match.margin ?? null,
-        probability: track.calibration?.probability ?? null,
+        probability:
+          track.calibration?.probability ??
+          (calibratorModel && match.score != null
+            ? logisticProbability(calibratorModel, Number(match.score))
+            : null),
       };
       const key = `${otid}|${label}`;
       const result = fuseTrack({
