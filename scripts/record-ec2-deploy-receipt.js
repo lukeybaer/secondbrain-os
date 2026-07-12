@@ -22,10 +22,15 @@ const {
   buildReceipt,
   appendReceipt,
   relationFromAncestry,
-  RECEIPTS_FILE,
 } = require('./lib/ec2-deploy-receipts.js');
 
-const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
+// The DEPLOYING checkout is this script's own repo root, NEVER the
+// SECONDBRAIN_ROOT env (which points at the shared checkout on this machine;
+// deploys run from isolated worktrees, and hashing a different checkout than
+// the one that shipped produced a false non-master receipt on the first live
+// run, 2026-07-12). Matches deploy-ec2-server.sh's own
+// `git rev-parse --show-toplevel` root resolution.
+const REPO = path.resolve(__dirname, '..');
 
 function git(args) {
   return execFileSync('git', ['-C', REPO, ...args], { encoding: 'utf8', timeout: 15000 }).trim();
@@ -42,7 +47,12 @@ function gitOk(args) {
 
 function main() {
   const fileArgIdx = process.argv.indexOf('--receipts-file');
-  const receiptsFile = fileArgIdx > -1 ? process.argv[fileArgIdx + 1] : RECEIPTS_FILE;
+  // Default ledger lives in the DEPLOYING checkout so deploy-ec2-server.sh
+  // (which resolves the same root) can mirror the exact file just written.
+  const receiptsFile =
+    fileArgIdx > -1
+      ? process.argv[fileArgIdx + 1]
+      : path.join(REPO, 'data', 'agent', 'ec2-deploy-receipts.jsonl');
 
   const repoHead = git(['rev-parse', 'HEAD']);
   const originMasterHead = git(['rev-parse', 'origin/master']);
