@@ -98,18 +98,27 @@ function eligibleRawCounts(root, since, until) {
 }
 
 // Pure parity evaluator (exported for tests). Today's Gmail is still arriving and
-// the S3 mirror runs on a lag, so a parity gap CONFINED to the current CT day is
+// the S3 mirror runs on a lag, so a parity gap CONFINED to the current day is
 // expected, not a coverage defect. Only a gap on a PAST day (or a stale/missing
 // proof, or an unattributed count gap) is red. This stops a handful of same-day
 // in-flight emails (e.g. 3/1353 on today's date) from flipping ALL of Graphiti
 // coverage red every day. Past-day gaps still flag, so real coverage loss is kept.
+//
+// The health probe dates its day buckets in UTC, but this evaluator historically
+// compared against today in CT. During the ~5-6h window after UTC midnight but
+// before CT midnight (i.e. ~7-11:59pm CT), the UTC "today" is one day ahead of
+// the CT "today", so a same-day gap on the new UTC date looked like a past-day
+// gap and flipped coverage red every night. Fix: treat both today-CT AND today-UTC
+// as "still arriving" since either can legitimately be in-flight.
 function evaluateGmailS3Parity(j, todayCt) {
   if (!j) return { green: false, detail: 'missing Gmail S3 parity proof', ageH: null };
   const ageH = Math.round((Date.now() - Date.parse(j.generated_at || 0)) / 3600000);
   const fresh = ageH <= 30;
   const countMatch = (j.gmail_count || 0) === (j.s3_raw_eml_count || 0);
   const missingDays = Array.isArray(j.missing_days) ? j.missing_days.map(String) : [];
-  const onlyTodayMissing = missingDays.length > 0 && missingDays.every((d) => d === todayCt);
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  const todaySet = new Set([todayCt, todayUtc]);
+  const onlyTodayMissing = missingDays.length > 0 && missingDays.every((d) => todaySet.has(d));
   const green = fresh && (countMatch || onlyTodayMissing);
   const shortfall = Math.max(0, (j.gmail_count || 0) - (j.s3_raw_eml_count || 0));
   const detail = !fresh
