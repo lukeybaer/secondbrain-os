@@ -337,6 +337,21 @@ DIFF=$(diff -w "$LF" "$ROOT/data/agent/_ec2-live-after.js" | grep -cE '^[<>]' ||
 rm -f "$LF" "$ROOT/data/agent/_ec2-live-after.js"
 if [ "$DIFF" -eq 0 ]; then
   echo "[deploy] OK: repo and live EC2 server.js are now identical."
+  # W5 Stage 4 single code authority: record the deploy receipt (deploying
+  # HEAD, relation to origin/master, shipped + origin/master content hashes)
+  # and mirror the receipts ledger to the EC2 live data dir so the EC2-side
+  # deploy-parity probe can verify /opt against it independently. A deploy
+  # that cannot be receipted FAILS LOUD: unreceipted releases are exactly the
+  # silent-revert class this kills (feedback_ec2_build_path_silent_revert.md).
+  echo "[deploy] recording deploy receipt"
+  if ! node "$ROOT/scripts/record-ec2-deploy-receipt.js"; then
+    echo "[deploy] RECEIPT FAIL: the deploy landed but could not be receipted. Fix and re-run the deploy so the parity probe has a receipt to verify against." >&2
+    exit 1
+  fi
+  scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/data/agent/ec2-deploy-receipts.jsonl" "$HOST:/tmp/secondbrain-deploy-receipts.jsonl"
+  ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+    'sudo mkdir -p /opt/secondbrain/data/agent && sudo cp /tmp/secondbrain-deploy-receipts.jsonl /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl && sudo chown ec2-user:ec2-user /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl && rm -f /tmp/secondbrain-deploy-receipts.jsonl'
+  echo "[deploy] receipt recorded + mirrored to /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl"
 else
   echo "[deploy] WARNING: $DIFF lines still differ after deploy. Investigate."
   exit 1

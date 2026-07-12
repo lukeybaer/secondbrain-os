@@ -48,7 +48,9 @@ const {
   checkFileParity,
   checkActiveProcessParity,
   buildParityReport,
+  normalizedSha256,
 } = require('./lib/deploy-parity-check.js');
+const { readLatestReceipt, checkReceiptAgainstLive } = require('./lib/ec2-deploy-receipts.js');
 const { readLiveDeps } = require('./lib/live-deps-parser.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -163,6 +165,24 @@ function runChecksOnce({ buildPathRoot, liveRoot, pm2ProcessName }) {
       newestFileMtimeMs,
       newestFile,
       pm2StartMs: pm2ProcessStartMs(pm2ProcessName),
+    }),
+  );
+
+  // W5 Stage 4 deploy-receipt check: the last receipted deploy's content hash
+  // must still match live /opt (receipt-hash-mismatch = something overwrote
+  // prod outside the receipted path), and that deploy must have shipped
+  // origin/master content (non-master-deploy). The receipts ledger is
+  // mirrored by deploy-ec2-server.sh to the live data dir; fall back to the
+  // repo copy so a desktop run of this probe still checks. No receipt yet is
+  // a warning, never drift (Codex 2026-07-12 finding 10).
+  const liveReceipts = path.join(liveRoot, 'data', 'agent', 'ec2-deploy-receipts.jsonl');
+  const repoReceipts = path.join(REPO_ROOT, 'data', 'agent', 'ec2-deploy-receipts.jsonl');
+  const receipt = readLatestReceipt(fs.existsSync(liveReceipts) ? liveReceipts : repoReceipts);
+  const liveServer = safeReadFile(path.join(liveRoot, 'server.js'));
+  checks.push(
+    checkReceiptAgainstLive({
+      receipt,
+      liveServerSha256: liveServer == null ? null : normalizedSha256(liveServer),
     }),
   );
 

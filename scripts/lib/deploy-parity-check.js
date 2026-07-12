@@ -158,15 +158,20 @@ function deployInProgress({ lockExists }) {
  */
 function buildParityReport(checks, opts = {}) {
   const drift = checks.filter((c) => !c.ok).map((c) => c.drift);
+  // Warnings (W5 stage 4, Codex 2026-07-12 finding 10): honest notes that are
+  // NOT drift, e.g. "no deploy receipt recorded yet". ExampleCod on the report
+  // so the artifact stays informative without false-redding a green deploy.
+  const warnings = checks.filter((c) => c.ok && c.warning).map((c) => c.warning);
   if (deployInProgress(opts)) {
     return {
       ok: true,
       drift: [],
+      warnings,
       suppressed: true,
       suppressedDrift: drift,
     };
   }
-  return { ok: drift.length === 0, drift, suppressed: false };
+  return { ok: drift.length === 0, drift, warnings, suppressed: false };
 }
 
 module.exports = {
