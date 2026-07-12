@@ -372,6 +372,10 @@ function snapshotMemory(hours = 24) {
         if (!text) continue;
         if (/^---$/.test(text)) continue;
         if (/^##\s/.test(text)) continue;
+        // Never surface internal IDs (spine-session-, UUIDs, dispatch-N) on the
+        // card FACE -- same gate as the people-files addedSampleFor path and
+        // the QC FACE_DENYLIST in verify-dashboard-cards-live.js.
+        if (isInternalIdOrMetadataLine(text)) continue;
         if (isAdd && addedLines.length < 5) addedLines.push(text);
         if (isDelete && deletedLines.length < 5) deletedLines.push(text);
         if (addedLines.length >= 5 && deletedLines.length >= 5) break;
