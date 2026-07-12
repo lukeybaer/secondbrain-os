@@ -29,10 +29,8 @@ const {
   faceCopyHasInternalIdLeak,
   enforceFaceCopyGate,
 } = require('./lib/executive-surface-policy.js');
-const {
-  formatKingdomEquippingSection,
-  generateKingdomEquippingIdeas,
-} = require('./kingdom-equipping-ideas.js');
+const { generateKingdomEquippingIdeas } = require('./kingdom-equipping-ideas.js');
+const { buildKingdomEquippingCard } = require('./lib/briefing-cards/kingdom-equipping-card.js');
 const { formatUncommittedParkedWorkSection } = require('./lib/git-hygiene-briefing.js');
 const { generateSelfHealHealthCard } = require('./self-heal/self-heal-health-card.js');
 const {
@@ -8930,10 +8928,10 @@ function buildCloudMorningBriefing({
       'CONTENT PIPELINE',
       formatContentPipelineSection(contentPipelineLines),
     ),
-    kingdom_equipping: legacySection(
-      'KINGDOM EQUIPPING IDEAS',
-      formatKingdomEquippingSection(dataDir, date),
-    ),
+    // W6 card 2: rendered through the shared module BOTH generators consume
+    // (scripts/lib/briefing-cards/kingdom-equipping-card.js); idea GENERATION
+    // stays in this build's targeted refresh + the nightly job.
+    kingdom_equipping: buildKingdomEquippingCard(dataDir, date).markdown,
     // COMMUNICATION COACHING reads the dated artifact comm-coaching-card.js writes
     // (data/agent/comm-coaching/<date>.json). Real content ONLY when a valid,
     // same-date, non-blocked 2+2 snapshot exists; otherwise null -> honest blocker
