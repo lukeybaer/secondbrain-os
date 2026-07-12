@@ -112,6 +112,39 @@ function formatWholeNumber(value) {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(n);
 }
 
+function formatMoney(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return '$0';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0,
+  }).format(n);
+}
+
+function parseIsoDay(value) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return null;
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+}
+
+function formatShortDate(dateIso) {
+  const date = parseIsoDay(dateIso);
+  if (!date) return cleanExecutiveFragment(dateIso, { max: 40 }) || 'ExampleCo date';
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    month: 'short',
+    day: 'numeric',
+  }).format(date);
+}
+
+function daysBetween(a, b) {
+  const start = a instanceof Date ? a.getTime() : parseIsoDay(a)?.getTime();
+  const end = b instanceof Date ? b.getTime() : parseIsoDay(b)?.getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.round((end - start) / 86400000);
+}
+
 // The exact "TITLE:\n\nBODY" shape both generators publish per card.
 function legacySection(title, body) {
   return `${String(title || '').trim()}:\n\n${String(body || '').trim()}`;
@@ -126,5 +159,9 @@ module.exports = {
   sourceLabelFromUrl,
   findLatestDatedFile,
   formatWholeNumber,
+  formatMoney,
+  parseIsoDay,
+  formatShortDate,
+  daysBetween,
   legacySection,
 };
