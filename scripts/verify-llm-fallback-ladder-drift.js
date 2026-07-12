@@ -71,6 +71,21 @@ const MUST_CONTAIN = [
   ],
   [
     'scripts/lib/ask-ai.js',
+    "return ['codex', 'claude-cli', 'claude-proxy', 'openai-api']",
+    'W5 stage 3 (2026-07-12): on EC2 the local CLI runs BEFORE the tunnel proxy so the laptop SSH tunnel is not load-bearing there; paid floor still last',
+  ],
+  [
+    'scripts/lib/ask-ai.js',
+    'function isEc2Host',
+    'the EC2 rung order is host-detected (SB_LLM_HOST_PROFILE override, else linux + pushed OAuth token), never hand-copied per call site',
+  ],
+  [
+    'scripts/lib/ask-ai.js',
+    'function resolveRungOrder',
+    'the one place per-call rung overrides meet the host-aware default (Codex 2026-07-12 finding 7)',
+  ],
+  [
+    'scripts/lib/ask-ai.js',
     'function chargedLlmApiGate',
     'charged API answer generation is gated before any paid floor runs',
   ],

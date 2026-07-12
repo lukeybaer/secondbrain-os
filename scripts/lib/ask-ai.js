@@ -4,13 +4,13 @@
 // policy, plan: dev-plans/llm-fallback-ladder-2026-06-11.html, Codex-reviewed;
 // charged-floor policy updated per ExampleCo's 2026-07-11 voice dispatch).
 //
-// Rung order (defaultRungOrder):
-//   1. codex         -- OpenAI subscription (Codex CLI), independent vendor
-//   2. claude-proxy  -- Claude Max via the laptop SSH-tunnel proxy
-//   3. claude-cli    -- Claude Max via the local `claude -p` CLI
-//   4. bedrock       -- AWS Bedrock funded $20/mo lane (only where configured)
-//   5. anthropic-api -- Anthropic API key floor (only if key set)
-//   6. openai-api    -- OpenAI API key floor, standing-authorized charged floor
+// Rung order (defaultRungOrder, host-aware since W5 stage 3 2026-07-12):
+//   desktop: 1. codex  2. claude-proxy  3. claude-cli  4. openai-api
+//   EC2:     1. codex  2. claude-cli    3. claude-proxy 4. openai-api
+//     (on EC2 the local CLI runs on the pushed OAuth token and needs no
+//      tunnel; the laptop SSH-tunnel proxy is NOT load-bearing there)
+//   bedrock / anthropic-api -- documented paid floors, only where configured
+//     (not in the default array; per-call ExampleCo approval required)
 //
 // Hard requirement: no surface dead when the Claude subscription is down.
 // Therefore: every rung failure (null, throw, or sentinel auth-error output)
@@ -634,8 +634,41 @@ function runOpenAiApiRung(question, opts) {
   });
 }
 
-function defaultRungOrder() {
+// W5 Stage 3 tunnel independence (ExampleCo 2026-07-11 R6: "Amy lives in the
+// cloud, the PC is an optional accessory"). On EC2, the claude-proxy rung is
+// the SSH reverse tunnel to the laptop, which flaps with laptop sleep; the
+// local `claude` CLI authenticates with the pushed OAuth token
+// (/home/ec2-user/.claude-oauth-token, reference_ec2_claude_auth.md) and
+// needs no tunnel. Measured live 2026-07-12: EC2 claude-cli answered in 6.0s
+// (small prompt) / 23.7s (62KB prompt), and a dead tunnel descends
+// proxy->cli in 91ms without touching a paid floor. The EC2 default
+// therefore puts the local CLI BEFORE the tunnel proxy, so the tunnel is not
+// load-bearing there; it stays as a later subscription rung (still useful
+// when the pushed token is stale but the tunnel happens to be up).
+// SB_LLM_HOST_PROFILE=ec2|desktop overrides detection explicitly.
+function isEc2Host(env = process.env) {
+  if (env.SB_LLM_HOST_PROFILE === 'ec2') return true;
+  if (env.SB_LLM_HOST_PROFILE === 'desktop') return false;
+  try {
+    return process.platform === 'linux' && fs.existsSync('/home/ec2-user/.claude-oauth-token');
+  } catch {
+    return false;
+  }
+}
+
+function defaultRungOrder(env = process.env) {
+  if (isEc2Host(env)) {
+    // EC2: local CLI before the tunnel proxy (tunnel not load-bearing).
+    return ['codex', 'claude-cli', 'claude-proxy', 'openai-api'];
+  }
   return ['codex', 'claude-proxy', 'claude-cli', 'openai-api'];
+}
+
+// The ONE place an explicit per-call override meets the host-aware default
+// (Codex review 2026-07-12 finding 7: overrides bypassing the host profile
+// must be a deliberate, greppable choice, not an accident of `||`).
+function resolveRungOrder(opts = {}, env = process.env) {
+  return opts.rungOrder || defaultRungOrder(env);
 }
 
 function builtinRungs(opts) {
@@ -645,8 +678,9 @@ function builtinRungs(opts) {
     'claude-cli': { name: 'claude-cli', fn: (q) => runClaudeCliRung(q, opts) },
     'openai-api': { name: 'openai-api', fn: (q) => runOpenAiApiRung(q, opts), paid: true },
   };
-  const order = opts.rungOrder || defaultRungOrder();
-  return order.map((n) => all[n]).filter(Boolean);
+  return resolveRungOrder(opts)
+    .map((n) => all[n])
+    .filter(Boolean);
 }
 
 // ---- the ladder -------------------------------------------------------------
@@ -770,6 +804,8 @@ module.exports = {
   askAI,
   BrainUnreachable,
   defaultRungOrder,
+  isEc2Host,
+  resolveRungOrder,
   budgetWarning,
   chargedLlmApiGate,
   ctDateString,
