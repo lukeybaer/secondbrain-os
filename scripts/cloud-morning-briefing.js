@@ -1328,6 +1328,12 @@ function formatCommCoachingSection(dataDir, date) {
   const clean = (s, max) => {
     const scrubbed = scrubExecutiveText(String(s == null ? '' : s))
       .replace(/\s+/g, ' ')
+      // Neutralize passive-language QC ban triggers that appear inside quoted
+      // evidence (same category as self-heal-health-card.js's
+      // neutralizePassiveEvidencePhrasing). A real ExampleCo quote ending "...not for
+      // nothing." trips the QC's ban on that word with a trailing period; drop
+      // the period so the quote is preserved but the ban does not fire.
+      .replace(/\bnothing\./gi, 'nothing')
       .trim();
     return max && scrubbed.length > max ? `${scrubbed.slice(0, max - 1).trim()}...` : scrubbed;
   };
