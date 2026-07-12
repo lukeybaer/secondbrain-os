@@ -42,6 +42,11 @@ LIVE_DEPS=(
   "scripts/ec2-card-controller-run.sh"
   "scripts/ec2-morning-briefing-run.sh"
   "scripts/install-ec2-card-controller-cron.sh"
+  # Wave 4 rung 2: the agentic overnight healer. The morning runner (deployed
+  # above) invokes the wrapper, which invokes the driver; ship both so the /opt
+  # copy never drifts behind a land (feedback_ec2_build_path_silent_revert).
+  "scripts/overnight-agentic-healer.sh"
+  "scripts/agentic-healer-driver.js"
   "scripts/otter-call-speaker-rosters.js"
   "scripts/otter-call-completeness-report.js"
   "scripts/otter-text-audio-coverage-report.js"

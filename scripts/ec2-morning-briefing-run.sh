@@ -98,6 +98,21 @@ CONTROLLER_CMD=("$NODE_BIN" scripts/card-controller.js --mode overnight --date "
 # runner calls it opportunistically and tolerates its absence (see header).
 MECH_CMD=("$NODE_BIN" scripts/overnight-self-heal-orchestrator.js --mechanical-only)
 
+# RUNG 2 (Wave 4): the AGENTIC OVERNIGHT HEALER. After the mechanical pass
+# (rung 1) and the briefing build+publish have finished, this spawns one full
+# agentic dev session (claude primary, codex fallback per the ladder) against
+# the FRESH dashboard-qc-result.json defect list the publish just wrote, with
+# the standing mission to fix remaining defects like an interactive session
+# ExampleCo dispatched: root-cause, code fix in an isolated worktree, tests, land
+# via land.js --apply, deploy via deploy-ec2-server.sh when EC2-affecting,
+# verify per-card on the live board. It runs strictly AFTER the briefing flock
+# above is released (the driver additionally PROBES the briefing lock and
+# refuses to race an active generation), it is best-effort (its exit never
+# fails this runner), and it is skippable via BRIEFING_SKIP_AGENTIC_HEALER=1.
+# Budget (45m hard wall clock), no-repeat-tactics ledger, and the
+# honest-blocked-receipt-on-expiry rail live in scripts/agentic-healer-driver.js.
+HEALER_CMD=(bash scripts/overnight-agentic-healer.sh)
+
 TEST_MODE=0
 if [ "${NODE_ENV:-}" = "test" ] || [ "${VITEST:-}" = "true" ] || [ "${BRIEFING_DRY_RUN:-}" = "1" ]; then
   TEST_MODE=1
@@ -108,6 +123,11 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # different fan-out model and would become a competing writer again.
   if [ "$TEST_MODE" = "1" ]; then
     echo "[morning-briefing-run] DRY-RUN (card-controller authority): would run: (cd $CONTROLLER_ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR ${CONTROLLER_CMD[*]})"
+    if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
+      echo "[morning-briefing-run] agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
+    else
+      echo "[morning-briefing-run] DRY-RUN (card-controller authority): agentic-healer rung 2 would run after the controller pass: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
+    fi
     exit 0
   fi
   cd "$CONTROLLER_ROOT" || { echo "[morning-briefing-run] cannot cd to deployed controller runtime $CONTROLLER_ROOT" >&2; exit 1; }
@@ -119,6 +139,19 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
     echo "[morning-briefing-run] $(date -u +%FT%TZ) card-controller final pass completed."
   else
     echo "[morning-briefing-run] $(date -u +%FT%TZ) card-controller final pass exit=$status; briefing remains honestly labeled until its scoped repairs pass."
+  fi
+  # RUNG 2 (Wave 4) runs on the controller-authority path too (Codex review
+  # 2026-07-12: without this the healer was silently bypassed the moment the
+  # authority marker flips to 1). The healer executes against the git build
+  # path ($ROOT), never the /opt file-copy runtime, and its exit never fails
+  # this runner.
+  if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
+  else
+    cd "$ROOT" || echo "[morning-briefing-run] WARNING: cannot cd to $ROOT for the agentic healer."
+    BRIEFING_DATE="$DATE" SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" SECONDBRAIN_ROOT="$ROOT" "${HEALER_CMD[@]}"
+    healer_status=$?
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: finished with exit $healer_status (receipt: $DATA_DIR/agent/overnight-agentic-healer-runs.jsonl)."
   fi
   exit 0
 fi
@@ -160,6 +193,11 @@ fi
 # TEST GATE: never spawn the real briefing under test / dry-run.
 if [ "$TEST_MODE" = "1" ]; then
   echo "[morning-briefing-run] DRY-RUN (test mode): would run: (cd $ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${CMD[*]})"
+  if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
+    echo "[morning-briefing-run] agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
+  else
+    echo "[morning-briefing-run] DRY-RUN (test mode): agentic-healer rung 2 would run after the briefing: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
+  fi
   exit 0
 fi
 
@@ -180,5 +218,16 @@ else
   # Non-zero from cloud-morning-briefing is typically a blocked publish (published
   # anyway, labeled). The dashboard still gets a fresh dated briefing.
   echo "[morning-briefing-run] $(date -u +%FT%TZ) finished with exit $status (likely published-blocked; see $LOG_DIR)."
+fi
+
+# RUNG 2 (Wave 4): agentic healer, strictly after the briefing flock released.
+# Best-effort: whatever its exit, this runner still exits 0 below, so rung 2
+# can never fail or delay the published briefing (it only heals after it).
+if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
+  echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
+else
+  BRIEFING_DATE="$DATE" SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" SECONDBRAIN_ROOT="$ROOT" "${HEALER_CMD[@]}"
+  healer_status=$?
+  echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: finished with exit $healer_status (receipt: $DATA_DIR/agent/overnight-agentic-healer-runs.jsonl)."
 fi
 exit 0
