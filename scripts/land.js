@@ -277,25 +277,28 @@ function main() {
   // red. The System Health "Automated regression suite" row reads the freshest
   // copy (scripts/lib/system-health-tests-row.js) and deploy-ec2-server.sh
   // ships it to the cloud. The receipt lands in the SHARED main checkout's
-  // data/agent (worktrees are ephemeral) plus SECONDBRAIN_DATA_DIR when set.
+  // data/agent (durable across worktree removal), in THIS worktree's
+  // data/agent (so a deploy run from the worktree right after landing finds
+  // it; gitignored, so no dirt), plus SECONDBRAIN_DATA_DIR when set.
   // Dry runs do not write: they prove nothing about a land.
-  const receiptTargets = {
-    repoRoot: process.env.SB_MAIN_CHECKOUT || commonMainRoot(root) || root,
-    dataDir: process.env.SECONDBRAIN_DATA_DIR || '',
-  };
+  const mainCheckoutRoot = process.env.SB_MAIN_CHECKOUT || commonMainRoot(root) || root;
   const writeReceipt = (status, landed) => {
     if (!APPLY) return;
-    writeLandGateReceipt(
-      buildLandGateReceipt({
-        status,
-        branch,
-        commit: gitSafe(['rev-parse', 'HEAD']),
-        changedFileCount: files.length,
-        scopedTestFileCount: scopedRun.ranCount,
-        landed,
-      }),
-      receiptTargets,
-    );
+    const receipt = buildLandGateReceipt({
+      status,
+      branch,
+      commit: gitSafe(['rev-parse', 'HEAD']),
+      changedFileCount: files.length,
+      scopedTestFileCount: scopedRun.ranCount,
+      landed,
+    });
+    writeLandGateReceipt(receipt, {
+      repoRoot: mainCheckoutRoot,
+      dataDir: process.env.SECONDBRAIN_DATA_DIR || '',
+    });
+    if (path.resolve(root) !== path.resolve(mainCheckoutRoot)) {
+      writeLandGateReceipt(receipt, { repoRoot: root });
+    }
   };
 
   if (!scopedRun.green) {
