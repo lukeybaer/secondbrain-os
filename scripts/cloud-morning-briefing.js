@@ -11,6 +11,16 @@ const { buildBriefingDashboardUrl } = require('./lib/briefing-auth.js');
 const { notifyWithFallback } = require('./lib/notify-with-fallback.js');
 const { notifyBriefingPublished, loadBriefingNotifyEnv } = require('./lib/briefing-notify.js');
 const { fallbackExpiresAt, isFallbackExpired } = require('./lib/briefing-fallback-expiry.js');
+// W6 shared card-format helpers (single copy consumed by this generator, the
+// shared per-card builders, and manual-briefing-v3.js through those builders).
+const {
+  writeJsonAtomic,
+  cleanPublicContentFragment,
+  readDatedArtifact,
+  readLatestCompleteDatedArtifact,
+  materializeFallbackArtifact,
+  normalizeArtifactArray,
+} = require('./lib/briefing-cards/card-format.js');
 const {
   qcBriefingMarkdown,
   repairBriefingMarkdown,
@@ -175,13 +185,6 @@ function normalizeSourceDecision(value) {
 
 function readBriefingSourceDecisions(dataDir) {
   return readJson(path.join(dataDir, 'agent', 'briefing-source-decisions.json'), {});
-}
-
-function writeJsonAtomic(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8');
-  fs.renameSync(tmp, file);
 }
 
 function writeTextAtomic(file, text) {
@@ -488,16 +491,6 @@ function cleanExecutiveFragment(value, { max = 180 } = {}) {
     .slice(0, max)
     .replace(/\s+[.,;:!?]*$/g, '')
     .trim();
-}
-
-function cleanPublicContentFragment(value, { max = 180 } = {}) {
-  const safe = String(value || '')
-    .replace(/\bClaude Code\b/gi, 'a leading AI coding tool')
-    .replace(/\bClaude\b/gi, 'a leading AI assistant')
-    .replace(/\bAnthropic\b/gi, 'a major AI lab')
-    .replace(/\bOpenAI\b/gi, 'a major AI lab')
-    .replace(/\bCodex CLI\b/gi, 'a leading AI coding tool');
-  return cleanExecutiveFragment(safe, { max });
 }
 
 function cleanNewsFragment(value, { max = 180 } = {}) {
@@ -2257,72 +2250,10 @@ function summarizeContentPipeline(queueRaw, historyRaw) {
   return lines;
 }
 
-function readDatedArtifact(dataDir, parts, date) {
-  return readJson(path.join(dataDir, ...parts, `${date}.json`), null);
-}
-
-function readLatestCompleteDatedArtifact(
-  dataDir,
-  parts,
-  date,
-  keys,
-  minCount,
-  maxAgeDays = 2,
-  now = new Date(),
-) {
-  const dir = path.join(dataDir, ...parts);
-  let files = [];
-  try {
-    files = fs.readdirSync(dir);
-  } catch {
-    return null;
-  }
-  const rows = files
-    .map((file) => {
-      const m = file.match(/^(\d{4}-\d{2}-\d{2})\.json$/);
-      if (!m || m[1] >= date) return null;
-      const lag = daysBetween(m[1], date);
-      if (!Number.isFinite(lag) || lag < 0 || lag > maxAgeDays) return null;
-      const full = path.join(dir, file);
-      const raw = readJson(full, null);
-      // An already-expired materialized fallback must never be re-promoted as a
-      // fresh fallback source -- that would chain yesterday's content forward
-      // indefinitely. Skip it so the search finds a real complete set or none.
-      if (isFallbackExpired(raw, now)) return null;
-      const items = normalizeArtifactArray(raw, keys);
-      if (items.length < minCount) return null;
-      return { date: m[1], file: full, raw, items, lag };
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.date.localeCompare(b.date));
-  return rows.length ? rows[rows.length - 1] : null;
-}
-
-function materializeFallbackArtifact(dataDir, parts, date, fallback, label, now = new Date()) {
-  if (!fallback || !fallback.raw) return;
-  const target = path.join(dataDir, ...parts, `${date}.json`);
-  const stamp = (now instanceof Date ? now : new Date(now)).toISOString();
-  const payload = {
-    ...fallback.raw,
-    date,
-    generatedAt: stamp,
-    generated_at: stamp,
-    fallbackFrom: fallback.date,
-    // Hard 24h expiry: past this stamp the fallback is yesterday-as-today and
-    // both the load path and the render path reject it for an honest blocker.
-    fallbackExpires: fallbackExpiresAt(now),
-    fallbackReason: `${label} fresh generation did not complete before briefing; latest complete set preserved the approval workflow.`,
-  };
-  writeJsonAtomic(target, payload);
-}
-
-function normalizeArtifactArray(raw, keys) {
-  if (Array.isArray(raw)) return raw;
-  for (const key of keys) {
-    if (Array.isArray(raw && raw[key])) return raw[key];
-  }
-  return [];
-}
+// readDatedArtifact / readLatestCompleteDatedArtifact /
+// materializeFallbackArtifact / normalizeArtifactArray moved VERBATIM to
+// scripts/lib/briefing-cards/card-format.js (W6 cards 4 + 5); imported below
+// with the other shared card-format helpers.
 
 function formatWholeNumber(value) {
   const n = Number(value || 0);
@@ -3894,202 +3825,18 @@ function buildCovidNewsCard(dataDir, date, blockers) {
   };
 }
 
-function buildShortsProposalsCard(dataDir, date, blockers, now = new Date()) {
-  let raw = readDatedArtifact(dataDir, ['agent', 'shorts-proposals'], date);
-  let fallback = null;
-  // A materialized fallback sitting in today's file is only good for 24h. Once
-  // expired it is yesterday-as-today: drop it before counting so it can never
-  // render as fresh content, and let the re-sourcing below find a current set
-  // or fall through to an honest blocker.
-  if (isFallbackExpired(raw, now)) raw = null;
-  let proposalsRaw = normalizeArtifactArray(raw, ['proposals', 'items']);
-  if (proposalsRaw.length < 10) {
-    fallback = readLatestCompleteDatedArtifact(
-      dataDir,
-      ['agent', 'shorts-proposals'],
-      date,
-      ['proposals', 'items'],
-      10,
-      2,
-      now,
-    );
-    if (fallback) {
-      materializeFallbackArtifact(
-        dataDir,
-        ['agent', 'shorts-proposals'],
-        date,
-        fallback,
-        'Shorts proposals',
-        now,
-      );
-      raw = readDatedArtifact(dataDir, ['agent', 'shorts-proposals'], date) || fallback.raw;
-      proposalsRaw = normalizeArtifactArray(raw, ['proposals', 'items']);
-    }
-  }
-  const proposals = proposalsRaw
-    .map((item) => ({
-      title: cleanPublicContentFragment(item && item.title, { max: 130 }),
-      signal: cleanExecutiveFragment(item && (item.source_signal || item.virality_proof), {
-        max: 130,
-      }),
-      source: cleanExecutiveFragment(item && item.source_url, { max: 220 }),
-      status: item && item.status === 'approved' ? '[APPROVED]' : '[click to approve]',
-    }))
-    .filter((item) => item.title);
-  const enough = proposals.length >= 10;
-  const lines = [];
-  if (!proposals.length) {
-    lines.push('No fresh shorts proposals are ready yet.');
-  } else {
-    lines.push(`Fresh proposals staged: ${Math.min(proposals.length, 10)}/10.`);
-    if (fallback) {
-      lines.push(
-        `Fallback used: latest complete source-backed set from ${fallback.date}; approvals remain available while fresh sourcing continues.`,
-      );
-    }
-  }
-  for (const [idx, proposal] of proposals.slice(0, 10).entries()) {
-    lines.push(`  ${idx + 1}. ${proposal.title} ${proposal.status}`);
-    if (proposal.signal) lines.push(`     Signal: ${proposal.signal}.`);
-    if (proposal.source) lines.push(`     Source: ${proposal.source}`);
-  }
-  lines.push("  Approval starts today's build queue. No approval means no video build.");
-  return {
-    markdown: legacySection("TODAY'S 10 SHORTS PROPOSALS", lines.join('\n')),
-    state: {
-      id: 'shorts-proposals',
-      count: proposals.length,
-      ok: enough,
-      source: fallback ? `fallback-${fallback.date}` : raw ? 'artifact' : 'missing',
-    },
-  };
-}
-
-// Render-time intro/opening/greeting/sponsor detector for the viral card
-// (ExampleCo 2026-07-07 #learn: a viral clip must be a HOOK, never the intro). This
-// is a compact mirror of viral-tech-clip-proposals.js isIntroLikeSegment, kept
-// local so the briefing card ExampleCos no cross-module require. Full rule ->
-// memory/feedback_viral_clip_never_intro_section.md. A stale fallback artifact
-// (materialized before the generator's intro gate) can still carry an intro
-// clip; this drops it at render so the card never surfaces one.
-const VIRAL_CLIP_INTRO_RE =
-  /\b(intro(?:duction|s)?|welcome(?:\s+(?:to|back))?|cold\s*open|opening|preamble|housekeeping|before\s+we\s+(?:start|begin|dive)|let'?s\s+get\s+started|thanks?\s+for\s+(?:watching|tuning|joining)|sponsor(?:ed)?\s+(?:by|read|segment|message)|brought\s+to\s+you\s+by|hit\s+the\s+(?:like|subscribe)|patreon|merch|table\s+of\s+contents|agenda)\b/i;
-const VIRAL_CLIP_GREETING_RE =
-  /^(?:hey|hi|hello|yo|what'?s\s+up|good\s+(?:morning|afternoon|evening))\b[\s,!.]*(?:everyone|everybody|guys|folks|friends|all|there|y'?all)?[\s,!.]*$/i;
-
-function viralClipTextIsIntroLike(text) {
-  const s = String(text || '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!s) return false;
-  return VIRAL_CLIP_INTRO_RE.test(s) || VIRAL_CLIP_GREETING_RE.test(s);
-}
-
-function buildViralTechCard(dataDir, date, blockers, now = new Date()) {
-  let raw = readDatedArtifact(dataDir, ['agent', 'viral-tech-clips'], date);
-  let fallback = null;
-  // Drop an expired materialized fallback before counting so a >24h-old clip
-  // set never renders as today's; re-source or fall through to honest blocker.
-  if (isFallbackExpired(raw, now)) raw = null;
-  let proposalsRaw = normalizeArtifactArray(raw, ['proposals', 'clips', 'items']);
-  if (proposalsRaw.length < 3) {
-    fallback = readLatestCompleteDatedArtifact(
-      dataDir,
-      ['agent', 'viral-tech-clips'],
-      date,
-      ['proposals', 'clips', 'items'],
-      3,
-      2,
-      now,
-    );
-    if (fallback) {
-      materializeFallbackArtifact(
-        dataDir,
-        ['agent', 'viral-tech-clips'],
-        date,
-        fallback,
-        'Viral tech clips',
-        now,
-      );
-      raw = readDatedArtifact(dataDir, ['agent', 'viral-tech-clips'], date) || fallback.raw;
-      proposalsRaw = normalizeArtifactArray(raw, ['proposals', 'clips', 'items']);
-    }
-  }
-  // Render-time defense (ExampleCo 2026-07-07 #learn): the card must NEVER surface a
-  // clip whose window is a plain intro/opening/greeting/sponsor section, even
-  // when a STALE fallback artifact (materialized before the generator's intro
-  // gate existed) resurfaces one. The generator drops intro segments at source;
-  // this is the belt-and-suspenders at render so an old fallback set can't leak
-  // an intro clip. Mirrors viral-tech-clip-proposals.js isIntroLikeSegment; kept
-  // local so the card ExampleCos no cross-module require.
-  proposalsRaw = proposalsRaw.filter((item) => {
-    const fields = [
-      item && item.insight,
-      item && item.short_description,
-      item && item.clip_description,
-      item && item.speaker,
-    ];
-    return !fields.some((f) => viralClipTextIsIntroLike(f));
-  });
-  const proposals = proposalsRaw
-    .map((item) => ({
-      title: cleanPublicContentFragment(item && (item.source_title || item.title), { max: 140 }),
-      source: cleanExecutiveFragment(item && (item.clip_url || item.source_url), { max: 220 }),
-      preview: cleanExecutiveFragment(
-        item && (item.embed_url || item.clip_url || item.source_url),
-        { max: 260 },
-      ),
-      views: item && (item.views ?? item.view_count ?? item.viewCount),
-      viewsPerDay: item && (item.viewsPerDay ?? item.views_per_day),
-      timestamp: cleanExecutiveFragment(item && item.approx_timestamp, { max: 40 }),
-      seconds: Number(item && item.clip_seconds) || 15,
-      speaker: cleanPublicContentFragment(item && item.speaker, { max: 100 }),
-      insight: cleanPublicContentFragment(item && item.insight, { max: 180 }),
-      shortDescription: cleanPublicContentFragment(item && item.short_description, { max: 180 }),
-      virality: cleanPublicContentFragment(item && item.virality_signal, { max: 140 }),
-      status: item && item.status === 'approved' ? '[APPROVED]' : '[click to approve]',
-    }))
-    .filter((item) => item.title);
-  const enough = proposals.length >= 3;
-  const lines = [];
-  if (!proposals.length) {
-    lines.push('No viral clip proposals are ready yet.');
-  } else {
-    lines.push(`Verified clip proposals staged: ${Math.min(proposals.length, 3)}/3.`);
-    if (fallback) {
-      lines.push(
-        `Fallback used: latest verified clip set from ${fallback.date}; approvals remain available while fresh YouTube sourcing continues.`,
-      );
-    }
-  }
-  for (const [idx, proposal] of proposals.slice(0, 3).entries()) {
-    lines.push(`  ${idx + 1}. ${proposal.title} ${proposal.status}`);
-    if (proposal.source) lines.push(`     Source: ${proposal.source}`);
-    if (proposal.preview) lines.push(`     Preview clip: ${proposal.preview}`);
-    if (proposal.speaker) lines.push(`     Speaker: ${proposal.speaker}`);
-    if (proposal.insight) lines.push(`     Insight: ${proposal.insight}`);
-    lines.push(
-      `     Virality: ${proposal.virality || `${formatWholeNumber(proposal.views)} total, ${formatWholeNumber(proposal.viewsPerDay)} views/day`}`,
-    );
-    lines.push(
-      `     Clip: ${proposal.timestamp || 'timestamp pending'}, ${proposal.seconds} seconds`,
-    );
-    if (proposal.shortDescription) lines.push(`     Short: ${proposal.shortDescription}`);
-  }
-  lines.push('  Approval queues the clip for extraction. Skip means no clip build today.');
-  return {
-    markdown: legacySection(
-      `VIRAL TECH CLIP PROPOSALS (${Math.min(proposals.length, 3)})`,
-      lines.join('\n'),
-    ),
-    state: {
-      id: 'viral-tech-clips',
-      count: proposals.length,
-      ok: enough,
-      source: fallback ? `fallback-${fallback.date}` : raw ? 'artifact' : 'missing',
-    },
-  };
-}
+// W6 generator merge, cards 4 + 5: the VIRAL TECH CLIP PROPOSALS and
+// TODAY'S 10 SHORTS PROPOSALS builders moved VERBATIM to
+// scripts/lib/briefing-cards/{viral-tech-clips,shorts-proposals}-card.js so
+// manual-briefing-v3.js consumes the SAME modules. Output here is
+// byte-identical to the pre-move builders; the intro-clip render defense and
+// its regexes ride the shared viral module (re-exported below for the
+// existing regression tests).
+const {
+  buildViralTechCard,
+  viralClipTextIsIntroLike,
+} = require('./lib/briefing-cards/viral-tech-clips-card.js');
+const { buildShortsProposalsCard } = require('./lib/briefing-cards/shorts-proposals-card.js');
 
 // W6 generator merge, card 1: the MORTGAGE RATE INDEXES builder moved
 // VERBATIM to scripts/lib/briefing-cards/mortgage-rate-indexes-card.js so

@@ -20,6 +20,7 @@ const {
   containsRawOperationalLeak,
   scrubExecutiveText,
 } = require('../executive-surface-policy.js');
+const { fallbackExpiresAt, isFallbackExpired } = require('../briefing-fallback-expiry.js');
 
 function readJson(file, fallback) {
   try {
@@ -150,9 +151,94 @@ function legacySection(title, body) {
   return `${String(title || '').trim()}:\n\n${String(body || '').trim()}`;
 }
 
+function cleanPublicContentFragment(value, { max = 180 } = {}) {
+  const safe = String(value || '')
+    .replace(/\bClaude Code\b/gi, 'a leading AI coding tool')
+    .replace(/\bClaude\b/gi, 'a leading AI assistant')
+    .replace(/\bAnthropic\b/gi, 'a major AI lab')
+    .replace(/\bOpenAI\b/gi, 'a major AI lab')
+    .replace(/\bCodex CLI\b/gi, 'a leading AI coding tool');
+  return cleanExecutiveFragment(safe, { max });
+}
+
+function writeJsonAtomic(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, file);
+}
+
+function readDatedArtifact(dataDir, parts, date) {
+  return readJson(path.join(dataDir, ...parts, `${date}.json`), null);
+}
+
+function readLatestCompleteDatedArtifact(
+  dataDir,
+  parts,
+  date,
+  keys,
+  minCount,
+  maxAgeDays = 2,
+  now = new Date(),
+) {
+  const dir = path.join(dataDir, ...parts);
+  let files = [];
+  try {
+    files = fs.readdirSync(dir);
+  } catch {
+    return null;
+  }
+  const rows = files
+    .map((file) => {
+      const m = file.match(/^(\d{4}-\d{2}-\d{2})\.json$/);
+      if (!m || m[1] >= date) return null;
+      const lag = daysBetween(m[1], date);
+      if (!Number.isFinite(lag) || lag < 0 || lag > maxAgeDays) return null;
+      const full = path.join(dir, file);
+      const raw = readJson(full, null);
+      // An already-expired materialized fallback must never be re-promoted as a
+      // fresh fallback source -- that would chain yesterday's content forward
+      // indefinitely. Skip it so the search finds a real complete set or none.
+      if (isFallbackExpired(raw, now)) return null;
+      const items = normalizeArtifactArray(raw, keys);
+      if (items.length < minCount) return null;
+      return { date: m[1], file: full, raw, items, lag };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  return rows.length ? rows[rows.length - 1] : null;
+}
+
+function materializeFallbackArtifact(dataDir, parts, date, fallback, label, now = new Date()) {
+  if (!fallback || !fallback.raw) return;
+  const target = path.join(dataDir, ...parts, `${date}.json`);
+  const stamp = (now instanceof Date ? now : new Date(now)).toISOString();
+  const payload = {
+    ...fallback.raw,
+    date,
+    generatedAt: stamp,
+    generated_at: stamp,
+    fallbackFrom: fallback.date,
+    // Hard 24h expiry: past this stamp the fallback is yesterday-as-today and
+    // both the load path and the render path reject it for an honest blocker.
+    fallbackExpires: fallbackExpiresAt(now),
+    fallbackReason: `${label} fresh generation did not complete before briefing; latest complete set preserved the approval workflow.`,
+  };
+  writeJsonAtomic(target, payload);
+}
+
+function normalizeArtifactArray(raw, keys) {
+  if (Array.isArray(raw)) return raw;
+  for (const key of keys) {
+    if (Array.isArray(raw && raw[key])) return raw[key];
+  }
+  return [];
+}
+
 module.exports = {
   readJson,
   cleanExecutiveFragment,
+  cleanPublicContentFragment,
   stripHtml,
   decodeHtmlEntities,
   cleanPublicUrl,
@@ -164,4 +250,9 @@ module.exports = {
   formatShortDate,
   daysBetween,
   legacySection,
+  writeJsonAtomic,
+  readDatedArtifact,
+  readLatestCompleteDatedArtifact,
+  materializeFallbackArtifact,
+  normalizeArtifactArray,
 };
