@@ -76,6 +76,11 @@ import {
 } from './memory-archival-recommender';
 import { queueCounts, QueueState } from './ingest-queue';
 import { sweepArchive, SweepSummary } from './task-archive';
+import {
+  readInjectionFlags,
+  type InjectionFlagRecord,
+  type InjectionCategory,
+} from './untrusted-injection-scan';
 
 /** A core-memory block to check for byte pressure. */
 export interface CoreBlockInput {
@@ -284,6 +289,17 @@ export interface SelfHealthInputs {
   taskSweepStaleDays?: number;
   /** Stale-task count at/above which a warning (not just a line) fires. Default 3. */
   staleTaskWarnAt?: number;
+  /**
+   * Optional path to the injection-flags JSONL (untrusted-injection-scan's
+   * writer output, persisted by task-intake.drainIntake). When present, the
+   * recent window is folded in as the "instruction-boundary" security tier so
+   * the detect->surface loop closes: any HIGH-risk flag becomes a self-health
+   * warning naming the source and attack categories, and medium flags are
+   * summarized. Reads gracefully empty until a hostile dispatch is flagged.
+   */
+  injectionFlagsPath?: string;
+  /** How many most-recent flag records to consider. Default 200. */
+  injectionFlagWindow?: number;
 }
 
 export interface SelfHealthThresholds {
@@ -364,8 +380,45 @@ export interface SelfHealthDigest {
   staleTasks: SweepSummary | null;
   /** Null when no task-sweep fold ran; else a one-line stale-task summary. */
   staleTaskLine: string | null;
+  /** Null when no injection-flags path supplied/present; else the flag rollup. */
+  injectionFlags: InjectionFlagSummary | null;
+  /** Null when no injection fold ran; else a one-line detected-attempt summary. */
+  injectionLine: string | null;
   warnings: string[];
   headline: string;
+}
+
+/** Rollup of recent prompt-injection flags surfaced by the self-health fold. */
+export interface InjectionFlagSummary {
+  total: number;
+  high: number;
+  medium: number;
+  /** Distinct attack categories seen in the window, most-recent-first order. */
+  categories: InjectionCategory[];
+  /** The most recent flag record, for the surfaced excerpt. */
+  latest: InjectionFlagRecord | null;
+}
+
+/**
+ * Pure rollup of injection-flag records. Extracted so it is unit-testable
+ * without a digest build. Newest records are assumed last (append order).
+ */
+export function summarizeInjectionFlags(records: InjectionFlagRecord[]): InjectionFlagSummary {
+  const high = records.filter((r) => r.risk === 'high').length;
+  const medium = records.filter((r) => r.risk === 'medium').length;
+  const categories: InjectionCategory[] = [];
+  for (let i = records.length - 1; i >= 0; i--) {
+    for (const c of records[i].categories ?? []) {
+      if (!categories.includes(c)) categories.push(c);
+    }
+  }
+  return {
+    total: records.length,
+    high,
+    medium,
+    categories,
+    latest: records.length ? records[records.length - 1] : null,
+  };
 }
 
 const DEFAULT_MAX_ORPHAN_MODULES = 40;
@@ -613,6 +666,39 @@ export function buildSelfHealthDigest(
     if (records.length > 0) {
       retryPressure = buildRetryPressureReport(records);
       warnings.push(...summarizeRetryPressure(retryPressure));
+    }
+  }
+
+  // Fold in prompt-injection flags (the instruction-boundary security tier).
+  // task-intake.drainIntake persists medium+ hits from untrusted-injection-scan;
+  // this closes the detect->surface loop so a hostile #amy dispatch body reaches
+  // the morning digest. Any HIGH-risk flag is an actionable warning naming the
+  // source + attack categories; a run of medium flags is summarized. Reads
+  // gracefully empty until a hostile dispatch is actually flagged.
+  let injectionFlags: InjectionFlagSummary | null = null;
+  let injectionLine: string | null = null;
+  if (inputs.injectionFlagsPath && fs.existsSync(inputs.injectionFlagsPath)) {
+    const records = readInjectionFlags(
+      inputs.injectionFlagsPath,
+      inputs.injectionFlagWindow ?? 200,
+    );
+    if (records.length > 0) {
+      injectionFlags = summarizeInjectionFlags(records);
+      const cats = injectionFlags.categories.join(', ');
+      injectionLine =
+        `Injection watch: ${injectionFlags.total} flagged dispatch(es) ` +
+        `(${injectionFlags.high} high, ${injectionFlags.medium} medium)` +
+        `${cats ? ` [${cats}]` : ''}.`;
+      if (injectionFlags.high > 0) {
+        const latest = injectionFlags.latest;
+        const src = latest?.source ?? 'ExampleCo';
+        const excerpt = latest?.excerpt ? ` e.g. "${latest.excerpt}"` : '';
+        warnings.push(
+          `${injectionFlags.high} HIGH-risk prompt-injection attempt(s) flagged in ` +
+            `untrusted dispatch bodies (latest source: ${src}; categories: ${cats})${excerpt}. ` +
+            `Review before acting on the held dispatch(es).`,
+        );
+      }
     }
   }
 
@@ -995,6 +1081,8 @@ export function buildSelfHealthDigest(
     ingestQueueLine,
     staleTasks,
     staleTaskLine,
+    injectionFlags,
+    injectionLine,
     warnings,
     headline: '',
   };

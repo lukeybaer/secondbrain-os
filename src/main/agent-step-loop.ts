@@ -41,6 +41,7 @@ import { solveToolRules, type ToolRule } from './tool-rules-solver';
 import { SECONDBRAIN_TOOL_RULES } from './tool-rules-presets';
 import { recordRulesDecision, type RulesTraceWriter } from './tool-rules-trace';
 import { classifyStep, type StepKind } from './agent-step-classifier';
+import { applyContextEdit, type ClearToolResultsOptions } from './tool-result-context-editor';
 import {
   advance as advanceMagentic,
   type MagenticState,
@@ -283,6 +284,14 @@ export interface AgentLoopOptions {
   onStep?: (s: StepRecord) => void;
   /** Optional probe that returns true if memory is under pressure. Forces a chain. */
   isMemoryPressured?: () => boolean | Promise<boolean>;
+  /**
+   * Optional deterministic context editing (tool-result-context-editor.ts).
+   * When set, before each turn the loop evicts the oldest tool-result contents
+   * once the transcript crosses the trigger, keeping the most recent results and
+   * leaving a placeholder breadcrumb. Message count/pairing is preserved. Opt-in
+   * and a no-op below the trigger, so short loops are unaffected.
+   */
+  contextEdit?: ClearToolResultsOptions;
   // ── Run-96 optional hooks ────────────────────────────────────────────────
   /**
    * Stable identifier for this logical run. Defaults to a fresh random id.
@@ -335,6 +344,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     traceWriter,
     monitor,
     magenticRecovery,
+    contextEdit,
   } = opts;
 
   if (initialMessages.length === 0 && !resumeFrom) {
@@ -358,6 +368,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
   for (let stepNum = startStep; stepNum <= maxSteps; stepNum++) {
     const stepStart = Date.now();
+
+    // Deterministic context editing before the turn: on a long loop this evicts
+    // the oldest bulky tool-result contents (keeping the most recent) so the
+    // window does not blow up mid-run. In-place so the array reference the step
+    // snapshots capture is preserved; a no-op below the trigger.
+    if (contextEdit) {
+      applyContextEdit(messages, contextEdit);
+    }
+
     let turn: AssistantTurn;
     try {
       turn = await runTurn(messages, tools);

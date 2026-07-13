@@ -26,6 +26,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createTask, approveTask, type TaskOrigin } from './task-store';
 import { extractDispatch, isAutoRunnable, type ExtractedDispatch } from './task-extract';
+import { toInjectionFlag, appendInjectionFlag } from './untrusted-injection-scan';
 
 interface DispatchEntry {
   ts?: string;
@@ -132,7 +133,12 @@ function hasAmyRequestSignal(entry: DispatchEntry, raw: string): boolean {
 }
 
 function isExplicitActionRequest(entry: DispatchEntry, raw: string): boolean {
-  if (entry.approved === true || entry.explicitRequest === true || entry.explicitAmyTrigger === true) return true;
+  if (
+    entry.approved === true ||
+    entry.explicitRequest === true ||
+    entry.explicitAmyTrigger === true
+  )
+    return true;
 
   const source = String(entry.source ?? '').toLowerCase();
   if (source === 'gmail' || source === 'gmail_amy_email') return hasAmyRequestSignal(entry, raw);
@@ -187,6 +193,24 @@ export async function drainIntake(
         reason: 'extraction error, held for review',
         actionType: 'ExampleCo',
       };
+    }
+
+    // Surface prompt-injection attempts riding in the untrusted dispatch body.
+    // wrapUntrusted (in task-extract) still defends the extraction prompt; this
+    // persists medium+ hits so the morning self-health digest can escalate them.
+    // Best-effort: a flag-write failure must never block intake.
+    if (extracted.injectionScan) {
+      const flag = toInjectionFlag(extracted.injectionScan, entry.source ?? 'dispatch', key);
+      if (flag) {
+        try {
+          appendInjectionFlag(
+            path.join(path.dirname(dispatchQueuePath), 'injection-flags.jsonl'),
+            flag,
+          );
+        } catch {
+          /* observability-only; do not disrupt intake */
+        }
+      }
     }
 
     const explicitRequest = isExplicitActionRequest(entry, raw);

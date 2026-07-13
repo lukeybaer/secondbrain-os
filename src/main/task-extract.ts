@@ -16,7 +16,19 @@
 // "auto-run what we clearly understood, hold what we did not".
 
 import { wrapUntrusted } from './untrusted-content';
+import { scanForInjection, type InjectionScanResult } from './untrusted-injection-scan';
 import { canUseChargedLlmApi } from './charged-llm-api-guard';
+
+/**
+ * Merge injection scans of the raw directive and its surrounding context into a
+ * single worst-case result. Both are untrusted DATA; either can carry an attack.
+ */
+function scanDispatchInjection(raw: string, context?: string): InjectionScanResult {
+  const a = scanForInjection(raw);
+  const b = context ? scanForInjection(context) : undefined;
+  if (!b) return a;
+  return a.score >= b.score ? a : b;
+}
 
 /**
  * What kind of action the extracted instruction performs. Gates auto-run:
@@ -46,6 +58,13 @@ export interface ExtractedDispatch {
   reason: string;
   /** Action category from the extractor; gates auto-run via isAutoRunnable. */
   actionType: DispatchActionType;
+  /**
+   * Prompt-injection scan of the raw directive + surrounding context (both are
+   * attacker-influenced DATA). Attached so the intake layer can persist elevated
+   * hits to injection-flags.jsonl and the self-health digest can surface them.
+   * The wrapUntrusted boundary is still the defense; this is detection on top.
+   */
+  injectionScan?: InjectionScanResult;
 }
 
 /**
@@ -209,7 +228,7 @@ function parseStrictJson(output: string | null | undefined): ParsedExtraction | 
  * whole provider ladder fails, returns the raw text marked NOT confident, so
  * it is recorded but held for a human, never auto-run.
  */
-export async function extractDispatch(
+async function extractDispatchCore(
   rawComment: string,
   context?: string,
 ): Promise<ExtractedDispatch> {
@@ -323,4 +342,24 @@ export async function extractDispatch(
   } catch {
     return fallback;
   }
+}
+
+/**
+ * Extract a clean dispatch from a raw directive chunk. Never throws. Attaches a
+ * single prompt-injection scan (raw + context) to the result so intake can
+ * persist elevated hits and self-health can surface them; extraction itself is
+ * unchanged. The scan is best-effort and never affects the extraction outcome.
+ */
+export async function extractDispatch(
+  rawComment: string,
+  context?: string,
+): Promise<ExtractedDispatch> {
+  const extracted = await extractDispatchCore(rawComment, context);
+  try {
+    const injectionScan = scanDispatchInjection((rawComment ?? '').trim(), context);
+    if (injectionScan.risk !== 'none') return { ...extracted, injectionScan };
+  } catch {
+    /* scan is observability-only; never let it break extraction */
+  }
+  return extracted;
 }

@@ -359,6 +359,12 @@ export async function runSelfHealthAudit(): Promise<void> {
     // fold is existsSync-guarded so it stays silent until the spine dir exists.
     const taskSweepDir = path.join(app.getPath('userData'), 'data', 'tasks');
 
+    // Fold in prompt-injection flags (instruction-boundary security tier). Lives
+    // next to the dispatch queue in the agent data dir; task-intake.drainIntake
+    // writes medium+ hits from untrusted-injection-scan. Reads gracefully empty
+    // until a hostile dispatch is flagged, so this is safe to always pass.
+    const injectionFlagsPath = path.join(outDir, 'injection-flags.jsonl');
+
     const digest = buildSelfHealthDigest({
       srcDir,
       indexContent,
@@ -381,6 +387,7 @@ export async function runSelfHealthAudit(): Promise<void> {
       memoryTemperatureDir,
       ingestQueueRoot,
       taskSweepDir,
+      injectionFlagsPath,
     });
 
     try {
