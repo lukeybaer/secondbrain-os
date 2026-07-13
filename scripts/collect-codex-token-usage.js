@@ -139,16 +139,26 @@ function main() {
   }
 
   const rate = (mostRecentScan && mostRecentScan.latest.rate_limits) || {};
-  const primary = rate.primary || {};
-  const secondary = rate.secondary || {};
+  const windows = [rate.primary, rate.secondary].filter(Boolean);
+  const weeklyWindow =
+    windows.find((w) => Number(w.window_minutes) === 10080) || rate.secondary || {};
+  const fiveHourWindow =
+    windows.find((w) => Number(w.window_minutes) === 300) ||
+    (rate.primary && rate.primary.window_minutes == null ? rate.primary : {});
   const report = {
     window: { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10), days },
     plan: rate.plan_type || null,
-    weekly_used_percent: typeof secondary.used_percent === 'number' ? secondary.used_percent : null,
-    weekly_window_minutes: secondary.window_minutes || null,
-    weekly_resets_at: secondary.resets_at ? new Date(Number(secondary.resets_at) * 1000).toISOString() : null,
-    five_hour_used_percent: typeof primary.used_percent === 'number' ? primary.used_percent : null,
-    five_hour_resets_at: primary.resets_at ? new Date(Number(primary.resets_at) * 1000).toISOString() : null,
+    weekly_used_percent:
+      typeof weeklyWindow.used_percent === 'number' ? weeklyWindow.used_percent : null,
+    weekly_window_minutes: weeklyWindow.window_minutes || null,
+    weekly_resets_at: weeklyWindow.resets_at
+      ? new Date(Number(weeklyWindow.resets_at) * 1000).toISOString()
+      : null,
+    five_hour_used_percent:
+      typeof fiveHourWindow.used_percent === 'number' ? fiveHourWindow.used_percent : null,
+    five_hour_resets_at: fiveHourWindow.resets_at
+      ? new Date(Number(fiveHourWindow.resets_at) * 1000).toISOString()
+      : null,
     weekly_input_tokens: weeklyBilledInput,
     weekly_output_tokens: weeklyOutput,
     sessions: sessionsCount,
