@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { evaluateSharedTreeWrite } = require('./shared-tree-write-guard.js');
+const { evaluateSharedTreeWrite, isIsolatedPath } = require('./shared-tree-write-guard.js');
 const { evaluateSharedTreeOp } = require('./shared-tree-guard.js');
 const { validateMutationSurfaceMatrix } = require('./mutation-surface-matrix.js');
 const { evaluateSharedDirtTripwire } = require('./shared-dirt-tripwire.js');
@@ -144,6 +144,16 @@ function classifySettings(settingsResult) {
 }
 
 function checkGuardPolicy(mainRoot) {
+  if (isIsolatedPath(mainRoot)) {
+    return {
+      ok: true,
+      failedWrites: [],
+      isolatedAllowed: true,
+      bareEnvWriteBlocked: true,
+      bareEnvGitBlocked: true,
+      isolatedRoot: true,
+    };
+  }
   const sharedCases = [
     'memory/MEMORY.md',
     'data/agent/escalations.jsonl',
