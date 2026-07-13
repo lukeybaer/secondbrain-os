@@ -2386,6 +2386,11 @@ function blockerRowLead(rowText) {
   return (cut > 0 ? text.slice(0, cut) : text).trim();
 }
 
+function blockerSubjectIsSystemHealthOnly(rowSubject, cardId) {
+  if (cardId !== 'otter_speaker_pareto') return false;
+  return /\b(?:System Health:\s*)?Otter speaker enrichment\b/i.test(String(rowSubject || ''));
+}
+
 function blockersNamedCardDefects(tiles, defectsByCard) {
   const blockersTile = tiles.find((t) => /^BLOCKERS\b/i.test(t.name));
   if (!blockersTile) return [];
@@ -2403,6 +2408,7 @@ function blockersNamedCardDefects(tiles, defectsByCard) {
         if (!tile) continue;
         const existing = defectsByCard.get(card.id) || [];
         if (existing.length) continue;
+        if (blockerSubjectIsSystemHealthOnly(rowSubject, card.id)) continue;
         if (!isNamedInBlockersPart(tile, rowSubject, part, card.id)) continue;
         if (seen.has(card.id)) continue;
         seen.add(card.id);
