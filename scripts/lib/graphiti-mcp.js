@@ -1,4 +1,5 @@
 const http = require('http');
+const { ensureGraphitiTunnel } = require('./graphiti-tunnel');
 
 const DEFAULT_URL = process.env.GRAPHITI_URL || 'http://127.0.0.1:8000';
 const DEFAULT_GROUP = process.env.GRAPHITI_GROUP_ID || 'owner-ea';
@@ -69,6 +70,10 @@ function parseMcpResponse(raw) {
 }
 
 async function ensureSession(baseUrl = DEFAULT_URL) {
+  const tunnel = await ensureGraphitiTunnel({ baseUrl });
+  if (!tunnel.reachable) {
+    throw new Error(tunnel.reason || 'Graphiti is unreachable');
+  }
   if (sessionId) return sessionId;
   const init = await requestJson(
     `${baseUrl}/mcp`,
@@ -102,22 +107,27 @@ async function ensureSession(baseUrl = DEFAULT_URL) {
 
 async function toolCall(toolName, args, opts = {}) {
   const baseUrl = opts.baseUrl || DEFAULT_URL;
-  const sid = await ensureSession(baseUrl);
-  const res = await requestJson(
-    `${baseUrl}/mcp`,
-    {
-      jsonrpc: '2.0',
-      method: 'tools/call',
-      params: { name: toolName, arguments: args },
-      id: ++requestId,
-    },
-    { 'Mcp-Session-Id': sid },
-    opts.timeoutMs || 45000,
-  );
-  if (res.statusCode < 200 || res.statusCode >= 300) {
-    throw new Error(`Graphiti MCP HTTP ${res.statusCode}: ${String(res.raw).slice(0, 300)}`);
+  try {
+    const sid = await ensureSession(baseUrl);
+    const res = await requestJson(
+      `${baseUrl}/mcp`,
+      {
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: toolName, arguments: args },
+        id: ++requestId,
+      },
+      { 'Mcp-Session-Id': sid },
+      opts.timeoutMs || 45000,
+    );
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw new Error(`Graphiti MCP HTTP ${res.statusCode}: ${String(res.raw).slice(0, 300)}`);
+    }
+    return parseMcpResponse(res.raw);
+  } catch (error) {
+    resetSession();
+    throw error;
   }
-  return parseMcpResponse(res.raw);
 }
 
 async function addEpisode(event, opts = {}) {
@@ -146,6 +156,10 @@ async function searchFacts(query, opts = {}) {
 }
 
 async function health(baseUrl = DEFAULT_URL) {
+  const tunnel = await ensureGraphitiTunnel({ baseUrl });
+  if (!tunnel.reachable) {
+    return { status: 'error', reason: tunnel.reason || 'Graphiti is unreachable' };
+  }
   const res = await requestJson(`${baseUrl}/health`, null, {}, 5000);
   try {
     return JSON.parse(res.raw || '{}');

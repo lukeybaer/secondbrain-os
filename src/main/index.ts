@@ -332,35 +332,13 @@ app
       .ensure()
       .catch((err) => writeLog('agent-memory init', err));
 
-    // Establish SSH tunnel to Graphiti on EC2 (localhost:8000 → EC2:8000)
-    // Graphiti MCP only accepts localhost connections (Host header validation).
-    try {
-      const { spawn } = require('child_process');
-      const sshKeyPath = join(app.getPath('home'), '.ssh', 'secondbrain-backend-key.pem');
-      if (fs.existsSync(sshKeyPath)) {
-        const ssh = spawn(
-          'ssh',
-          [
-            '-i',
-            sshKeyPath,
-            '-fNL',
-            '8000:localhost:8000',
-            '-o',
-            'StrictHostKeyChecking=no',
-            '-o',
-            'ExitOnForwardFailure=yes',
-            '-o',
-            'ServerAliveInterval=60',
-            'ec2-user@ExampleCo',
-          ],
-          { detached: true, stdio: 'ignore', windowsHide: true },
-        );
-        ssh.unref();
-        console.log('[startup] SSH tunnel to Graphiti established (pid:', ssh.pid, ')');
-      }
-    } catch (e) {
-      writeLog('graphiti-tunnel', e);
-    }
+    // Prime Graphiti's shared local tunnel recovery before the app begins work.
+    import('./graphiti-client')
+      .then(({ isGraphitiAvailable }) => isGraphitiAvailable())
+      .then((available) => {
+        if (!available) writeLog('graphiti-tunnel', new Error('Graphiti did not become healthy at startup'));
+      })
+      .catch((error) => writeLog('graphiti-tunnel', error));
 
     app.on('browser-window-created', (_, window) => {
       optimizer.watchWindowShortcuts(window);

@@ -12,6 +12,7 @@ const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { ensureGraphitiTunnel } = require('./lib/graphiti-tunnel');
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -55,6 +56,9 @@ async function parseSSE(res) {
 
 async function initGraphiti() {
   try {
+    const tunnel = await ensureGraphitiTunnel({ baseUrl: GRAPHITI_URL });
+    if (!tunnel.reachable) return false;
+    if (sessionId) return true;
     const res = await fetch(`${GRAPHITI_URL}/mcp`, {
       method: 'POST',
       headers: mcpHeaders(),
@@ -78,11 +82,13 @@ async function initGraphiti() {
     });
     return true;
   } catch {
+    sessionId = null;
     return false;
   }
 }
 
 async function addEpisode(name, body, source) {
+  if (!sessionId && !(await initGraphiti())) return false;
   try {
     const res = await fetch(`${GRAPHITI_URL}/mcp`, {
       method: 'POST',
@@ -105,6 +111,7 @@ async function addEpisode(name, body, source) {
     });
     return !!(await parseSSE(res))?.result;
   } catch {
+    sessionId = null;
     return false;
   }
 }

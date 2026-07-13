@@ -18,11 +18,14 @@
 //   recent [--limit N] [--group <id>] [--json]
 //   health
 //
-// Falls through silently if Graphiti is unreachable (SSH tunnel down,
-// EC2 unhealthy, etc.). Exit 0 with no output keeps callers passing
-// instead of breaking the calling pipeline.
+// Repairs a missing local SSH tunnel before falling through when Graphiti is
+// genuinely unreachable. Exit 0 with no output keeps archive callers from
+// breaking their primary pipeline.
 
 import { readFileSync } from "node:fs";
+import tunnelModule from "./lib/graphiti-tunnel.js";
+
+const { ensureGraphitiTunnel } = tunnelModule;
 
 const URL = process.env.GRAPHITI_URL || "http://127.0.0.1:8000";
 const DEFAULT_GROUP = process.env.GRAPHITI_GROUP_ID || "owner-ea";
@@ -40,8 +43,10 @@ function cleanExit(code) {
 }
 
 async function ensureSession() {
-  if (_sessionId) return _sessionId;
   try {
+    const tunnel = await ensureGraphitiTunnel({ baseUrl: URL });
+    if (!tunnel.reachable) return null;
+    if (_sessionId) return _sessionId;
     const res = await fetch(`${URL}/mcp`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
@@ -81,6 +86,7 @@ async function ensureSession() {
     } catch {}
     return _sessionId;
   } catch {
+    _sessionId = null;
     return null;
   }
 }
@@ -113,16 +119,24 @@ async function tool(name, args) {
     if (c?.[0]?.text) return JSON.parse(c[0].text);
     return json.result ?? null;
   } catch {
+    _sessionId = null;
     return null;
   }
 }
 
 async function cmdHealth() {
   try {
+    const tunnel = await ensureGraphitiTunnel({ baseUrl: URL });
+    if (!tunnel.reachable) {
+      console.error(`graphiti unreachable: ${tunnel.reason || 'tunnel unavailable'}`);
+      cleanExit(2);
+      return;
+    }
     const r = await fetch(`${URL}/health`, { signal: AbortSignal.timeout(5_000) });
     if (!r.ok) {
       console.error(`graphiti unhealthy: HTTP ${r.status}`);
       cleanExit(2);
+      return;
     }
     const j = await r.json();
     console.log(JSON.stringify(j));

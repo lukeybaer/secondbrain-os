@@ -33,6 +33,11 @@ const KEY_FILES = [
   "src/main/agent-memory.ts",
   "scripts/lib/graphiti-source-scanner.js",
   "scripts/lib/graphiti-mcp.js",
+  "scripts/lib/graphiti-tunnel.js",
+  "scripts/fire-graphiti-episode.mjs",
+  "scripts/graphiti-cli.mjs",
+  "scripts/recurate-all.ts",
+  "scripts/whatsapp-ingest-standalone.js",
   "scripts/lib/voice-cloud-runtime.js",
   "scripts/graphiti-live-health.js",
   "docker-compose.graphiti.yml",
@@ -67,6 +72,41 @@ const MUST_CONTAIN = [
     "src/main/memory-index.ts",
     "fireGraphitiCascade",
     "upsertMemory cascades an episode in the same transaction as the Tier 2 write",
+  ],
+  [
+    "src/main/graphiti-client.ts",
+    "ensureGraphitiTunnel",
+    "Electron Graphiti search and writes repair a missing local SSH tunnel before declaring the graph unavailable",
+  ],
+  [
+    "src/main/index.ts",
+    "isGraphitiAvailable",
+    "Electron boot primes the same Graphiti client self-heal path used by normal memory operations",
+  ],
+  [
+    "scripts/lib/graphiti-tunnel.js",
+    "sb-key.pem",
+    "standalone Graphiti callers can recover a missing local SSH tunnel with the deployed key",
+  ],
+  [
+    "scripts/fire-graphiti-episode.mjs",
+    "ensureGraphitiTunnel",
+    "the #learn manual episode writer repairs its required local tunnel before declaring Graphiti unreachable",
+  ],
+  [
+    "scripts/fire-graphiti-episode.mjs",
+    "cleanExit",
+    "the #learn writer avoids force-closing Node so Windows does not assert while detached SSH handles close",
+  ],
+  [
+    "scripts/recurate-all.ts",
+    "ensureGraphitiTunnel",
+    "the standalone conversation re-curator repairs a missing local Graphiti tunnel before ingesting",
+  ],
+  [
+    "scripts/whatsapp-ingest-standalone.js",
+    "ensureGraphitiTunnel",
+    "the standalone WhatsApp importer repairs a missing local Graphiti tunnel before ingesting",
   ],
   [
     "src/main/graphiti-retry-queue.ts",
@@ -172,6 +212,11 @@ function checkDrift(repoRoot) {
   if (doc && !/graphiti-retry-queue\.ts/.test(doc)) {
     failures.push(
       "doc no longer names graphiti-retry-queue.ts as the durability/spool layer",
+    );
+  }
+  if (doc && !/graphiti-tunnel\.js/.test(doc)) {
+    failures.push(
+      "doc no longer names scripts/lib/graphiti-tunnel.js as the local tunnel self-heal layer",
     );
   }
   if (doc && !/channel-health-monitor\.js/i.test(doc)) {

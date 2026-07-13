@@ -14,6 +14,12 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createRequire } from 'module';
+
+const cjsRequire = createRequire(import.meta.url);
+const { ensureGraphitiTunnel } = cjsRequire('./lib/graphiti-tunnel.js') as {
+  ensureGraphitiTunnel: (options: { baseUrl: string }) => Promise<{ reachable: boolean }>;
+};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -48,8 +54,10 @@ async function parseSSE(res: Response): Promise<any> {
 }
 
 async function ensureGraphitiSession(): Promise<boolean> {
-  if (sessionId) return true;
   try {
+    const tunnel = await ensureGraphitiTunnel({ baseUrl: GRAPHITI_URL });
+    if (!tunnel.reachable) return false;
+    if (sessionId) return true;
     const res = await fetch(`${GRAPHITI_URL}/mcp`, {
       method: 'POST',
       headers: mcpHeaders(),
@@ -74,6 +82,7 @@ async function ensureGraphitiSession(): Promise<boolean> {
     });
     return !!data?.result;
   } catch {
+    sessionId = null;
     return false;
   }
 }
@@ -108,6 +117,7 @@ async function addEpisode(
     const data = await parseSSE(res);
     return !!data?.result;
   } catch {
+    sessionId = null;
     return false;
   }
 }

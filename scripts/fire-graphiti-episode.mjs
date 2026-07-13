@@ -2,8 +2,8 @@
 // fire-graphiti-episode.mjs <memory-file.md>
 //
 // Standalone Graphiti addEpisode firer for the #learn workflow. Reads the
-// given memory file, opens an MCP session against the local Graphiti
-// server at http://127.0.0.1:8000, calls add_memory with the file body,
+// given memory file, ensures the local SSH tunnel to Graphiti at
+// http://127.0.0.1:8000, calls add_memory with the file body,
 // prints GRAPHITI_OK <name> on success or GRAPHITI_UNREACHABLE <reason>
 // on failure. Exit code: 0 either way (failure is reported, not fatal,
 // because the next seed-graphiti.ts run will pick the file up).
@@ -13,27 +13,13 @@
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import tunnelModule from './lib/graphiti-tunnel.js';
+
+const { ensureGraphitiTunnel } = tunnelModule;
 
 const GRAPHITI_URL = process.env.GRAPHITI_URL || 'http://127.0.0.1:8000';
-const file = process.argv[2];
-if (!file) {
-  console.error('usage: fire-graphiti-episode.mjs <memory-file.md>');
-  process.exit(2);
-}
-
-const body = readFileSync(file, 'utf8');
-const name = path.basename(file, '.md');
-
-let sessionId = null;
-let requestId = 0;
-
-function headers() {
-  const h = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json, text/event-stream',
-  };
-  if (sessionId) h['mcp-session-id'] = sessionId;
-  return h;
+function cleanExit(code) {
+  process.exitCode = code;
 }
 
 async function parseSSE(res) {
@@ -43,7 +29,33 @@ async function parseSSE(res) {
   try { return JSON.parse(line.slice(6)); } catch { return null; }
 }
 
-try {
+async function main() {
+  const file = process.argv[2];
+  if (!file) {
+    console.error('usage: fire-graphiti-episode.mjs <memory-file.md>');
+    return 2;
+  }
+
+  const body = readFileSync(file, 'utf8');
+  const name = path.basename(file, '.md');
+  let sessionId = null;
+  let requestId = 0;
+
+  function headers() {
+    const h = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+    };
+    if (sessionId) h['mcp-session-id'] = sessionId;
+    return h;
+  }
+
+  const tunnel = await ensureGraphitiTunnel({ baseUrl: GRAPHITI_URL });
+  if (!tunnel.reachable) {
+    console.log('GRAPHITI_UNREACHABLE ' + (tunnel.reason || 'Graphiti is unreachable'));
+    return 0;
+  }
+
   const init = await fetch(`${GRAPHITI_URL}/mcp`, {
     method: 'POST',
     headers: headers(),
@@ -88,9 +100,15 @@ try {
   const data = await parseSSE(res);
   if (data?.result) {
     console.log('GRAPHITI_OK ' + name);
-    process.exit(0);
+    return 0;
   }
   console.log('GRAPHITI_UNREACHABLE no-result-from-add_memory');
-} catch (e) {
-  console.log('GRAPHITI_UNREACHABLE ' + (e?.message || String(e)));
+  return 0;
 }
+
+main()
+  .then(cleanExit)
+  .catch((error) => {
+    console.log('GRAPHITI_UNREACHABLE ' + (error?.message || String(error)));
+    cleanExit(0);
+  });

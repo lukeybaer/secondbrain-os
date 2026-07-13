@@ -12,6 +12,15 @@
 // Falls back gracefully to the three-tier memory system if unavailable.
 
 import { getConfig } from './config';
+import { createRequire } from 'module';
+
+const cjsRequire = createRequire(import.meta.url);
+const { ensureGraphitiTunnel } = cjsRequire('../../scripts/lib/graphiti-tunnel.js') as {
+  ensureGraphitiTunnel: (options: { baseUrl: string }) => Promise<{
+    reachable: boolean;
+    reason: string | null;
+  }>;
+};
 
 // ��─ Types ──────────��───────────────────────���──────────────────────────────────
 
@@ -44,7 +53,7 @@ export interface GraphitiNode {
 
 function graphitiUrl(): string {
   // Graphiti MCP server only accepts localhost connections (Host header validation).
-  // Access from Electron requires an SSH tunnel: ssh -fNL 8000:localhost:8000 ec2-user@ExampleCo
+  // Access from Electron requires an SSH tunnel: ssh -N -L 127.0.0.1:8000:localhost:8000 ec2-user@ExampleCo
   // The tunnel maps local port 8000 → EC2 localhost:8000 (Graphiti Docker).
   return 'http://127.0.0.1:8000';
 }
@@ -54,9 +63,13 @@ let _requestId = 0;
 
 /** Initialize an MCP session (required before any tool calls). */
 async function ensureSession(): Promise<string | null> {
-  if (_sessionId) return _sessionId;
-
   try {
+    const tunnel = await ensureGraphitiTunnel({ baseUrl: graphitiUrl() });
+    if (!tunnel.reachable) {
+      console.warn(`[graphiti] Tunnel unavailable: ${tunnel.reason || 'ExampleCo reason'}`);
+      return null;
+    }
+    if (_sessionId) return _sessionId;
     const res = await fetch(`${graphitiUrl()}/mcp`, {
       method: 'POST',
       headers: {
@@ -163,6 +176,7 @@ async function mcpToolCall<T>(toolName: string, args: Record<string, ExampleCo>)
     const json = dataMatch ? JSON.parse(dataMatch[1]) : JSON.parse(text);
 
     if (json.error) {
+      resetGraphitiSession();
       console.warn(`[graphiti] ${toolName} error: ${json.error.message}`);
       return null;
     }
@@ -172,6 +186,7 @@ async function mcpToolCall<T>(toolName: string, args: Record<string, ExampleCo>)
     if (content?.[0]?.text) {
       const contentText = String(content[0].text);
       if (/^\s*error\b/i.test(contentText)) {
+        resetGraphitiSession();
         console.warn(`[graphiti] ${toolName} error: ${contentText.slice(0, 200)}`);
         return null;
       }
@@ -189,6 +204,7 @@ async function mcpToolCall<T>(toolName: string, args: Record<string, ExampleCo>)
 
     return null;
   } catch (err: any) {
+    resetGraphitiSession();
     if (err.name !== 'AbortError') {
       console.warn(`[graphiti] ${toolName} failed: ${err.message}`);
     }
@@ -199,6 +215,8 @@ async function mcpToolCall<T>(toolName: string, args: Record<string, ExampleCo>)
 /** Simple REST request (for /health which is plain HTTP, not MCP). */
 async function restRequest<T>(endpoint: string): Promise<T | null> {
   try {
+    const tunnel = await ensureGraphitiTunnel({ baseUrl: graphitiUrl() });
+    if (!tunnel.reachable) return null;
     const res = await fetch(`${graphitiUrl()}${endpoint}`, {
       signal: AbortSignal.timeout(5_000),
     });
