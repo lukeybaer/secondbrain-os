@@ -191,8 +191,13 @@ function scrubInternalIdsFromFace(text, opts = {}) {
   let s = String(text || '');
   if (!s) return s;
   // Drop a leading frontmatter-style key directly in front of an internal id.
+  // PERF (2026-07-12 outage): the previous pattern nested quantifiers
+  // ([A-Za-z0-9]*(?:[_-]?[A-Za-z0-9]+)*), which backtracks exponentially on
+  // long alphanumeric tokens (memory-index slugs), pinning the render at 100%
+  // CPU for minutes. This bounded character-class form matches the same keys
+  // in linear time.
   s = s.replace(
-    /\b[A-Za-z][A-Za-z0-9]*(?:[_-]?[A-Za-z0-9]+)*\s*:\s*(?=(?:[0-9a-f]{8}-[0-9a-f]{4}-)|spine-session-|dispatch-\d)/gi,
+    /\b[A-Za-z][A-Za-z0-9_-]{0,63}\s*:\s*(?=(?:[0-9a-f]{8}-[0-9a-f]{4}-)|spine-session-|dispatch-\d)/gi,
     '',
   );
   // spine-session ids: map to the human task title when the store knows it.
