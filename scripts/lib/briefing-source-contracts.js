@@ -163,6 +163,11 @@ const OTTER_ARTIFACTS = [
   ['life-archive', 'voiceprints', 'otter-call-speaker-rosters-latest.json'],
   ['life-archive', 'voiceprints', 'otter-call-completeness-latest.json'],
   ['life-archive', 'voiceprints', 'otter-text-audio-coverage-latest.json'],
+  ['life-archive', 'voiceprints', 'speaker-pareto-latest.json'],
+  ['life-archive', 'voiceprints', 'otter-speaker-identity-completeness-latest.json'],
+  ['life-archive', 'voiceprints', 'voice-discovery-roster-latest.json'],
+  ['life-archive', 'voiceprints', 'voiceprint-health-latest.json'],
+  ['life-archive', 'voiceprints', 'otter-processing-coverage-probe-latest.json'],
 ];
 
 function otterEvidence({ dataDir }) {
@@ -287,10 +292,12 @@ async function refreshOtter({
   // no paid/model call. The target card is rendered only afterward through
   // refresh-card.js under the controller's serialized publish lane.
   const mismatchOtids = otterSpeakerMismatchOtids({ dataDir, date });
+  const otterEnv = {
+    VOICE_SKIP_BRIEFING_REFRESH: '1',
+    VOICE_SKIP_PEOPLE_SYNC: '1',
+  };
   const commands = [
-    // This is deliberately source-targeted. A summary/prose mention identifies
-    // a suspect call, but this process uses the established voice-only 0.56
-    // score and margin gates to decide whether a track is actually ExampleCo.
+    [['scripts/otter-ingest-watch.js', '--once'], 4 * 60 * 1000],
     ...(mismatchOtids.length
       ? [
           [
@@ -302,12 +309,37 @@ async function refreshOtter({
               'briefing-card-controller-otter-speaker-mismatch',
             ],
             45 * 60 * 1000,
+            {
+              OTTER_POST_INGEST_RESOLVER_LIMIT: '25',
+              OTTER_POST_INGEST_PROBE_CONCURRENCY: '2',
+              OTTER_POST_INGEST_AUDIO_CONCURRENCY: '2',
+              OTTER_VOICE_EFS_LOCK_DIR: '/mnt/sbvoice/life-archive/voiceprints',
+            },
           ],
         ]
       : []),
+    [
+      [
+        'scripts/otter-post-ingest-voice-intelligence.js',
+        '--reason',
+        'briefing-card-controller-otter-refresh',
+      ],
+      45 * 60 * 1000,
+      {
+        OTTER_POST_INGEST_RESOLVER_LIMIT: '25',
+        OTTER_POST_INGEST_PROBE_CONCURRENCY: '2',
+        OTTER_POST_INGEST_AUDIO_CONCURRENCY: '2',
+        OTTER_VOICE_EFS_LOCK_DIR: '/mnt/sbvoice/life-archive/voiceprints',
+      },
+    ],
     [['scripts/otter-call-speaker-rosters.js', '--write'], 5 * 60 * 1000],
     [['scripts/otter-call-completeness-report.js', '--write'], 5 * 60 * 1000],
     [['scripts/otter-text-audio-coverage-report.js', '--write'], 5 * 60 * 1000],
+    [['scripts/otter-speaker-pareto-report.js'], 5 * 60 * 1000],
+    [['scripts/otter-speaker-identity-completeness.js', '--write'], 5 * 60 * 1000],
+    [['scripts/otter-voice-discovery-roster.js', '--write'], 5 * 60 * 1000],
+    [['scripts/voiceprint-health-report.js', '--write'], 5 * 60 * 1000],
+    [['scripts/otter-processing-coverage-probe.js'], 5 * 60 * 1000],
     // Missing exec summaries and generic/raw call titles are the recurring
     // otter_speaker_pareto defect class (2026-07-09 LEARNINGS): the legacy
     // cloudSelfHealScriptRunsForRefreshTargets path always ran this producer
@@ -328,7 +360,7 @@ async function refreshOtter({
     ],
   ];
   const results = [];
-  for (const [args, timeoutMs] of commands) {
+  for (const [args, timeoutMs, extraEnv] of commands) {
     const row = await runNodeCommand({
       node,
       cwd,
@@ -338,10 +370,7 @@ async function refreshOtter({
       // controller source lane: only the eventual scoped refresh-card call may
       // write briefing markdown, and people-file Git work needs its own isolated
       // workflow. The acoustic resolver remains enabled.
-      env: controllerSourceEnv(dataDir, {
-        VOICE_SKIP_BRIEFING_REFRESH: '1',
-        VOICE_SKIP_PEOPLE_SYNC: '1',
-      }),
+      env: controllerSourceEnv(dataDir, { ...otterEnv, ...(extraEnv || {}) }),
       runCommand,
       timeoutMs,
     });

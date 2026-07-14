@@ -659,11 +659,25 @@ function liveCardBadgeLineFromArtifact(artifact) {
   return `Live card badge count: ${count} defective card(s) as of ${ts} (source: dashboard-qc-result.json); Blockers issue count is blocker rows plus individual System Health failures.`;
 }
 
+function blockersCleanVerdictLineFromArtifact(artifact) {
+  const rawCount = Number(artifact && artifact.defectiveCardCount);
+  const count = Number.isFinite(rawCount) && rawCount >= 0 ? rawCount : 0;
+  if (count > 0) {
+    return `Clean? no. Live dashboard QC reports ${count} defective card(s) for this briefing. See live card badges and System Health for detail.`;
+  }
+  return 'Clean? yes. Live dashboard QC reports 0 survived defects for this briefing.';
+}
+
 function refreshBlockersReconciliationLine(markdown, artifact) {
   const nextLine = liveCardBadgeLineFromArtifact(artifact);
   const lineRe = /^Live card badge count: .*$/m;
-  if (lineRe.test(markdown)) return markdown.replace(lineRe, nextLine);
-  return markdown;
+  const cleanLineRe = /^Clean\? (?:yes|no)\. Live dashboard QC reports .*$/m;
+  let next = markdown;
+  if (cleanLineRe.test(next)) {
+    next = next.replace(cleanLineRe, blockersCleanVerdictLineFromArtifact(artifact));
+  }
+  if (lineRe.test(next)) next = next.replace(lineRe, nextLine);
+  return next;
 }
 
 function refreshPublishedBlockersReconciliationLine({ markdownPath, artifact }) {

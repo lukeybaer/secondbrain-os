@@ -2078,6 +2078,7 @@ function cardSpecificDefects(card, tile, runDate) {
     ...videoManifestDriftDefects(card, tile),
     ...contentPipelineDefects(card, tile),
     ...voiceConfirmationDefects(card, tile),
+    ...blockersFalseCleanDefects(card, tile),
   ];
 }
 
@@ -2468,6 +2469,21 @@ function blockersUnderReportDefects(tiles) {
     );
   }
   return defects;
+}
+
+function blockersFalseCleanDefects(card, tile) {
+  if (!tile || card.id !== 'blockers') return [];
+  const text = `${tile.body || ''}\n${tile.inner || ''}`;
+  const saysClean =
+    /Clean\?\s*yes\.\s*Live dashboard QC reports\s+0\s+survived defects/i.test(text);
+  const badge = text.match(/Live card badge count:\s*(\d+)\s+defective card\(s\)/i);
+  const badgeCount = badge ? Number(badge[1]) : 0;
+  if (saysClean && Number.isFinite(badgeCount) && badgeCount > 0) {
+    return [
+      `BLOCKERS-FALSE-CLEAN: ${card.id} (${tile.name}) says the briefing is clean while the live dashboard artifact reports ${badgeCount} defective card(s); the Blockers verdict line must follow dashboard-qc-result.json`,
+    ];
+  }
+  return [];
 }
 
 /**

@@ -1561,29 +1561,52 @@ function qcSeamSections(sections) {
 // represent several failed health checks. Returns '' when there is no artifact
 // yet (the first pass of a fresh build, before any render-QC has run against
 // this run's published page).
-function blockersReconciliationLine(dataDir, blockersCount) {
+function blockersReconciliationState(dataDir) {
   let read;
   try {
     read = readLiveBoardArtifact({ dataDir });
   } catch {
-    return '';
+    return { line: '', canonicalCount: null, stale: false, artifact: null };
   }
   const { artifact, stale } = read || {};
-  if (!artifact) return '';
+  if (!artifact) return { line: '', canonicalCount: null, stale: false, artifact: null };
   const canonicalCount = liveBoardDefectiveCardCount(artifact);
-  if (canonicalCount === null) return '';
-  if (stale) {
-    return `Live card badge count: stale (last verified ${artifact.ts || 'ExampleCo time'}, older than one briefing cycle) -- do not treat this as the current Blockers issue count.`;
+  if (canonicalCount === null) {
+    return { line: '', canonicalCount: null, stale: Boolean(stale), artifact };
   }
-  return `Live card badge count: ${canonicalCount} defective card(s) as of ${artifact.ts} (source: dashboard-qc-result.json); Blockers issue count is blocker rows plus individual System Health failures.`;
+  let line = '';
+  if (stale) {
+    line = `Live card badge count: stale (last verified ${artifact.ts || 'ExampleCo time'}, older than one briefing cycle) -- do not treat this as the current Blockers issue count.`;
+  } else {
+    line = `Live card badge count: ${canonicalCount} defective card(s) as of ${artifact.ts} (source: dashboard-qc-result.json); Blockers issue count is blocker rows plus individual System Health failures.`;
+  }
+  return { line, canonicalCount, stale: Boolean(stale), artifact };
+}
+
+function blockersReconciliationLine(dataDir, blockersCount) {
+  return blockersReconciliationState(dataDir, blockersCount).line;
+}
+
+function blockersCleanVerdictLine(reconciliationState) {
+  const count = Number(reconciliationState && reconciliationState.canonicalCount);
+  if (
+    reconciliationState &&
+    reconciliationState.stale === false &&
+    Number.isFinite(count) &&
+    count > 0
+  ) {
+    return `Clean? no. Live dashboard QC reports ${count} defective card(s) for this briefing. See live card badges and System Health for detail.`;
+  }
+  return 'Clean? yes. Live dashboard QC reports 0 survived defects for this briefing.';
 }
 
 function renderBlockersSection(blockers, opts = {}) {
   const dataDir = opts && opts.dataDir;
-  const reconciliation = dataDir ? blockersReconciliationLine(dataDir, blockers.length) : '';
+  const reconciliationState = dataDir ? blockersReconciliationState(dataDir) : null;
+  const reconciliation = reconciliationState ? reconciliationState.line : '';
   if (!blockers.length) {
     const body = [
-      'Clean? yes. Live dashboard QC reports 0 survived defects for this briefing.',
+      blockersCleanVerdictLine(reconciliationState),
       reconciliation,
     ]
       .filter(Boolean)
@@ -6457,7 +6480,9 @@ function maybeRegenSpeakerPareto(dataDir) {
     const out = path.join(voiceprintsDir, 'speaker-pareto-latest.json');
     const existing = readJson(out, null);
     const stamp = existing && (existing.generated_at || existing.generatedAt);
-    if (existing && stamp && hoursSinceIso(stamp) <= 26) return;
+    const freshness = existing ? computeSpeakerFreshness({ pareto: existing }) : null;
+    if (existing && stamp && hoursSinceIso(stamp) <= 26 && !(freshness && freshness.defect))
+      return;
     // The generator keys off upstream intelligence artifacts; if the primary one
     // is absent there is nothing to rebuild from, so skip and let the renderer
     // honest-block rather than spawn a doomed process.
