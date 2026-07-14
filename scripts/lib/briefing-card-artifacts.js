@@ -256,9 +256,16 @@ function artifactsToBriefingMarkdown(artifacts, { date, generatedAt = new Date()
 function loadBriefingFromCardArtifacts({ dataDir, date, allowMarkdownFallback = true } = {}) {
   const union = readCardArtifactUnion({ dataDir, date, allowMarkdownFallback });
   if (!union.artifacts.length) return null;
+  const generatedAt =
+    union.artifacts
+      .map((artifact) => artifact.generatedAt)
+      .filter(Boolean)
+      .sort()
+      .slice(-1)[0] || new Date().toISOString();
   return {
     date,
     filename: `briefing-${date}.md`,
+    greeting: [`# Daily Briefing - ${date}`, '', `Generated: ${generatedAt}`].join('\n'),
     sourceMode: union.sourceMode,
     sections: union.artifacts.map((artifact, index) => {
       const cards = splitMarkdownCards(artifactMarkdown(artifact));
