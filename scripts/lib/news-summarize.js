@@ -467,6 +467,16 @@ const NEWS_SUMMARIZE_RETRY_BASE_MS = 1500; // exponential backoff base between a
 // in-budget call (the 2026-05-30 90s-vs-120s incident). Match the documented
 // 120s per-call budget so an in-budget summary is never killed mid-flight.
 const NEWS_SUMMARIZE_RUNG_TIMEOUT_MS = 120000;
+// Bounded concurrency for the news summary pass (report breakpoint 6 transitional
+// guard). The serial loop coupled every card's publish to the slowest news call:
+// 12 items x ~12s median = a multi-minute serial floor that held the monolithic
+// pass's publish lock. Running a bounded pool (a few summaries in flight, each
+// still under its own per-item rung timeout) collapses that floor without
+// hammering the shared LLM rung. Env-overridable; clamped to at least 1.
+const NEWS_SUMMARIZE_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.NEWS_SUMMARIZE_CONCURRENCY) || 4,
+);
 
 function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -2083,6 +2093,7 @@ async function summarizeNewsItems(
     resolveUrl,
     cache,
     limit = 12,
+    concurrency = NEWS_SUMMARIZE_CONCURRENCY,
     retries = NEWS_SUMMARIZE_RETRIES,
     retryBaseMs = NEWS_SUMMARIZE_RETRY_BASE_MS,
     rungTimeoutMs = NEWS_SUMMARIZE_RUNG_TIMEOUT_MS,
@@ -2090,8 +2101,12 @@ async function summarizeNewsItems(
   } = {},
 ) {
   const list = Array.isArray(items) ? items : [];
-  const out = [];
-  for (const item of list.slice(0, limit)) {
+  const head = list.slice(0, limit);
+  const results = new Array(head.length);
+
+  // Resolve one item cache-first, else summarize. Writes results[i] by index so
+  // the output order is identical to a serial pass regardless of finish order.
+  async function resolveOne(item, i) {
     const url = item && item.url;
     let summary = url && cache && cache.get ? normalizeSummary(cache.get(url, item), item) : null;
     if (!summary) {
@@ -2110,8 +2125,27 @@ async function summarizeNewsItems(
         cache.setFailure(url, r.failureKind || 'summary_unavailable');
       }
     }
-    out.push(summary ? { ...item, summary } : item);
+    results[i] = summary ? { ...item, summary } : item;
   }
+
+  // Bounded-concurrency worker pool (report breakpoint 6 transitional guard): at
+  // most `bound` summarize calls in flight, so one slow LLM rung cannot serialize
+  // the whole news card. Each worker pulls the next index synchronously (no await
+  // between the grab and the bounds check, so no double-claim race), keeping at
+  // most `bound` items resolving at once while output order stays deterministic.
+  const bound = Math.max(1, Math.min(Number(concurrency) || 1, head.length || 1));
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const i = next;
+      next += 1;
+      if (i >= head.length) return;
+      await resolveOne(head[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: bound }, () => worker()));
+
+  const out = results.slice();
   // pass through any beyond the limit unchanged
   for (const item of list.slice(limit)) out.push(item);
   return out;
