@@ -60,6 +60,17 @@ const OPENAI_WARN_USD = Number(process.env.OPENAI_API_WARN_USD || 15);
 const DEFAULT_OPENAI_CALL_EST_USD = 0.02;
 const CHARGED_API_RUNGS = new Set(['openai-api', 'anthropic-api', 'bedrock']);
 
+class RungTimeoutError extends Error {
+  constructor(rungName, timeoutMs) {
+    super(`rung-timeout:${rungName}:${timeoutMs}ms`);
+    this.name = 'RungTimeoutError';
+    this.code = 'ERUNG_TIMEOUT';
+    this.rungTimeout = true;
+    this.rungName = rungName;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 class BrainUnreachable extends Error {
   constructor(attempts) {
     super('All LLM rungs failed: ' + attempts.map((a) => `${a.rung}=${a.outcome}`).join(', '));
@@ -75,6 +86,31 @@ function appendJsonl(file, obj) {
   } catch {
     /* logging must never break the ladder */
   }
+}
+
+function resolveRungTimeoutMs(opts = {}, fallbackMs = 45000) {
+  const raw =
+    opts.rungTimeoutMs !== undefined
+      ? opts.rungTimeoutMs
+      : process.env.ASK_AI_FAIL_FAST_MS !== undefined
+        ? process.env.ASK_AI_FAIL_FAST_MS
+        : fallbackMs;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallbackMs;
+}
+
+function withRungTimeout(fn, timeoutMs, rungName) {
+  const ms = resolveRungTimeoutMs({ rungTimeoutMs: timeoutMs }, timeoutMs);
+  let timer = null;
+  return new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new RungTimeoutError(rungName, ms)), ms);
+    Promise.resolve()
+      .then(fn)
+      .then(resolve, reject)
+      .finally(() => {
+        if (timer) clearTimeout(timer);
+      });
+  });
 }
 
 // ---- hard-capped spend ledger for the OpenAI API floor ---------------------
@@ -472,7 +508,7 @@ function runCodexRung(question, opts) {
       const res = spawnSync('codex', args, {
         input: withCodexAmyPrelude(question),
         encoding: 'utf8',
-        timeout: opts.rungTimeoutMs || 90000,
+        timeout: resolveRungTimeoutMs(opts, 90000),
         env: { ...process.env, CLAUDECODE: '' },
         shell: process.platform === 'win32',
         maxBuffer: 10 * 1024 * 1024,
@@ -519,7 +555,7 @@ function runClaudeProxyRung(question, opts) {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-        timeout: opts.rungTimeoutMs || 45000,
+        timeout: resolveRungTimeoutMs(opts, 45000),
       },
       (res) => {
         let raw = '';
@@ -550,7 +586,7 @@ function runClaudeCliRung(question, opts) {
   return new Promise((resolve) => {
     const res = spawnSync('claude', ['-p', question], {
       encoding: 'utf8',
-      timeout: opts.rungTimeoutMs || 120000,
+      timeout: resolveRungTimeoutMs(opts, 120000),
       env: buildClaudeCliEnv(),
       shell: process.platform === 'win32',
       maxBuffer: 10 * 1024 * 1024,
@@ -585,7 +621,7 @@ function runOpenAiApiRung(question, opts) {
           Authorization: 'Bearer ' + apiKey,
           'Content-Length': Buffer.byteLength(body),
         },
-        timeout: opts.rungTimeoutMs || 45000,
+        timeout: resolveRungTimeoutMs(opts, 45000),
       },
       (res) => {
         let raw = '';
@@ -753,10 +789,11 @@ async function askAI(question, opts = {}) {
     }
     const rungRetries = Number.isInteger(opts.rungRetries) ? opts.rungRetries : 1;
     try {
-      const out = await withTransientRetry(() => r.fn(question), {
+      const timeoutMs = resolveRungTimeoutMs(opts, 45000);
+      const out = await withTransientRetry(() => withRungTimeout(() => r.fn(question), timeoutMs, r.name), {
         retries: rungRetries,
         sleep: opts.sleep,
-        isTransient: isTransientError,
+        isTransient: (err) => (err && err.rungTimeout ? false : isTransientError(err)),
         // Record each absorbed blip so the attempt log shows the rung held
         // through a transient failure instead of silently descending.
         onRetry: ({ attempt, error, delayMs }) => {
@@ -802,7 +839,10 @@ async function askAI(question, opts = {}) {
 
 module.exports = {
   askAI,
+  RungTimeoutError,
   BrainUnreachable,
+  resolveRungTimeoutMs,
+  withRungTimeout,
   defaultRungOrder,
   isEc2Host,
   resolveRungOrder,

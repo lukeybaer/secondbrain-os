@@ -134,6 +134,13 @@ const { numericFaceNeedsDateStamp } = require('./lib/briefing-date-stamp.js');
 // snapshot when it is stale BEFORE the card is re-rendered -- never gating or
 // touching any sibling card. No-op (skips) for every other card.
 const { refreshProducerForCard } = require('./lib/briefing-card-producers.js');
+const {
+  produceAllCardArtifacts,
+  produceCardArtifact,
+  writeCardArtifact,
+  readCardArtifactUnion,
+  writeLiveBoardArtifactFromCardArtifacts,
+} = require('./lib/briefing-card-artifacts.js');
 
 // The delimiter buildCloudMorningBriefing joins its own fresh output with
 // (`qcSections.join('\n\n---\n\n')`). Still exported for fixture-building,
@@ -175,13 +182,13 @@ const LOCK_WAIT_SECONDS = 30;
 function usageError(msg) {
   console.error(`[refresh-card] ${msg}`);
   console.error(
-    'Usage: node scripts/refresh-card.js <cardId> [--date YYYY-MM-DD] [--publish] [--data-dir D] [--verify]',
+    'Usage: node scripts/refresh-card.js (--all | <cardId>) [--date YYYY-MM-DD] [--publish] [--data-dir D] [--verify]',
   );
   process.exit(2);
 }
 
 function parseArgs(argv) {
-  const opts = { publish: false, verify: false };
+  const opts = { all: false, publish: false, verify: false };
   const positionals = [];
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -189,11 +196,13 @@ function parseArgs(argv) {
     else if (arg === '--data-dir') opts.dataDir = argv[++i];
     else if (arg === '--publish') opts.publish = true;
     else if (arg === '--verify') opts.verify = true;
+    else if (arg === '--all') opts.all = true;
     else if (arg.startsWith('--')) usageError(`ExampleCo flag: ${arg}`);
     else positionals.push(arg);
   }
-  if (positionals.length !== 1) usageError('exactly one <cardId> positional argument is required');
-  opts.cardId = positionals[0];
+  if (opts.all && positionals.length) usageError('--all does not accept a <cardId> positional');
+  if (!opts.all && positionals.length !== 1) usageError('exactly one <cardId> positional argument is required');
+  opts.cardId = positionals[0] || null;
   return opts;
 }
 
@@ -1071,6 +1080,73 @@ async function runVerify({ cardId, date, dataDir }) {
   }
 }
 
+function summarizeArtifactPublish(artifacts) {
+  const counts = { clean: 0, blocked: 0, defect: 0, stale: 0 };
+  for (const artifact of artifacts || []) {
+    const key = counts[artifact.status] === undefined ? 'defect' : artifact.status;
+    counts[key] += 1;
+  }
+  return `clean=${counts.clean} blocked=${counts.blocked} defect=${counts.defect} stale=${counts.stale}`;
+}
+
+async function publishArtifactUnion({ dataDir, date, now = new Date() }) {
+  const union = readCardArtifactUnion({ dataDir, date, allowMarkdownFallback: true });
+  const board = writeLiveBoardArtifactFromCardArtifacts({
+    dataDir,
+    date,
+    artifacts: union.artifacts,
+    now,
+  });
+  return { union, board };
+}
+
+async function refreshOneCardArtifact({ cardId, date, dataDir, publish, verify } = {}) {
+  const artifact = await produceCardArtifact({ cardId, date, dataDir });
+  const artifactPath = writeCardArtifact({ dataDir, date, artifact });
+  console.log(
+    `[refresh-card] produced artifact card='${cardId}' status=${artifact.status} path=${artifactPath}`,
+  );
+  if (publish) {
+    const { union, board } = await publishArtifactUnion({ dataDir, date });
+    console.log(
+      `[refresh-card] published artifact union cards=${union.artifacts.length} ${summarizeArtifactPublish(
+        union.artifacts,
+      )} board=${board.absPath}`,
+    );
+  }
+  if (verify && artifact.status !== 'clean') {
+    console.error(
+      `[refresh-card] --verify: card='${cardId}' status=${artifact.status}; artifact is honest but not clean.`,
+    );
+    process.exitCode = 1;
+  }
+  return artifact;
+}
+
+async function refreshAllCardArtifacts({ date, dataDir, publish, verify } = {}) {
+  const result = await produceAllCardArtifacts({ dataDir, date });
+  console.log(
+    `[refresh-card] produced all card artifacts cards=${result.artifacts.length} ${summarizeArtifactPublish(
+      result.artifacts,
+    )}`,
+  );
+  if (publish) {
+    console.log(`[refresh-card] published artifact union board=${result.board.absPath}`);
+  }
+  if (verify) {
+    const union = readCardArtifactUnion({ dataDir, date, allowMarkdownFallback: false });
+    if (union.artifacts.length !== CARDS.length) {
+      console.error(
+        `[refresh-card] --verify: expected ${CARDS.length} card artifacts, found ${union.artifacts.length}`,
+      );
+      process.exitCode = 1;
+    } else {
+      console.log('[refresh-card] --verify: every manifest card has an artifact');
+    }
+  }
+  return result;
+}
+
 function main() {
   const opts = parseArgs(process.argv);
   // Default to the America/Chicago calendar date, never the UTC one: between
@@ -1078,13 +1154,16 @@ function main() {
   // would target a briefing file that does not exist yet. Explicit --date wins.
   const date = opts.date || ctDayKeyForInstant();
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR;
-  refreshCard({
-    cardId: opts.cardId,
-    date,
-    dataDir,
-    publish: opts.publish,
-    verify: opts.verify,
-  }).catch((err) => {
+  const task = opts.all
+    ? refreshAllCardArtifacts({ date, dataDir, publish: opts.publish, verify: opts.verify })
+    : refreshOneCardArtifact({
+        cardId: opts.cardId,
+        date,
+        dataDir,
+        publish: opts.publish,
+        verify: opts.verify,
+      });
+  task.catch((err) => {
     console.error(`[refresh-card] failed: ${(err && err.message) || err}`);
     process.exitCode = 1;
   });
@@ -1118,6 +1197,8 @@ module.exports = {
   newsSummaryCardKeyForTarget,
   withSharedBriefingLock,
   refreshCard,
+  refreshOneCardArtifact,
+  refreshAllCardArtifacts,
   runVerify,
   markdownPathFor,
   receiptPathFor,

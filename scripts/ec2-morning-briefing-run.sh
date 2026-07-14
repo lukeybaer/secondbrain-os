@@ -81,17 +81,16 @@ fi
 export HOME
 
 # Build the exact command once so the dry-run print and the real spawn cannot drift.
-# --notify: deliver the Telegram briefing link on publish (clean OR blocked).
-# Without it ExampleCo never gets the 5:30 link (root cause of 2026-07-03 fix);
-# scripts/lib/briefing-notify.js dedupes one message per publish state per day.
-CMD=("$NODE_BIN" scripts/cloud-morning-briefing.js --date "$DATE" --publish --notify)
+# The serial cloud-morning-briefing writer is retired. The scheduled pass now
+# publishes the union of independent per-card artifacts.
+BRIEFING_SERIAL_PASS_RETIRED="${BRIEFING_SERIAL_PASS_RETIRED:-1}"
+export BRIEFING_SERIAL_PASS_RETIRED
+CMD=("$NODE_BIN" scripts/refresh-card.js --all --date "$DATE" --publish --verify)
 
-# The card-controller authority is deliberately reversible. It is enabled only
-# after a supervised all-card proof run. Once enabled, 5:30 is NOT a second
-# full build: it does a final pass over only red/unverified cards on the board
-# opened at 11 PM and then sends the ordinary briefing link. This prevents the
-# old whole-document writer from overwriting card-level proof overnight.
-CONTROLLER_CMD=("$NODE_BIN" scripts/card-controller.js --mode overnight --date "$DATE" --bootstrap --notify)
+# The old card-controller authority switch is now only a deployed-root selector.
+# It no longer runs a competing final-pass writer; both branches publish the
+# same all-card artifact union.
+CONTROLLER_CMD=("${CMD[@]}")
 
 # Mechanical-pass command, built once for the same reason. `--mechanical-only` is
 # W2a's flag on the orchestrator (coordinated, landing on another branch); this
