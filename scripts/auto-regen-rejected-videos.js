@@ -859,17 +859,23 @@ function regenVideoOnLocalEc2Build(v, localMp4, localThumb) {
   // Previously `--id <daily_id>` no-oped (the loop only iterates that stale
   // queue file) and the build returned exit 0 with no mp4 -- a false success.
   const specFile = path.join(os.tmpdir(), `regen-spec-${v.id}.json`);
-  let legacyArgs = ['-u', 'scripts/ec2-build-from-queue.py', '--id', v.id];
+  const legacySpecFileArgs = [];
   try {
     fs.writeFileSync(specFile, JSON.stringify({ ...v, id: v.id }));
-    legacyArgs = legacyArgs.concat(['--spec-file', specFile]);
+    legacySpecFileArgs.push('--spec-file', specFile);
   } catch (e) {
     console.warn(`  [ec2-local] could not write --spec-file: ${e.message.slice(0, 160)}`);
   }
   var r =
     typeof r !== 'undefined' && r
       ? r
-      : spawnSync('python3', legacyArgs, {
+      : spawnSync('python3', [
+          '-u',
+          'scripts/ec2-build-from-queue.py',
+          '--id',
+          v.id,
+          ...legacySpecFileArgs,
+        ], {
           cwd: '/opt/secondbrain',
           encoding: 'utf-8',
           timeout: 30 * 60 * 1000,

@@ -97,6 +97,15 @@ const LADDER_REQUIRE =
 
 const SELF = 'scripts/audit-llm-callsites.js';
 
+function isEnvKeyScrubLine(line, kind) {
+  const trimmed = String(line || '').trim();
+  if (kind === 'openai-key') return /^delete\s+env\.OPENAI_API_KEY\b/.test(trimmed);
+  if (kind === 'anthropic-key') {
+    return /^delete\s+env\.(?:ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)\b/.test(trimmed);
+  }
+  return false;
+}
+
 function walk(dir, root, files) {
   let entries;
   try {
@@ -133,7 +142,7 @@ function scan(root) {
     let matched = false;
     for (let i = 0; i < lines.length; i++) {
       for (const p of PATTERNS) {
-        if (p.re.test(lines[i])) {
+        if (p.re.test(lines[i]) && !isEnvKeyScrubLine(lines[i], p.kind)) {
           sites.push({ file: rel, line: i + 1, kind: p.kind });
           matched = true;
         }
