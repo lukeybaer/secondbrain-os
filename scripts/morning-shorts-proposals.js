@@ -904,6 +904,36 @@ function renderBriefingSection(date, proposals, wall) {
   return lines.join('\n');
 }
 
+// 2026-07-13 re-gate: daily-video-topic-gen.js writes its click-required daily
+// topic + bedtime story into THIS same dated file as PENDING proposals, marked
+// generator:'daily-video-topic-gen' (source:'daily-topic-gen'). This
+// regenerator overwrites the file every morning, so without preservation those
+// daily proposals would be clobbered before ExampleCo could approve them. Merge any
+// such foreign proposals back in, PREPENDED so they land inside the dashboard
+// card's rendered/clickable top-10 window, deduped by id (a fresh proposal with
+// the same id wins). A preserved daily proposal keeps its approved status.
+// Category, not literal trigger: any proposal carrying a non-morning generator
+// marker is preserved, so a future writer to this surface is honored too.
+function preserveForeignProposals(outPath, freshProposals) {
+  let existing = [];
+  try {
+    const prior = JSON.parse(fs.readFileSync(outPath, 'utf8'));
+    if (prior && Array.isArray(prior.proposals)) existing = prior.proposals;
+  } catch {
+    /* no prior file, nothing to preserve */
+  }
+  const fresh = Array.isArray(freshProposals) ? freshProposals : [];
+  const freshIds = new Set(fresh.map((p) => p && p.id));
+  const foreign = existing.filter(
+    (p) =>
+      p &&
+      (p.generator === 'daily-video-topic-gen' || p.source === 'daily-topic-gen') &&
+      !freshIds.has(p.id),
+  );
+  if (foreign.length === 0) return fresh;
+  return [...foreign, ...fresh];
+}
+
 // Main entry point. Idempotent: if today's proposals already exist on disk,
 // reuse them (carryover-WITHIN-the-day so the dashboard renders consistently
 // across reloads). The "no carryover BETWEEN days" guarantee is enforced by
@@ -955,6 +985,9 @@ async function main() {
       // not literal trigger: ANY morning where zero X candidates clear the gate
       // writes a walled file, never a bare throw.
       const state = emptySourceState(date, hn.length, lab.length);
+      // Preserve any click-required daily-topic-gen proposals so a dead X
+      // source morning does not wipe them before ExampleCo can approve them.
+      state.proposals = preserveForeignProposals(out, state.proposals);
       fs.writeFileSync(out, JSON.stringify(state, null, 2));
       console.log(renderBriefingSection(date, [], state.wall));
       return;
@@ -1047,6 +1080,11 @@ async function main() {
   const fl = engagementFloors();
   const wall = buildWall(proposals.length, { floors: fl, maxAttempts: MAX_ATTEMPTS });
 
+  const freshProposals = proposals.slice(0, 10).map((p, i) => ({
+    ...normalizeProposal(p, i, { title: p.title, url: p.source_url, source: 'generated' }),
+    status: 'unapproved',
+    approved_at: null,
+  }));
   const state = {
     date,
     generated_at: new Date().toISOString(),
@@ -1054,15 +1092,16 @@ async function main() {
     research_contract:
       'X/trending-grounded: every proposal source_url must be an X post or thread, and the trend_hook must explain why it is hot now.',
     wall,
-    proposals: proposals.slice(0, 10).map((p, i) => ({
-      ...normalizeProposal(p, i, { title: p.title, url: p.source_url, source: 'generated' }),
-      status: 'unapproved',
-      approved_at: null,
-    })),
+    // Persist daily-topic-gen proposals alongside the fresh X-sourced set so the
+    // gate + approve endpoint + dashboard card all see them.
+    proposals: preserveForeignProposals(out, freshProposals),
   };
   fs.writeFileSync(out, JSON.stringify(state, null, 2));
 
-  const md = renderBriefingSection(date, state.proposals, state.wall);
+  // Render the briefing markdown with the fresh X-sourced set only; the daily
+  // topic proposals render on the dashboard card (which reads the file) and do
+  // not carry X virality metrics, so they stay out of this stdout section.
+  const md = renderBriefingSection(date, freshProposals, state.wall);
   console.log(md);
 }
 
@@ -1089,4 +1128,5 @@ module.exports = {
   hasViralityProof,
   loadRejectionFeedback,
   isAlreadyRejected,
+  preserveForeignProposals,
 };

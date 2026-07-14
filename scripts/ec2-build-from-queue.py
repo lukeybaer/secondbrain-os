@@ -1958,6 +1958,34 @@ def load_today_approved_proposal_ids():
     return {pp["id"] for pp in proposals if pp.get("status") == "approved" and pp.get("id")}
 
 
+def daily_build_blocked(approved_today):
+    """Return True when a daily (no --id) build must produce NOTHING.
+
+    2026-07-13 re-gate (ExampleCo): nothing builds without an explicit approval
+    click. On the daily path we build ONLY proposals ExampleCo approved today. Two
+    cases block every build:
+
+      * GATE_NOT_PRESENT: today's proposals file is absent, so NOTHING has been
+        proposed or approved. This now fails CLOSED. Previously it failed OPEN
+        ("legacy daily-build mode; gate inactive") and built the entire
+        ec2-build-queue with zero approval clicks. That was the leak: the daily
+        generator used to append straight to the queue, and this gate then waved
+        the whole queue through whenever no proposals file existed.
+      * empty set: the proposals file exists but no proposal is approved yet
+        (skip = no video).
+
+    A non-empty approved set does NOT block; those approved ids build. The --id
+    path (the /briefing/approve-shorts endpoint and auto-regen-rejected-
+    videos.js) never reaches this check: it sets target_id and bypasses the
+    daily gate as a fix to an already-approved video.
+    """
+    if approved_today == "GATE_NOT_PRESENT":
+        return True
+    if isinstance(approved_today, set) and len(approved_today) == 0:
+        return True
+    return False
+
+
 if __name__ == "__main__":
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     config = load_config()
@@ -2019,13 +2047,16 @@ if __name__ == "__main__":
     # daily generation, not to fixes of already-approved videos.
     approved_today = load_today_approved_proposal_ids()
     if not target_id:
-        if approved_today == "GATE_NOT_PRESENT":
-            print("[gate] No proposals file for today; legacy daily-build mode (gate inactive)")
-        elif len(approved_today) == 0:
-            print("[gate] No approved proposals today. Skip = no video. Exiting cleanly.")
+        if daily_build_blocked(approved_today):
+            if approved_today == "GATE_NOT_PRESENT":
+                print(
+                    "[gate] No proposals file for today; nothing proposed or approved. "
+                    "Skip = no video. Exiting cleanly (fail-closed)."
+                )
+            else:
+                print("[gate] No approved proposals today. Skip = no video. Exiting cleanly.")
             sys.exit(0)
-        else:
-            print(f"[gate] {len(approved_today)} approved proposal(s) today: {sorted(approved_today)}")
+        print(f"[gate] {len(approved_today)} approved proposal(s) today: {sorted(approved_today)}")
 
     built = []
     failed = []
