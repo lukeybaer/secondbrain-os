@@ -2243,11 +2243,32 @@ function systemHealthActionCardsFromRows(rows = []) {
   return [...out];
 }
 
+// Poll /health after a restart. A `pm2 restart` exit 0 only means PM2 accepted
+// the command -- it does NOT prove the process actually came up. A version-skew
+// crash-loop (an entrypoint newer than a lib it needs) restarts "successfully"
+// and then dies on load, so without this probe a crash-loop was reported as
+// "healed". Mirrors scripts/deploy-ec2-server.sh's 325-331 health loop.
+function backendHealthProbe({ port = 3001, runner = spawnSync, attempts = 10, sleepSec = 3 } = {}) {
+  const loop =
+    `code=000; for i in $(seq 1 ${attempts}); do sleep ${sleepSec}; ` +
+    `code=$(curl -s -o /dev/null -w "%{http_code}" -m 8 http://127.0.0.1:${port}/health 2>/dev/null || echo 000); ` +
+    `[ "$code" = "200" ] && break; done; echo "$code"`;
+  const res = runner('bash', ['-lc', loop], {
+    encoding: 'utf8',
+    timeout: attempts * sleepSec * 1000 + 20_000,
+    maxBuffer: 1024 * 1024,
+  });
+  const code = (String(res && res.stdout ? res.stdout : '').trim().split(/\s+/).pop() || '000');
+  return { ok: code === '200', code };
+}
+
 function restartSecondbrainBackend({
   appRoot = REPO,
   env = process.env,
   platform = process.platform,
   runner = spawnSync,
+  healthProbe = backendHealthProbe,
+  healthPort = Number(env.SB_HEALTH_PORT) || 3001,
 } = {}) {
   if (env.SELF_HEAL_PM2_RESTART === '0') return { skipped: true, reason: 'disabled' };
   const resolved =
@@ -2265,11 +2286,26 @@ function restartSecondbrainBackend({
     timeout: 90_000,
     maxBuffer: 1024 * 1024,
   });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      status: result.status,
+      stdout: String(result.stdout || '').slice(-500),
+      stderr: String(result.stderr || '').slice(-500),
+    };
+  }
+  // Restart accepted -- now PROVE the backend actually serves /health before
+  // reporting the heal as successful (never report a crash-loop as healed).
+  const health = healthProbe({ port: healthPort, runner });
   return {
-    ok: result.status === 0,
+    ok: health.ok,
     status: result.status,
+    healthOk: health.ok,
+    healthCode: health.code,
     stdout: String(result.stdout || '').slice(-500),
-    stderr: String(result.stderr || '').slice(-500),
+    stderr: health.ok
+      ? String(result.stderr || '').slice(-500)
+      : `post-restart /health HTTP ${health.code}; ${String(result.stderr || '').slice(-300)}`,
   };
 }
 
@@ -5406,6 +5442,7 @@ module.exports = {
   safeDeployRelPath,
   deployTargetsForRelPath,
   deployedFilesNeedServerRestart,
+  backendHealthProbe,
   restartSecondbrainBackend,
   deployChangedFilesFromWorktree,
   refreshPublishedBriefingAfterHeal,

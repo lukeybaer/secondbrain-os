@@ -19,7 +19,6 @@ KEY="${SB_KEY:-$HOME/.ssh/sb-key.pem}"
 HOST="ec2-user@ExampleCo"
 ROOT="$(git rev-parse --show-toplevel)"
 SRC="$ROOT/ec2-server.js"
-LF="$ROOT/data/agent/_ec2-deploy.lf.js"
 LIVE_DEPS=(
   "scripts/lib/voice-cloud-runtime.js"
   "scripts/lib/live-dev-state.js"
@@ -200,63 +199,48 @@ cleanup_deploy_lock() {
 }
 trap cleanup_deploy_lock EXIT
 
-# Normalize CRLF -> LF so the deployed file is clean on Linux.
-tr -d '\r' < "$SRC" > "$LF"
+# ============================================================================
+# LIVE WRITE: delegated to the atomic-release primitive (the SOLE /opt writer).
+# ============================================================================
+# This script used to write /opt piecemeal: scp the two server twins, scp+cp
+# each LIVE_DEP, tar+extract scripts/lib + scripts/self-heal, then run an inline
+# require-scan gate and pm2 restart, rolling back individual .bak files. That
+# per-file mutation is exactly the version-skew hazard we are killing: a partial
+# write could leave an entrypoint newer than a lib it needs, crash-looping PM2.
+#
+# scripts/lib/atomic-release.sh replaces all of that. It stages a FULL checkout
+# of exactly HEAD's sha into /opt/secondbrain-releases/<sha>, VERIFIES the tree
+# loads (node -c + require-scan + import-smoke -- the import-smoke catches a
+# stale lib missing an EXPORT, which the old require-scan-only gate could not),
+# then does an ATOMIC symlink swap + pm2 restart + POST-RESTART /health, rolling
+# the symlink back to the previous release on ANY failure. So the whole tree
+# (both server twins, every LIVE_DEP, scripts/lib, scripts/self-heal) ships as
+# one immutable unit -- no file can be forgotten, and no half-written window
+# exists. The LIVE_DEPS + CONTROLLER_RUNTIME_FILES arrays above are retained as
+# the audited entrypoint/closure manifest (checked to exist locally below);
+# they no longer drive the copy.
+SHA="$(git -C "$ROOT" rev-parse HEAD)"
+echo "[deploy] delegating live write to atomic-release.sh (sha $SHA)"
+echo "[deploy]   ships /opt/secondbrain/server.js + /opt/secondbrain/ec2-server.js inside the release tree"
+if ! bash "$ROOT/scripts/lib/atomic-release.sh" \
+  --sha "$SHA" --source-root "$ROOT" --host "$HOST" --key "$KEY"; then
+  echo "[deploy] ATOMIC RELEASE FAILED: the primitive either failed verification, or swapped and then rolled back on a health failure. /opt is unchanged from the last good release. See the [atomic-release] lines above." >&2
+  exit 1
+fi
 
-echo "[deploy] backing up live server.js + ec2-server.js"
-ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-  'ts=$(date +%s); cp /opt/secondbrain/server.js /opt/secondbrain/server.js.bak-$ts; cp /opt/secondbrain/ec2-server.js /opt/secondbrain/ec2-server.js.bak-$ts; echo "  backed up @ $ts"'
-
-echo "[deploy] pushing repo ec2-server.js -> EC2 server.js + ec2-server.js"
-scp -i "$KEY" -o StrictHostKeyChecking=no "$LF" "$HOST:/opt/secondbrain/server.js"
-scp -i "$KEY" -o StrictHostKeyChecking=no "$LF" "$HOST:/opt/secondbrain/ec2-server.js"
-
-echo "[deploy] pushing live backend dependencies"
-for dep in "${LIVE_DEPS[@]}"; do
-  if [ -f "$ROOT/$dep" ]; then
-    dep_dir="$(dirname "$dep")"
-    tmp="/tmp/secondbrain-deploy-${dep//[^A-Za-z0-9._-]/_}"
-    scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/$dep" "$HOST:$tmp"
-    ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-      "sudo mkdir -p /opt/secondbrain/$dep_dir && sudo cp $tmp /opt/secondbrain/$dep && sudo chown ec2-user:ec2-user /opt/secondbrain/$dep && rm -f $tmp"
-  fi
+echo "[deploy] auditing curated entrypoint + controller closure exists locally"
+for dep in "${LIVE_DEPS[@]}" "${CONTROLLER_RUNTIME_FILES[@]}"; do
+  # server.js is minted from ec2-server.js inside the release; it has no repo file.
+  [ "$dep" = "server.js" ] && continue
+  [ -f "$ROOT/$dep" ] || { echo "[deploy] MANIFEST MISSING LOCAL: $dep" >&2; exit 1; }
 done
+echo "[deploy] curated closure present locally: OK (shipped inside the atomic release)"
 
-# 2026-07-06 deploy-outage fix: LIVE_DEPS is a hand-curated list of top-level
-# entrypoint scripts, and it drifts -- a land can add a new require() inside
-# ec2-server.js (or anything it transitively requires) without anyone
-# remembering to add the new file to this array. scripts/lib/ and
-# scripts/self-heal/ are pure library code (no entrypoints of their own, cheap
-# to ship in full), so instead of trying to keep every library file curated by
-# hand, ship the WHOLE directories every deploy. This kills the curated-list-
-# drift class for libs outright; LIVE_DEPS stays the curated list only for
-# top-level entrypoint scripts (callback-watchdog.js, cloud-morning-briefing.js,
-# etc.) that are not under scripts/lib/ or scripts/self-heal/.
-echo "[deploy] pushing scripts/lib/ + scripts/self-heal/ in full (kills curated-list drift for libs)"
-for libdir in "scripts/lib" "scripts/self-heal"; do
-  if [ -d "$ROOT/$libdir" ]; then
-    tmp_tar="/tmp/secondbrain-deploy-$(basename "$libdir").tar.gz"
-    tar -czf "$tmp_tar" -C "$ROOT" "$libdir"
-    scp -i "$KEY" -o StrictHostKeyChecking=no "$tmp_tar" "$HOST:$tmp_tar"
-    rm -f "$tmp_tar"
-    ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-      "sudo mkdir -p /opt/secondbrain/$libdir && sudo tar -xzf $tmp_tar -C /opt/secondbrain && sudo chown -R ec2-user:ec2-user /opt/secondbrain/$libdir && rm -f $tmp_tar"
-  fi
-done
-
-echo "[deploy] verifying deployed card-controller runtime closure"
-for dep in "${CONTROLLER_RUNTIME_FILES[@]}"; do
-  [ -f "$ROOT/$dep" ] || { echo "[deploy] CONTROLLER RUNTIME MISSING LOCAL: $dep" >&2; exit 1; }
-  local_hash="$(sha256sum "$ROOT/$dep" | awk '{print $1}')"
-  remote_hash="$(ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "sha256sum /opt/secondbrain/$dep 2>/dev/null | cut -d ' ' -f1")"
-  if [ "$local_hash" != "$remote_hash" ]; then
-    echo "[deploy] CONTROLLER RUNTIME PARITY FAIL: $dep" >&2
-    echo "  local=$local_hash remote=${remote_hash:-missing}" >&2
-    exit 1
-  fi
-done
-echo "[deploy] card-controller runtime closure: OK (/opt/secondbrain)"
-
+# ============================================================================
+# runtime DATA artifacts (NOT code): the ONLY things this script still writes to
+# /opt directly, always under /opt/secondbrain/data/, never a code path. These
+# are receipts + snapshots the cloud Dev Ops / deploy-parity cards read.
+# ============================================================================
 if [ -f "$ROOT/data/agent/devops-health-latest.json" ]; then
   echo "[deploy] pushing fresh Dev Ops desktop checkout snapshot"
   scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/data/agent/devops-health-latest.json" "$HOST:/tmp/devops-health-latest.json"
@@ -280,79 +264,26 @@ else
   echo "[deploy] NOTE: no data/agent/land-gate-receipt.json to ship yet; the Automated regression suite row will stay informational until the first receipted land."
 fi
 
-# Require-resolution gate (2026-07-06): BEFORE pm2 restart, statically walk the
-# relative-require closure of the just-deployed server.js on EC2 and abort if
-# anything is missing. `node -c` only syntax-checks; it never resolves
-# requires, so a missing module was previously invisible until PM2 actually
-# loaded it and crash-looped. This gate runs against the shipped
-# require-scan-check.js (scripts/lib/require-scan.js does the walking), so it
-# needs no repo checkout on EC2 -- only the files this same deploy just copied.
-echo "[deploy] pushing require-scan gate"
-scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/scripts/require-scan-check.js" "$HOST:/tmp/secondbrain-deploy-require-scan-check.js"
+# The require-scan gate, syntax-check, pm2 restart, /health probe, .bak
+# rollback, and post-deploy parity diff that used to live here are now ALL
+# guarantees of scripts/lib/atomic-release.sh (run above): it require-scans AND
+# import-smokes the staged tree before the swap, and health-probes with symlink
+# rollback after. Keeping a second, inline copy here would just be a per-file
+# /opt writer competing with the sole writer -- exactly what we removed.
+
+# ============================================================================
+# deploy receipt (single code authority): record what shipped + how it relates
+# to origin/master, and mirror the ledger to /opt/secondbrain/data/ so the
+# EC2-side deploy-parity probe can verify /opt independently. A release that
+# cannot be receipted FAILS LOUD (feedback_ec2_build_path_silent_revert.md).
+# ============================================================================
+echo "[deploy] recording deploy receipt"
+if ! node "$ROOT/scripts/record-ec2-deploy-receipt.js"; then
+  echo "[deploy] RECEIPT FAIL: the release landed but could not be receipted. Fix and re-run so the parity probe has a receipt to verify against." >&2
+  exit 1
+fi
+scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/data/agent/ec2-deploy-receipts.jsonl" "$HOST:/tmp/secondbrain-deploy-receipts.jsonl"
 ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-  "sudo cp /tmp/secondbrain-deploy-require-scan-check.js /opt/secondbrain/scripts/require-scan-check.js && sudo chown ec2-user:ec2-user /opt/secondbrain/scripts/require-scan-check.js && rm -f /tmp/secondbrain-deploy-require-scan-check.js"
-
-echo "[deploy] require-scan gate: resolving server.js's require closure on EC2 (before restart)"
-if ! ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-  'node /opt/secondbrain/scripts/require-scan-check.js --root /opt/secondbrain server.js'; then
-  echo "[deploy] REQUIRE-SCAN FAIL: server.js requires a module that is missing on EC2. Rolling back the on-disk file (PM2 was never restarted, so the old process was already still running; this just keeps the ON-DISK copy consistent with it too, so the deploy-parity probe and the nightly canary do not false-red against a half-deployed file). See MISSING lines above; add the module to LIVE_DEPS (or scripts/lib or scripts/self-heal, which ship in full) and redeploy."
-  ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-    'cp "$(ls -t /opt/secondbrain/server.js.bak-* | head -1)" /opt/secondbrain/server.js; cp "$(ls -t /opt/secondbrain/ec2-server.js.bak-* | head -1)" /opt/secondbrain/ec2-server.js'
-  exit 1
-fi
-
-echo "[deploy] require-scan gate: resolving deployed card-controller closure"
-if ! ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-  'node /opt/secondbrain/scripts/require-scan-check.js --root /opt/secondbrain scripts/card-controller.js scripts/refresh-card.js scripts/verify-dashboard-cards-live.js'; then
-  echo "[deploy] CONTROLLER REQUIRE-SCAN FAIL: the deployed controller closure is incomplete. Restoring server twins before PM2 restart." >&2
-  ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-    'cp "$(ls -t /opt/secondbrain/server.js.bak-* | head -1)" /opt/secondbrain/server.js; cp "$(ls -t /opt/secondbrain/ec2-server.js.bak-* | head -1)" /opt/secondbrain/ec2-server.js'
-  exit 1
-fi
-
-echo "[deploy] syntax-check + restart + health on EC2"
-ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" '
-  node -c /opt/secondbrain/server.js || { echo "[deploy] SYNTAX FAIL on EC2, rolling back"; cp "$(ls -t /opt/secondbrain/server.js.bak-* | head -1)" /opt/secondbrain/server.js; exit 1; }
-  node -c /opt/secondbrain/scripts/callback-watchdog.js || { echo "[deploy] CALLBACK WATCHDOG SYNTAX FAIL on EC2"; exit 1; }
-  pm2 restart secondbrain-backend --update-env >/dev/null
-  if pm2 describe callback-watchdog >/dev/null 2>&1; then
-    pm2 restart callback-watchdog --update-env >/dev/null
-  else
-    pm2 start /opt/secondbrain/scripts/callback-watchdog.js --name callback-watchdog --cwd /opt/secondbrain --update-env >/dev/null
-  fi
-  pm2 save >/dev/null
-  code=000
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    sleep 3
-    code=$(curl -s -o /dev/null -w "%{http_code}" -m 8 http://127.0.0.1:3001/health 2>/dev/null || echo 000)
-    [ "$code" = "200" ] && break
-  done
-  echo "  /health HTTP $code (after $((i*3))s)"
-  [ "$code" = "200" ] || { echo "[deploy] HEALTH FAIL, rolling back"; cp "$(ls -t /opt/secondbrain/server.js.bak-* | head -1)" /opt/secondbrain/server.js; pm2 restart secondbrain-backend --update-env >/dev/null; exit 1; }
-'
-
-echo "[deploy] verifying post-deploy parity (whitespace-insensitive)"
-ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" 'tr -d "\r" < /opt/secondbrain/server.js' > "$ROOT/data/agent/_ec2-live-after.js"
-DIFF=$(diff -w "$LF" "$ROOT/data/agent/_ec2-live-after.js" | grep -cE '^[<>]' || true)
-rm -f "$LF" "$ROOT/data/agent/_ec2-live-after.js"
-if [ "$DIFF" -eq 0 ]; then
-  echo "[deploy] OK: repo and live EC2 server.js are now identical."
-  # W5 Stage 4 single code authority: record the deploy receipt (deploying
-  # HEAD, relation to origin/master, shipped + origin/master content hashes)
-  # and mirror the receipts ledger to the EC2 live data dir so the EC2-side
-  # deploy-parity probe can verify /opt against it independently. A deploy
-  # that cannot be receipted FAILS LOUD: unreceipted releases are exactly the
-  # silent-revert class this kills (feedback_ec2_build_path_silent_revert.md).
-  echo "[deploy] recording deploy receipt"
-  if ! node "$ROOT/scripts/record-ec2-deploy-receipt.js"; then
-    echo "[deploy] RECEIPT FAIL: the deploy landed but could not be receipted. Fix and re-run the deploy so the parity probe has a receipt to verify against." >&2
-    exit 1
-  fi
-  scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/data/agent/ec2-deploy-receipts.jsonl" "$HOST:/tmp/secondbrain-deploy-receipts.jsonl"
-  ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-    'sudo mkdir -p /opt/secondbrain/data/agent && sudo cp /tmp/secondbrain-deploy-receipts.jsonl /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl && sudo chown ec2-user:ec2-user /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl && rm -f /tmp/secondbrain-deploy-receipts.jsonl'
-  echo "[deploy] receipt recorded + mirrored to /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl"
-else
-  echo "[deploy] WARNING: $DIFF lines still differ after deploy. Investigate."
-  exit 1
-fi
+  'sudo mkdir -p /opt/secondbrain/data/agent && sudo cp /tmp/secondbrain-deploy-receipts.jsonl /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl && sudo chown ec2-user:ec2-user /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl && rm -f /tmp/secondbrain-deploy-receipts.jsonl'
+echo "[deploy] receipt recorded + mirrored to /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl"
+echo "[deploy] OK: released $SHA via atomic-release (/opt/secondbrain -> releases/$SHA), health-verified."
