@@ -119,6 +119,46 @@ function readFreshestTestsBlocked(opts = {}) {
   return best;
 }
 
+function landReceiptTimeMs(receipt) {
+  const parsed = receipt && receipt.ranAt ? new Date(receipt.ranAt).getTime() : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function landReceiptSupersedesTests(testsArtifact, receipt, now = Date.now()) {
+  if (!testsArtifact || !testsArtifact.json || !receipt) return false;
+  if (Number(testsArtifact.json.failed || 0) <= 0) return false;
+  if (receipt.status !== 'green' || receipt.landed !== true) return false;
+  if (!isLandGateReceiptFresh(receipt, now)) return false;
+  return landReceiptTimeMs(receipt) > Number(testsArtifact.timeMs || 0);
+}
+
+function readTestsHealthProof(opts = {}) {
+  const testsArtifact = readFreshestTestsBlocked(opts);
+  const landReceipt =
+    opts.landReceipt !== undefined
+      ? opts.landReceipt
+      : readFreshestLandGateReceipt({
+          dataDir: opts.dataDir,
+          repoRoot: opts.repoRoot || opts.repo,
+        });
+  if (landReceiptSupersedesTests(testsArtifact, landReceipt, opts.now || Date.now())) {
+    return {
+      tests: null,
+      testsArtifact: null,
+      landReceipt,
+      landReceiptSupersededTests: true,
+      supersededTestsArtifact: testsArtifact,
+    };
+  }
+  return {
+    tests: testsArtifact && testsArtifact.json,
+    testsArtifact,
+    landReceipt,
+    landReceiptSupersededTests: false,
+    supersededTestsArtifact: null,
+  };
+}
+
 function testCategoryKey(item) {
   const haystack = [
     item && item.file,
@@ -253,8 +293,10 @@ module.exports = {
   formatTestsHealthRow,
   formatTestsHealthRows,
   isInformationalTestsRowText,
+  landReceiptSupersedesTests,
   parseJsonFileMaybe,
   readFreshestTestsBlocked,
+  readTestsHealthProof,
   summarizeFailingTests,
   summarizeTestsByCategory,
   testCategoryKey,

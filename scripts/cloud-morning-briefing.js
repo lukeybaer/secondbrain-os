@@ -59,7 +59,7 @@ const {
   formatTestsHealthRow,
   formatTestsHealthRows,
   isInformationalTestsRowText,
-  readFreshestTestsBlocked,
+  readTestsHealthProof,
   summarizeTestsByCategory,
 } = require('./lib/system-health-tests-row.js');
 // Same non-green SYSTEM HEALTH parser the publish validator uses, so the named
@@ -6528,10 +6528,14 @@ function computeTestsHealth(testsBlocked) {
 }
 
 function computeTestsHealthForHealth(dataDir) {
-  const artifact = readFreshestTestsBlocked({ repo: REPO_ROOT, dataDir });
-  const health = computeTestsHealth(artifact && artifact.json);
-  health.sourcePath = artifact && artifact.path;
-  health.sourceTimeMs = artifact && artifact.timeMs;
+  const proof = readTestsHealthProof({ repo: REPO_ROOT, dataDir });
+  const health = computeTestsHealth(proof.tests);
+  health.sourcePath = proof.testsArtifact && proof.testsArtifact.path;
+  health.sourceTimeMs = proof.testsArtifact && proof.testsArtifact.timeMs;
+  health.landReceipt = proof.landReceipt;
+  health.landReceiptSupersededTests = proof.landReceiptSupersededTests;
+  health.supersededTestsPath =
+    proof.supersededTestsArtifact && proof.supersededTestsArtifact.path;
   return health;
 }
 
