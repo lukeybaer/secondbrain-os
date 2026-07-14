@@ -8817,6 +8817,12 @@ async function maybeRunScheduledTaskPreflight({
       dataDir,
       date,
       trigger: 'pc-off-briefing-preflight',
+      // The pre-briefing fleet run must run ONLY card-feeding (preBriefingRequired)
+      // skills, never heavy non-card self-improvement like nightly-enhancement.
+      // Otherwise a hung self-improvement codex blocks the whole briefing from
+      // generating any card (2026-07-14 incident). Non-blocking skills still run
+      // via their own schedules.
+      preBriefingRequiredOnly: true,
     };
     if (scheduledTasks) opts.tasks = scheduledTasks;
     if (scheduledTaskRunner) opts.runSkill = scheduledTaskRunner;

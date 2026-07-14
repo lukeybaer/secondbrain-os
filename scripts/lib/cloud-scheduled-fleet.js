@@ -272,12 +272,16 @@ async function runDueScheduledTasks({
   trigger = 'cloud-scheduled-fleet',
   maxTasks = Infinity,
   now = () => new Date(),
+  // When true, run ONLY preBriefingRequired (card-feeding) skills. The
+  // pre-briefing fleet run sets this so a heavy non-card self-improvement skill
+  // (nightly-enhancement) can never block the morning briefing.
+  preBriefingRequiredOnly = false,
 } = {}) {
   const agentDir = path.join(dataDir, 'agent');
   const outcomesLedger = path.join(agentDir, 'scheduled-skill-outcomes.jsonl');
   const fleetLedger = path.join(agentDir, 'cloud-scheduled-fleet.jsonl');
   const rows = readJsonl(outcomesLedger);
-  const expected = expectedSkillsForDate(tasks, date);
+  const expected = expectedSkillsForDate(tasks, date, { preBriefingRequiredOnly });
   const due = missingDueSkills(expected, rows, date).slice(0, maxTasks);
   const replayed = [];
   const skipped = expected.length - due.length;
