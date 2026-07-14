@@ -128,6 +128,12 @@ const {
   checkHealthBlockersReverseConsistency,
 } = require('./validate-briefing-quality.js');
 const { numericFaceNeedsDateStamp } = require('./lib/briefing-date-stamp.js');
+// Per-card INDEPENDENT producer hook. For the two cards whose snapshots are
+// generated on the desktop shared checkout and shipped to EC2 (uncommitted_parked
+// / git-hygiene, system_health / devops-health), refresh THAT card's producer
+// snapshot when it is stale BEFORE the card is re-rendered -- never gating or
+// touching any sibling card. No-op (skips) for every other card.
+const { refreshProducerForCard } = require('./lib/briefing-card-producers.js');
 
 // The delimiter buildCloudMorningBriefing joins its own fresh output with
 // (`qcSections.join('\n\n---\n\n')`). Still exported for fixture-building,
@@ -825,6 +831,11 @@ async function refreshCard({
   // without paying for a real multi-minute build.
   buildFn = buildTargetedRebuild,
   prepareFn = prepareTargetedRebuild,
+  // Injectable ONLY for tests: the real CLI path always uses the actual
+  // producer hook. For the two desktop-generated-snapshot cards it regenerates
+  // + ships that card's snapshot when stale; for every other card it is a cheap
+  // no-op (no matching producer). Tests inject a spy/stub so no git/scp runs.
+  refreshProducerFn = refreshProducerForCard,
 } = {}) {
   const card = getCardById(cardId);
   if (!card) {
@@ -859,6 +870,32 @@ async function refreshCard({
   // content. Taking the lock before the read closes that race.
   const doRefresh = async () => {
     await prepareFn({ dataDir, date, now, cardId });
+
+    // Independent per-card producer refresh (breakpoint 3). If THIS card has a
+    // desktop-generated snapshot producer (git-hygiene / devops-health) and that
+    // snapshot is stale, regenerate + ship JUST this card's snapshot before the
+    // re-render below reads it. Non-fatal by contract: a producer error (or the
+    // EC2 file-deploy where it cannot run) never blocks the refresh -- the card's
+    // own honest freshness labelling still governs what renders. Sibling cards
+    // are never touched.
+    try {
+      const producerResult = await refreshProducerFn({
+        cardId,
+        dataDir,
+        now: now.getTime(),
+        logger: console,
+      });
+      if (producerResult && producerResult.error) {
+        console.warn(
+          `[refresh-card] producer refresh for '${cardId}' reported: ${producerResult.error} (non-fatal; card labels its own freshness)`,
+        );
+      }
+    } catch (e) {
+      console.warn(
+        `[refresh-card] producer refresh for '${cardId}' threw (non-fatal): ${(e && e.message) || e}`,
+      );
+    }
+
     const existingMarkdown = fs.readFileSync(markdownPath, 'utf8');
 
     console.log(`[refresh-card] rebuilding card='${cardId}' date=${date} dataDir=${dataDir}`);
