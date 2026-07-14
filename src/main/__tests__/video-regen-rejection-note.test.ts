@@ -26,6 +26,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const SCRIPTS_DIR = path.join(REPO_ROOT, 'scripts');
 const QUEUE_BUILDER = path.join(SCRIPTS_DIR, 'ec2-build-from-queue.py');
 const TOPIC_GEN = path.join(SCRIPTS_DIR, 'daily-video-topic-gen.js');
+const AUTO_REGEN = path.join(SCRIPTS_DIR, 'auto-regen-rejected-videos.js');
 const SEEDANCE = path.join(SCRIPTS_DIR, 'seedance-broll.py');
 
 function pythonBin(): string {
@@ -149,23 +150,28 @@ print(json.dumps({"script": hydrated["script"], "stock_queries": hydrated["stock
   });
 });
 
-// -- daily-video-topic-gen.js re-queues rejected videos ----------------------
+// -- Rejected-video regen ownership -----------------------------------------
 
-describe('(a) daily-video-topic-gen.js re-queues rejected videos with feedback', () => {
+describe('(a) rejected-video regen stays feedback-aware after the daily re-gate', () => {
   let src: string;
-  it('has collectRejectedForRegen', () => {
+  it('daily-video-topic-gen.js does not own rejected-video regeneration', () => {
     src = fs.readFileSync(TOPIC_GEN, 'utf8');
-    expect(src).toContain('function collectRejectedForRegen');
+    expect(src).toContain('Rejected-video regeneration is owned by auto-regen-rejected-videos.js');
+    expect(src).toContain('NEVER touches ec2-build-queue.json');
+    expect(src).not.toContain('collectRejectedForRegen(existingIds)');
   });
 
-  it('attaches the rejection_note field to the re-queued spec', () => {
-    src = fs.readFileSync(TOPIC_GEN, 'utf8');
-    expect(src).toContain('rejection_note: note');
+  it('auto-regen ExampleCos the video rejection note into the rebuild handoff', () => {
+    src = fs.readFileSync(AUTO_REGEN, 'utf8');
+    expect(src).toContain('function buildRegenFeedbackPayload');
+    expect(src).toContain("rejection_note: v.video_rejection_note || ''");
+    expect(src).toContain('v.video_rejection_note ||');
   });
 
-  it('invokes collectRejectedForRegen in the main flow', () => {
-    src = fs.readFileSync(TOPIC_GEN, 'utf8');
-    expect(src).toContain('collectRejectedForRegen(existingIds)');
+  it('auto-regen forces the rebuild path instead of reusing stale output', () => {
+    src = fs.readFileSync(AUTO_REGEN, 'utf8');
+    expect(src).toContain('FORCE_REBUILD=1');
+    expect(src).toContain('ec2-build-from-queue.py --id <id>');
   });
 });
 
