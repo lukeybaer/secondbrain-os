@@ -182,6 +182,14 @@ function markdownPathFor(dataDir, date) {
   return path.join(dataDir || defaultDataDir(), 'briefings', `briefing-${date}.md`);
 }
 
+function readCompatibilityMarkdown({ dataDir, date } = {}) {
+  try {
+    return fs.readFileSync(markdownPathFor(dataDir, date), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 function readMarkdownFallbackArtifacts({ dataDir, date } = {}) {
   const file = markdownPathFor(dataDir, date);
   if (!fs.existsSync(file)) return [];
@@ -341,6 +349,57 @@ function existingSourceArtifact({ dataDir, date, id }) {
   return fallback || null;
 }
 
+function firstRedSystemHealthRow(markdown) {
+  return (
+    String(markdown || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => /^\u2717\s+/.test(line)) || ''
+  );
+}
+
+function systemHealthStatusFromMarkdown(markdown) {
+  return firstRedSystemHealthRow(markdown) ? 'blocked' : 'clean';
+}
+
+function produceSystemHealthCardArtifact({
+  date,
+  dataDir = defaultDataDir(),
+  now = new Date(),
+  markdownForProof,
+  renderSystemHealthSectionFn,
+} = {}) {
+  const renderer =
+    renderSystemHealthSectionFn ||
+    require('../refresh-briefing-generated-sections.js').renderSystemHealthSection;
+  const proof =
+    markdownForProof === undefined ? readCompatibilityMarkdown({ dataDir, date }) : markdownForProof;
+  const markdown = String(renderer(proof) || '').trim();
+  const status = systemHealthStatusFromMarkdown(markdown);
+  const redRow = firstRedSystemHealthRow(markdown);
+  const blockedReason = redRow
+    ? redRow.replace(/^\u2717\s+/, '').slice(0, 220)
+    : '';
+  return createCardArtifact({
+    id: 'system_health',
+    title: cardTitle('system_health'),
+    date,
+    kind: 'data',
+    status,
+    generatedAt: now.toISOString(),
+    markdown,
+    source: { mode: 'system-health-renderer' },
+    blockedReason:
+      status === 'blocked'
+        ? blockedReason || 'System Health still has red subsystem rows.'
+        : '',
+    qc: {
+      ok: status === 'clean',
+      failures: status === 'clean' ? [] : [blockedReason || 'System Health red subsystem rows'],
+    },
+  });
+}
+
 async function produceLlmCardArtifact({ card, date, dataDir, now = new Date() }) {
   const prompt = [
     `Produce the ${card.id} Daily Briefing card for ${date}.`,
@@ -382,6 +441,9 @@ async function produceLlmCardArtifact({ card, date, dataDir, now = new Date() })
 }
 
 function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
+  if (card.id === 'system_health') {
+    return produceSystemHealthCardArtifact({ date, dataDir, now });
+  }
   const existing = existingSourceArtifact({ dataDir, date, id: card.id });
   if (existing) {
     return {
@@ -505,6 +567,7 @@ module.exports = {
   cardForMarkdownTitle,
   markdownSectionToArtifact,
   markdownPathFor,
+  readCompatibilityMarkdown,
   readMarkdownFallbackArtifacts,
   readExplicitArtifacts,
   orderArtifacts,
@@ -516,6 +579,7 @@ module.exports = {
   writeLiveBoardArtifactFromCardArtifacts,
   writeCompatibilityMarkdown,
   produceCardArtifact,
+  produceSystemHealthCardArtifact,
   produceAllCardArtifacts,
   listCardArtifactDates,
   briefingArtifactWatchdog,
