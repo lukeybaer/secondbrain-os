@@ -5,12 +5,13 @@
 // AppData or ignored repo-local runtime paths and should be cloud-archived with
 // receipts when they become durable records.
 //
-// Additionally: each do-the-work skill (the three registered nightly
-// cron tasks) must actually SHIP its code rather than writing a report. The
-// shipping contract is now "LAND via the gate" (node scripts/land.js --apply)
-// instead of a raw git commit, because mutating work happens in an isolated
-// worktree and lands through the gate, never a direct shared-checkout commit.
-// So the assertion accepts either "land" or "commit" as the ship verb.
+// Additionally: active do-the-work skills must actually SHIP their code rather
+// than writing a report. The shipping contract is now "LAND via the gate"
+// (node scripts/land.js --apply) instead of a raw git commit, because mutating
+// work happens in an isolated worktree and lands through the gate, never a
+// direct shared-checkout commit. Retired saturated tasks must stay explicit
+// no-ops and remain absent from the schedulers that used to launch them.
+// The active assertion accepts either "land" or "commit" as the ship verb.
 // Phase 11 of plans/dazzling-rolling-moler.md.
 //
 // Commit 13 of 18 in the plan.
@@ -21,12 +22,24 @@ import * as path from 'path';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const SCHEDULED_DIR = path.join(REPO_ROOT, 'scheduled-tasks');
+const ACTIVE_DO_WORK_TASKS = ['secondbrain-nightly-enhancement'];
+const RETIRED_NOOP_TASKS = ['video-quality-research', 'video-quality-tools'];
 
 function listSkillFiles(): string[] {
   return fs
     .readdirSync(SCHEDULED_DIR)
     .map((task) => path.join(SCHEDULED_DIR, task, 'SKILL.md'))
     .filter((p) => fs.existsSync(p));
+}
+
+function skillContent(taskName: string): string {
+  const p = path.join(SCHEDULED_DIR, taskName, 'SKILL.md');
+  expect(fs.existsSync(p)).toBe(true);
+  return fs.readFileSync(p, 'utf-8');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 describe('scheduled-tasks SKILL.md hygiene', () => {
@@ -59,15 +72,9 @@ describe('scheduled-tasks SKILL.md hygiene', () => {
     });
   }
 
-  for (const taskName of [
-    'secondbrain-nightly-enhancement',
-    'video-quality-research',
-    'video-quality-tools',
-  ]) {
+  for (const taskName of ACTIVE_DO_WORK_TASKS) {
     it(`${taskName}: is a "do the work" skill, not a report`, () => {
-      const p = path.join(SCHEDULED_DIR, taskName, 'SKILL.md');
-      expect(fs.existsSync(p)).toBe(true);
-      const content = fs.readFileSync(p, 'utf-8');
+      const content = skillContent(taskName);
       // Ships code for real: either the landing-gate command (scripts/land.js)
       // or an explicit git commit. A bare word like "land"/"commitment" must NOT
       // satisfy this, so the matcher pins the actual ship action, not prose.
@@ -76,15 +83,33 @@ describe('scheduled-tasks SKILL.md hygiene', () => {
     });
   }
 
-  for (const taskName of [
-    'secondbrain-nightly-enhancement',
-    'video-quality-research',
-    'video-quality-tools',
-  ]) {
+  for (const taskName of ACTIVE_DO_WORK_TASKS) {
     it(`${taskName}: names the nightly-enhancements runtime log`, () => {
-      const p = path.join(SCHEDULED_DIR, taskName, 'SKILL.md');
-      const content = fs.readFileSync(p, 'utf-8');
+      const content = skillContent(taskName);
       expect(content).toMatch(/nightly-enhancements\.jsonl/);
+    });
+  }
+
+  for (const taskName of RETIRED_NOOP_TASKS) {
+    it(`${taskName}: retired task stays an explicit no-op and is not scheduled`, () => {
+      const content = skillContent(taskName).toLowerCase();
+      expect(content).toMatch(/retired 2026-07-11/);
+      expect(content).toMatch(/do not run this task/);
+      expect(content).toMatch(/no-op/);
+      expect(content).toMatch(/removed from `scripts\/lib\/cloud-scheduled-fleet\.js`/);
+      expect(content).toMatch(/scripts\/register-scheduled-tasks\.ps1/);
+
+      const cloudFleet = fs.readFileSync(
+        path.join(REPO_ROOT, 'scripts', 'lib', 'cloud-scheduled-fleet.js'),
+        'utf-8',
+      );
+      const windowsTasks = fs.readFileSync(
+        path.join(REPO_ROOT, 'scripts', 'register-scheduled-tasks.ps1'),
+        'utf-8',
+      );
+      const skillLiteral = escapeRegExp(taskName);
+      expect(cloudFleet).not.toMatch(new RegExp(`\\bskill:\\s*['"]${skillLiteral}['"]`));
+      expect(windowsTasks).not.toMatch(new RegExp(`Skill-Task[^\\r\\n]*['"]${skillLiteral}['"]`));
     });
   }
 });
