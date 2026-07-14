@@ -344,8 +344,28 @@ function writeCompatibilityMarkdown({ dataDir, date, artifacts, now = new Date()
 
 function existingSourceArtifact({ dataDir, date, id }) {
   const current = readCardArtifact({ dataDir, date, id });
-  if (current) return { ...current, source: { ...(current.source || {}), ExampleCodForward: true } };
   const fallback = readMarkdownFallbackArtifacts({ dataDir, date }).find((artifact) => artifact.id === id);
+  if (current) {
+    const markdownMs = (() => {
+      try {
+        return fs.statSync(markdownPathFor(dataDir, date)).mtimeMs;
+      } catch {
+        return NaN;
+      }
+    })();
+    const currentMs = Date.parse(current.generatedAt || current.generated_at || '');
+    if (
+      fallback &&
+      Number.isFinite(markdownMs) &&
+      (!Number.isFinite(currentMs) || markdownMs > currentMs)
+    ) {
+      return {
+        ...fallback,
+        source: { ...(fallback.source || {}), replacedStaleArtifact: true },
+      };
+    }
+    return { ...current, source: { ...(current.source || {}), ExampleCodForward: true } };
+  }
   return fallback || null;
 }
 
