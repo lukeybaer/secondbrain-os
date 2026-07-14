@@ -19,7 +19,12 @@ const DEFAULT_DATA_DIR =
 // Bat/script jobs stay owned by their dedicated runners; this fleet owns the
 // scheduled SKILL.md work so PC-off nights still leave receipts.
 const DEFAULT_CLOUD_SCHEDULED_SKILLS = Object.freeze([
-  { skill: 'secondbrain-nightly-enhancement', cadence: 'daily', preBriefingRequired: true },
+  // NOT preBriefingRequired: nightly-enhancement is a heavy codex self-improvement
+  // fan-out, NOT a briefing-card feeder. On 2026-07-14 it hung (codex stuck) and,
+  // because it was preBriefingRequired with the 45min skill timeout, blocked the
+  // ENTIRE 5:30 briefing from generating a single card. A background self-improvement
+  // task must never gate morning publish; it still runs on its own midnight schedule.
+  { skill: 'secondbrain-nightly-enhancement', cadence: 'daily', preBriefingRequired: false },
   { skill: 'daily-birthday-check', cadence: 'daily', preBriefingRequired: true },
   { skill: 'daily-gmail-scan', cadence: 'daily', preBriefingRequired: true },
   { skill: 'daily-otter-sweep', cadence: 'daily', preBriefingRequired: true },
