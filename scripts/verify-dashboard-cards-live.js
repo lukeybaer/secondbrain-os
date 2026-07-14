@@ -1401,7 +1401,7 @@ function ownerlessRepairLanguageDefects(card, tile) {
   }
   const text = `${tile.body || ''} ${tile.inner || ''}`;
   if (
-    !/(?:\bSee the card\b|\bNo ExampleCo action\b|\bNothing for you to do\b|\bNothing\.|\bno action needed\b|\brequired unless\b)/i.test(
+    !/(?:\bSee the card\b|\bNo ExampleCo action\b|\bNothing for you to do\b|(?:^|[.!?]\s+|(?:Need(?:ed steps| from ExampleCo)?|What you need to do|What I need from you|Action)\s*:\s*)Nothing\.|\bno action needed\b|\brequired unless\b)/i.test(
       text,
     )
   ) {
@@ -2386,9 +2386,8 @@ function blockerRowLead(rowText) {
   return (cut > 0 ? text.slice(0, cut) : text).trim();
 }
 
-function blockerSubjectIsSystemHealthOnly(rowSubject, cardId) {
-  if (cardId !== 'otter_speaker_pareto') return false;
-  return /\b(?:System Health:\s*)?Otter speaker enrichment\b/i.test(String(rowSubject || ''));
+function blockerSubjectIsSystemHealthOnly(rowSubject) {
+  return /^\s*System Health\s*:/i.test(String(rowSubject || ''));
 }
 
 function blockersNamedCardDefects(tiles, defectsByCard) {
@@ -2408,7 +2407,7 @@ function blockersNamedCardDefects(tiles, defectsByCard) {
         if (!tile) continue;
         const existing = defectsByCard.get(card.id) || [];
         if (existing.length) continue;
-        if (blockerSubjectIsSystemHealthOnly(rowSubject, card.id)) continue;
+        if (blockerSubjectIsSystemHealthOnly(rowSubject)) continue;
         if (!isNamedInBlockersPart(tile, rowSubject, part, card.id)) continue;
         if (seen.has(card.id)) continue;
         seen.add(card.id);
