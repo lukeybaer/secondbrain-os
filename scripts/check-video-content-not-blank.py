@@ -29,6 +29,35 @@ THUMBNAIL_CARD_DURATION_S = 2.5
 SAMPLE_TIMESTAMPS_FRAC = (0.10, 0.50, 0.80)
 MIN_BODY_DURATION_S = 5.0
 
+# Real-content override (2026-07-13). The thumbnail gate is deliberately strict:
+# it rejects any frame that is >50% near-black or dark on average, because a
+# THUMBNAIL must have a bright, legible background. But legitimate storytelling
+# B-roll is often dark-yet-textured -- a firefly glowing at night measures
+# pct_near_black ~50-71% and mean_luminance ~31-44 (both fail the thumbnail
+# gate) while carrying luminance stddev ~42-46. A genuinely blank/black canvas
+# has stddev ~0. So for the BODY-frame sampling we add a texture override: a
+# sampled frame whose luminance stddev clears this threshold has real visual
+# content and is NOT counted toward blank_count, even though the strict
+# thumbnail gate failed it. The thumbnail gate itself is unchanged (thumbnails
+# still must pass the strict bar).
+STDDEV_REAL_CONTENT_MIN = 30.0
+
+
+def frame_has_real_texture(check_result: dict) -> bool:
+    """True when a sampled body frame ExampleCos enough luminance variance to be
+    real footage rather than a blank canvas.
+
+    Reads stddev_luminance from the thumbnail gate's own metrics so the measure
+    is computed exactly the way the file already samples frames (PIL over the
+    extracted JPEG). A frame that could not be decoded has no stddev -> 0.0 ->
+    treated as blank.
+    """
+    try:
+        std = float((check_result.get("metrics") or {}).get("stddev_luminance") or 0.0)
+    except (TypeError, ValueError):
+        std = 0.0
+    return std >= STDDEV_REAL_CONTENT_MIN
+
 
 def get_duration(path: Path) -> float:
     r = subprocess.run(
@@ -152,14 +181,22 @@ def analyze(path: Path) -> dict:
                 frame_results.append({"t_s": round(ts, 1), "extracted": False})
                 continue
             check = check_frame(frame)
+            has_texture = frame_has_real_texture(check)
+            # A frame counts as blank only if the strict gate failed it AND it
+            # lacks real luminance texture. Dark-but-textured storytelling
+            # B-roll (high stddev) is real content even when the thumbnail gate
+            # rejects it for being dark.
+            counts_blank = (not check.get("ok")) and (not has_texture)
             frame_results.append({
                 "t_s": round(ts, 1),
                 "extracted": True,
                 "ok": check.get("ok"),
                 "reason": check.get("reason", "")[:120],
+                "stddev_luminance": (check.get("metrics") or {}).get("stddev_luminance"),
+                "real_texture_override": bool(has_texture and not check.get("ok")),
                 "metrics": check.get("metrics", {}),
             })
-            if not check.get("ok"):
+            if counts_blank:
                 blank_count += 1
 
     metrics = {

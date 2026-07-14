@@ -295,16 +295,29 @@ def card_text_from_script(title, script):
     return (first[0][:70] if first and first[0] else title)
 
 
-def run(cmd, **kwargs):
+def run(cmd, check=False, **kwargs):
     # Timeout bumped from 600s to 1500s 2026-05-03: chained ass-subtitle
     # filters (captions.ass + overlays.ass) on the assemble step push the
     # encode time over 600s on EC2 t3-class instances. The previous limit
     # silently truncated the final.mp4 mid-encode.
+    #
+    # check=False by default so every existing caller keeps its current
+    # behavior (many run() calls have their own .exists()/fallback handling and
+    # must NOT raise -- e.g. the music-mix voice-only fallback). Pass check=True
+    # on critical steps that have no fallback (the final assembly): there a
+    # non-zero ffmpeg exit that leaves a partial/truncated file on disk would
+    # otherwise sail past the downstream `.exists()` check and be reported as a
+    # false success ("claimed success but no valid mp4"). Raising surfaces it.
     timeout = kwargs.get("timeout", 1500)
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         print(f"  CMD FAILED [{result.returncode}]: {cmd[:80]}")
         print(f"  STDERR: {result.stderr[:300]}")
+        if check:
+            raise RuntimeError(
+                f"command failed with exit {result.returncode}: {cmd[:120]} :: "
+                f"{(result.stderr or '')[:300]}"
+            )
     return result
 
 def load_manifest():
@@ -317,6 +330,37 @@ def load_manifest():
 
 def save_manifest(data):
     MANIFEST_PATH.write_text(json.dumps(data, indent=2))
+
+
+def build_exit_code(failed, target_id, built):
+    """Exit code for a build run.
+
+    Non-zero on ANY failure so a caller (auto-regen-rejected-videos.js) never
+    reads a swallowed build error as success. A requested --id / --spec-file
+    target that produced nothing built (e.g. the id was absent from the queue
+    and no spec was injected) is also a failure, not a silent 0.
+    """
+    if failed or (target_id and target_id not in built):
+        return 1
+    return 0
+
+
+def merge_injected_spec(queue, injected_spec):
+    """Merge a caller-supplied spec (from --spec-file) into the in-memory queue.
+
+    Lets a daily-generated id that is NOT present in the transient
+    ec2-build-queue.json still build: replaces the existing row with the same
+    id when present, otherwise appends. Mutates only the in-memory dict (the
+    on-disk queue file is never rewritten, so concurrent runs do not race).
+    Returns the injected id.
+    """
+    inj_id = injected_spec["id"]
+    vids = queue.setdefault("videos", [])
+    if any(s.get("id") == inj_id for s in vids):
+        queue["videos"] = [injected_spec if s.get("id") == inj_id else s for s in vids]
+    else:
+        vids.append(injected_spec)
+    return inj_id
 
 
 # ── Voice Generation ──────────────────────────────────────────────────────────
@@ -1850,13 +1894,13 @@ def build_video(spec, config):
             f'-filter_complex "[0:v]{base_chain}[base];[base][2:v]overlay=0:0:format=auto:eof_action=pass[v]" '
             f'-map "[v]" -map 1:a '
             f"-c:v libx264 -preset {preset} -crf {crf} -c:a aac -b:a 192k "
-            f"-t {total_dur} -pix_fmt yuv420p {final}")
+            f"-t {total_dur} -pix_fmt yuv420p {final}", check=True)
     else:
         vf_arg = f'-vf "{",".join(vf_parts)}"' if vf_parts else ""
         run(f"ffmpeg -y -f concat -safe 0 -i {concat_txt} -i {audio_for_assemble} "
             f"{vf_arg} "
             f"-c:v libx264 -preset {preset} -crf {crf} -c:a aac -b:a 192k "
-            f"-t {total_dur} -pix_fmt yuv420p {final}")
+            f"-t {total_dur} -pix_fmt yuv420p {final}", check=True)
 
     if not final.exists():
         print(f"  FAILED: no final.mp4")
@@ -1927,15 +1971,44 @@ if __name__ == "__main__":
     # work done. Fix: support both the legacy bare-id form and the
     # `--id <id>` form.
     target_id = None
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "--id" and len(sys.argv) > 2:
-            target_id = sys.argv[2]
-        elif sys.argv[1].startswith("--id="):
-            target_id = sys.argv[1].split("=", 1)[1]
-        elif not sys.argv[1].startswith("--"):
-            target_id = sys.argv[1]
+    spec_file = None
+    _argv = sys.argv[1:]
+    for i, a in enumerate(_argv):
+        if a == "--id" and i + 1 < len(_argv):
+            target_id = _argv[i + 1]
+        elif a.startswith("--id="):
+            target_id = a.split("=", 1)[1]
+        elif a == "--spec-file" and i + 1 < len(_argv):
+            spec_file = _argv[i + 1]
+        elif a.startswith("--spec-file="):
+            spec_file = a.split("=", 1)[1]
+        elif i == 0 and not a.startswith("--"):
+            # Legacy bare-id form.
+            target_id = a
     if target_id:
         print(f"[main] target_id={target_id}")
+
+    # --spec-file <path> lets the regen orchestrator (auto-regen-rejected-
+    # videos.js) rebuild a daily-generated id that is NOT present in the
+    # transient ec2-build-queue.json. Previously `--id <daily_id>` no-oped
+    # because the loop only iterates that stale queue file; the build then
+    # exited 0 with nothing built ("claimed success but no mp4"). We inject the
+    # caller-supplied spec into the in-memory queue only (the on-disk queue file
+    # is never mutated, so concurrent runs don't race).
+    injected_spec = None
+    if spec_file:
+        try:
+            injected_spec = json.loads(Path(spec_file).read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[main] --spec-file unreadable ({spec_file}): {e}")
+            sys.exit(1)
+        if not isinstance(injected_spec, dict) or not injected_spec.get("id"):
+            print(f"[main] --spec-file must contain a JSON object with an 'id' field: {spec_file}")
+            sys.exit(1)
+        inj_id = merge_injected_spec(queue, injected_spec)
+        if not target_id:
+            target_id = inj_id
+        print(f"[main] injected spec for {inj_id} from {spec_file}")
 
     # Daily approval gate (locked 2026-05-04 by ExampleCo #learn).
     # When run WITHOUT --id (i.e. the daily auto-generation path), only
@@ -2009,3 +2082,9 @@ if __name__ == "__main__":
     for f in failed:
         print(f"  FAIL: {f}")
     print(f"{'='*60}")
+
+    # Exit non-zero on ANY failure so a caller (auto-regen-rejected-videos.js)
+    # never reads a swallowed build error as success. Previously the script
+    # fell off the end of __main__ and returned exit 0 even for "0 built" or
+    # "N failed" -- a false success.
+    sys.exit(build_exit_code(failed, target_id, built))

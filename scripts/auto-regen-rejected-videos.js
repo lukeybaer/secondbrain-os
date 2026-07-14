@@ -51,6 +51,13 @@ const { stampNicheOntoSpec } = require('./lib/niche-to-legacy-spec.js');
 // keeps a deleted video out of this loop, even if a stray write re-flips a
 // needs_regen flag.
 const { isRegenCandidate } = require('./lib/video-delete-state.js');
+// FIX C(a): non-destructive quarantine of the good youtube/<id>.mp4 so a
+// failed rebuild never destroys the only valid copy.
+const {
+  quarantineGoodOutput,
+  restoreGoodOutput,
+  dropBackup: dropQuarantineBackup,
+} = require('./lib/good-output-quarantine.js');
 const PLAN_VIDEO_BUILD_CLI = path.join(__dirname, 'lib', 'plan-video-build-cli.js');
 const BUILD_FROM_PLAN_PY = path.join(__dirname, 'build-from-plan.py');
 
@@ -738,11 +745,23 @@ function regenVideoOnLocalEc2Build(v, localMp4, localThumb) {
       /* ignore */
     }
   }
-  try {
-    fs.rmSync(path.join('/opt/secondbrain/data/youtube', `${v.id}.mp4`), { force: true });
-  } catch {
-    /* ignore */
-  }
+  // FIX C(a) 2026-07-13: do NOT destroy the good youtube/<id>.mp4 before the
+  // rebuild has produced a VERIFIED non-blank replacement. Previously this
+  // spot rmSync'd the only valid copy at the start of every attempt, so each
+  // false-positive rejection (the FIX A blank-detector bug) permanently
+  // destroyed a good video whenever the doomed rebuild then failed. Now we
+  // quarantine the good copy to a sibling backup: the candidate scan below
+  // still won't mistake a stale youtube/<id>.mp4 for a fresh build, every
+  // failure path restores the original, and the backup is only dropped once a
+  // verified non-blank replacement exists. See scripts/lib/good-output-quarantine.js.
+  const goodMp4 = path.join('/opt/secondbrain/data/youtube', `${v.id}.mp4`);
+  const backupState = quarantineGoodOutput(goodMp4);
+  const dropBackup = () => dropQuarantineBackup(backupState);
+  // Every early failure return must restore the quarantined good copy.
+  const fail = (reason, extra = {}) => {
+    restoreGoodOutput(backupState);
+    return { ok: false, reason, ...extra };
+  };
 
   // 2026-05-26 ExampleCo #learn: migration-week wiring. When
   // USE_PLANNER_PIPELINE=1, run the new planner + dumb executor
@@ -774,10 +793,9 @@ function regenVideoOnLocalEc2Build(v, localMp4, localThumb) {
 
   if (usePlannerPipeline) {
     if (!nicheObj) {
-      return {
-        ok: false,
-        reason: `USE_PLANNER_PIPELINE=1 but niche YAML missing for channel ${v.channel}; cannot plan without a niche profile`,
-      };
+      return fail(
+        `USE_PLANNER_PIPELINE=1 but niche YAML missing for channel ${v.channel}; cannot plan without a niche profile`,
+      );
     }
     // 1. Plan via the CLI wrapper (spawnSync, sync subprocess).
     const planPath = path.join('/tmp', `${v.id}.plan.json`);
@@ -802,10 +820,9 @@ function regenVideoOnLocalEc2Build(v, localMp4, localThumb) {
       },
     );
     if (planR.status !== 0) {
-      return {
-        ok: false,
-        reason: `planner CLI exit ${planR.status}: ${(planR.stderr || planR.stdout || '').slice(0, 400)}`,
-      };
+      return fail(
+        `planner CLI exit ${planR.status}: ${(planR.stderr || planR.stdout || '').slice(0, 400)}`,
+      );
     }
     v.plan_path = planPath;
     // Stash on the outer closure so the success-path return object can
@@ -827,20 +844,32 @@ function regenVideoOnLocalEc2Build(v, localMp4, localThumb) {
       ...HIDDEN_PROCESS,
     });
     if (execR.status !== 0) {
-      return {
-        ok: false,
-        reason: `build-from-plan exit ${execR.status}: ${(execR.stderr || execR.stdout || '').slice(0, 400)}`,
-        plan_path: planPath,
-      };
+      return fail(
+        `build-from-plan exit ${execR.status}: ${(execR.stderr || execR.stdout || '').slice(0, 400)}`,
+        { plan_path: planPath },
+      );
     }
     // Treat the rest of the function as if the legacy path had produced
     // the artifact: it lives at data/youtube/build-from-plan/<id>/final.mp4.
     var r = execR;
   }
+  // FIX C(b) 2026-07-13: write the manifest spec to a temp file and pass it via
+  // --spec-file so ec2-build-from-queue.py can rebuild a daily-generated id
+  // that is NOT present in the transient scripts/ec2-build-queue.json.
+  // Previously `--id <daily_id>` no-oped (the loop only iterates that stale
+  // queue file) and the build returned exit 0 with no mp4 -- a false success.
+  const specFile = path.join(os.tmpdir(), `regen-spec-${v.id}.json`);
+  let legacyArgs = ['-u', 'scripts/ec2-build-from-queue.py', '--id', v.id];
+  try {
+    fs.writeFileSync(specFile, JSON.stringify({ ...v, id: v.id }));
+    legacyArgs = legacyArgs.concat(['--spec-file', specFile]);
+  } catch (e) {
+    console.warn(`  [ec2-local] could not write --spec-file: ${e.message.slice(0, 160)}`);
+  }
   var r =
     typeof r !== 'undefined' && r
       ? r
-      : spawnSync('python3', ['-u', 'scripts/ec2-build-from-queue.py', '--id', v.id], {
+      : spawnSync('python3', legacyArgs, {
           cwd: '/opt/secondbrain',
           encoding: 'utf-8',
           timeout: 30 * 60 * 1000,
@@ -861,11 +890,9 @@ function regenVideoOnLocalEc2Build(v, localMp4, localThumb) {
         });
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
   if (r.status !== 0) {
-    return {
-      ok: false,
-      reason: `local ec2 build exit ${r.status}: ${(r.stderr || r.stdout || '').slice(0, 300)}`,
+    return fail(`local ec2 build exit ${r.status}: ${(r.stderr || r.stdout || '').slice(0, 300)}`, {
       timing_s: { total_s: elapsed },
-    };
+    });
   }
 
   const buildLog = (r.stdout || '') + '\n' + (r.stderr || '');
@@ -885,12 +912,31 @@ function regenVideoOnLocalEc2Build(v, localMp4, localThumb) {
   });
   if (!builtMp4) {
     const missingReason = `local ec2 build claimed success but no output mp4 (checked ${builtCandidates.join(', ')})`;
-    return {
-      ok: false,
-      reason: ec2BuildFailureReason(buildLog, missingReason),
-    };
+    return fail(ec2BuildFailureReason(buildLog, missingReason));
+  }
+  // FIX C(a): verify the rebuild is actually non-blank BEFORE it replaces the
+  // quarantined good copy. A false success here would ship a broken artifact
+  // and (via dropBackup below) discard the only valid video. If the gate
+  // fails, restore the good original and fail loud.
+  const builtVerify = checkVideoContent(builtMp4);
+  if (!builtVerify.ok) {
+    return fail(
+      `rebuilt mp4 failed the non-blank content gate; kept the prior good copy: ${builtVerify.reason}`,
+      { content_gate: builtVerify.metrics || null },
+    );
   }
   fs.copyFileSync(builtMp4, localMp4);
+  // Repopulate the canonical youtube/<id>.mp4 with the fresh verified build
+  // (the planner path writes elsewhere) so the good-output location always
+  // holds a verified video before we drop the quarantined backup.
+  try {
+    if (path.resolve(builtMp4) !== path.resolve(goodMp4)) {
+      fs.copyFileSync(builtMp4, goodMp4);
+    }
+  } catch (e) {
+    console.warn(`  [ec2-local] could not refresh canonical mp4: ${e.message.slice(0, 160)}`);
+  }
+  dropBackup();
   const builtThumb = path.join(buildDir, 'thumbnail.jpg');
   if (fs.existsSync(builtThumb)) {
     try {
@@ -1788,6 +1834,21 @@ function main() {
             v.regen_unaddressed_rejection_at = new Date().toISOString();
             v.video_needs_regen = true;
             // status stays 'video_rejected' -- do NOT cycle back into queue.
+            // FIX C(c): count this as a durable attempt so a rebuild that keeps
+            // failing to address the rejection dead-letters after N tries
+            // instead of being re-flagged needs_regen on every run forever.
+            const recorded = regenRetry.recordAttempt({
+              videoId: v.id,
+              step: 'video',
+              lastError: v.regen_unaddressed_rejection,
+              errorCode: classifyErrorCode('video', v.regen_unaddressed_rejection),
+              rejectionNote: (v.video_rejection_note || '').slice(0, 240),
+            });
+            if (recorded.exhausted) {
+              v.regen_status = 'dead-letter';
+              v.regen_error = 'retry attempts exhausted; see data/agent/regen-failures.jsonl';
+              v.regen_failed_at = new Date().toISOString();
+            }
             console.log(`  rebuild_did_not_address_rejection: ${v.regen_unaddressed_rejection}`);
             continue;
           }
@@ -1942,11 +2003,27 @@ function main() {
           }
           // Re-flag for another regen cycle so the iteration loop continues.
           v.video_needs_regen = true;
+          // FIX C(c): count this rubric failure as a durable attempt so a
+          // video that can never clear the rubric dead-letters after N tries
+          // instead of being re-flagged needs_regen on every run forever.
+          const failedNames = (v.rubric_failed || [])
+            .map((f) => f.name || f)
+            .slice(0, 5)
+            .join(', ');
+          const recorded = regenRetry.recordAttempt({
+            videoId: v.id,
+            step: 'video',
+            lastError: `rubric failed: ${failedNames || 'unspecified criteria'}`,
+            errorCode: classifyErrorCode('video', 'rubric failed'),
+            rejectionNote: (v.video_rejection_note || '').slice(0, 240),
+          });
+          if (recorded.exhausted) {
+            v.regen_status = 'dead-letter';
+            v.regen_error = 'retry attempts exhausted; see data/agent/regen-failures.jsonl';
+            v.regen_failed_at = new Date().toISOString();
+          }
           console.log(
-            `  rubric failed -- staying video_rejected. failed: ${(v.rubric_failed || [])
-              .map((f) => f.name || f)
-              .slice(0, 5)
-              .join(', ')}`,
+            `  rubric failed -- staying video_rejected. failed: ${failedNames}`,
           );
         }
       } else {
