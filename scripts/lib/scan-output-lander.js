@@ -33,9 +33,33 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { ensureCodexWorktree, isSharedCheckout } = require('./codex-worktree.js');
+const {
+  ensureCodexWorktree,
+  isSharedCheckout,
+  proveWorktreeIsolation,
+} = require('./codex-worktree.js');
 
 const GIT_TIMEOUT_MS = 120_000;
+
+// Loud-refusal ledger. Defaults to the same runtime outcomes ledger the
+// scheduled runner appends to (data/agent/scheduled-skill-outcomes.jsonl,
+// gitignored). Honors SECONDBRAIN_DATA_DIR so the record lands in the SHARED
+// data dir even when repoRoot is an isolated worktree.
+function defaultLedgerPath(repoRoot) {
+  const dataDir = process.env.SECONDBRAIN_DATA_DIR || path.join(repoRoot, 'data');
+  return path.join(dataDir, 'agent', 'scheduled-skill-outcomes.jsonl');
+}
+
+// Append a single JSONL row to the outcomes ledger. Best-effort but never
+// silent: a failed append is logged loudly so the refusal is still visible.
+function recordRefusal(ledgerPath, row, log) {
+  try {
+    fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
+    fs.appendFileSync(ledgerPath, JSON.stringify({ ts: new Date().toISOString(), ...row }) + '\n');
+  } catch (e) {
+    log(`[scan-lander] REFUSAL ledger append FAILED (${ledgerPath}): ${e.message}`);
+  }
+}
 
 function runGitDefault(args, cwd) {
   const r = spawnSync('git', args, {
@@ -159,6 +183,8 @@ function landScanOutputs({
   runLand = runLandDefault,
   ensureWorktree = ensureCodexWorktree,
   sharedCheckoutCheck = isSharedCheckout,
+  proveIsolation = proveWorktreeIsolation,
+  ledgerPath,
   syncShared = true,
 } = {}) {
   if (!repoRoot) throw new Error('landScanOutputs: repoRoot is required');
@@ -209,6 +235,36 @@ function landScanOutputs({
         };
       }
     }
+  }
+
+  // PROVEN-ISOLATION GATE (2026-07-13 fail-closed fix): never `git add`/`commit`
+  // in a tree we cannot PROVE is an isolated worktree. When the isolation probe
+  // is unproven (git timed out/errored under .git bloat), the old code could
+  // fall through and commit into the shared checkout, which the pre-commit guard
+  // blocks -- leaving staged dirt. Now we REFUSE loudly: ledger the refusal to
+  // the same outcomes ledger the scheduled runner uses, and return not-landed.
+  // This does NOT change behavior when isolation IS proven.
+  const isolation = proveIsolation(landRoot);
+  if (!isolation || !isolation.proven) {
+    const reason =
+      `isolation-unproven: refusing git add/commit in ${landRoot} ` +
+      `(${isolation ? isolation.reason : 'no isolation proof'})`;
+    log(`[scan-lander] LOUD REFUSAL: ${reason}`);
+    recordRefusal(
+      ledgerPath || defaultLedgerPath(repoRoot),
+      {
+        rung: 'scan-output-lander',
+        ok: false,
+        exitCode: 1,
+        verdict: 'refused-isolation-unproven',
+        reason,
+        landRoot,
+        onShared,
+        files,
+      },
+      log,
+    );
+    return { ok: false, landed: false, refused: true, reason, files };
   }
 
   const add = runGit(['add', '--', ...pathspecs], landRoot);
