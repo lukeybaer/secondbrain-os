@@ -141,8 +141,18 @@ function cardForMarkdownTitle(title) {
 }
 
 function inferMarkdownSectionStatus(body) {
-  const text = String(body || '');
-  if (/\b(HARD-BLOCKED|blocked|source expired|unavailable|stale)\b/i.test(text)) return 'blocked';
+  const lines = String(body || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const first = lines[0] || '';
+  const firstFew = lines.slice(0, 4).join('\n');
+  if (/^(HARD-BLOCKED|BLOCKED\b|Blocked:|This card is held\b)/i.test(first)) return 'blocked';
+  if (/^Status:\s*(blocked|red|stale|unavailable)\b/i.test(firstFew)) return 'blocked';
+  if (/^Severity:\s*(red|blocked)\b/i.test(firstFew)) return 'blocked';
+  if (/^(Source unavailable|Source expired|Unavailable)\b:?/i.test(first)) return 'blocked';
+  if (/^\u2717\s/.test(first)) return 'blocked';
+  if (/held back rather than shown as today|more than 24 hours old/i.test(first)) return 'blocked';
   return 'clean';
 }
 
