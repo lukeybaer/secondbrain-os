@@ -483,6 +483,7 @@ describe('overnight-self-heal-orchestrator: EC2 app root vs git root', () => {
         calls.push({ cmd, args, cwd: opts.cwd });
         return { status: 0, stdout: 'restarted', stderr: '' };
       },
+      healthProbe: () => ({ ok: true, code: '200' }),
     });
     expect(result.ok).toBe(true);
     expect(calls).toEqual([
