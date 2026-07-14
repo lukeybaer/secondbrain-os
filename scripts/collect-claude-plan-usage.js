@@ -38,6 +38,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const https = require('https');
+const { writeSidecar, clearSidecar } = require('./lib/collector-degrade.js');
 
 const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
@@ -127,11 +128,34 @@ async function fetchUsageWithRetry(token, { attempts = 4, delayMs = 1500 } = {})
   throw lastErr;
 }
 
+// Additive degrade sidecar: on failure, record the three-state degrade contract
+// next to (never overwriting) claude-plan-usage.json, so the Cloudflare "Just a
+// moment" bot-challenge from the EC2 datacenter IP becomes a loud PROVISIONING
+// state the code-writing healer is told to SKIP (it can never clear a per-IP
+// reputation gate), instead of a repairable "blocked" card it grabs daily. The
+// last-good main artifact is left untouched.
+function writeDegradeSidecar(errText) {
+  const { block, sidecar } = writeSidecar(OUT_PATH, {
+    errorText: errText,
+    owner: 'ExampleCo',
+    remediation:
+      'collect from a residential IP (the desktop scheduled task) and ship to EC2; claude.ai/api/oauth/usage Cloudflare-challenges datacenter IPs, so retry from EC2 cannot clear it',
+    source: 'https://claude.ai/api/oauth/usage',
+  });
+  if (sidecar) {
+    console.error(
+      `[collect-claude-plan-usage] degrade sidecar (${block.degrade_state}${block.healer_excluded ? ', healer-excluded' : ''}) -> ${sidecar}`,
+    );
+  }
+  return block;
+}
+
 async function main() {
   let token;
   try { token = readAccessToken(); }
   catch (e) {
     console.error(`[collect-claude-plan-usage] ${e.message}`);
+    writeDegradeSidecar(e.message);
     process.exit(2);
   }
   let raw;
@@ -142,6 +166,7 @@ async function main() {
   try { raw = await fetchUsageWithRetry(token, { attempts }); }
   catch (e) {
     console.error(`[collect-claude-plan-usage] ${e.message}`);
+    writeDegradeSidecar(e.message);
     process.exit(1);
   }
   const flat = flatten(raw);
@@ -154,6 +179,8 @@ async function main() {
   };
   fs.mkdirSync(path.dirname(OUT_PATH), { recursive: true });
   fs.writeFileSync(OUT_PATH, JSON.stringify(out, null, 2));
+  // Clear any stale degrade sidecar on a clean read so the fault does not linger.
+  clearSidecar(OUT_PATH);
   console.log(`[collect-claude-plan-usage] wrote ${OUT_PATH}`);
   console.log(`  weekly all models: ${flat.weekly_all_models_percent}% (resets ${flat.weekly_all_models_resets_at})`);
   console.log(`  weekly Sonnet:     ${flat.weekly_sonnet_percent}% (resets ${flat.weekly_sonnet_resets_at})`);

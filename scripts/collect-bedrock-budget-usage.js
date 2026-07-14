@@ -15,6 +15,7 @@
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { writeSidecar, clearSidecar } = require('./lib/collector-degrade.js');
 
 // Resolve the AWS account id at runtime (never hardcode it -- the literal is a
 // PII denylist token and this file ships in the public-sync allowlist). Env
@@ -91,8 +92,25 @@ function main() {
     payload = fetchBudget();
   } catch (e) {
     console.error(`[collect-bedrock-budget-usage] ${e.message}`);
-    process.exit(1);
+    // Additive degrade sidecar (never touches the main artifact, readers guard on
+    // `limit`): an IAM AccessDenied becomes a loud PROVISIONING state with an owner
+    // + remediation the healer is told to skip, not a silently-tolerated gap.
+    const { block, sidecar } = writeSidecar(OUT_PATH, {
+      errorText: e.message,
+      owner: 'ExampleCo',
+      remediation: 'run: bash scripts/infra/apply-ec2-iam.sh (ExampleCos budgets:ViewBudget to the EC2 role)',
+      source: 'aws budgets describe-budget',
+    });
+    if (sidecar) {
+      console.error(
+        `[collect-bedrock-budget-usage] degrade sidecar (${block.degrade_state}${block.healer_excluded ? ', healer-excluded' : ''}) -> ${sidecar}`,
+      );
+    }
+    // exit 2 for a structural provisioning fault (loud, human-owned), 1 otherwise.
+    process.exit(block && block.degrade_state === 'provisioning' ? 2 : 1);
   }
+  // Clear any stale degrade sidecar on a clean read so the fault does not linger.
+  clearSidecar(OUT_PATH);
   const out = {
     generated_at: new Date().toISOString(),
     source: 'aws budgets describe-budget',

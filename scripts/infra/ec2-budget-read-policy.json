@@ -1,0 +1,12 @@
+{
+  "_comment": "Reference/template for the EC2 instance-role budget-read ExampleCo (report breakpoint 7, IAM-as-code). ACCOUNT_ID is a placeholder: the real 12-digit id is a PII denylist token and is substituted at runtime by scripts/infra/apply-ec2-iam.sh via `aws sts get-caller-identity`. Do NOT hardcode the account id here; this file ships in the public-sync allowlist.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AmyBedrockBudgetRead",
+      "Effect": "Allow",
+      "Action": "budgets:ViewBudget",
+      "Resource": "arn:aws:budgets::ACCOUNT_ID:budget/amy-llm-fallback-bedrock"
+    }
+  ]
+}
