@@ -88,6 +88,238 @@ function otterStatusPreamble(body) {
   return (idx === -1 ? lines : lines.slice(0, idx)).join('\n');
 }
 
+function splitMarkdownTableLine(line) {
+  const text = String(line || '').trim();
+  if (!/^\|.*\|$/.test(text)) return [];
+  return text
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+
+function otterMarkdownCallRows(body) {
+  const lines = String(body || '').split(/\r?\n/);
+  const rows = [];
+  let header = null;
+  for (const line of lines) {
+    const cells = splitMarkdownTableLine(line);
+    if (!cells.length) continue;
+    if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
+    const lowered = cells.map((cell) => cell.toLowerCase());
+    if (
+      lowered.some((cell) => /\b(?:call|title|meeting)\b/.test(cell)) &&
+      lowered.some((cell) => /\bspeakers?\b/.test(cell)) &&
+      lowered.some((cell) => /\b(?:summary|executive)\b/.test(cell))
+    ) {
+      header = lowered;
+      continue;
+    }
+    if (!header) continue;
+    const idx = {
+      title: header.findIndex((cell) => /\b(?:call|title|meeting)\b/.test(cell)),
+      speakers: header.findIndex((cell) => /\bspeakers?\b/.test(cell)),
+      summary: header.findIndex((cell) => /\b(?:summary|executive)\b/.test(cell)),
+    };
+    rows.push({
+      title: cells[idx.title] || '',
+      speakers: cells[idx.speakers] || '',
+      summary: cells[idx.summary] || '',
+    });
+  }
+  return rows;
+}
+
+function otterCallTitleCore(title) {
+  return String(title || '')
+    .replace(/^(?:[A-Z][a-z]{2}\s+\d{1,2}\s+)?\d{1,2}:\d{2}\s*(?:AM|PM)?\s*-\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function otterCallTitleLooksRawOrGeneric(title) {
+  const core = otterCallTitleCore(title);
+  if (!core || /^[-]+$/.test(core) || /^No calls$/i.test(core)) return false;
+  if (
+    !/\s/.test(core) &&
+    core.length >= 12 &&
+    /[A-Z]/.test(core) &&
+    /[a-z]/.test(core) &&
+    /[0-9_-]/.test(core)
+  ) {
+    return true;
+  }
+  const words = core.split(/\s+/).filter(Boolean);
+  if (/needing title review/i.test(core)) return true;
+  if (words.length <= 5 && /\b(?:meeting|call|session)$/i.test(core)) return true;
+  if (
+    words.length <= 6 &&
+    /\b(?:strategy|analysis|performance|governance|mapping|balance|data|cash|planning)\b/i.test(
+      core,
+    ) &&
+    /\b(?:meeting|call|session)$/i.test(core)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function summaryNamesPersonAsParticipant(summary, rx) {
+  const text = String(summary || '');
+  const match = text.match(rx);
+  if (!match || match.index == null) return false;
+  const name = match[0];
+  const start = Math.max(0, match.index - 90);
+  const end = Math.min(text.length, match.index + name.length + 90);
+  const context = text.slice(start, end);
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`${escaped}\\s*(?:'s|â€™s)`, 'i').test(context)) return false;
+  if (/\bmentioned the other day\b/i.test(context)) return false;
+  if (
+    /\b(?:resource|resources|input|caveat|question|feedback|note|thread)s?\b/i.test(context) &&
+    !/\bwith\b/i.test(context)
+  ) {
+    return false;
+  }
+  const participantPatterns = [
+    new RegExp(
+      `\\b(?:spoke|met|aligned|reviewed|discussed|worked|walked through|clarified|confirmed|decided|agreed)\\b[^.!?]{0,90}\\bwith\\s+${escaped}\\b`,
+      'i',
+    ),
+    new RegExp(
+      `\\bwith\\s+${escaped}\\b[^.!?]{0,90}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed|walked through)\\b`,
+      'i',
+    ),
+    new RegExp(
+      `\\b${escaped}\\b[^.!?]{0,80}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed|joined|asked|said|flagged)\\b`,
+      'i',
+    ),
+    new RegExp(
+      `\\bExampleCo\\s*,[^.!?]{0,120}\\b${escaped}\\b[^.!?]{0,120}\\b(?:aligned|reviewed|discussed|clarified|confirmed|decided|agreed)\\b`,
+      'i',
+    ),
+  ];
+  return participantPatterns.some((pattern) => pattern.test(context));
+}
+
+function otterCallHistoryContentFailures({ id, title, body, surface = 'briefing-card' } = {}) {
+  if (id !== 'otter_speaker_pareto' && !/OTTER SPEAKER PARETO/i.test(title || '')) return [];
+  const text = String(body || '');
+  const failures = [];
+  const prefix = `${surface}:otter_speaker_pareto`;
+  if (/existing relevance scan ties it to/i.test(text)) {
+    failures.push(
+      `${prefix}: OTTER-CALL-SUMMARY renders boilerplate relevance-label prose instead of a source-grounded executive summary of the call`,
+    );
+  }
+  if (
+    /\bThis call focused on\b[\s\S]{0,220}\bsourced transcript segment/i.test(text) ||
+    /\bno reliable decision or ExampleCo-owned next action was extracted\b/i.test(text)
+  ) {
+    failures.push(
+      `${prefix}: OTTER-CALL-SUMMARY renders generic fallback prose instead of what happened, decisions made, and ExampleCo next actions`,
+    );
+  }
+  if (
+    /Summary unavailable:\s*the processed transcript did not yield a coherent exec summary/i.test(
+      text,
+    )
+  ) {
+    failures.push(
+      `${prefix}: OTTER-CALL-SUMMARY-MISSING has a failed executive summary; missing call summaries are blockers, not clean content`,
+    );
+  }
+  if (
+    /\b(?:clearest source-backed read is|Touches [^.;]{0,120}; Contains|family wealth\s*\/\s*mission|relationship capital)\b/i.test(
+      text,
+    )
+  ) {
+    failures.push(
+      `${prefix}: OTTER-CALL-SUMMARY renders boilerplate relevance labels instead of what happened, decisions made, and ExampleCo next actions`,
+    );
+  }
+  if (
+    /\bDecisions\/actions:\s*(?:Yes|Yeah|Okay|Ok|Again|Always|A feedback|I think|Like|You know|For\b)/i.test(
+      text,
+    ) ||
+    /\b[A-Z][A-Za-z0-9 '&/-]{4,80}:\s*(?:Yes|Yeah|Okay|Ok|Again|Always|A feedback|I think|Like|You know|For\b)/.test(
+      text,
+    )
+  ) {
+    failures.push(
+      `${prefix}: OTTER-CALL-SUMMARY renders transcript quotes instead of an executive summary of what happened, decisions, and ExampleCo next actions`,
+    );
+  }
+  if (/\bcall covered again\b|\bI just want\b|\breally good start\b/i.test(text)) {
+    failures.push(
+      `${prefix}: OTTER-CALL-SUMMARY still reads like transcript fragments instead of an executive summary`,
+    );
+  }
+  if (
+    /\bcall covered\s+(?:tough|again|yes|yeah|okay|ok|so|and\s+i['â€™]?m|i['â€™]?m|i am|we['â€™]?re|we are|you know)\b/i.test(
+      text,
+    ) ||
+    /\bcall covered\b[\s\S]{0,240}\b(?:i['â€™]?m|i am|we['â€™]?re|we are|trying to|get a deal|watching my budget|manager level people)\b/i.test(
+      text,
+    )
+  ) {
+    failures.push(
+      `${prefix}: OTTER-CALL-SUMMARY renders first-person transcript fragments instead of an executive summary`,
+    );
+  }
+  if (/\b\d+\.\s+\d\w?\b/i.test(text)) {
+    failures.push(`${prefix}: OTTER-CALL-SUMMARY splits a numeric value while trimming the call summary`);
+  }
+  if (
+    /\b(?:Briefing summary|Detail:)\b/i.test(text) ||
+    /\b(?:and|or|with|to|for|from|between|around|whether)\.\s*(?:-|Day Before|Lifetime stats|$)/i.test(
+      text,
+    )
+  ) {
+    failures.push(
+      `${prefix}: OTTER-CALL-SUMMARY renders labeled or clipped prose instead of complete executive-summary sentences`,
+    );
+  }
+  const rows = otterMarkdownCallRows(text);
+  const rawTitles = rows.filter((row) => otterCallTitleLooksRawOrGeneric(row.title));
+  if (rawTitles.length) {
+    failures.push(
+      `${prefix}: OTTER-CALL-TITLE ${rawTitles.length} call title(s) are raw or generic calendar labels; titles must say what the meeting accomplished or decided`,
+    );
+  }
+  const expectedPeople = [
+    ['Ed', /\bEd(?:\s+Evans)?\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME(?:\s+Bluth)?\b/i],
+    ['Zach', /\bZach(?:ary)?\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
+    ['PRIVATE_NAME', /\bExampleCo\s+Walker\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
+    ['PRIVATE_NAME Spillers', /\bPRIVATE_NAME(?:\s+Spillers)?\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
+    ['Phil', /\bPhil\b/i],
+    ['PRIVATE_NAME', /\bPRIVATE_NAME\b/i],
+  ];
+  const missingPeople = [];
+  for (const row of rows) {
+    if (summaryNamesPersonAsParticipant(row.summary, /\bExampleCo\b/i) && !/\bExampleCo\b/i.test(row.speakers)) {
+      missingPeople.push(`${row.title || 'call'}:ExampleCo`);
+    }
+    for (const [display, rx] of expectedPeople) {
+      if (!summaryNamesPersonAsParticipant(row.summary, rx)) continue;
+      if (rx.test(row.speakers)) continue;
+      missingPeople.push(`${row.title || 'call'}:${display}`);
+    }
+  }
+  if (missingPeople.length) {
+    failures.push(
+      `${prefix}: OTTER-SPEAKER-MISMATCH call summaries mention known people that are absent from the speaker roster: ${missingPeople.slice(0, 6).join(', ')}`,
+    );
+  }
+  return [...new Set(failures)];
+}
+
 // SOFT false-positive terms: bare vendor / process / particulate words an article
 // legitimately uses. In a NEWS body these are replaced with a neutral token
 // BEFORE the operational-leak check, so they do not trip the gate -- but only
@@ -181,7 +413,8 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
     : /OTTER SPEAKER PARETO/i.test(title)
       ? [title, otterStatusPreamble(body)].filter(Boolean).join('\n')
       : text;
-  if (/\bblocker|need from ExampleCo|action required\b/i.test(blockerScopeText)) {
+  const blockerTriggerText = /^BLOCKERS\b/i.test(title) ? body : blockerScopeText;
+  if (/\bblocker|need from ExampleCo|action required\b/i.test(blockerTriggerText)) {
     const actionableLines = body
       .split('\n')
       .map((line) => line.replace(/^[-*]\s+/, '').trim())
@@ -191,6 +424,8 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
       failures.push(`${surface}:${id}: blocker lacks a yes/no question or concrete steps`);
     }
   }
+
+  failures.push(...otterCallHistoryContentFailures({ id, title, body, surface }));
 
   return { ok: failures.length === 0, id, failures };
 }
@@ -346,6 +581,7 @@ module.exports = {
   qcBriefingMarkdown,
   repairBriefingMarkdown,
   splitMarkdownCards,
+  otterCallHistoryContentFailures,
   isNewsCardTitle,
   isTokenUsageCardTitle,
   isSystemHealthCardTitle,

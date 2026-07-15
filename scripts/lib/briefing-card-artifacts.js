@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { CARDS, getCardById } = require('./briefing-card-manifest.js');
-const { splitMarkdownCards } = require('./briefing-card-qc.js');
+const { splitMarkdownCards, qcCard } = require('./briefing-card-qc.js');
 const { askAI } = require('./ask-ai.js');
 const { writeDataArtifact } = require('./data-root.js');
 
@@ -129,7 +129,7 @@ function writeCardArtifact({ dataDir, date, artifact }) {
 function readCardArtifact({ dataDir, date, id }) {
   const json = readJson(artifactPathFor({ dataDir, date, id }));
   if (!json || json.schemaVersion !== SCHEMA_VERSION || !json.id) return null;
-  return json;
+  return normalizeArtifactQuality(json);
 }
 
 function cardForMarkdownTitle(title) {
@@ -161,7 +161,7 @@ function markdownSectionToArtifact(section, { date, generatedAt = new Date().toI
   if (!card) return null;
   const body = String(section.body || '').trim();
   const status = inferMarkdownSectionStatus(body);
-  return createCardArtifact({
+  return normalizeArtifactQuality(createCardArtifact({
     id: card.id,
     title: section.title,
     date,
@@ -175,7 +175,7 @@ function markdownSectionToArtifact(section, { date, generatedAt = new Date().toI
       ok: status === 'clean',
       failures: status === 'clean' ? [] : [body.split(/\r?\n/)[0].slice(0, 200) || 'blocked'],
     },
-  });
+  }));
 }
 
 function markdownPathFor(dataDir, date) {
@@ -206,7 +206,56 @@ function readExplicitArtifacts({ dataDir, date } = {}) {
     .readdirSync(dir)
     .filter((name) => name.endsWith('.json'))
     .map((name) => readJson(path.join(dir, name)))
-    .filter((json) => json && json.schemaVersion === SCHEMA_VERSION && json.id);
+    .filter((json) => json && json.schemaVersion === SCHEMA_VERSION && json.id)
+    .map((json) => normalizeArtifactQuality(json));
+}
+
+function uniqueList(values) {
+  return [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function artifactContentFailures(artifact) {
+  const status = normalizeStatus(artifact && artifact.status);
+  if (status !== 'clean') return [];
+  const markdown = artifactMarkdown(artifact);
+  const parsed = splitMarkdownCards(markdown)[0] || {
+    title: artifact.title || cardTitle(artifact.id),
+    body: markdown,
+  };
+  return qcCard(
+    {
+      id: artifact.id,
+      title: parsed.title || artifact.title || cardTitle(artifact.id),
+      body: parsed.body || '',
+    },
+    { surface: 'card-artifact' },
+  ).failures;
+}
+
+function normalizeArtifactQuality(artifact) {
+  if (!artifact || !artifact.id) return artifact;
+  const status = normalizeStatus(artifact.status);
+  const explicitFailures =
+    artifact.qc && Array.isArray(artifact.qc.failures) ? artifact.qc.failures : [];
+  const failures = uniqueList([
+    ...(status === 'clean' && artifact.qc && artifact.qc.ok === false
+      ? explicitFailures.length
+        ? explicitFailures
+        : ['card artifact qc failed']
+      : []),
+    ...artifactContentFailures(artifact),
+  ]);
+  if (status !== 'clean' || failures.length === 0) return artifact;
+  return {
+    ...artifact,
+    status: 'defect',
+    qc: {
+      ...(artifact.qc || {}),
+      ok: false,
+      failures,
+    },
+    blockedReason: '',
+  };
 }
 
 function orderArtifacts(artifacts) {
@@ -294,6 +343,12 @@ function statusToLiveStatus(status) {
   return 'defect';
 }
 
+function artifactDefectKinds(artifact) {
+  const failures =
+    artifact && artifact.qc && Array.isArray(artifact.qc.failures) ? artifact.qc.failures : [];
+  return uniqueList([...(failures || []), artifact && artifact.blockedReason, artifact && artifact.status]);
+}
+
 function liveBoardArtifactFromCardArtifacts(artifacts, { date, now = new Date() } = {}) {
   const ts = now.toISOString();
   const cards = orderArtifacts(artifacts).map((artifact) => {
@@ -302,10 +357,7 @@ function liveBoardArtifactFromCardArtifacts(artifacts, { date, now = new Date() 
       id: artifact.id,
       title: artifact.title || cardTitle(artifact.id),
       status: liveStatus,
-      defectKinds:
-        liveStatus === 'clean'
-          ? []
-          : [artifact.blockedReason || artifact.status || 'card artifact not clean'],
+      defectKinds: liveStatus === 'clean' ? [] : artifactDefectKinds(artifact),
       asOf: artifact.generatedAt || ts,
     };
   });
@@ -487,13 +539,13 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
   }
   const existing = existingSourceArtifact({ dataDir, date, id: card.id });
   if (existing) {
-    return {
+    return normalizeArtifactQuality({
       ...existing,
       kind: 'data',
       status: existing.status === 'clean' ? 'clean' : normalizeStatus(existing.status),
       generatedAt: now.toISOString(),
       source: { ...(existing.source || {}), producer: 'data-card-artifact' },
-    };
+    });
   }
   return createCardArtifact({
     id: card.id,
@@ -511,9 +563,10 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
 async function produceCardArtifact({ cardId, date, dataDir = defaultDataDir(), now = new Date() } = {}) {
   const card = getCardById(cardId);
   if (!card) throw new Error(`ExampleCo briefing card '${cardId}'`);
-  return isLlmCard(card.id)
+  const artifact = isLlmCard(card.id)
     ? produceLlmCardArtifact({ card, date, dataDir, now })
     : produceDataCardArtifact({ card, date, dataDir, now });
+  return normalizeArtifactQuality(await artifact);
 }
 
 function producerConcurrency() {
