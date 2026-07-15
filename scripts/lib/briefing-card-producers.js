@@ -77,7 +77,7 @@ function defaultDataDir() {
 }
 
 function defaultMainRoot() {
-  return process.env.SECONDBRAIN_ROOT || path.join(os.homedir(), 'secondbrain');
+  return process.env.SB_MAIN_CHECKOUT || path.join(os.homedir(), 'secondbrain');
 }
 
 // Mirrors cloud-morning-briefing.js runningOnEc2: the file-deploy where the
@@ -134,14 +134,21 @@ const PRODUCERS = [
     parseGeneratedAt(payload) {
       return (payload && (payload.generated_at || payload.generatedAt)) || null;
     },
-    // Regenerate by REUSING verify-shared-checkout-clean.main --write-snapshot:
-    // it runs probeDevOpsHealth (git status bounded to 10s) over the desktop
-    // shared checkout and writes { generated_at, mainRoot, result } to outPath.
+    // Regenerate by REUSING verify-shared-checkout-clean.main --reconcile
+    // --write-snapshot: the single reconciler path gets a chance to
+    // fast-forward the desktop shared checkout, then probeDevOpsHealth writes
+    // { generated_at, mainRoot, result } to outPath.
     // A non-green verdict (exit 1) is NOT a producer failure -- the snapshot was
     // still written and MUST ship so the card honestly shows red.
     regenerate({ dataDir, mainRoot }) {
       const outPath = snapshotPathFor(this, dataDir);
-      const code = devopsVerifier.main(['--main-root', mainRoot, '--write-snapshot', outPath]);
+      const code = devopsVerifier.main([
+        '--main-root',
+        mainRoot,
+        '--reconcile',
+        '--write-snapshot',
+        outPath,
+      ]);
       const payload = readJsonSafe(outPath);
       return {
         outPath,

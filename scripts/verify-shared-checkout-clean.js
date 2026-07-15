@@ -4,16 +4,18 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { probeDevOpsHealth } = require('./lib/devops-health.js');
+const { runReconciler } = require('./shared-checkout-reconciler.js');
 
 function parseArgs(argv) {
   const out = {
-    mainRoot: process.env.SECONDBRAIN_ROOT || path.join(require('node:os').homedir(), 'secondbrain'),
+    mainRoot: process.env.SB_MAIN_CHECKOUT || path.join(require('node:os').homedir(), 'secondbrain'),
     json: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--main-root') out.mainRoot = argv[++i] || out.mainRoot;
     else if (a === '--json') out.json = true;
+    else if (a === '--reconcile') out.reconcile = true;
     else if (a === '--write-snapshot') out.snapshotPath = argv[++i] || out.snapshotPath;
     else if (a === '--help' || a === '-h') out.help = true;
   }
@@ -23,7 +25,7 @@ function parseArgs(argv) {
 function usage() {
   return [
     'Usage:',
-    '  node scripts/verify-shared-checkout-clean.js [--main-root C:/Users/ExampleCod/secondbrain] [--json] [--write-snapshot data/agent/devops-health-latest.json]',
+    '  node scripts/verify-shared-checkout-clean.js [--main-root C:/Users/ExampleCod/secondbrain] [--reconcile] [--json] [--write-snapshot data/agent/devops-health-latest.json]',
   ].join('\n');
 }
 
@@ -37,6 +39,10 @@ function main(argv = process.argv.slice(2), deps = {}) {
   const writeFileSync = deps.writeFileSync || fs.writeFileSync;
   const mkdirSync = deps.mkdirSync || fs.mkdirSync;
   const nowIso = deps.nowIso || (() => new Date().toISOString());
+  const reconcile = deps.runReconciler || runReconciler;
+  if (args.reconcile) {
+    reconcile({ mainRoot: args.mainRoot }, deps);
+  }
   const result = probe({ mainRoot: args.mainRoot });
   if (args.snapshotPath) {
     const snapshotPath = path.resolve(args.snapshotPath);

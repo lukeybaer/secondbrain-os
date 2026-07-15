@@ -22,9 +22,8 @@
 //     scoped tests + fast-forward push). The normal landing gate, no bypass.
 //   - Shared checkout: NEVER commit here. Create a disposable isolation
 //     worktree off origin/master (scripts/lib/codex-worktree.js), copy the
-//     dirty files into it, commit + land THERE, then remove the worktree and
-//     best-effort fast-forward the shared checkout so the landed content
-//     stops reading as dirt. The shared index is never touched.
+//     dirty files into it, commit + land THERE, then remove the worktree.
+//     Shared freshness is reconciler-owned, not agent-owned.
 //
 // Failure posture: fail loud, never silent, never fatal to the writer. A
 // landing failure returns { ok: false, reason } for the caller to ledger/log;
@@ -38,7 +37,6 @@ const {
   isSharedCheckout,
   proveWorktreeIsolation,
 } = require('./codex-worktree.js');
-const { fastForwardShared } = require('./shared-checkout-sync.js');
 
 const GIT_TIMEOUT_MS = 120_000;
 
@@ -144,7 +142,6 @@ function landScanOutputs({
   sharedCheckoutCheck = isSharedCheckout,
   proveIsolation = proveWorktreeIsolation,
   ledgerPath,
-  syncShared = true,
 } = {}) {
   if (!repoRoot) throw new Error('landScanOutputs: repoRoot is required');
   if (!Array.isArray(pathspecs) || pathspecs.length === 0) {
@@ -264,7 +261,6 @@ function landScanOutputs({
     // leak orphans (feedback_codex_orphan_leak_thrashes_briefing.md).
     runGit(['worktree', 'remove', '--force', disposable.cwd], repoRoot);
     if (disposable.branch) runGit(['branch', '-D', disposable.branch], repoRoot);
-    if (syncShared) fastForwardShared({ sharedRoot: repoRoot, runGit, log });
   }
 
   return {
@@ -279,5 +275,4 @@ module.exports = {
   landScanOutputs,
   dirtyOwnedPaths,
   parsePorcelain,
-  fastForwardShared,
 };

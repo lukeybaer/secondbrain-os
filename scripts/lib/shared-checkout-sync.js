@@ -43,7 +43,6 @@ function fastForwardShared({
   remote = 'origin',
   target = 'master',
   runGit = runGitDefault,
-  log = () => {},
 } = {}) {
   if (!sharedRoot) throw new Error('fastForwardShared: sharedRoot is required');
 
@@ -53,42 +52,35 @@ function fastForwardShared({
     return { ok: false, reason: 'shared-not-target-branch' };
   }
 
+  const status = runGit(['status', '--porcelain'], sharedRoot);
+  if (!status.ok) return { ok: false, reason: 'status-failed' };
+  const dirty = parsePorcelain(status.stdout);
+  if (dirty.length > 0) {
+    return { ok: false, reason: 'dirty-shared-checkout', dirty };
+  }
+
   const fetch = runGit(['fetch', remote, target], sharedRoot);
   if (!fetch.ok) return { ok: false, reason: 'fetch-failed' };
 
-  const ancestor = runGit(['merge-base', '--is-ancestor', 'HEAD', remoteRef], sharedRoot);
-  if (!ancestor.ok) return { ok: false, reason: 'diverged-not-ff' };
-
-  let merge = runGit(['merge', '--ff-only', remoteRef], sharedRoot);
-  if (!merge.ok) {
-    // Git refuses a fast-forward over locally modified tracked files even when
-    // their bytes already match the incoming blob. Reconcile only those
-    // content-identical files, then retry once. Real peer differences still
-    // refuse and stay untouched.
-    const status = runGit(['status', '--porcelain'], sharedRoot);
-    const dirty = status.ok ? parsePorcelain(status.stdout) : [];
-    let reconciled = 0;
-    for (const entry of dirty) {
-      if (entry.code.includes('?')) continue;
-      const targetBlob = runGit(['rev-parse', `${remoteRef}:${entry.rel}`], sharedRoot);
-      if (!targetBlob.ok) continue;
-      const workingHash = runGit(['hash-object', '--', entry.rel], sharedRoot);
-      if (!workingHash.ok) continue;
-      if (targetBlob.stdout.trim() !== workingHash.stdout.trim()) continue;
-      const checkout = runGit(['checkout', remoteRef, '--', entry.rel], sharedRoot);
-      if (checkout.ok) reconciled += 1;
-    }
-
-    if (reconciled > 0) {
-      merge = runGit(['merge', '--ff-only', remoteRef], sharedRoot);
-    }
-    if (!merge.ok) {
-      log('[shared-sync] shared checkout fast-forward refused; leaving it as-is.');
-      return { ok: false, reason: 'ff-refused' };
-    }
+  const counts = runGit(['rev-list', '--left-right', '--count', `HEAD...${remoteRef}`], sharedRoot);
+  if (!counts.ok) return { ok: false, reason: 'relation-failed' };
+  const [aheadRaw, behindRaw] = counts.stdout.trim().split(/\s+/);
+  const ahead = Number.parseInt(aheadRaw || '0', 10) || 0;
+  const behind = Number.parseInt(behindRaw || '0', 10) || 0;
+  if (ahead > 0 && behind > 0) {
+    return { ok: false, reason: 'diverged-not-ff', ahead, behind };
+  }
+  if (ahead > 0) {
+    return { ok: false, reason: 'shared-ahead-of-target', ahead, behind };
+  }
+  if (behind === 0) {
+    return { ok: true, reason: 'already-current', ahead, behind, synced: false };
   }
 
-  return { ok: true };
+  const merge = runGit(['merge', '--ff-only', remoteRef], sharedRoot);
+  if (!merge.ok) return { ok: false, reason: 'ff-refused', ahead, behind };
+
+  return { ok: true, reason: 'fast-forwarded', ahead, behind, synced: true };
 }
 
 module.exports = {
