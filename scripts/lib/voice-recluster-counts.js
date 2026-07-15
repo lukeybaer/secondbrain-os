@@ -16,6 +16,21 @@ function distinctOtidCount(cluster) {
   return new Set((cluster && cluster.otids ? cluster.otids : []).filter(Boolean)).size;
 }
 
+const STRICT_LIKELY_PERSON_STATUSES = new Set([
+  'confirmed_by_ExampleCo',
+  'confirmed_by_ExampleCo_cluster',
+  'confirmed_reference_voiceprint_match',
+  'confirmed_reference_voiceprint_acoustic_group',
+]);
+
+function resolutionClearsLikelyPersonGate(resolution) {
+  if (!resolution || !resolution.person_id) return false;
+  const status = String(resolution.status || '').toLowerCase();
+  if (!STRICT_LIKELY_PERSON_STATUSES.has(status)) return false;
+  const blob = JSON.stringify(resolution).toLowerCase();
+  return !/inferred|needs_ExampleCo|low_margin|person_guess|provisional|not strong enough|not enough/.test(blob);
+}
+
 // person_id -> clips among this cluster's members that already resolved to that
 // person (confirmed_by_ExampleCo or an auto voiceprint match). The top one is the
 // "likely person" hint; it is evidence, never an assertion.
@@ -23,7 +38,7 @@ function likelyPersonForCluster(cluster, resolutions) {
   const counts = new Map();
   for (const member of (cluster && cluster.members) || []) {
     const res = resolutions[String(member && member.voice_cluster_id)];
-    const pid = res && res.person_id ? String(res.person_id) : '';
+    const pid = resolutionClearsLikelyPersonGate(res) ? String(res.person_id) : '';
     if (!pid) continue;
     counts.set(pid, (counts.get(pid) || 0) + 1);
   }
@@ -90,5 +105,6 @@ module.exports = {
   buildReclusterMemberIndex,
   reclusterInfoForIds,
   likelyPersonForCluster,
+  resolutionClearsLikelyPersonGate,
   distinctOtidCount,
 };
