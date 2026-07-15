@@ -295,6 +295,7 @@ async function refreshOtter({
   const otterEnv = {
     VOICE_SKIP_BRIEFING_REFRESH: '1',
     VOICE_SKIP_PEOPLE_SYNC: '1',
+    VOICE_SKIP_LIFE_RELEVANCE: '1',
   };
   const commands = [
     [['scripts/otter-ingest-watch.js', '--once'], 4 * 60 * 1000],
