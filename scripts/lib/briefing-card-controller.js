@@ -238,7 +238,7 @@ function cardEntry(artifact, cardId) {
 function hasVerifiedScopedLiveResult({ command, beforeArtifact, afterArtifact, cardId, date } = {}) {
   if (command && command.verified === true) return true;
   const afterCard = cardEntry(afterArtifact, cardId);
-  if (!afterCard || !afterArtifact || afterArtifact.ran !== true || afterArtifact.retry === true) return false;
+  if (!afterCard || !afterArtifact || afterArtifact.retry === true) return false;
   if (date && afterArtifact.date && String(afterArtifact.date) !== String(date)) return false;
   const beforeTs = Date.parse(beforeArtifact && beforeArtifact.ts);
   const afterTs = Date.parse(afterArtifact && afterArtifact.ts);
@@ -250,9 +250,15 @@ function hasVerifiedScopedLiveResult({ command, beforeArtifact, afterArtifact, c
   const stdout = String(command && command.stdout || '');
   const escapedCardId = String(cardId || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const printedScopedProof =
+    afterArtifact.ran === true &&
     stdout.includes('[refresh-card] --verify: wrote canonical dashboard artifact') &&
     new RegExp(`\\[refresh-card\\] --verify: card='${escapedCardId}' status=`).test(stdout);
-  return timestampAdvanced && printedScopedProof;
+  const printedArtifactUnionProof =
+    Number(command && command.exitCode) === 0 &&
+    String(afterArtifact.source || '') === 'per-card-artifacts' &&
+    new RegExp(`\\[refresh-card\\] produced artifact card='${escapedCardId}' status=`).test(stdout) &&
+    stdout.includes('[refresh-card] published artifact union');
+  return timestampAdvanced && (printedScopedProof || printedArtifactUnionProof);
 }
 
 function resolvePlan({ cards, artifact } = {}) {
