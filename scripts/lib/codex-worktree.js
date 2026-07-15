@@ -184,6 +184,65 @@ function resolveBaseRef(repoRoot, requested, runGit = git) {
   return 'HEAD';
 }
 
+function sourceRootCandidates(repoRoot, explicit = []) {
+  const home = os.homedir();
+  return [
+    ...explicit,
+    process.env.SECONDBRAIN_CODEX_REPO_ROOT,
+    process.env.SECONDBRAIN_SOURCE_ROOT,
+    process.env.SECONDBRAIN_GIT_ROOT,
+    process.env.SECONDBRAIN_CHECKOUT_ROOT,
+    home ? path.join(home, 'secondbrain-current') : '',
+    home ? path.join(home, 'secondbrain') : '',
+    repoRoot && path.basename(path.resolve(repoRoot)) === 'secondbrain'
+      ? path.resolve(repoRoot, '..', 'secondbrain-current')
+      : '',
+  ]
+    .filter(Boolean)
+    .map((p) => path.resolve(String(p)));
+}
+
+function resolveCodexSourceRoot(repoRoot, options = {}) {
+  const requestedRoot = path.resolve(repoRoot || process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..', '..'));
+  const probeOpts = {};
+  if (options.runGit) probeOpts.runGit = options.runGit;
+  if (options.probeAttempts != null) probeOpts.attempts = options.probeAttempts;
+  if (options.probeBackoffMs != null) probeOpts.backoffMs = options.probeBackoffMs;
+
+  const originalState = probeWorkTree(requestedRoot, probeOpts);
+  if (originalState !== 'not-worktree') {
+    return {
+      repoRoot: requestedRoot,
+      originalRoot: requestedRoot,
+      originalState,
+      source: 'requested',
+    };
+  }
+
+  const seen = new Set([normalizePath(requestedRoot)]);
+  for (const candidate of sourceRootCandidates(requestedRoot, options.candidates || [])) {
+    const key = normalizePath(candidate);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const state = probeWorkTree(candidate, probeOpts);
+    if (state === 'worktree') {
+      return {
+        repoRoot: candidate,
+        originalRoot: requestedRoot,
+        originalState,
+        source: 'fallback',
+      };
+    }
+  }
+
+  return {
+    repoRoot: requestedRoot,
+    originalRoot: requestedRoot,
+    originalState,
+    source: 'requested',
+  };
+}
+
 function ensureCodexWorktree(options = {}) {
   const repoRoot = path.resolve(options.repoRoot || process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..', '..'));
   // Thread an injectable git runner + probe tuning through every probe so the
@@ -254,6 +313,7 @@ module.exports = {
   isSharedCheckout,
   probeWorkTree,
   proveWorktreeIsolation,
+  resolveCodexSourceRoot,
   normalizePath,
   slugify,
 };

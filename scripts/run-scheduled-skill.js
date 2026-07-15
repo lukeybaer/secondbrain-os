@@ -29,7 +29,11 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { classifyRunOutput, nextRung } = require('./lib/skill-runner-ladder.js');
-const { ensureCodexWorktree, isSharedCheckout } = require('./lib/codex-worktree.js');
+const {
+  ensureCodexWorktree,
+  isSharedCheckout,
+  resolveCodexSourceRoot,
+} = require('./lib/codex-worktree.js');
 const { landScanOutputs } = require('./lib/scan-output-lander.js');
 
 // Git-worthy output areas a scheduled skill legitimately produces: its own
@@ -47,8 +51,11 @@ if (!skillName) {
 
 const SECONDBRAIN_ROOT = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
 const DATA_DIR = process.env.SECONDBRAIN_DATA_DIR || path.join(SECONDBRAIN_ROOT, 'data');
+const CODEX_SOURCE_ROOT = resolveCodexSourceRoot(SECONDBRAIN_ROOT);
+const CODEX_REPO_ROOT = CODEX_SOURCE_ROOT.repoRoot;
 const skillFile = path.join(SECONDBRAIN_ROOT, 'scheduled-tasks', skillName, 'SKILL.md');
 const directConfigFile = path.join(SECONDBRAIN_ROOT, 'scheduled-tasks', skillName, 'direct.json');
+const HAS_DIRECT_CONFIG = fs.existsSync(directConfigFile);
 const OUTCOMES_LEDGER = path.join(DATA_DIR, 'agent', 'scheduled-skill-outcomes.jsonl');
 
 // Log file: per-skill, in the same backups dir other scripts use
@@ -95,10 +102,25 @@ if (!fs.existsSync(skillFile)) {
   process.exit(1);
 }
 
-if (process.env.RUN_SCHEDULED_SKILL_ISOLATED !== '1' && isSharedCheckout(SECONDBRAIN_ROOT)) {
+const ROOT_IS_SHARED_CHECKOUT = isSharedCheckout(SECONDBRAIN_ROOT);
+const CODEX_REPO_IS_SHARED_CHECKOUT = isSharedCheckout(CODEX_REPO_ROOT);
+const NEEDS_ISOLATED_RERUN =
+  ROOT_IS_SHARED_CHECKOUT ||
+  (!HAS_DIRECT_CONFIG &&
+    (CODEX_REPO_IS_SHARED_CHECKOUT ||
+      path.resolve(CODEX_REPO_ROOT) !== path.resolve(SECONDBRAIN_ROOT) ||
+      CODEX_SOURCE_ROOT.originalState === 'not-worktree'));
+
+if (process.env.RUN_SCHEDULED_SKILL_ISOLATED !== '1' && NEEDS_ISOLATED_RERUN) {
   try {
+    if (CODEX_SOURCE_ROOT.source === 'fallback') {
+      fs.appendFileSync(
+        logFile,
+        `[isolation] using source checkout ${CODEX_REPO_ROOT} for release root ${SECONDBRAIN_ROOT}\n`,
+      );
+    }
     const isolated = ensureCodexWorktree({
-      repoRoot: SECONDBRAIN_ROOT,
+      repoRoot: CODEX_REPO_ROOT,
       purpose: `scheduled-skill-${skillName}`,
       branchPrefix: 'codex/scheduled-skill',
       linkNodeModules: false,
@@ -153,14 +175,14 @@ if (process.env.RUN_SCHEDULED_SKILL_ISOLATED !== '1' && isSharedCheckout(SECONDB
         // sb-sessions dir does not fill with orphans.
         const st = spawnSync(
           'git',
-          ['-C', SECONDBRAIN_ROOT, 'worktree', 'remove', '--force', isolated.cwd],
+          ['-C', CODEX_REPO_ROOT, 'worktree', 'remove', '--force', isolated.cwd],
           {
             encoding: 'utf8',
             timeout: 60000,
           },
         );
         if (st.status === 0 && isolated.branch) {
-          spawnSync('git', ['-C', SECONDBRAIN_ROOT, 'branch', '-D', isolated.branch], {
+          spawnSync('git', ['-C', CODEX_REPO_ROOT, 'branch', '-D', isolated.branch], {
             encoding: 'utf8',
             timeout: 60000,
           });
@@ -326,7 +348,7 @@ function runCodexRung() {
   let codexCwd;
   try {
     codexCwd = ensureCodexWorktree({
-      repoRoot: SECONDBRAIN_ROOT,
+      repoRoot: CODEX_REPO_ROOT,
       purpose: `scheduled-skill-${skillName}`,
       branchPrefix: 'codex/scheduled-skill',
     }).cwd;
