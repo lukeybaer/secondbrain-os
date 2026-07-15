@@ -77,6 +77,7 @@ const {
   isSubstantialNewsExampleCoraph,
   endsAsProse,
   isThreeExampleCoraphArticleSummary,
+  newsSummaryHasSourceFailureProse,
   stripPublisherChrome,
   trimToSentenceBoundary,
   HEADLINE_ONLY_NOTE,
@@ -2899,6 +2900,14 @@ function healedNewsItems(dataDir, date, cardKey) {
 // failure leaves item.summary unset and the renderer falls back to the real
 // excerpt / honest headline note, never a fabricated ExampleCoraph.
 const NEWS_SUMMARY_CARD_KEYS = ['aitech', 'us', 'world', 'immigration', 'mortgage', 'covid'];
+const NEWS_SUMMARY_CATEGORY_LABELS = {
+  aitech: 'AI and technology news',
+  us: 'United States news',
+  world: 'world news',
+  immigration: 'United States immigration news',
+  mortgage: 'mortgage industry news',
+  covid: 'COVID-19 treatments and research news',
+};
 const NEWS_SUMMARY_FAILURE_TTL_MS = 6 * 60 * 60 * 1000;
 // Live NEWS-STUB QC treats two headline-only rows as a defect, but self-heal
 // summary refresh must still try to drive rendered stubs to zero. Otherwise a
@@ -2964,6 +2973,11 @@ function newsSummaryRescueLimit(itemCount, target) {
   // accessible backup articles can displace inaccessible top-feed rows without
   // turning one card into an unbounded feed crawl.
   return Math.min(n, Math.max(t + 5, t * 3));
+}
+
+function newsItemWithSummaryCategory(item, cardKey) {
+  const label = NEWS_SUMMARY_CATEGORY_LABELS[cardKey];
+  return label && item ? { ...item, newsCategory: label } : item;
 }
 
 function projectedRenderedNewsStubCount(items, target, cache) {
@@ -3136,7 +3150,7 @@ async function summarizeCloudNews({
               attemptedUrls.add(it.url);
               stats.attempted += 1;
               cardStats.attempted += 1;
-              await summarizeNewsItems([it], {
+              await summarizeNewsItems([newsItemWithSummaryCategory(it, cardKey)], {
                 askAI: askAIImpl,
                 fetchText,
                 resolveUrl,
@@ -3150,7 +3164,7 @@ async function summarizeCloudNews({
             }
           } else {
             for (const it of candidates) attemptedUrls.add(it.url);
-            await summarizeNewsItems(candidates, {
+            await summarizeNewsItems(candidates.map((it) => newsItemWithSummaryCategory(it, cardKey)), {
               askAI: askAIImpl,
               fetchText,
               resolveUrl,
@@ -3271,6 +3285,7 @@ function rendererCleanNewsExampleCoraphText(text) {
       .replace(/\s+/g, ' '),
   );
   if (!out) return '';
+  if (newsSummaryHasSourceFailureProse(out)) return '';
   if (/^\*{0,2}TLDR\*{0,2}:?/i.test(out)) return '';
   if (/^read the full article\b/i.test(out) || /RSS-derived summary/i.test(out)) return '';
   if (/^\d+\s+(?:minutes?|hours?|days?)\s+ago\b/i.test(out)) return '';

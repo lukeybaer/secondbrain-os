@@ -88,17 +88,10 @@ const NEWS_FILLER_TERMS = new Set([
   ),
 ]);
 
-// A summary of a real article body must contain SPECIFIC, CONCRETE facts from
-// that body, not a generic restatement of the headline. The signals of a body
-// specific are (a) a number/quantity/date drawn from the body (a $ amount, a
-// percent, a count, a year) and (b) a distinctive content term that appears in
-// the article body but NOT in the headline (a name, place, product, statute,
-// figure). We require at least this many DISTINCT body specifics across the whole
-// summary; below it, the summary is hollow headline-restatement and is rejected
-// so the caller regenerates (LLM path) or drops to the honest headline-only note
-// (render path). Tuned so real, substantive summaries clear it comfortably
-// (live 2026-07-01: substantive rows carry 5-30 specifics) while pure headline
-// echo ExampleCos 0-2.
+// Historical helper retained for tests and diagnostics. It is NOT the acceptance
+// gate: ExampleCo's 2026-07-15 correction made the active standard simpler. The model
+// reads the article, checks whether it belongs in the target news category, and
+// outputs a straight three-ExampleCoraph shortened version of the article.
 const NEWS_MIN_BODY_SPECIFICS = 3;
 
 // The anti-sparse gate judges a summary AGAINST its own article body. It applies
@@ -173,11 +166,9 @@ function countNewsBodySpecifics(paras, item = {}) {
   return specifics.size;
 }
 
-// True when the summary ExampleCos enough concrete body specifics, OR there is no
-// real body to judge against (the check only applies when a substantial article
-// body exists). This is the anti-sparse gate: a 3-ExampleCoraph summary that merely
-// restates the headline with generic filler, when the body had specific detail,
-// is rejected here even though it clears the shape + grounding gates.
+// Historical diagnostic helper. The active acceptance gate is now the simpler
+// "does this read as a shortened article in the target category?" standard, but
+// this count remains useful for tests and forensic review of weak summaries.
 function newsSummaryHasBodySpecifics(paras, item = {}) {
   const count = countNewsBodySpecifics(paras, item);
   if (count === null) return true; // no real body: not applicable
@@ -195,6 +186,17 @@ function normalizeNewsOpeningText(text) {
 
 const NEWS_AUTHOR_PROCESS_RE =
   /\b(?:Could|Can|Should|Would)\s+I\b|\bI\s+(?:have|wondered|started|installed|fired|checked|appeared|casually|compared|spent|provided|admit|asked|wanted|decided|tried|tested)\b|\bHere's what surprised me\b|\b(?:my|me)\s*(?:[:;]|\s+(?:newsletter|review unit|living room|experiment|inbox))\b/i;
+
+const NEWS_SOURCE_FAILURE_PROSE_RE =
+  /\b(?:available excerpt|source excerpt|article text (?:is|was) not|body text (?:is|was) not|full article (?:is|was) not|fuller executive briefing summary|needs? the rest of (?:the )?(?:body|article|text)|(?:no concrete|no grounded)[^.!?]{0,120}\b(?:excerpt|article text|source text|body text|to summarize)\b|insufficient (?:(?:article|source) (?:content|context|material)|source material|content to summarize|context to summarize)|cannot summarize|unable to summarize|not enough (?:(?:article|source) (?:content|context|material)|source material|content to summarize|context to summarize)|the excerpt (?:does not|doesn't|only|also says)|the (?:supplied|provided) (?:body|text|article text|article|source text)(?=\s+(?:does|is|was|lacks|contains|includes|provided|supplied|appears)|[.,;:]|$))\b/i;
+
+function isIrrelevantToCategoryResponse(text) {
+  return /\bIRRELEVANT_TO_CATEGORY\b/i.test(String(text || ''));
+}
+
+function newsSummaryHasSourceFailureProse(text) {
+  return NEWS_SOURCE_FAILURE_PROSE_RE.test(String(text || ''));
+}
 
 // A fallback summary must not be the article opening pasted into three
 // ExampleCoraphs. This catches the "modal shows the start of the article" class:
@@ -236,7 +238,7 @@ function newsSummarySentences(ExampleCoraph) {
 }
 
 function articleSummaryTerms(item = {}) {
-  const raw = [item.title, item.excerpt, item.summaryText, item.sourceText]
+  const raw = [item.title, item.excerpt, item.summaryText, item.sourceText, item.bodyText]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
@@ -254,16 +256,11 @@ function isThreeExampleCoraphArticleSummary(paras, item = {}) {
   if (!list.every(isSubstantialNewsExampleCoraph)) return false;
   if (!list.every(endsAsProse)) return false;
   if (!list.every((p) => newsSummarySentences(p).length >= 1)) return false;
-  // Anti-sparse (news-sparse-16): when a real article body is available, the
-  // summary must add SPECIFIC, CONCRETE facts from that body (numbers, names,
-  // what changed), not just restate the headline with generic filler. A hollow
-  // "technically 3 ExampleCoraphs that don't really say anything" summary is rejected
-  // here so the caller regenerates or falls back to the honest headline-only note.
-  if (!newsSummaryHasBodySpecifics(list, item)) return false;
+  if (newsSummaryHasSourceFailureProse(list.join(' '))) return false;
   if (newsSummaryLooksLikeArticleOpening(list, item)) return false;
   const terms = articleSummaryTerms(item);
   if (terms.length < 2) return true;
-  const hasExpandedMetadata = Boolean(item.excerpt || item.summaryText || item.sourceText);
+  const hasExpandedMetadata = Boolean(item.excerpt || item.summaryText || item.sourceText || item.bodyText);
   if (!hasExpandedMetadata) {
     // Title-only grounding (no excerpt/body to match against): the summary must
     // reference at least one DISTINCTIVE term from the headline. A short title
@@ -1548,37 +1545,29 @@ function substantialExampleCoraphText(scopeHtml) {
   return parts.join(' ').trim();
 }
 
-// Strict positive prompt: 3 FULL, richly detailed factual ExampleCoraphs grounded in
-// the source. ExampleCo 2026-06-22: the summaries got too thin and short articles
-// degraded to a headline-only stub because the model produced terse ExampleCoraphs
-// that fell under the 18-word / 110-char substantial floor. The prompt now
-// demands at least three FULL sentences per ExampleCoraph and explicit richness so
-// real articles reliably clear that floor and render as a full 3-ExampleCoraph
-// summary.
+// Straight article-summary prompt. The model has the article text, so the job is
+// simple: decide whether it belongs in the target news category, then write a
+// shortened version of the article in exactly three ExampleCoraphs.
 function buildSummaryPrompt(item, sourceText) {
   const title = String((item && item.title) || '').slice(0, 300);
   const source = String((item && item.source) || '').slice(0, 80);
+  const category = String(
+    (item && (item.newsCategory || item.targetCategory || item.category || item.sectionTitle)) || '',
+  ).slice(0, 120);
   const body = String(sourceText || '').slice(0, 6000);
   return [
     'Summarize this news article for an executive daily briefing.',
+    category ? `Target news category: ${category}.` : '',
+    category ? 'First decide whether the article belongs in the target news category.' : '',
+    category ? 'If it does not, return exactly IRRELEVANT_TO_CATEGORY and nothing else.' : '',
     'Write EXACTLY three full ExampleCoraphs separated by a single blank line.',
     'Each ExampleCoraph MUST be at least three full sentences and at least 40 words',
-    'of detailed, specific prose with article facts, not general commentary.',
-    'Use only facts grounded in the provided article text.',
-    'Include the concrete specifics that are IN the article body: the exact numbers,',
-    'dollar amounts, percentages, dates, named people, companies, places, and',
-    'products, and precisely what changed. Do NOT merely restate or paraphrase the',
-    'headline. A summary that just repeats the headline in different words, or that',
-    'says something "matters", "is significant", or "signals a shift" without the',
-    "article's specific facts, is WRONG. If the body names a figure, quote it.",
+    'of article-summary prose.',
+    'Make the output a shortened version of the article. Say what is in the article.',
+    'Use only facts from the article text. Do not invent, forecast, or editorialize.',
     'Return the article summary ExampleCoraphs only, with no headline, labels, bullets, or markdown.',
-    'ExampleCoraph 1: what happened, with the concrete who/what/when.',
-    'ExampleCoraph 2: the key details, numbers, quotes, and context from the article.',
-    'ExampleCoraph 3: why it is notable and what it signals, grounded in the article.',
-    'State the facts directly. NEVER frame the summary as a description of an',
-    'article: do not write "this article", "the article says/reports/notes",',
-    '"in this piece", or "the provided/supplied text". Lead with the substance,',
-    'not with what the article does.',
+    'Do not mention the excerpt, supplied text, provided body, missing details, or needing more article text.',
+    'Do not frame the output as commentary about an article. Lead with the article substance.',
     `Source: ${source}`,
     `Title: ${title}`,
     '',
@@ -1760,14 +1749,16 @@ function stripArticleMetaFraming(text) {
 function normalizeSummary(text, item = {}, bodyText = '') {
   const raw = String(text || '').trim();
   if (!raw) return null;
+  if (isIrrelevantToCategoryResponse(raw)) return null;
+  if (newsSummaryHasSourceFailureProse(raw)) return null;
   const paras = raw
     .split(/\n{2,}/)
     .map((p) => stripArticleMetaFraming(p.replace(/\s+/g, ' ').trim()))
     .filter((p) => p.length >= 40);
   const firstThree = paras.slice(0, 3);
-  // Thread the fetched article body through so the anti-sparse body-specifics gate
-  // in isThreeExampleCoraphArticleSummary can judge against the REAL body, not just the
-  // headline. On the LLM path the body lives in a local var, not item.sourceText.
+  // Thread the fetched article body through so the final-read gate can compare
+  // against the real article context. On the LLM path the body lives in a local
+  // var, not item.sourceText.
   const gateItem = bodyText ? { ...item, bodyText } : item;
   if (!isThreeExampleCoraphArticleSummary(firstThree, gateItem)) return null;
   return firstThree.join('\n\n');
@@ -1954,6 +1945,7 @@ async function summarizeBodyWithRetry(
     } catch {
       out = null; // a throw is just another transient failure -> retry
     }
+    if (isIrrelevantToCategoryResponse(out && out.text)) return null;
     const summary = normalizeSummary(out && out.text, item, sourceText);
     if (summary) return summary;
     // Transient miss: back off (exponential) before the next attempt. No sleep
@@ -2177,6 +2169,8 @@ module.exports = {
   isThreeExampleCoraphArticleSummary,
   countNewsBodySpecifics,
   newsSummaryHasBodySpecifics,
+  newsSummaryHasSourceFailureProse,
+  isIrrelevantToCategoryResponse,
   newsSummaryLooksLikeArticleOpening,
   NEWS_MIN_BODY_SPECIFICS,
   trimToSentenceBoundary,

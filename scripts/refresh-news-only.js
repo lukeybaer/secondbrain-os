@@ -24,10 +24,27 @@ const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
 const { spawnSync, spawn } = require('child_process');
-const { isThreeExampleCoraphArticleSummary } = require('./lib/news-summarize.js');
+const {
+  isThreeExampleCoraphArticleSummary,
+  newsSummaryHasSourceFailureProse,
+  isIrrelevantToCategoryResponse,
+} = require('./lib/news-summarize.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const BRIEFING_DIR = path.join(REPO_ROOT, 'data', 'briefings');
+
+const NEWS_CATEGORY_BY_SECTION_LABEL = {
+  'AI & TECH NEWS': 'AI and technology news',
+  'US NEWS': 'United States news',
+  'WORLD NEWS': 'world news',
+  'US IMMIGRATION NEWS': 'United States immigration news',
+  'MORTGAGE INDUSTRY NEWS': 'mortgage industry news',
+  'COVID-19 TREATMENTS & NEWS': 'COVID-19 treatments and research news',
+};
+
+function newsCategoryForSectionLabel(label) {
+  return NEWS_CATEGORY_BY_SECTION_LABEL[String(label || '').trim().toUpperCase()] || '';
+}
 const USERPROFILE_DIR = process.env.USERPROFILE || os.homedir();
 const CLAUDE_CLI_JS = path.join(
   USERPROFILE_DIR,
@@ -451,6 +468,7 @@ function isCleanThreeExampleCoraphSummary(ExampleCoraphs) {
     if (s.split(/\s+/).filter(Boolean).length < 18) return false;
     if (!/[.!?]["']?$/.test(s)) return false;
     if (/^(What happened|Why it matters|What to watch):/i.test(s)) return false;
+    if (newsSummaryHasSourceFailureProse(s)) return false;
     if (newsArtifactRe().test(s) || isPublisherChrome(s)) return false;
     return true;
   });
@@ -889,15 +907,21 @@ async function summarizeArticle(a) {
   if (!ctx || ctx.length < 500) return null;
 
   {
+    const category = String(a.newsCategory || a.targetCategory || '').trim();
     const prompt = [
       "Write ExampleCo's morning briefing summary for the news article below.",
+      category ? `Target news category: ${category}.` : '',
       '',
       'Hard requirements:',
+      category
+        ? '- First decide whether the article belongs in the target news category. If it does not, return exactly IRRELEVANT_TO_CATEGORY.'
+        : '',
       '- Output exactly 3 ExampleCoraphs and nothing else.',
       '- No labels, bullets, headings, markdown, source names, transcript language, or read-more language.',
       '- Summarize only facts present in the source excerpt. Do not invent, forecast, or editorialize.',
-      '- Make it read like a concise article replacement for an executive: what happened, why it matters, and what to watch, woven into narrative ExampleCoraphs.',
+      '- Make it a shortened version of the article. Say what is in the article.',
       '- Each ExampleCoraph should be 2-3 sentences, dense but readable.',
+      '- Do not mention the excerpt, supplied text, missing details, or needing more article text.',
       '- Use plain ASCII punctuation only.',
       '',
       `Title: ${a.title}`,
@@ -914,17 +938,23 @@ async function summarizeArticle(a) {
     // orphan that still LED with the unreliable local CLI; when the CLI timed out
     // on every candidate it left US IMMIGRATION 0/10 and US NEWS 7/10 in the
     // rendered briefing even though the widened pools held 19 and 119 articles.
-    const bedrockSummary = normalizeSummaryExampleCoraphs(await bedrockSummarizeAsync(prompt));
+    const bedrockRaw = await bedrockSummarizeAsync(prompt);
+    if (isIrrelevantToCategoryResponse(bedrockRaw)) return null;
+    const bedrockSummary = normalizeSummaryExampleCoraphs(bedrockRaw);
     if (bedrockSummary) return bedrockSummary;
     // Rung 2: local Claude CLI (Claude Max), only when the one-time probe says it
     // is usable. Secondary now that Bedrock leads.
     if (claudeCliUsable()) {
-      const summary = normalizeSummaryExampleCoraphs(await claudeSummarizeAsync(prompt));
+      const claudeRaw = await claudeSummarizeAsync(prompt);
+      if (isIrrelevantToCategoryResponse(claudeRaw)) return null;
+      const summary = normalizeSummaryExampleCoraphs(claudeRaw);
       if (summary) return summary;
     }
     // Rung 3: Codex (GPT-5.x) for a real 3-ExampleCoraph summary before resorting to
     // direct extraction.
-    const codexSummary = normalizeSummaryExampleCoraphs(await codexSummarizeAsync(prompt));
+    const codexRaw = await codexSummarizeAsync(prompt);
+    if (isIrrelevantToCategoryResponse(codexRaw)) return null;
+    const codexSummary = normalizeSummaryExampleCoraphs(codexRaw);
     if (codexSummary) return codexSummary;
   }
 
@@ -1258,6 +1288,7 @@ const DISCOVERY = {
 
 async function gatherSection(feeds, target = 10, extraCandidates = [], discover = null, opts = {}) {
   const summarize = typeof opts.summarize === 'function' ? opts.summarize : summarizeArticle;
+  const newsCategory = String(opts.newsCategory || newsCategoryForSectionLabel(opts.label) || '').trim();
   const all = [...extraCandidates];
   for (const [url, name] of feeds) {
     const items = await fetchFeed(url, name);
@@ -1280,7 +1311,9 @@ async function gatherSection(feeds, target = 10, extraCandidates = [], discover 
     for (let i = 0; i < fresh.length; i += BATCH) {
       if (okCount() >= target) break;
       const batch = fresh.slice(i, i + BATCH);
-      const results = await Promise.all(batch.map((c) => summarize(c)));
+      const results = await Promise.all(
+        batch.map((c) => summarize(newsCategory ? { ...c, newsCategory } : c)),
+      );
       for (let j = 0; j < batch.length; j += 1) {
         if (okCount() >= target) break;
         const cand = batch[j];
@@ -1455,7 +1488,9 @@ async function main() {
   if (serial) {
     results = [];
     for (const spec of activeSpecs) {
-      const articles = await gatherSection(spec.feeds, 10, spec.extra || [], spec.discover || null);
+      const articles = await gatherSection(spec.feeds, 10, spec.extra || [], spec.discover || null, {
+        label: spec.label,
+      });
       console.log(`[news-refresh] ${spec.label}: ${articles.length}/10 (serial)`);
       results.push({ label: spec.label, articles });
     }
@@ -1467,6 +1502,7 @@ async function main() {
           10,
           spec.extra || [],
           spec.discover || null,
+          { label: spec.label },
         );
         return { label: spec.label, articles };
       }),

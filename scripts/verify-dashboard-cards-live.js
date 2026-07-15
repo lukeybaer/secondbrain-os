@@ -56,6 +56,7 @@ const manifest = require('./lib/briefing-card-manifest.js');
 const {
   HEADLINE_ONLY_NOTE_RE,
   isThreeExampleCoraphArticleSummary,
+  newsSummaryHasSourceFailureProse,
   newsPublisherChromeSource,
 } = require('./lib/news-summarize.js');
 const { loadOperatorIdentity } = require('./lib/operator-identity.js');
@@ -623,6 +624,7 @@ function newsArticleBlocks(tile) {
 function articleBlockLooksSummarized(block, card = {}) {
   const paras = Array.isArray(block.paras) ? block.paras : [];
   if (paras.length === 1 && HEADLINE_ONLY_NOTE_RE.test(paras[0])) return true;
+  if (newsSummaryHasSourceFailureProse(paras.join('\n\n'))) return false;
   if (card.id === 'ai_tech_news' && newsDetailLooksLikeArticleOpening(block)) return false;
   return isThreeExampleCoraphArticleSummary(paras, { title: block.title });
 }
@@ -663,15 +665,27 @@ function newsSummaryShapeDefects(card, tile) {
   if (!isNewsCard(card)) return [];
   const blocks = newsArticleBlocks(tile);
   if (!blocks.length) return [];
+  const sourceDiagnostics = blocks.filter((block) =>
+    newsSummaryHasSourceFailureProse((block.paras || []).join('\n\n')),
+  );
   const bad = blocks.filter((block) => !articleBlockLooksSummarized(block, card));
-  if (!bad.length) return [];
+  if (!bad.length && !sourceDiagnostics.length) return [];
   const sample = bad
     .slice(0, 3)
     .map((block) => block.title || 'untitled')
     .join('; ');
-  return [
+  const defects = [];
+  if (sourceDiagnostics.length) {
+    defects.push(
+      `NEWS-SOURCE-DIAGNOSTIC: ${card.id} (${tile.name}) ${sourceDiagnostics.length} rendered article detail row(s) show source/fetch failure prose instead of an article summary`,
+    );
+  }
+  if (bad.length) {
+    defects.push(
     `NEWS-PROSE: ${card.id} (${tile.name}) ${bad.length} rendered article row(s) are not three-ExampleCoraph summaries of their article: ${sample}`,
-  ];
+    );
+  }
+  return defects;
 }
 
 function newsFaceRows(tile) {
@@ -802,6 +816,14 @@ function newsRowQualityDefects(card, tile) {
   if (metaProse.length) {
     defects.push(
       `NEWS-ARTICLE-META: ${card.id} (${tile.name}) ${metaProse.length} row(s) summarize the article as an article instead of giving the executive substance`,
+    );
+  }
+  const sourceDiagnostics = rows.filter((row) =>
+    newsSummaryHasSourceFailureProse(`${row.title} ${row.why}`),
+  );
+  if (sourceDiagnostics.length) {
+    defects.push(
+      `NEWS-SOURCE-DIAGNOSTIC: ${card.id} (${tile.name}) ${sourceDiagnostics.length} row(s) show source/fetch failure prose instead of an article summary`,
     );
   }
   if (card.id === 'covid_news') {
