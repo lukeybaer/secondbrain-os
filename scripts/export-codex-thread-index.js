@@ -5,6 +5,15 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+const CODEX_STATE_MAX_BUFFER_BYTES = (() => {
+  const parsed = Number.parseInt(process.env.CODEX_THREAD_INDEX_STATE_MAX_BUFFER_BYTES || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 128 * 1024 * 1024;
+})();
+const CODEX_STATE_ROW_LIMIT = (() => {
+  const parsed = Number.parseInt(process.env.CODEX_THREAD_INDEX_STATE_ROW_LIMIT || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5000;
+})();
+
 function readJsonl(file) {
   if (!file || !fs.existsSync(file)) return [];
   const rows = [];
@@ -45,21 +54,36 @@ function readCodexStateRows(statePath = path.join(os.homedir(), '.codex', 'state
     'import json, sqlite3, sys',
     'db = sqlite3.connect(sys.argv[1])',
     'db.row_factory = sqlite3.Row',
-    'cols = "id,title,created_at,updated_at,updated_at_ms,archived,cwd,model,reasoning_effort"',
-    'rows = [dict(r) for r in db.execute("SELECT " + cols + " FROM threads")]',
+    'limit = int(sys.argv[2])',
+    'cols = "id,title,created_at,updated_at,updated_at_ms,archived,cwd"',
+    'sql = "SELECT " + cols + " FROM threads ORDER BY COALESCE(updated_at_ms, updated_at * 1000, created_at * 1000, 0) DESC LIMIT ?"',
+    'rows = [dict(r) for r in db.execute(sql, (limit,))]',
     'print(json.dumps(rows))',
   ].join('\n');
   const candidates = [
-    [process.env.PYTHON || 'python', ['-c', code, statePath]],
-    ['py', ['-3', '-c', code, statePath]],
+    [process.env.PYTHON || 'python', ['-c', code, statePath, String(CODEX_STATE_ROW_LIMIT)]],
+    ['python3', ['-c', code, statePath, String(CODEX_STATE_ROW_LIMIT)]],
+    ['py', ['-3', '-c', code, statePath, String(CODEX_STATE_ROW_LIMIT)]],
   ];
   for (const [cmd, args] of candidates) {
-    const res = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
-    if (res.status !== 0 || !res.stdout) continue;
+    const res = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: CODEX_STATE_MAX_BUFFER_BYTES });
+    if (res.error) {
+      console.error(`Codex state read via ${cmd} failed: ${res.error.message}`);
+      continue;
+    }
+    if (res.signal) {
+      console.error(`Codex state read via ${cmd} stopped by signal ${res.signal}`);
+      continue;
+    }
+    if (res.status !== 0 || !res.stdout) {
+      if (res.stderr) console.error(`Codex state read via ${cmd} failed: ${res.stderr.trim()}`);
+      continue;
+    }
     try {
       const rows = JSON.parse(res.stdout);
       return Array.isArray(rows) ? rows : [];
-    } catch {
+    } catch (err) {
+      console.error(`Codex state read via ${cmd} returned invalid JSON: ${err.message}`);
       return [];
     }
   }
@@ -79,12 +103,14 @@ function mergeThreadRows(prev, next) {
   if (!next) return prev;
   const prevMs = Date.parse(prev.updatedAt || '') || 0;
   const nextMs = Date.parse(next.updatedAt || '') || 0;
-  const title = preferTitle(prev.title, next.title);
+  const preferred = nextMs >= prevMs ? next : prev;
+  const fallback = preferred === next ? prev : next;
+  const title = String(preferred.title || '').trim() || preferTitle(prev.title, next.title);
   const merged = nextMs >= prevMs ? { ...prev, ...next } : { ...next, ...prev };
   merged.title = title;
   merged.thread_name = title;
-  merged.firstUserMessage = prev.firstUserMessage || next.firstUserMessage || '';
-  merged.preview = prev.preview || next.preview || '';
+  merged.firstUserMessage = preferred.firstUserMessage || fallback.firstUserMessage || '';
+  merged.preview = preferred.preview || fallback.preview || '';
   merged.source = prev.source === next.source ? prev.source : 'codex-session-index+state';
   return merged;
 }
@@ -209,6 +235,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  CODEX_STATE_MAX_BUFFER_BYTES,
+  CODEX_STATE_ROW_LIMIT,
   coerceIso,
   exportCodexThreadIndex,
   normalizeThreadRow,
