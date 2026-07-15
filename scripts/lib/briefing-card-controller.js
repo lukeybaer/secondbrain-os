@@ -144,6 +144,28 @@ function cardStatus(artifact, cardId) {
   return statusMap(artifact).get(String(cardId || '').toLowerCase()) || 'ExampleCo';
 }
 
+function mutualMergePartnerIds(cardId) {
+  const id = String(cardId || '').toLowerCase();
+  const card = getCardById(id);
+  if (!card || !Array.isArray(card.mergedInto)) return [];
+  return card.mergedInto
+    .map((partnerId) => String(partnerId || '').toLowerCase())
+    .filter((partnerId) => {
+      const partner = getCardById(partnerId);
+      return partner
+        && Array.isArray(partner.mergedInto)
+        && partner.mergedInto.map((value) => String(value || '').toLowerCase()).includes(id);
+    });
+}
+
+function effectiveGreenGuardStatus(statuses, cardId) {
+  const id = String(cardId || '').toLowerCase();
+  const ownStatus = statuses.get(id) || 'missing';
+  if (ownStatus === 'clean') return 'clean';
+  const cleanPartner = mutualMergePartnerIds(id).find((partnerId) => statuses.get(partnerId) === 'clean');
+  return cleanPartner ? 'clean' : ownStatus;
+}
+
 function unrelatedGreenRegressions(beforeArtifact, afterArtifact, { cardId, protectedCardIds = [] } = {}) {
   const before = statusMap(beforeArtifact);
   const after = statusMap(afterArtifact);
@@ -154,7 +176,7 @@ function unrelatedGreenRegressions(beforeArtifact, afterArtifact, { cardId, prot
   const regressions = [];
   for (const [id, beforeStatus] of before.entries()) {
     if (excluded.has(id) || beforeStatus !== 'clean') continue;
-    const afterStatus = after.get(id) || 'missing';
+    const afterStatus = effectiveGreenGuardStatus(after, id);
     if (afterStatus !== 'clean') regressions.push({ id, beforeStatus, afterStatus });
   }
   return regressions;
@@ -170,16 +192,17 @@ function greenRegressions(beforeArtifact, afterArtifact, {
     protectedCardIds,
   });
   const targetId = String(cardId || '').toLowerCase();
+  const after = statusMap(afterArtifact);
   if (
     protectTarget
     && targetId
     && cardStatus(beforeArtifact, targetId) === 'clean'
-    && cardStatus(afterArtifact, targetId) !== 'clean'
+    && effectiveGreenGuardStatus(after, targetId) !== 'clean'
   ) {
     regressions.push({
       id: targetId,
       beforeStatus: 'clean',
-      afterStatus: cardStatus(afterArtifact, targetId),
+      afterStatus: effectiveGreenGuardStatus(after, targetId),
     });
   }
   return regressions;
@@ -1033,6 +1056,8 @@ module.exports = {
   statusMap,
   defectCodesForCard,
   cardStatus,
+  mutualMergePartnerIds,
+  effectiveGreenGuardStatus,
   unrelatedGreenRegressions,
   greenRegressions,
   controllerImplementationDigest,
