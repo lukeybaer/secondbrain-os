@@ -81,15 +81,14 @@ fi
 export HOME
 
 # Build the exact command once so the dry-run print and the real spawn cannot drift.
-# The serial cloud-morning-briefing writer is retired. The scheduled pass now
-# publishes the union of independent per-card artifacts.
-BRIEFING_SERIAL_PASS_RETIRED="${BRIEFING_SERIAL_PASS_RETIRED:-1}"
-export BRIEFING_SERIAL_PASS_RETIRED
-CMD=("$NODE_BIN" scripts/refresh-card.js --all --date "$DATE" --publish --verify)
+# The morning run must create the dated briefing markdown before any per-card
+# artifact union can be meaningful. refresh-card --all is a repaint helper, not
+# the 5:30 generator.
+CMD=("$NODE_BIN" scripts/cloud-morning-briefing.js --date "$DATE" --publish --notify)
 
 # The old card-controller authority switch is now only a deployed-root selector.
 # It no longer runs a competing final-pass writer; both branches publish the
-# same all-card artifact union.
+# same real cloud briefing.
 CONTROLLER_CMD=("${CMD[@]}")
 
 # Mechanical-pass command, built once for the same reason. `--mechanical-only` is
