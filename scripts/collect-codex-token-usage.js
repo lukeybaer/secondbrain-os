@@ -114,7 +114,8 @@ function main() {
     return i >= 0 ? parseInt(process.argv[i + 1], 10) : 7;
   })();
   const days = Number.isFinite(argDays) && argDays > 0 ? argDays : 7;
-  const end = new Date();
+  const clock = process.env.CODEX_USAGE_NOW ? new Date(process.env.CODEX_USAGE_NOW) : new Date();
+  const end = Number.isNaN(clock.getTime()) ? new Date() : new Date(clock);
   end.setUTCHours(23, 59, 59, 999);
   const start = new Date(end);
   start.setUTCDate(start.getUTCDate() - (days - 1));

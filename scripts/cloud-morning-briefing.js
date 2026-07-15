@@ -5806,7 +5806,11 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
   try {
     const { probeRecallBrokerHealth } = require('./recall-broker-health');
     const rb = probeRecallBrokerHealth({ serverLedgerDir: path.join(dataDir, 'agent') });
-    push(rb.status === 'green' ? OK : rb.status === 'red' ? BAD : ExampleCo, rb.detail);
+    const detail = String(rb.detail || 'probe returned no detail.');
+    push(
+      rb.status === 'green' ? OK : rb.status === 'red' ? BAD : ExampleCo,
+      /^Recall Broker:/i.test(detail) ? detail : `Recall Broker: ${detail}`,
+    );
   } catch {
     push(ExampleCo, 'Recall Broker: probe could not run on this host.');
   }
