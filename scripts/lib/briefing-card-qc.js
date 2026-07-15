@@ -30,9 +30,15 @@ const {
 // unchanged (Telegram/Vapi/notify/spine still rely on it). 2026-06-22.
 const NEWS_CARD_TITLE_RE =
   /\b(?:AI\s*&\s*TECH NEWS|US NEWS|WORLD NEWS|US IMMIGRATION NEWS|MORTGAGE INDUSTRY NEWS|COVID-19 TREATMENTS & NEWS|GROUP NEWS)\b/i;
+const COVID_NEWS_TOPIC_RE =
+  /\b(?:covid(?:-19)?|sars[-\s]?cov[-\s]?2|coronavirus|long covid|paxlovid|remdesivir|molnupiravir|booster|variant|vaccine|vaccination|antiviral)\b/i;
 
 function isNewsCardTitle(title) {
   return NEWS_CARD_TITLE_RE.test(String(title || ''));
+}
+
+function isCovidNewsCardTitle(title) {
+  return /^COVID(?:-19)?(?:\s+TREATMENTS\s*&\s*NEWS|\s+NEWS)?/i.test(String(title || '').trim());
 }
 
 function isTokenUsageCardTitle(title) {
@@ -86,6 +92,72 @@ function otterStatusPreamble(body) {
   const lines = String(body || '').split('\n');
   const idx = lines.findIndex((l) => /^\s*(?:Past 24 Hours|Day Before|Lifetime stats)\b/i.test(l));
   return (idx === -1 ? lines : lines.slice(0, idx)).join('\n');
+}
+
+function systemHealthContentFailures({ id, title, body, surface = 'briefing-card' } = {}) {
+  if (id !== 'system_health' && !isSystemHealthCardTitle(title)) return [];
+  const redRows = String(body || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^(?:\u2717|âœ—|\?)\s+/.test(line));
+  if (!redRows.length) return [];
+  return [
+    `${surface}:system_health: SYSTEM-HEALTH-RED ${redRows.length} subsystem row(s) are non-green: ${redRows
+      .slice(0, 3)
+      .join(' | ')}`,
+  ];
+}
+
+function tokenUsageContentFailures({ id, title, body, surface = 'briefing-card' } = {}) {
+  if (id !== 'token_usage' && !isTokenUsageCardTitle(title)) return [];
+  const text = String(body || '');
+  const failures = [];
+  if (
+    /\bClaude Max\b[\s\S]{0,240}\b(?:did not refresh|stale|unreachable|HTTP 403|invalid|expired)\b/i.test(
+      text,
+    ) ||
+    /\b\d+h\s+stale\b/i.test(text)
+  ) {
+    failures.push(
+      `${surface}:token_usage: TOKEN-USAGE-STALE Claude usage is stale or unreachable; the token card cannot be clean until it renders current usage or an honest blocked state`,
+    );
+  }
+  if (/\bBedrock\b[\s\S]{0,160}\busage unavailable\b/i.test(text)) {
+    failures.push(
+      `${surface}:token_usage: TOKEN-USAGE-BEDROCK-MISSING Bedrock fallback usage is unavailable`,
+    );
+  }
+  return [...new Set(failures)];
+}
+
+function markdownNumberedRows(body) {
+  const rows = [];
+  let current = null;
+  for (const rawLine of String(body || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const m = line.match(/^(\d+)\.\s+(.+?)\s*$/);
+    if (m) {
+      if (current) rows.push(current);
+      current = { n: m[1], title: m[2], why: '' };
+      continue;
+    }
+    if (current && line && !/^Source:/i.test(line) && !/^Google News/i.test(line)) {
+      current.why += `${current.why ? ' ' : ''}${line}`;
+    }
+  }
+  if (current) rows.push(current);
+  return rows;
+}
+
+function covidNewsContentFailures({ id, title, body, surface = 'briefing-card' } = {}) {
+  if (id !== 'covid_news' && !isCovidNewsCardTitle(title)) return [];
+  const rows = markdownNumberedRows(body);
+  if (!rows.length) return [];
+  const offTopic = rows.filter((row) => !COVID_NEWS_TOPIC_RE.test(`${row.title} ${row.why}`));
+  if (!offTopic.length) return [];
+  return [
+    `${surface}:covid_news: COVID-TOPIC ${offTopic.length} row(s) are not visibly about COVID treatment/news`,
+  ];
 }
 
 function splitMarkdownTableLine(line) {
@@ -425,6 +497,9 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
     }
   }
 
+  failures.push(...systemHealthContentFailures({ id, title, body, surface }));
+  failures.push(...tokenUsageContentFailures({ id, title, body, surface }));
+  failures.push(...covidNewsContentFailures({ id, title, body, surface }));
   failures.push(...otterCallHistoryContentFailures({ id, title, body, surface }));
 
   return { ok: failures.length === 0, id, failures };
@@ -581,8 +656,12 @@ module.exports = {
   qcBriefingMarkdown,
   repairBriefingMarkdown,
   splitMarkdownCards,
+  systemHealthContentFailures,
+  tokenUsageContentFailures,
+  covidNewsContentFailures,
   otterCallHistoryContentFailures,
   isNewsCardTitle,
+  isCovidNewsCardTitle,
   isTokenUsageCardTitle,
   isSystemHealthCardTitle,
   isSelfHealHealthCardTitle,
