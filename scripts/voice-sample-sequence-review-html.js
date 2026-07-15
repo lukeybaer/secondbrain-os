@@ -14,6 +14,8 @@ const enrichedDir = path.join(repo, 'data', 'otter', 'enriched');
 const probeIndexPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'track-probe-index-latest.json');
 const callRostersPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'otter-call-speaker-rosters-latest.json');
 const speakerParetoPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'speaker-pareto-latest.json');
+const briefingVoiceQueuePath = path.join(repo, 'data', 'life-archive', 'people', 'briefing-voice-queue-latest.json');
+const reclusterPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'recluster-latest.json');
 const reportDir = path.join(repo, 'reports');
 const forceServerUrls = process.argv.includes('--server-url') || process.argv.includes('--web');
 const localFileMode = !forceServerUrls && (process.argv.includes('--local-file') || !fs.existsSync('/opt/secondbrain'));
@@ -68,6 +70,49 @@ function normalizeId(value) {
 }
 
 let targetAliasesCache = null;
+let queueVoiceAliasesCache = null;
+const enrichedTextCache = new Map();
+
+function reviewClipPath(probePath) {
+  return String(probePath || '')
+    .replace(/\\/g, '/')
+    .replace(/-dur-[0-9.]+\.wav$/, '-dur-30.00.wav');
+}
+
+function queueVoiceAliases(targetValue) {
+  if (queueVoiceAliasesCache) return queueVoiceAliasesCache;
+  const queue = readJson(briefingVoiceQueuePath, {});
+  const rows = [
+    ...(Array.isArray(queue?.ExampleCo_voice_queue) ? queue.ExampleCo_voice_queue : []),
+    ...(Array.isArray(queue?.confirmation_queue) ? queue.confirmation_queue : []),
+  ];
+  const wanted = new Set([String(targetValue || ''), normalizeId(targetValue)]);
+  const targetIsAcousticExampleCo = /^ExampleCo_voice_/.test(String(targetValue || ''));
+  const out = new Set();
+  for (const row of rows) {
+    const topLevelIds = [
+      row?.voice_cluster_id,
+      row?.ExampleCo_speaker_id,
+      row?.acoustic_ExampleCo_id,
+    ].filter(Boolean).map(String);
+    const rowIds = [
+      ...topLevelIds,
+      ...(Array.isArray(row?.voice_cluster_ids) ? row.voice_cluster_ids : []),
+    ]
+      .filter(Boolean)
+      .map(String);
+    const urlTarget = String(row?.sequence_review_url || '').match(/[?&]target=([^&]+)/);
+    if (urlTarget) rowIds.push(decodeURIComponent(urlTarget[1]));
+    const isTarget = rowIds.some((id) => wanted.has(id) || wanted.has(normalizeId(id)));
+    if (!isTarget) continue;
+    for (const id of targetIsAcousticExampleCo ? topLevelIds : rowIds) {
+      out.add(id);
+      out.add(normalizeId(id));
+    }
+  }
+  queueVoiceAliasesCache = out;
+  return out;
+}
 
 function paretoVoiceAliases(targetValue) {
   const pareto = readJson(speakerParetoPath, {});
@@ -106,6 +151,7 @@ function targetAliases() {
   const person = String(target || '').match(/^person:(.+)$/);
   if (person) aliases.add(person[1]);
   for (const alias of paretoVoiceAliases(target)) aliases.add(alias);
+  for (const alias of queueVoiceAliases(target)) aliases.add(alias);
   targetAliasesCache = aliases;
   return aliases;
 }
@@ -161,6 +207,39 @@ function speakerFromCall(call, aliases) {
   return null;
 }
 
+function trackTextFromEnriched(otid, label) {
+  const key = `${otid}|${label}`;
+  if (enrichedTextCache.has(key)) return enrichedTextCache.get(key);
+  const empty = { text: '', segmentCount: 0, wordCount: 0 };
+  if (!otid || !label) {
+    enrichedTextCache.set(key, empty);
+    return empty;
+  }
+  const filePath = path.join(enrichedDir, `${otid}.json`);
+  const doc = readJson(filePath, {});
+  const segments = (doc.segments || []).filter(
+    (segment) => String(segment.speaker_model_label) === String(label),
+  );
+  const value = {
+    text: segmentText(segments),
+    segmentCount: segments.length,
+    wordCount: segments.reduce(
+      (sum, segment) =>
+        sum +
+        Number(
+          segment.word_count ||
+            String(segment.text || '')
+              .split(/\s+/)
+              .filter(Boolean).length ||
+            0,
+        ),
+      0,
+    ),
+  };
+  enrichedTextCache.set(key, value);
+  return value;
+}
+
 function rowsFromProbeIndex() {
   const index = readJson(probeIndexPath, {});
   const aliases = targetAliases();
@@ -192,6 +271,103 @@ function rowsFromProbeIndex() {
       voiceClusterId: probe.voice_cluster_id || (speaker?.voice_cluster_ids || [])[0] || '',
       ExampleCoSpeakerId: probe.ExampleCo_speaker_id || (speaker?.ExampleCo_speaker_ids || [])[0] || '',
       topMatch: probe.ecapa || probe.voice_embedding_match || null,
+    });
+  }
+  return out;
+}
+
+function rowsFromRecluster() {
+  const recluster = readJson(reclusterPath, {});
+  const aliases = targetAliases();
+  const targetIsAcousticExampleCo = /^ExampleCo_voice_/.test(String(target || ''));
+  const normalizedTarget = normalizeId(target);
+  const rosterByOtid = loadRosterByOtid();
+  const out = [];
+  for (const cluster of recluster?.clusters || []) {
+    const members = Array.isArray(cluster?.members) ? cluster.members : [];
+    const ids = [
+      cluster?.cluster_id,
+      cluster?.confirmed_person_id ? `person:${cluster.confirmed_person_id}` : '',
+      cluster?.confirmed_person_id,
+      ...(Array.isArray(cluster?.member_track_keys) ? cluster.member_track_keys : []),
+      ...members.flatMap((member) => [
+        member?.voice_cluster_id,
+        member?.ExampleCo_speaker_id,
+        member?.acoustic_ExampleCo_id,
+        member?.track_key,
+      ]),
+    ]
+      .filter(Boolean)
+      .map(String);
+    const clusterId = String(cluster?.cluster_id || '');
+    const matches = targetIsAcousticExampleCo
+      ? clusterId === String(target) || normalizeId(clusterId) === normalizedTarget
+      : ids.some((id) => aliases.has(id) || aliases.has(normalizeId(id)));
+    if (!matches) continue;
+    for (const member of members) {
+      const otid = String(member?.otid || '');
+      const label = String(member?.speaker_model_label || '');
+      const call = rosterByOtid.get(otid);
+      const text = trackTextFromEnriched(otid, label);
+      const audio = reviewClipPath(member?.probe_audio_path || '').replace(/\\/g, '/');
+      out.push({
+        date: call?.date || dateFromValue(member?.date || member?.start_time || ''),
+        title: call?.title || member?.title || otid || 'untitled',
+        otid,
+        label,
+        segmentCount: text.segmentCount || Number(member?.segment_count || 0),
+        wordCount: text.wordCount || Number(member?.word_count || 0),
+        audio,
+        audioExists: audio ? fs.existsSync(path.join(repo, audio)) : false,
+        text: text.text || member?.sample_transcript || '',
+        identityTier: cluster?.confirmed_person_id ? 'confirmed_recluster_voice' : 'durable_ExampleCo_voice',
+        voiceClusterId: member?.voice_cluster_id || '',
+        ExampleCoSpeakerId: cluster?.cluster_id || member?.ExampleCo_speaker_id || '',
+        topMatch: null,
+      });
+    }
+  }
+  return out;
+}
+
+function rowsFromBriefingQueue() {
+  const queue = readJson(briefingVoiceQueuePath, {});
+  const aliases = targetAliases();
+  const rosterByOtid = loadRosterByOtid();
+  const rows = [
+    ...(Array.isArray(queue?.ExampleCo_voice_queue) ? queue.ExampleCo_voice_queue : []),
+    ...(Array.isArray(queue?.confirmation_queue) ? queue.confirmation_queue : []),
+  ];
+  const out = [];
+  for (const row of rows) {
+    const ids = [
+      row?.voice_cluster_id,
+      row?.ExampleCo_speaker_id,
+      row?.acoustic_ExampleCo_id,
+      ...(Array.isArray(row?.voice_cluster_ids) ? row.voice_cluster_ids : []),
+    ]
+      .filter(Boolean)
+      .map(String);
+    if (!ids.some((id) => aliases.has(id) || aliases.has(normalizeId(id)))) continue;
+    const otid = String(row?.sample?.otid || '');
+    const label = String(row?.sample?.speaker_model_label || row?.speaker_model_label || '');
+    const call = rosterByOtid.get(otid);
+    const text = trackTextFromEnriched(otid, label);
+    const audio = reviewClipPath(row?.probe_audio_path || row?.source_probe_audio_path || '').replace(/\\/g, '/');
+    out.push({
+      date: call?.date || dateFromValue(row?.last_seen || row?.first_seen || ''),
+      title: call?.title || row?.sample?.title || otid || 'untitled',
+      otid,
+      label,
+      segmentCount: text.segmentCount || Number(row?.segment_count || 0),
+      wordCount: text.wordCount || Number(row?.word_count || 0),
+      audio,
+      audioExists: audio ? fs.existsSync(path.join(repo, audio)) : false,
+      text: text.text || row?.sample?.text || row?.sample_text || '',
+      identityTier: row?.quality_gate?.identity_tier || row?.status || '',
+      voiceClusterId: row?.voice_cluster_id || '',
+      ExampleCoSpeakerId: row?.ExampleCo_speaker_id || row?.acoustic_ExampleCo_id || '',
+      topMatch: null,
     });
   }
   return out;
@@ -238,6 +414,10 @@ const personTarget = /^person:/.test(String(target || ''));
 const rows = [];
 if (acousticExampleCoTarget || personTarget) rows.push(...rowsFromEnriched());
 if (acousticExampleCoTarget || (!acousticExampleCoTarget && !personTarget)) rows.push(...rowsFromProbeIndex());
+if (acousticExampleCoTarget || (!acousticExampleCoTarget && !personTarget)) rows.push(...rowsFromRecluster());
+if (!rows.length && (acousticExampleCoTarget || (!acousticExampleCoTarget && !personTarget))) {
+  rows.push(...rowsFromBriefingQueue());
+}
 if (!rows.length && !acousticExampleCoTarget && !personTarget) rows.push(...rowsFromEnriched());
 
 const dedupedRows = [];
@@ -664,5 +844,5 @@ const html = `<!doctype html>
 
 fs.writeFileSync(outPath, html, 'utf8');
 if (legacyOutPath !== outPath) fs.writeFileSync(legacyOutPath, html, 'utf8');
-console.log(outPath);
-console.log(manifestPath);
+console.log(path.relative(repo, outPath).replace(/\\/g, '/'));
+console.log(path.relative(repo, manifestPath).replace(/\\/g, '/'));

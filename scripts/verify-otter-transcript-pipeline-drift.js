@@ -108,6 +108,21 @@ const MUST_CONTAIN = [
   ],
   [
     'scripts/voice-sample-sequence-review-html.js',
+    'briefing-voice-queue-latest.json',
+    'voice review can rebuild links emitted by the current briefing ExampleCo-voice queue',
+  ],
+  [
+    'scripts/voice-sample-sequence-review-html.js',
+    'recluster-latest.json',
+    'voice review resolves recluster-backed ExampleCo_voice_ecapa ids to member probe clips',
+  ],
+  [
+    'scripts/voice-sample-sequence-review-html.js',
+    'targetIsAcousticExampleCo',
+    'ExampleCo_voice_ecapa review expansion matches direct recluster ids instead of leaking sibling clusters through shared member aliases',
+  ],
+  [
+    'scripts/voice-sample-sequence-review-html.js',
     'distinct_calls_found',
     'recurring ExampleCo review can prove consistency across multiple calls',
   ],
@@ -223,8 +238,13 @@ function checkDrift(repoRoot) {
   if (doc && !/NOT from Otter|Gmail-derived|not a wired output/i.test(doc)) {
     failures.push('doc no longer states that action items are Gmail-derived, not an Otter stage');
   }
-  if (doc && !/SPEAKER_MATCH_SCORE=0\.56|voice-only review page|distinct calls|voice_cluster_ids/i.test(doc)) {
-    failures.push('doc no longer states the voice-only review, Pareto voice_cluster_ids, and 0.56 acoustic matching standard');
+  if (
+    doc &&
+    !/SPEAKER_MATCH_SCORE=0\.56|voice-only review page|distinct calls|voice_cluster_ids|briefing-voice-queue-latest\.json|recluster-latest\.json/i.test(
+      doc,
+    )
+  ) {
+    failures.push('doc no longer states the voice-only review, Pareto/recluster acoustic expansion, and 0.56 acoustic matching standard');
   }
   if (
     doc
