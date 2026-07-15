@@ -38,6 +38,7 @@ const {
   isSharedCheckout,
   proveWorktreeIsolation,
 } = require('./codex-worktree.js');
+const { fastForwardShared } = require('./shared-checkout-sync.js');
 
 const GIT_TIMEOUT_MS = 120_000;
 
@@ -126,48 +127,6 @@ function mirrorEntry({ entry, fromRoot, toRoot, runGit, log }) {
   }
   fs.mkdirSync(path.dirname(dst), { recursive: true });
   fs.copyFileSync(src, dst);
-}
-
-// Best-effort fast-forward of the shared checkout after a land, so content
-// that just reached origin/master stops reading as local dirt. STRICTLY
-// fast-forward and strictly guarded: only when local HEAD is an ancestor of
-// origin/master, and git itself refuses if any peer's uncommitted work would
-// be clobbered. Failure here is expected and non-fatal (the shared-dirt
-// tripwire treats content-equal-to-origin dirt as landed-awaiting-sync).
-function fastForwardShared({ sharedRoot, runGit = runGitDefault, log = () => {} } = {}) {
-  const fetch = runGit(['fetch', 'origin', 'master'], sharedRoot);
-  if (!fetch.ok) return { ok: false, reason: 'fetch-failed' };
-  const anc = runGit(['merge-base', '--is-ancestor', 'HEAD', 'origin/master'], sharedRoot);
-  if (!anc.ok) return { ok: false, reason: 'diverged-not-ff' };
-  let merge = runGit(['merge', '--ff-only', 'origin/master'], sharedRoot);
-  if (!merge.ok) {
-    // Git refuses an ff merge over a locally-modified file even when its
-    // working bytes are IDENTICAL to the incoming blob (it compares against
-    // old HEAD, not the target). That is exactly the state a just-landed scan
-    // leaves behind. Reconcile only those provably content-equal paths (a
-    // byte-identical checkout, safe under peers), then retry once. Any path
-    // with REAL peer differences still refuses, and we leave it alone.
-    const dirty = parsePorcelain(runGit(['status', '--porcelain'], sharedRoot).stdout);
-    let reconciled = 0;
-    for (const entry of dirty) {
-      if (entry.code.includes('?')) continue; // untracked never blocks ff
-      const originBlob = runGit(['rev-parse', `origin/master:${entry.rel}`], sharedRoot);
-      if (!originBlob.ok) continue;
-      const workingHash = runGit(['hash-object', '--', entry.rel], sharedRoot);
-      if (!workingHash.ok) continue;
-      if (originBlob.stdout.trim() !== workingHash.stdout.trim()) continue;
-      const co = runGit(['checkout', 'origin/master', '--', entry.rel], sharedRoot);
-      if (co.ok) reconciled += 1;
-    }
-    if (reconciled > 0) {
-      merge = runGit(['merge', '--ff-only', 'origin/master'], sharedRoot);
-    }
-    if (!merge.ok) {
-      log('[scan-lander] shared ff-sync refused (peer dirt in the way); leaving as-is.');
-      return { ok: false, reason: 'ff-refused' };
-    }
-  }
-  return { ok: true };
 }
 
 // Land the writer's outputs through the normal gate. Returns

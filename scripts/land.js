@@ -30,6 +30,7 @@ const fs = require('fs');
 
 const landGate = require('./lib/land-gate.js');
 const { buildLandGateReceipt, writeLandGateReceipt } = require('./lib/land-gate-receipt.js');
+const { fastForwardShared } = require('./lib/shared-checkout-sync.js');
 
 const REMOTE = 'origin';
 const TARGET = 'master';
@@ -245,6 +246,32 @@ function pushFastForward(branch) {
   log('pushed.');
 }
 
+function syncSharedCheckoutAfterPush(root) {
+  if (!APPLY) return;
+  const mainRoot = process.env.SB_MAIN_CHECKOUT || commonMainRoot(root);
+  if (!mainRoot) {
+    log('shared checkout sync skipped: main checkout could not be resolved.');
+    return;
+  }
+  if (path.resolve(mainRoot) === path.resolve(root)) {
+    log('shared checkout sync skipped: land ran in the main checkout.');
+    return;
+  }
+
+  log(`syncing shared checkout ${mainRoot} to ${REMOTE}/${TARGET} ...`);
+  const result = fastForwardShared({
+    sharedRoot: mainRoot,
+    remote: REMOTE,
+    target: TARGET,
+    log: (line) => log(line),
+  });
+  if (result.ok) {
+    log('shared checkout sync complete.');
+    return;
+  }
+  log(`shared checkout sync skipped: ${result.reason}.`);
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -326,6 +353,7 @@ function main() {
   try {
     pushFastForward(branch);
     writeReceipt('green', APPLY);
+    syncSharedCheckoutAfterPush(root);
   } finally {
     landGate.releaseLandLock(dir, lock.token);
     log('land lock released.');
