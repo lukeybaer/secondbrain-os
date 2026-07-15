@@ -533,6 +533,42 @@ async function produceLlmCardArtifact({ card, date, dataDir, now = new Date() })
   });
 }
 
+function produceSourceBackedLlmCardArtifact({ card, date, dataDir, now = new Date() } = {}) {
+  if (!card || card.id !== 'covid_news') return null;
+  try {
+    const { formatHealedNewsSection } = require('../cloud-morning-briefing.js');
+    if (typeof formatHealedNewsSection !== 'function') return null;
+    const rendered = formatHealedNewsSection(
+      dataDir,
+      date,
+      'covid',
+      'COVID-19 TREATMENTS & NEWS',
+    );
+    const markdown = String((rendered && rendered.markdown) || '').trim();
+    const state = (rendered && rendered.state) || {};
+    const count = Number(state.count || 0);
+    if (!markdown || state.ok !== true || count < 1 || state.source === 'missing') return null;
+    return createCardArtifact({
+      id: card.id,
+      title: cardTitle(card),
+      date,
+      kind: 'llm',
+      status: 'clean',
+      generatedAt: now.toISOString(),
+      markdown,
+      source: {
+        mode: 'content-heal',
+        cardKey: 'covid',
+        count,
+        renderer: 'formatHealedNewsSection',
+      },
+      qc: { ok: true, failures: [] },
+    });
+  } catch {
+    return null;
+  }
+}
+
 function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
   if (card.id === 'system_health') {
     return produceSystemHealthCardArtifact({ date, dataDir, now });
@@ -564,7 +600,8 @@ async function produceCardArtifact({ cardId, date, dataDir = defaultDataDir(), n
   const card = getCardById(cardId);
   if (!card) throw new Error(`ExampleCo briefing card '${cardId}'`);
   const artifact = isLlmCard(card.id)
-    ? produceLlmCardArtifact({ card, date, dataDir, now })
+    ? produceSourceBackedLlmCardArtifact({ card, date, dataDir, now }) ||
+      produceLlmCardArtifact({ card, date, dataDir, now })
     : produceDataCardArtifact({ card, date, dataDir, now });
   return normalizeArtifactQuality(await artifact);
 }
@@ -673,6 +710,7 @@ module.exports = {
   writeLiveBoardArtifactFromCardArtifacts,
   writeCompatibilityMarkdown,
   produceCardArtifact,
+  produceSourceBackedLlmCardArtifact,
   produceSystemHealthCardArtifact,
   produceAllCardArtifacts,
   listCardArtifactDates,

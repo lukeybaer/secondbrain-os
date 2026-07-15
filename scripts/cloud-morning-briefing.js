@@ -550,6 +550,17 @@ function newsItemExampleCosHardBlockMarker(item = {}) {
   );
 }
 
+function cleanNewsSummaryPreservingExampleCoraphs(value) {
+  return String(value || '')
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\s*\/p\s*>/gi, '\n\n')
+    .split(/\n{2,}/)
+    .map((part) => stripPublisherChrome(decodeHtmlEntities(stripHtml(part))).trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+}
+
 function normalizeCovidArticle(item) {
   const rawTitle = stripHtml(item && item.title);
   const suffix = rawTitle.match(/\s+-\s+([A-Za-z][A-Za-z0-9 .&'-]{1,60})$/);
@@ -2629,6 +2640,7 @@ function isImmigrationNewsTopical(item) {
 }
 
 function normalizeHealedNewsItem(item) {
+  const rawSummary = cleanNewsSummaryPreservingExampleCoraphs(item && item.summary);
   const rawExcerpt = stripPublisherChrome(decodeHtmlEntities(stripHtml(item && item.excerpt)));
   const rawSourceText = stripPublisherChrome(
     decodeHtmlEntities(
@@ -2675,6 +2687,7 @@ function normalizeHealedNewsItem(item) {
   return {
     title,
     _urlTitle: urlTitle,
+    summary: rawSummary,
     excerpt,
     sourceText,
     source: source || domain || sourceLabelFromUrl(url),
