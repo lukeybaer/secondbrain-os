@@ -27,6 +27,11 @@ const LLM_CARD_IDS = Object.freeze([
   'shorts_proposals',
 ]);
 
+const RECIPROCAL_MERGE_PARTNERS = Object.freeze({
+  content_pipeline: 'video_approval_queue',
+  video_approval_queue: 'content_pipeline',
+});
+
 function defaultDataDir() {
   return (
     process.env.SECONDBRAIN_DATA_DIR ||
@@ -302,9 +307,23 @@ function artifactMarkdown(artifact) {
   return `${title}:\nCard artifact had no markdown body.`;
 }
 
+function isRepresentedByMergePartnerArtifact(artifact) {
+  return (
+    artifact &&
+    normalizeStatus(artifact.status) === 'clean' &&
+    artifact.source &&
+    artifact.source.mode === 'represented-by-merge-partner' &&
+    artifact.source.partnerId
+  );
+}
+
+function renderableArtifacts(artifacts) {
+  return orderArtifacts(artifacts).filter((artifact) => !isRepresentedByMergePartnerArtifact(artifact));
+}
+
 function artifactsToBriefingMarkdown(artifacts, { date, generatedAt = new Date().toISOString() } = {}) {
   const lines = [`# Daily Briefing - ${date || generatedAt.slice(0, 10)}`, '', `Generated: ${generatedAt}`, ''];
-  for (const artifact of orderArtifacts(artifacts)) {
+  for (const artifact of renderableArtifacts(artifacts)) {
     lines.push(artifactMarkdown(artifact), '', '---', '');
   }
   return `${lines.join('\n').replace(/\n---\n\s*$/, '\n')}`;
@@ -324,7 +343,7 @@ function loadBriefingFromCardArtifacts({ dataDir, date, allowMarkdownFallback = 
     filename: `briefing-${date}.md`,
     greeting: [`# Daily Briefing - ${date}`, '', `Generated: ${generatedAt}`].join('\n'),
     sourceMode: union.sourceMode,
-    sections: union.artifacts.map((artifact, index) => {
+    sections: renderableArtifacts(union.artifacts).map((artifact, index) => {
       const cards = splitMarkdownCards(artifactMarkdown(artifact));
       const parsed = cards[0] || { title: artifact.title, body: artifactMarkdown(artifact) };
       return {
@@ -455,6 +474,27 @@ function systemHealthStatusFromMarkdown(markdown) {
   return firstRedSystemHealthRow(markdown) ? 'blocked' : 'clean';
 }
 
+function previousIsoDate(date) {
+  const d = new Date(`${date}T00:00:00Z`);
+  if (!Number.isFinite(d.getTime())) return String(date || '');
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function tokenUsageSourceArtifactPaths(dataDir, date) {
+  const agentDir = path.join(dataDir || defaultDataDir(), 'agent');
+  return [
+    path.join(agentDir, `token-usage-${previousIsoDate(date)}.json`),
+    path.join(agentDir, 'claude-plan-usage.json'),
+    path.join(agentDir, 'codex-token-usage-week.json'),
+    path.join(agentDir, 'bedrock-budget-usage.json'),
+  ];
+}
+
+function hasTokenUsageSourceArtifact({ dataDir, date } = {}) {
+  return tokenUsageSourceArtifactPaths(dataDir, date).some((file) => fs.existsSync(file));
+}
+
 function produceSystemHealthCardArtifact({
   date,
   dataDir = defaultDataDir(),
@@ -490,6 +530,74 @@ function produceSystemHealthCardArtifact({
       ok: status === 'clean',
       failures: status === 'clean' ? [] : [blockedReason || 'System Health red subsystem rows'],
     },
+  });
+}
+
+function produceTokenUsageCardArtifact({
+  date,
+  dataDir = defaultDataDir(),
+  now = new Date(),
+  formatTokenUsageSectionFn,
+} = {}) {
+  const renderer =
+    formatTokenUsageSectionFn || require('../cloud-morning-briefing.js').formatTokenUsageSection;
+  const body = String(renderer(dataDir, date) || '').trim();
+  if (!body) {
+    return createCardArtifact({
+      id: 'token_usage',
+      title: cardTitle('token_usage'),
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `${cardTitle('token_usage')}:\nBlocked: token usage renderer returned no content.`,
+      blockedReason: 'Token usage renderer returned no content.',
+      source: { mode: 'token-usage-renderer', missing: true },
+    });
+  }
+  return createCardArtifact({
+    id: 'token_usage',
+    title: cardTitle('token_usage'),
+    date,
+    kind: 'data',
+    status: 'clean',
+    generatedAt: now.toISOString(),
+    markdown: `${cardTitle('token_usage')}:\n${body}`,
+    source: {
+      mode: 'token-usage-renderer',
+      artifacts: [
+        `agent/token-usage-${previousIsoDate(date)}.json`,
+        'agent/claude-plan-usage.json',
+        'agent/codex-token-usage-week.json',
+        'agent/bedrock-budget-usage.json',
+      ],
+    },
+    qc: { ok: true, failures: [] },
+  });
+}
+
+function representedByMergePartnerArtifact({ card, date, dataDir, now = new Date() } = {}) {
+  const partnerId = RECIPROCAL_MERGE_PARTNERS[card && card.id];
+  if (!partnerId) return null;
+  const partner = existingSourceArtifact({ dataDir, date, id: partnerId });
+  if (!partner || normalizeStatus(partner.status) !== 'clean') return null;
+  const partnerTitle = cardTitle(partnerId);
+  const title = cardTitle(card);
+  return createCardArtifact({
+    id: card.id,
+    title,
+    date,
+    kind: 'data',
+    status: 'clean',
+    generatedAt: now.toISOString(),
+    markdown: `${title}:\nRepresented by ${partnerTitle} for ${date}. The dashboard renders this reciprocal pipeline pair as one live tile today, and ${partnerTitle} is clean.`,
+    source: {
+      mode: 'represented-by-merge-partner',
+      partnerId,
+      partnerStatus: 'clean',
+      partnerGeneratedAt: partner.generatedAt || partner.generated_at || null,
+    },
+    qc: { ok: true, failures: [] },
   });
 }
 
@@ -573,7 +681,24 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
   if (card.id === 'system_health') {
     return produceSystemHealthCardArtifact({ date, dataDir, now });
   }
+  if (card.id === 'token_usage') {
+    const existing = existingSourceArtifact({ dataDir, date, id: card.id });
+    if (!hasTokenUsageSourceArtifact({ dataDir, date }) && existing) {
+      return normalizeArtifactQuality({
+        ...existing,
+        kind: 'data',
+        status: existing.status === 'clean' ? 'clean' : normalizeStatus(existing.status),
+        generatedAt: now.toISOString(),
+        source: { ...(existing.source || {}), producer: 'data-card-artifact' },
+      });
+    }
+    return produceTokenUsageCardArtifact({ date, dataDir, now });
+  }
   const existing = existingSourceArtifact({ dataDir, date, id: card.id });
+  if (!existing || isMissingSourcePlaceholderArtifact(existing)) {
+    const represented = representedByMergePartnerArtifact({ card, date, dataDir, now });
+    if (represented) return represented;
+  }
   if (existing) {
     return normalizeArtifactQuality({
       ...existing,
@@ -704,6 +829,8 @@ module.exports = {
   orderArtifacts,
   readCardArtifactUnion,
   artifactMarkdown,
+  isRepresentedByMergePartnerArtifact,
+  renderableArtifacts,
   artifactsToBriefingMarkdown,
   loadBriefingFromCardArtifacts,
   liveBoardArtifactFromCardArtifacts,
@@ -712,6 +839,7 @@ module.exports = {
   produceCardArtifact,
   produceSourceBackedLlmCardArtifact,
   produceSystemHealthCardArtifact,
+  produceTokenUsageCardArtifact,
   produceAllCardArtifacts,
   listCardArtifactDates,
   briefingArtifactWatchdog,
