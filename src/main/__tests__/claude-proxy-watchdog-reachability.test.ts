@@ -16,9 +16,11 @@ import path from 'path';
 // half-open tunnel. Pinning to behavior shape (not a literal log string) keeps
 // it from going stale on wording tweaks.
 const WATCHDOG = path.join(__dirname, '..', '..', '..', 'scripts', 'claude-proxy-watchdog.ps1');
+const VBS_LAUNCHER = path.join(__dirname, '..', '..', '..', 'start-claude-proxy.vbs');
 
 describe('claude-proxy-watchdog half-open tunnel guard', () => {
   const src = fs.readFileSync(WATCHDOG, 'utf8');
+  const launcherSrc = fs.readFileSync(VBS_LAUNCHER, 'utf8');
 
   it('actively probes the backend /health maxPlanProxy field', () => {
     expect(src).toMatch(/Invoke-RestMethod[^\n]*\/health/);
@@ -62,5 +64,17 @@ describe('claude-proxy-watchdog half-open tunnel guard', () => {
     expect(disconnectedBranch).toMatch(/Test-LocalProxyHealthState/);
     expect(disconnectedBranch).toMatch(/auth-degraded/);
     expect(disconnectedBranch).toMatch(/disconnectedStreak\s*=\s*0/);
+  });
+
+  it('uses a singleton guard so duplicate watchdog instances do not kill each other', () => {
+    expect(src).toMatch(/SecondBrainClaudeProxyWatchdog/);
+    expect(src).toMatch(/WaitOne\(0/);
+    expect(src).toMatch(/Another watchdog instance is already running/);
+  });
+
+  it('keeps the VBS launcher delegated to the watchdog instead of starting a second proxy and tunnel', () => {
+    expect(launcherSrc).toMatch(/claude-proxy-watchdog\.ps1/);
+    expect(launcherSrc).not.toMatch(/claude-proxy-supervisor\.js/);
+    expect(launcherSrc).not.toMatch(/-R 3456:localhost:3456/);
   });
 });
