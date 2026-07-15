@@ -48,4 +48,19 @@ describe('claude-proxy-watchdog half-open tunnel guard', () => {
     const watchLoop = src.slice(src.indexOf('Watching.'));
     expect(watchLoop).toMatch(/Test-MaxProxyConnected/);
   });
+
+  it('does not restart the tunnel when the local proxy is auth-degraded', () => {
+    // A dead Claude refresh token makes the local proxy return 503 with
+    // "claude auth failing". Restarting SSH cannot fix that and only creates
+    // a churn loop. The watchdog must distinguish that case from a half-open
+    // reverse tunnel.
+    expect(src).toMatch(/Test-LocalProxyHealthState/);
+    expect(src).toMatch(/127\.0\.0\.1:3456\/health/);
+    expect(src).toMatch(/auth-degraded/);
+
+    const disconnectedBranch = src.slice(src.indexOf("$state -eq 'disconnected'"));
+    expect(disconnectedBranch).toMatch(/Test-LocalProxyHealthState/);
+    expect(disconnectedBranch).toMatch(/auth-degraded/);
+    expect(disconnectedBranch).toMatch(/disconnectedStreak\s*=\s*0/);
+  });
 });

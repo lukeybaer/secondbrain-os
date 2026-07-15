@@ -15,11 +15,10 @@
  * hard caps while anthropic/bedrock keep per-call approval), and the proxy
  * health honesty -- NOT every rung's HTTP implementation detail.
  *
- * No dev-plans/core/llm-fallback-ladder.LESSONS.md exists yet (the doc's own
- * section 5 says so). This lint therefore checks the doc only for now: it
- * fails if a LESSONS file is missing ONLY once the doc claims one exists, so
- * this lint self-updates the day that file is created and the doc is edited
- * to point at it.
+ * LESSONS bookkeeping is guarded too. While the doc says no component
+ * lessons file exists, a missing file is acceptable. Once the doc points to
+ * the lessons file, that file must exist; if the file exists, the doc may not
+ * keep claiming it is absent.
  *
  * Zero deps (fs/path only) so it works in a fresh worktree.
  *   node scripts/verify-llm-fallback-ladder-drift.js
