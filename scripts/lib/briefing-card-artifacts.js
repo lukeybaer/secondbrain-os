@@ -342,10 +342,31 @@ function writeCompatibilityMarkdown({ dataDir, date, artifacts, now = new Date()
   return file;
 }
 
+function isMissingSourcePlaceholderArtifact(artifact) {
+  if (!artifact) return false;
+  const source = artifact.source || {};
+  const reason = `${artifact.blockedReason || ''}\n${artifact.markdown || ''}`;
+  return (
+    normalizeStatus(artifact.status) === 'blocked' &&
+    (source.missing === true || source.mode === 'data') &&
+    /deterministic source artifact missing/i.test(reason)
+  );
+}
+
 function existingSourceArtifact({ dataDir, date, id }) {
   const current = readCardArtifact({ dataDir, date, id });
   const fallback = readMarkdownFallbackArtifacts({ dataDir, date }).find((artifact) => artifact.id === id);
   if (current) {
+    if (fallback && isMissingSourcePlaceholderArtifact(current)) {
+      return {
+        ...fallback,
+        source: {
+          ...(fallback.source || {}),
+          replacedMissingSourceArtifact: true,
+          replacedArtifactGeneratedAt: current.generatedAt || current.generated_at || null,
+        },
+      };
+    }
     const markdownMs = (() => {
       try {
         return fs.statSync(markdownPathFor(dataDir, date)).mtimeMs;

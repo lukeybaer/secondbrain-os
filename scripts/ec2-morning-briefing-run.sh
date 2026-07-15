@@ -49,6 +49,9 @@ HOME="${HOME:-/home/ec2-user}"
 TOKEN_PATH="${CLAUDE_OAUTH_TOKEN_PATH:-$HOME/.claude-oauth-token}"
 # Briefing date = today in Central Time (the briefing's canonical day).
 DATE="${BRIEFING_DATE:-$(TZ=America/Chicago date +%F)}"
+DATE_ATTEMPT_FILE="${BRIEFING_DATE_ATTEMPT_FILE:-$DATA_DIR/agent/briefing-generation-attempts/$DATE.json}"
+DATE_LOCK_FILE="${BRIEFING_DATE_LOCK_FILE:-$DATA_DIR/agent/briefing-generation-attempts/$DATE.lock}"
+DATE_LEASE_HELD=0
 # Cron does not inherit a terminal's environment. The production authority
 # switch therefore lives beside other durable cloud runtime state. An explicit
 # environment value remains an emergency override for a single invocation.
@@ -161,10 +164,59 @@ snapshot_parity_artifact() {
   fi
 }
 
+print_date_generation_lease_dry_run() {
+  echo "[morning-briefing-run] DRY-RUN: date-generation lease would use $DATE_ATTEMPT_FILE (repeat override: BRIEFING_ALLOW_REPEAT=1)."
+}
+
+acquire_date_generation_lease() {
+  attempt_dir="$(dirname "$DATE_ATTEMPT_FILE")"
+  mkdir -p "$attempt_dir" 2>/dev/null || {
+    echo "[morning-briefing-run] date-generation lease: cannot create $attempt_dir; skipping full generation." >&2
+    return 1
+  }
+  exec 9>"$DATE_LOCK_FILE" || {
+    echo "[morning-briefing-run] date-generation lease: cannot open $DATE_LOCK_FILE; skipping full generation." >&2
+    return 1
+  }
+  if ! flock -n 9; then
+    echo "[morning-briefing-run] date-generation lease: another full run for $DATE is active; skipped."
+    return 1
+  fi
+  if [ -f "$DATE_ATTEMPT_FILE" ] && [ "${BRIEFING_ALLOW_REPEAT:-}" != "1" ]; then
+    echo "[morning-briefing-run] date-generation lease: $DATE already attempted at $DATE_ATTEMPT_FILE; skipped. Set BRIEFING_ALLOW_REPEAT=1 for supervised repair."
+    return 1
+  fi
+  tmp="$DATE_ATTEMPT_FILE.$$"
+  printf '{"ts":"%s","date":"%s","pid":%s,"host":"%s","root":"%s","repeatOverride":%s}\n' \
+    "$(date -u +%FT%TZ)" "$DATE" "$$" "$(hostname 2>/dev/null || echo ExampleCo)" "$ROOT" \
+    "$([ "${BRIEFING_ALLOW_REPEAT:-}" = "1" ] && echo true || echo false)" > "$tmp" 2>/dev/null || {
+      echo "[morning-briefing-run] date-generation lease: cannot write $tmp; skipping full generation." >&2
+      rm -f "$tmp" 2>/dev/null || true
+      return 1
+    }
+  mv "$tmp" "$DATE_ATTEMPT_FILE" 2>/dev/null || {
+    echo "[morning-briefing-run] date-generation lease: cannot publish $DATE_ATTEMPT_FILE; skipping full generation." >&2
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  }
+  DATE_LEASE_HELD=1
+  echo "[morning-briefing-run] date-generation lease: acquired for $DATE at $DATE_ATTEMPT_FILE."
+  return 0
+}
+
+release_date_generation_lease() {
+  if [ "${DATE_LEASE_HELD:-0}" = "1" ]; then
+    DATE_LEASE_HELD=0
+    exec 9>&- 2>/dev/null || true
+    echo "[morning-briefing-run] date-generation lease: released lock for $DATE; attempt marker remains."
+  fi
+}
+
 if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # No legacy mechanical pass under card-controller authority. It has a
   # different fan-out model and would become a competing writer again.
   if [ "$TEST_MODE" = "1" ]; then
+    print_date_generation_lease_dry_run
     echo "[morning-briefing-run] DRY-RUN (card-controller authority): would run: (cd $CONTROLLER_ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR ${CONTROLLER_CMD[*]})"
     if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
       echo "[morning-briefing-run] agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
@@ -172,6 +224,9 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
       echo "[morning-briefing-run] DRY-RUN (card-controller authority): agentic-healer rung 2 would run after the controller pass: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
     fi
     snapshot_parity_artifact 0
+    exit 0
+  fi
+  if ! acquire_date_generation_lease; then
     exit 0
   fi
   cd "$CONTROLLER_ROOT" || { echo "[morning-briefing-run] cannot cd to deployed controller runtime $CONTROLLER_ROOT" >&2; exit 1; }
@@ -201,6 +256,7 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # and republished the markdown, so the snapshot captures the finished
   # cloud-built board.
   snapshot_parity_artifact "$status"
+  release_date_generation_lease
   exit 0
 fi
 
@@ -240,6 +296,7 @@ fi
 
 # TEST GATE: never spawn the real briefing under test / dry-run.
 if [ "$TEST_MODE" = "1" ]; then
+  print_date_generation_lease_dry_run
   echo "[morning-briefing-run] DRY-RUN (test mode): would run: (cd $ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${CMD[*]})"
   if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
     echo "[morning-briefing-run] agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
@@ -247,6 +304,10 @@ if [ "$TEST_MODE" = "1" ]; then
     echo "[morning-briefing-run] DRY-RUN (test mode): agentic-healer rung 2 would run after the briefing: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
   fi
   snapshot_parity_artifact 0
+  exit 0
+fi
+
+if ! acquire_date_generation_lease; then
   exit 0
 fi
 
@@ -295,4 +356,5 @@ if [ "$status" != "1" ]; then
 else
   echo "[morning-briefing-run] parity-snapshot: skipped (exit 1: lock held or fatal; provenance unproven)."
 fi
+release_date_generation_lease
 exit 0
