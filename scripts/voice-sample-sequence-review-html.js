@@ -10,6 +10,7 @@ if (!target) {
 const limitIndex = process.argv.indexOf('--limit');
 const limit = limitIndex >= 0 ? Number(process.argv[limitIndex + 1] || '20') : 20;
 const repo = process.cwd();
+const SELECTION_POLICY = 'playable_first_v2';
 const enrichedDir = path.join(repo, 'data', 'otter', 'enriched');
 const probeIndexPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'track-probe-index-latest.json');
 const callRostersPath = path.join(repo, 'data', 'life-archive', 'voiceprints', 'otter-call-speaker-rosters-latest.json');
@@ -431,21 +432,28 @@ for (const row of rows) {
 rows.length = 0;
 rows.push(...dedupedRows);
 
-rows.sort((a, b) => (
+function rowSort(a, b) {
+  return (
   String(b.date).localeCompare(String(a.date)) ||
   b.segmentCount - a.segmentCount ||
   String(a.title).localeCompare(String(b.title))
-));
+  );
+}
 
-const byDay = [];
-const seenCalls = new Set();
+rows.sort(rowSort);
+
+const rowsByCall = new Map();
 for (const row of rows) {
   const callKey = row.otid || `${row.date}|${row.title}`;
-  if (seenCalls.has(callKey)) continue;
-  seenCalls.add(callKey);
-  byDay.push(row);
-  if (byDay.length >= limit) break;
+  const existing = rowsByCall.get(callKey);
+  if (!existing || (!existing.audioExists && row.audioExists)) rowsByCall.set(callKey, row);
 }
+const distinctCallRows = [...rowsByCall.values()].sort(rowSort);
+const playableRows = distinctCallRows.filter((row) => row.audioExists);
+const missingRows = distinctCallRows.filter((row) => !row.audioExists);
+const reviewPool = playableRows.length ? playableRows : distinctCallRows;
+const byDay = reviewPool.slice(0, limit);
+const totalDistinctCalls = distinctCallRows.length;
 
 const playable = byDay.filter((row) => row.audioExists).length;
 const selectedDays = new Set(byDay.map((row) => row.date));
@@ -457,14 +465,17 @@ const legacyManifestPath = path.join(repo, 'data', 'life-archive', 'voiceprints'
 fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
 const manifest = {
   schema: 'life_archive.voice_sequence_review.v1',
+  selection_policy: SELECTION_POLICY,
   generated_at: new Date().toISOString(),
   target,
   requested_limit: limit,
   total_tracks_found: rows.length,
-  distinct_calls_found: seenCalls.size,
+  distinct_calls_found: totalDistinctCalls,
   distinct_days_found: new Set(rows.map((row) => row.date)).size,
   samples_selected: byDay.length,
   playable_samples: playable,
+  missing_samples: missingRows.length,
+  missing_samples_available: missingRows.slice(0, 50),
   samples: byDay,
 };
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -494,6 +505,9 @@ const listItems = byDay.map((row, index) => `
     <span class="${row.audioExists ? 'ok' : 'bad'}">${row.audioExists ? 'ready' : 'missing'}</span>
   </button>
 `).join('');
+const missingNote = missingRows.length
+  ? ` ${missingRows.length} matched call${missingRows.length === 1 ? '' : 's'} have no generated clip yet.`
+  : '';
 
 const html = `<!doctype html>
 <html lang="en">
@@ -731,11 +745,11 @@ const html = `<!doctype html>
       <div>
         <h1>Voice Sequence Review</h1>
         <div class="meta">Target: <code>${esc(target)}</code></div>
-        <div class="subtle">Most recent ${byDay.length} call clips from ${selectedDays.size} different days. Use Next to pause the current clip and immediately start the next one.</div>
+        <div class="subtle">Most recent ${byDay.length} playable review clips from ${selectedDays.size} different days.${esc(missingNote)} Use Next to pause the current clip and immediately start the next one.</div>
       </div>
       <div class="stats">
         <div class="stat"><strong>${rows.length}</strong><span>matched tracks</span></div>
-        <div class="stat"><strong>${seenCalls.size}</strong><span>distinct calls</span></div>
+        <div class="stat"><strong>${totalDistinctCalls}</strong><span>distinct calls</span></div>
         <div class="stat"><strong>${playable}/${byDay.length}</strong><span>playable selected</span></div>
       </div>
     </header>
