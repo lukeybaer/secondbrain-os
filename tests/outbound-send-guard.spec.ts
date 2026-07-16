@@ -80,6 +80,12 @@ describe('outbound-send-guard hook', () => {
     expect(runHook('grep -r "smtplib is neat" docs/')).toBe(0);
   });
 
+  it('read-only views of sender code are allowed, but piping into an interpreter is not', () => {
+    expect(runHook('cat scripts/send-gmail.py')).toBe(0);
+    expect(runHook('git log --oneline -- scripts/send-gmail.py')).toBe(0);
+    expect(runHook('cat sender.txt | python - "import smtplib"')).toBe(2);
+  });
+
   it('is registered in ~/.claude/settings.json for Bash and PowerShell (skips off-machine)', () => {
     const settingsPath = path.join(homedir(), '.claude', 'settings.json');
     if (!existsSync(settingsPath)) return; // CI machines without the harness
