@@ -66,6 +66,14 @@ describe('claude-proxy-watchdog half-open tunnel guard', () => {
     expect(disconnectedBranch).toMatch(/disconnectedStreak\s*=\s*0/);
   });
 
+  it('does not restart while local live proof is ExampleCo, stale, or inconclusive', () => {
+    expect(src).toMatch(/proof-pending/);
+    expect(src).toMatch(/ExampleCo\|stale\|inconclusive/);
+    const disconnectedBranch = src.slice(src.indexOf("$state -eq 'disconnected'"));
+    expect(disconnectedBranch).toMatch(/proof-pending/);
+    expect(disconnectedBranch).toMatch(/disconnectedStreak\s*=\s*0/);
+  });
+
   it('uses a singleton guard so duplicate watchdog instances do not kill each other', () => {
     expect(src).toMatch(/SecondBrainClaudeProxyWatchdog/);
     expect(src).toMatch(/WaitOne\(0/);

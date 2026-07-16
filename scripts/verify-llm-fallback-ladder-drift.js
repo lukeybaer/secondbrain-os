@@ -40,6 +40,7 @@ const KEY_FILES = [
   'scripts/lib/ask-ai.js',
   'scripts/lib/cli-output-guard.js',
   'claude-proxy.js',
+  'scripts/lib/claude-max-health-state.js',
   'scripts/lib/proxy-stream-outcome.js',
   'memory/project_amy_universal_codex_fallback.md',
   'scripts/__tests__/ask-ai-ladder.test.js',
@@ -121,7 +122,12 @@ const MUST_CONTAIN = [
   [
     'claude-proxy.js',
     "url === '/health'",
-    'the proxy serves the honest token-expiry-based /health route the doc says stops EC2 routing to paid OpenAI when auth is fine',
+    'the proxy serves the honest persisted-live-proof /health route',
+  ],
+  [
+    'claude-proxy.js',
+    'classifyClaudeHealth',
+    'the proxy requires recent live proof instead of promoting token expiry directly to green',
   ],
   [
     'scripts/lib/proxy-stream-outcome.js',
