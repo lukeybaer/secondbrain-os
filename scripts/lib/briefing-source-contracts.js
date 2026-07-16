@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { summaryNamesPersonAsParticipant } = require('../verify-dashboard-cards-live.js');
 const { readProviderUsage } = require('./token-usage-receipts.js');
+const { readExecSummaryRecord: readOtterExecSummaryRecord } = require('./otter-exec-summary-artifacts.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -215,16 +216,6 @@ function titleKey(value) {
     .trim();
 }
 
-function execSummaryRecord(summaries, call) {
-  const keys = [call && call.otid, call && call.id, call && call.file, call && call.title]
-    .map((value) => String(value || '').trim())
-    .filter(Boolean);
-  for (const key of keys) {
-    if (summaries && summaries[key] && typeof summaries[key] === 'object') return summaries[key];
-  }
-  return null;
-}
-
 // Find the source otids behind the precise live-QC class
 // OTTER-SPEAKER-MISMATCH. The card's rendered executive summary is used only to
 // decide WHICH call needs fresh acoustic work. It is never identity evidence:
@@ -263,7 +254,11 @@ function otterSpeakerMismatchOtids({ dataDir, date }) {
       /\bExampleCo\b/i.test(`${speaker.display_name || ''} ${speaker.person_id || ''}`),
     );
     if (speaksExampleCo) continue;
-    const summaryRecord = execSummaryRecord(execSummaries, call);
+    const summaryRecord = readOtterExecSummaryRecord({
+      dataDir,
+      call,
+      aggregateSummaries: execSummaries,
+    });
     const displayTitleKey = titleKey(
       summaryRecord?.displayTitle || summaryRecord?.display_title || '',
     );
