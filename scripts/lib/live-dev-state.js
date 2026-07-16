@@ -3,6 +3,7 @@
 const path = require('path');
 const { speechSafe } = require('./speech-safe');
 const { sanitizeLiveStatusSpeech } = require('./vapi-voice-output');
+const { compactSessionTitleForVoice } = require('./voice-session-title');
 
 const PROBE_LEVELS = {
   situation: 0,
@@ -75,9 +76,8 @@ function agePhrase(iso, nowMs = Date.now()) {
 }
 
 function taskTitle(record) {
-  return safeText(record && (record.title || record.prompt || record.id) || 'that item', 120)
-    .replace(/^codex thread:\s*/i, '')
-    .replace(/^claude(?: code)? session:\s*/i, '')
+  return compactSessionTitleForVoice((record && (record.title || record.prompt || record.id)) || 'that item')
+    .slice(0, 120)
     .trim();
 }
 
@@ -242,12 +242,16 @@ function buildLiveStateItem(record, opts = {}) {
   const sourcePackets = buildSourcePackets(record, { progress, command });
   const freshnessIso = timestampForRecord(record, lastProgressRow, command);
   const objective = taskTitle(record);
+  const packetProgress = record && record._source === 'codex-thread-index'
+    ? ''
+    : latestProgressFromPackets(sourcePackets);
   const lastProgress = safeText(
     (command && command.progressNote) ||
       (lastProgressRow && (lastProgressRow.note || lastProgressRow.message)) ||
-      latestProgressFromPackets(sourcePackets),
+      packetProgress,
     240,
   );
+  const codexTitleOnly = record && record._source === 'codex-thread-index' && !lastProgress;
 
   return {
     id: record && record.id || '',
@@ -259,7 +263,7 @@ function buildLiveStateItem(record, opts = {}) {
     lastProgress,
     currentBlocker: safeText((lastProgressRow && lastProgressRow.blocker) || record && record.blocker, 180),
     nextAction: safeText((lastProgressRow && lastProgressRow.nextAction) || record && record.nextAction, 180),
-    confidence: sourcePackets.length ? 'source-backed' : 'title-status-only',
+    confidence: sourcePackets.length && !codexTitleOnly ? 'source-backed' : 'title-status-only',
     sourcePackets,
     record,
   };

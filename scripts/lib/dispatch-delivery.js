@@ -11,6 +11,7 @@
 //  - voice_callback  : place an outbound call (only on explicit "call me back")
 const { speechSafe } = require('./speech-safe');
 const { sanitizeLiveStatusSpeech } = require('./vapi-voice-output');
+const { compactSessionTitleForVoice } = require('./voice-session-title');
 const {
   buildLiveStateItems,
   formatLiveStateAnswer,
@@ -28,7 +29,12 @@ const DEFAULT_NO_PROGRESS_MS = 5 * 60 * 1000;
 const DEFAULT_CEILING_MS = 60 * 60 * 1000;
 const LIVE_STATUS_FRESH_MS = 2 * 60 * 60 * 1000;
 const RECENT_COMPLETE_MS = 24 * 60 * 60 * 1000;
+// Same horizon as recent completions, but named for spoken session lookup policy.
+const RECENT_SESSION_LOOKUP_MS = RECENT_COMPLETE_MS;
 const PROJECT_TERMINAL_PROOF_MS = 24 * 60 * 60 * 1000;
+// The local Codex mirror is expected to sync every few minutes. Older source
+// mtimes are usable as historical evidence, not active/recent proof.
+const CODEX_MIRROR_FRESH_MS = 10 * 60 * 1000;
 
 // Default wait policy by origin. Voice commands default to background+notify; the
 // result is spoken if the caller is still on the line, otherwise Telegram.
@@ -388,6 +394,20 @@ function isRecentlyCompleteDetailRecord(record, nowMs) {
   return isTerminalDetailRecord(record) && ts > 0 && nowMs - ts <= RECENT_COMPLETE_MS;
 }
 
+function isStaleCodexMirrorRecord(record, nowMs) {
+  if (!record || record._source !== 'codex-thread-index') return false;
+  const ts = Date.parse(record._sourceMtime || '');
+  if (!Number.isFinite(ts)) return true;
+  return nowMs - ts > CODEX_MIRROR_FRESH_MS;
+}
+
+function isActiveOrRecentDetailRecord(record, nowMs) {
+  const ts = recordUpdatedMs(record);
+  if (isStaleCodexMirrorRecord(record, nowMs)) return false;
+  if (!ts || nowMs - ts > RECENT_SESSION_LOOKUP_MS) return false;
+  return isActiveDetailRecord(record) || isTerminalDetailRecord(record);
+}
+
 function isRecentProjectTerminalProof(record, nowMs) {
   const ts = recordUpdatedMs(record);
   return (
@@ -473,6 +493,23 @@ function wantsSubagentSessions(query) {
   return searchTerms(query).some((term) => SUBAGENT_QUERY_TERMS.has(term));
 }
 
+function isNoisyCodexWorkerRecord(record, queryTerms = []) {
+  if (!record || record._source !== 'codex-thread-index') return false;
+  const text = normalizeSearchText(recordSourceText(record));
+  const terms = new Set(queryTerms || []);
+  if (/\bwrite exactly \d+ ExampleCoraphs summarizing this news article/.test(text)) {
+    return !['article', 'news', 'summarize', 'summary', 'ExampleCoraph'].some((term) =>
+      terms.has(term),
+    );
+  }
+  if (/\bExampleCo ExampleCo s executive assistant is drafting a linkedin conversation starter/.test(text)) {
+    return !['linkedin', 'contact', 'conversation', 'starter', 'draft'].some((term) =>
+      terms.has(term),
+    );
+  }
+  return false;
+}
+
 function recordSourceLabel(record) {
   const sourcePath = String((record && record._sourcePath) || '');
   if (record && record._source === 'codex-thread-index') return 'Codex thread snapshot';
@@ -507,11 +544,7 @@ function hasSubstantiveTaskSpineResult(record) {
 }
 
 function voiceTaskTitle(record, max = 86) {
-  const title = speechSafe(taskTitle(record))
-    .replace(/^codex thread:\s*/i, '')
-    .replace(/^claude(?: code)? session:\s*/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const title = compactSessionTitleForVoice(taskTitle(record), max);
   return title.slice(0, max).trim();
 }
 
@@ -551,7 +584,8 @@ function voiceLatestNote(record, max = 140) {
 function staleMirrorVoicePhrase(record, nowMs) {
   if (!record || record._source !== 'codex-thread-index') return '';
   const ts = Date.parse(record._sourceMtime || '');
-  if (!Number.isFinite(ts) || nowMs - ts <= 10 * 60 * 1000) return '';
+  if (!Number.isFinite(ts)) return ' The Codex mirror timestamp is missing, so this may be stale.';
+  if (nowMs - ts <= CODEX_MIRROR_FRESH_MS) return '';
   const age = agePhrase(record._sourceMtime, nowMs);
   return age ? ` The Codex mirror itself is ${age} old, so this may be stale.` : '';
 }
@@ -638,9 +672,9 @@ function scoreSpineRecord(record, query) {
 function scopedNoLiveStatusMatch(query, reason = '') {
   const display = speechSafe(displaySpineQueryForVoice(query) || query || 'that topic');
   if (reason) {
-    return `I ${reason} for ${display}, not active project or agent-session proof in ${SPINE_DETAIL_SCOPE_VOICE}.`;
+    return `I ${reason} for ${display}, not active or recent project or session proof in ${SPINE_DETAIL_SCOPE_VOICE}.`;
   }
-  return `I do not have active project or agent-session proof for ${display} in ${SPINE_DETAIL_SCOPE_VOICE}.`;
+  return `I do not have active or recent project or session proof for ${display} in ${SPINE_DETAIL_SCOPE_VOICE}.`;
 }
 
 function briefSourceLabel(label) {
@@ -679,6 +713,13 @@ function recordHasVoiceQueryClue(record, query) {
   return clues.some((term) => text.includes(term));
 }
 
+function recordMatchesAnyQueryTerm(record, queryTerms = []) {
+  const terms = (queryTerms || []).filter((term) => term && !QUERY_FILLER_TERMS.has(term));
+  if (!terms.length) return true;
+  const text = normalizeSpineQueryForVoice(recordSourceText(record));
+  return terms.some((term) => text.includes(term));
+}
+
 function briefProgressText(value, max = 170) {
   const text = sanitizeLiveStatusSpeech(speechSafe(value || ''))
     .replace(/\bLatest:\s*/i, '')
@@ -693,11 +734,7 @@ function briefProgressText(value, max = 170) {
 }
 
 function titleLabelText(value, max = 58) {
-  let text = speechSafe(String(value || ''))
-    .replace(/^codex thread:\s*/i, '')
-    .replace(/^claude(?: code)? session:\s*/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  let text = compactSessionTitleForVoice(value, Math.max(max * 3, 160));
   if (!text) return '';
   const firstQuestion = text.split('?')[0].trim();
   if (firstQuestion.length >= 12) text = firstQuestion;
@@ -726,13 +763,29 @@ function titleLabelText(value, max = 58) {
 
 function formatLikelyMatchesForVoice(records, nowMs, options = {}) {
   const minItems = options.minItems || 2;
-  const prefix = options.prefix || 'I found a few likely matches';
-  const items = uniqueSpineRecords(records)
-    .slice(0, 3)
-    .map((record) => {
-      return titleLabelText(voiceTaskTitle(record, 58), 58) || 'unnamed session';
-    })
-    .filter(Boolean);
+  const recordList = uniqueSpineRecords(records);
+  const hasTerminal = recordList.some((record) => isTerminalDetailRecord(record));
+  const hasOlderRecent = recordList.some((record) => {
+    const ts = recordUpdatedMs(record);
+    return ts > 0 && nowMs - ts > LIVE_STATUS_FRESH_MS;
+  });
+  const prefix =
+    options.prefix ||
+    (hasTerminal
+      ? 'I found a few recent or completed matches'
+      : hasOlderRecent
+        ? 'I found a few recent matches'
+        : 'I found a few likely matches');
+  const seen = new Set();
+  const items = [];
+  for (const record of recordList) {
+    const label = titleLabelText(voiceTaskTitle(record, 58), 58) || 'unnamed session';
+    const key = normalizeSearchText(label);
+    if (!label || seen.has(key)) continue;
+    seen.add(key);
+    items.push(label);
+    if (items.length >= 3) break;
+  }
   if (items.length < minItems) return '';
   const joined =
     items.length === 2 ? items.join(', and ') : `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
@@ -820,7 +873,10 @@ function summarizeSpineDetailForVoice({
     const queryTerms = searchTerms(query);
     const hasProjectScoExampleCom = queryTerms.some((term) => PROJECT_SCOPE_TERMS.has(term));
     const broadCandidates = rawScored.filter(
-      (x) => (!scoringQuery || x.score > 0) && recordHasVoiceQueryClue(x.record, query),
+      (x) =>
+        (!scoringQuery || x.score > 0) &&
+        recordHasVoiceQueryClue(x.record, query) &&
+        !isNoisyCodexWorkerRecord(x.record, queryTerms),
     );
     const usableBroadCandidates = broadCandidates.filter((x) => !isLowSignalIngest(x.record));
     const lowSignalMatches = broadCandidates.filter((x) => isLowSignalIngest(x.record));
@@ -841,6 +897,16 @@ function summarizeSpineDetailForVoice({
       .sort((a, b) => compareSpineCandidates(a, b, nowMs))
       .slice(0, maxItems)
       .map((x) => x.record);
+    const recentStatus = usableBroadCandidates
+      .filter(
+        (x) =>
+          isActiveOrRecentDetailRecord(x.record, nowMs) &&
+          !isLowSignalIngest(x.record) &&
+          recordMatchesAnyQueryTerm(x.record, queryTerms),
+      )
+      .sort((a, b) => compareSpineCandidates(a, b, nowMs))
+      .slice(0, maxItems)
+      .map((x) => x.record);
     const projectPhraseQuery = isProjectLiveStatusQuery(query) && searchTerms(query).length > 1;
     const terminalProof = projectPhraseQuery
       ? usableBroadCandidates
@@ -856,9 +922,10 @@ function summarizeSpineDetailForVoice({
           .filter(
             (x) =>
               !isLowSignalIngest(x.record) &&
-              isFreshLiveStatusRecord(x.record, nowMs) &&
+              !isNoisyCodexWorkerRecord(x.record, queryTerms) &&
+              isActiveOrRecentDetailRecord(x.record, nowMs) &&
               (!wantsSubagentSessions(query) ? !isSubagentSessionRecord(x.record) : true) &&
-              queryTerms.some((term) => normalizeSpineQueryForVoice(recordSourceText(x.record)).includes(term)),
+              recordMatchesAnyQueryTerm(x.record, queryTerms),
           )
           .sort((a, b) => compareSpineCandidates(a, b, nowMs))
           .map((x) => x.record)
@@ -872,6 +939,13 @@ function summarizeSpineDetailForVoice({
     else if (current.length) {
       const currentAndRecent = uniqueSpineRecords([...current, ...freshTerminal]).slice(0, maxItems);
       candidates = currentAndRecent.map((record) => ({
+        record,
+        score: 1,
+        priority: recordPriority(record),
+      }));
+    }
+    else if (recentStatus.length) {
+      candidates = recentStatus.map((record) => ({
         record,
         score: 1,
         priority: recordPriority(record),
@@ -909,15 +983,23 @@ function summarizeSpineDetailForVoice({
         const age = r ? agePhrase(r.updatedAt || r.completedAt || r.createdAt, nowMs) : '';
         const source = r ? voiceSourceLabel(r) : 'older record';
         const staleMirror = r ? staleMirrorVoicePhrase(r, nowMs) : '';
+        const recentMatch = r ? isActiveOrRecentDetailRecord(r, nowMs) : false;
+        const recentMatchLabel = r && isTerminalDetailRecord(r) ? 'recently completed' : 'recent';
+        const evidenceLabel = staleMirror ? 'stale evidence' : 'older evidence';
         const olderClause = r
-          ? `I found older ${
-              title ? source + ', ' + title : 'low-confidence ' + source + ' evidence'
-            }${age ? ', updated ' + age + ' ago' : ''}, which is stale evidence, not proof of current progress.${staleMirror}`
+          ? recentMatch
+            ? `I found a ${recentMatchLabel} ${title ? source + ', ' + title : source + ' match'}${
+                age ? ', updated ' + age + ' ago' : ''
+              }.`
+            : `I found older ${
+                title ? source + ', ' + title : 'low-confidence ' + source + ' evidence'
+              }${age ? ', updated ' + age + ' ago' : ''}, which is ${evidenceLabel}, not proof of current progress.${staleMirror}`
           : 'I found older matching records only.';
+        if (recentMatch) return olderClause;
         return (
           (staleMirror
-            ? `I don't have fresh Codex mirror proof of a live ${speechSafe(displayQuery || query)} session. `
-            : `I don't see a live ${speechSafe(displayQuery || query)} session. `) + olderClause
+            ? `I don't have fresh Codex mirror proof for an active or recent ${speechSafe(displayQuery || query)} session. `
+            : `I don't see an active or recent ${speechSafe(displayQuery || query)} session. `) + olderClause
         );
       }
     }
@@ -941,7 +1023,7 @@ function summarizeSpineDetailForVoice({
 
   if (!all.length) {
     return displayQuery
-      ? `I found no active project or agent-session match for ${speechSafe(displayQuery)} in ${SPINE_DETAIL_SCOPE_VOICE}; that is a scoped no-match, not whole-life proof.`
+      ? `I found no active or recent project or session match for ${speechSafe(displayQuery)} in ${SPINE_DETAIL_SCOPE_VOICE}; that is a scoped no-match, not whole-life proof.`
       : `I found no active spine items in ${SPINE_DETAIL_SCOPE_VOICE}.`;
   }
 

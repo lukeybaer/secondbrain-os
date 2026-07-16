@@ -54,6 +54,11 @@ function normalizeSpokenProjectAliases(value) {
   let text = ` ${normalizeSearchText(value)} `;
   text = text.replace(/\bcode\s+x\b/g, ' codex ');
   text = text.replace(/\b(?:coda|codec|codecs|kodak)\b/g, ' codex ');
+  text = text.replace(/\bwashing\b/g, ' watch ');
+  text = text.replace(/\bwatch(?:er|ing|ed|es)?\b/g, ' watch ');
+  text = text.replace(/\bmonitor(?:ing|ed|s)?\b/g, ' monitor ');
+  text = text.replace(/\bfix(?:ing|ed|es)?\b/g, ' fix ');
+  text = text.replace(/\bself\s+heal(?:er|ing)?\b/g, ' self heal ');
   text = text.replace(/\bpixie\s+pixie\b/g, ' ExampleCo ');
   text = text.replace(/\bpixie\s+(deployment|deploy|scale|scaling|session|status|app|test)\b/g, ' ExampleCo $1 ');
   text = text.replace(
