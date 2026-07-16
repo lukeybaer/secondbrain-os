@@ -36,7 +36,7 @@ function parseCliArgs(argv) {
 }
 
 function run({ opts = {}, date, reason } = {}) {
-  const envelope = readLiveBoardArtifact({ dataDir: opts.dataDir });
+  const envelope = readLiveBoardArtifact({ dataDir: opts.dataDir, repo: opts.repo });
   const artifact = envelope && envelope.artifact;
   if (!artifact) {
     return { written: 0, skipped: 'no-artifact' };
