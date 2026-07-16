@@ -47,6 +47,10 @@ const CONTENT_HEAL_CARD_CONFIG = Object.freeze({
   covid_news: { key: 'covid', label: 'COVID-19 TREATMENTS & NEWS', minimum: 1 },
 });
 
+const CARD_TITLE_OVERRIDES = Object.freeze({
+  shorts_proposals: "TODAY'S 10 SHORTS PROPOSALS",
+});
+
 function defaultDataDir() {
   return (
     process.env.SECONDBRAIN_DATA_DIR ||
@@ -67,6 +71,8 @@ function normalizeStatus(status) {
 
 function cardTitle(cardOrId) {
   const card = typeof cardOrId === 'string' ? getCardById(cardOrId) : cardOrId;
+  const id = card ? card.id : String(cardOrId || '');
+  if (CARD_TITLE_OVERRIDES[id]) return CARD_TITLE_OVERRIDES[id];
   if (!card) return String(cardOrId || '').replace(/_/g, ' ').toUpperCase();
   return String(card.title || card.id || '').replace(/_/g, ' ').toUpperCase();
 }
@@ -356,8 +362,20 @@ function renderableArtifacts(artifacts) {
   return orderArtifacts(artifacts).filter((artifact) => !isRepresentedByMergePartnerArtifact(artifact));
 }
 
-function artifactsToBriefingMarkdown(artifacts, { date, generatedAt = new Date().toISOString() } = {}) {
-  const lines = [`# Daily Briefing - ${date || generatedAt.slice(0, 10)}`, '', `Generated: ${generatedAt}`, ''];
+function artifactsToBriefingMarkdown(
+  artifacts,
+  { date, generatedAt = new Date().toISOString(), mode = 'off-cycle' } = {},
+) {
+  // Compatibility markdown is used by attended artifact-union refreshes today,
+  // so off-cycle is the default. Morning callers must pass mode: 'overnight'.
+  const briefingMode = mode === 'overnight' ? 'overnight' : 'off-cycle';
+  const lines = [
+    `# Daily Briefing - ${date || generatedAt.slice(0, 10)}`,
+    '',
+    `Briefing mode: ${briefingMode}`,
+    `Generated: ${generatedAt}`,
+    '',
+  ];
   for (const artifact of renderableArtifacts(artifacts)) {
     lines.push(artifactMarkdown(artifact), '', '---', '');
   }
@@ -471,10 +489,11 @@ function writeLiveBoardArtifactFromCardArtifacts({
   return { artifact, absPath };
 }
 
-function writeCompatibilityMarkdown({ dataDir, date, artifacts, now = new Date() }) {
+function writeCompatibilityMarkdown({ dataDir, date, artifacts, now = new Date(), mode = 'off-cycle' }) {
   const markdown = artifactsToBriefingMarkdown(artifacts, {
     date,
     generatedAt: now.toISOString(),
+    mode,
   });
   const file = markdownPathFor(dataDir, date);
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -613,7 +632,7 @@ function produceTokenUsageCardArtifact({
 } = {}) {
   const renderer =
     formatTokenUsageSectionFn || require('../cloud-morning-briefing.js').formatTokenUsageSection;
-  const body = String(renderer(dataDir, date) || '').trim();
+  const body = String(renderer(dataDir, date, { now }) || '').trim();
   const providerStates = ['claude', 'codex', 'bedrock'].map((provider) =>
     readProviderUsage({ dataDir, date, provider, now }),
   );
@@ -889,7 +908,26 @@ function produceSourceBackedLlmCardArtifact({ card, date, dataDir, now = new Dat
     const state = (rendered && rendered.state) || {};
     const count = Number(state.count || 0);
     const minimum = Number(contentConfig.minimum || state.target || card.newsTarget || 1);
-    if (!markdown || state.ok !== true || count < minimum || state.source === 'missing') return null;
+    if (!markdown || state.source === 'missing') return null;
+    if (state.ok !== true || count < minimum) {
+      return createCardArtifact({
+        id: card.id,
+        title: cardTitle(card),
+        date,
+        kind: 'llm',
+        status: 'blocked',
+        generatedAt: now.toISOString(),
+        markdown,
+        blockedReason: `content-heal shortfall: ${count}/${minimum} source-backed items ready`,
+        source: {
+          mode: 'content-heal',
+          cardKey: contentConfig.key,
+          count,
+          minimum,
+          renderer: 'formatHealedNewsSection',
+        },
+      });
+    }
     return createCardArtifact({
       id: card.id,
       title: cardTitle(card),
@@ -1099,6 +1137,8 @@ async function produceCardArtifact({ cardId, date, dataDir = defaultDataDir(), n
   const card = getCardById(cardId);
   if (!card) throw new Error(`ExampleCo briefing card '${cardId}'`);
   const artifact = isLlmCard(card.id)
+    // A partial source-backed content-heal card is a real blocked artifact and
+    // must not fall through to generic LLM-unavailable copy.
     ? produceSourceBackedLlmCardArtifact({ card, date, dataDir, now }) ||
       produceLlmCardArtifact({ card, date, dataDir, now })
     : produceDataCardArtifact({ card, date, dataDir, now });

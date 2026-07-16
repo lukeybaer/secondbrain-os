@@ -8058,7 +8058,10 @@ function formatLinkedInSection(
 function formatTokenUsageSection(
   dataDir = DEFAULT_DATA_DIR,
   date = new Date().toISOString().slice(0, 10),
+  { now = new Date() } = {},
 ) {
+  const nowMs = new Date(now).getTime();
+  const clockMs = Number.isFinite(nowMs) ? nowMs : Date.now();
   const target = previousIsoDate(date);
   const agentDir = path.join(dataDir, 'agent');
   const usagePath = path.join(agentDir, `token-usage-${target}.json`);
@@ -8066,7 +8069,7 @@ function formatTokenUsageSection(
   const codexPath = path.join(agentDir, 'codex-token-usage-week.json');
   const bedrockPath = path.join(agentDir, 'bedrock-budget-usage.json');
   const usage = readJson(usagePath, null);
-  const providerNow = new Date();
+  const providerNow = new Date(clockMs);
   const claudeState = readProviderUsage({ dataDir, date, provider: 'claude', now: providerNow });
   const codexState = readProviderUsage({ dataDir, date, provider: 'codex', now: providerNow });
   const bedrockState = readProviderUsage({ dataDir, date, provider: 'bedrock', now: providerNow });
@@ -8082,7 +8085,7 @@ function formatTokenUsageSection(
     fileMtimeMs(providerReceiptPath(dataDir, date, 'codex')) || 0,
     fileMtimeMs(providerReceiptPath(dataDir, date, 'bedrock')) || 0,
   );
-  const lines = [`Data refreshed: ${formatCtDateTime(refreshed || Date.now())}`];
+  const lines = [`Data refreshed: ${formatCtDateTime(refreshed || clockMs)}`];
 
   if (usage && usage.total) {
     const t = usage.total || {};
@@ -8133,11 +8136,11 @@ function formatTokenUsageSection(
         : NaN;
     const resetIso = String(plan.weekly_all_models_resets_at || '').slice(0, 10);
     const ageHrs = Number.isFinite(planGeneratedMs)
-      ? Math.max(0, Math.round((Date.now() - planGeneratedMs) / 3600000))
+      ? Math.max(0, Math.round((clockMs - planGeneratedMs) / 3600000))
       : 'ExampleCo';
     const stalePlan =
       !Number.isFinite(planGeneratedMs) ||
-      Date.now() - planGeneratedMs > 24 * 3600000 ||
+      clockMs - planGeneratedMs > 24 * 3600000 ||
       (resetIso && resetIso < date);
     if (stalePlan) {
       lines.push(
@@ -8151,7 +8154,7 @@ function formatTokenUsageSection(
   } else if (claudeState.state === 'stale' && plan && typeof plan.weekly_all_models_percent === 'number') {
     const planGeneratedMs = Date.parse(claudeState.observedAt || plan.generated_at || '');
     const ageHrs = Number.isFinite(planGeneratedMs)
-      ? Math.max(0, Math.round((Date.now() - planGeneratedMs) / 3600000))
+      ? Math.max(0, Math.round((clockMs - planGeneratedMs) / 3600000))
       : 'ExampleCo';
     lines.push(
       `Claude Max: live usage endpoint did not refresh -- last reading ${plan.weekly_all_models_percent}% is ${ageHrs}h stale (from ${formatCtDateTime(planGeneratedMs || 0)}), not current. Run scripts/collect-claude-plan-usage.js to refresh the authoritative percent.`,
@@ -8173,7 +8176,7 @@ function formatTokenUsageSection(
   } else if (codexState.state === 'stale' && codex && typeof codex.weekly_used_percent === 'number') {
     const generatedMs = Date.parse(codexState.observedAt || codex.generated_at || '');
     const ageHrs = Number.isFinite(generatedMs)
-      ? Math.max(0, Math.round((Date.now() - generatedMs) / 3600000))
+      ? Math.max(0, Math.round((clockMs - generatedMs) / 3600000))
       : 'ExampleCo';
     lines.push(
       `Codex: live usage reading did not refresh, last reading ${codex.weekly_used_percent}% is ${ageHrs}h stale (from ${formatCtDateTime(generatedMs || 0)}), not current. Run scripts/collect-codex-token-usage.js to refresh.`,

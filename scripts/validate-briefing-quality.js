@@ -188,11 +188,11 @@ function findSectionStart(lines, label) {
   );
 }
 
-function sectionBody(label, options = {}) {
-  const lines = md.split(/\r?\n/);
+function sectionBodyFromMarkdown(markdown, label, options = {}) {
+  const lines = String(markdown || '').split(/\r?\n/);
   const start = findSectionStart(lines, label);
   if (start < 0) {
-    if (!options.optional) fail(`${label} section missing`);
+    if (!options.optional && options.fail !== false) fail(`${label} section missing`);
     return '';
   }
   let end = lines.length;
@@ -207,6 +207,10 @@ function sectionBody(label, options = {}) {
     .slice(start + 1, end)
     .join('\n')
     .trim();
+}
+
+function sectionBody(label, options = {}) {
+  return sectionBodyFromMarkdown(md, label, options);
 }
 
 function sectionBodyAny(labels, displayLabel) {
@@ -233,6 +237,69 @@ function parseNumberedItems(body) {
   }
   if (cur) items.push(cur);
   return items;
+}
+
+function previousDateString(dateStr) {
+  const m = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function normalizeNewsUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  try {
+    const u = new URL(s);
+    u.hash = '';
+    u.search = '';
+    return u.toString().replace(/\/$/, '').toLowerCase();
+  } catch {
+    return s.replace(/[?#].*$/, '').replace(/\/$/, '').toLowerCase();
+  }
+}
+
+function normalizeNewsTitle(raw) {
+  return String(raw || '')
+    .toLowerCase()
+    .replace(/&(?:amp|apos|quot|#39);/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function newsArticleIdentity(article) {
+  const text = [article && article.title, ...((article && article.lines) || [])].join('\n');
+  const link = (text.match(/https?:\/\/\S+/i) || [])[0];
+  const urlKey = normalizeNewsUrl(link);
+  if (urlKey) return `url:${urlKey}`;
+  // URL is the authoritative identity. Title fallback is only for malformed
+  // legacy rows that lack links, so it is intentionally approximate.
+  const titleKey = normalizeNewsTitle(article && article.title);
+  return titleKey ? `title:${titleKey}` : '';
+}
+
+function checkNewsCarryForward(label, body, previousBody, expectedCount) {
+  const failures = [];
+  if (!previousBody) return failures;
+  const articles = parseNumberedItems(body);
+  const previousArticles = parseNumberedItems(previousBody);
+  if (!articles.length || !previousArticles.length) return failures;
+
+  const previousIds = new Set(previousArticles.map(newsArticleIdentity).filter(Boolean));
+  const repeated = articles.filter((article) => previousIds.has(newsArticleIdentity(article)));
+  const compareCount = Math.min(
+    articles.length,
+    Number.isFinite(expectedCount) ? expectedCount : articles.length,
+  );
+  const threshold = Math.max(2, Math.ceil(compareCount * 0.5));
+  if (repeated.length >= threshold) {
+    failures.push(
+      `${label} repeats ${repeated.length}/${articles.length} article(s) from the previous briefing; the news card looks stale and must refresh or render an honest stale-source blocker`,
+    );
+  }
+  return failures;
 }
 
 function readJsonl(rel) {
@@ -379,15 +446,12 @@ function checkHealthBlockersConsistency(markdown) {
   return fails;
 }
 
-// (a2) REVERSE SYSTEM-HEALTH <-> BLOCKERS consistency. The forward check above
-// enforces non-green-SH -> named-in-BLOCKERS. This enforces the OTHER direction:
-// a BLOCKERS entry that names a SYSTEM HEALTH subsystem as non-green must find
-// that subsystem PRESENT AND non-green in the SYSTEM HEALTH card. A blocker that
-// names a subsystem the SYSTEM HEALTH card shows GREEN, or OMITS entirely, is a
-// contradiction (ExampleCo 2026-07-01: BLOCKERS said "Scheduled tasks health system
-// health is non-green" while the SYSTEM HEALTH roster had collapsed to a single
-// green Graphiti row, so every other subsystem row had vanished). Together with
-// the forward check the two force the non-green sets EQUAL.
+// (a2) REVERSE SYSTEM-HEALTH <-> BLOCKERS consistency. The dedupe check above
+// prevents BLOCKERS from repeating health detail. This check catches explicit
+// BLOCKERS claims that contradict SYSTEM HEALTH: if BLOCKERS says a subsystem is
+// non-green, that subsystem must be present and non-green in SYSTEM HEALTH.
+// A blocker that names a subsystem the SYSTEM HEALTH card shows green, or omits
+// entirely, is a contradiction.
 //
 // Category, not literal trigger: we key ONLY on blockers that explicitly assert a
 // SYSTEM HEALTH state ("system health ... non-green", "SYSTEM HEALTH reports
@@ -1082,6 +1146,16 @@ function healCardForLabel(label) {
   if (!key || !healArtifact || !healArtifact.cards) return null;
   return healArtifact.cards[key] || null;
 }
+
+const previousDate = previousDateString(date);
+const previousBriefingPath = previousDate
+  ? path.join(path.dirname(briefingPath), `briefing-${previousDate}.md`)
+  : null;
+const previousBriefingMd =
+  previousBriefingPath && fs.existsSync(previousBriefingPath)
+    ? fs.readFileSync(previousBriefingPath, 'utf8')
+    : '';
+
 function isHeadlineRescueRow(article) {
   // The canonical "Full summary unavailable: the article body was too thin to
   // summarize ..." note is the ONLY degraded news-row shape exempted from the
@@ -1182,6 +1256,10 @@ for (const [label, expectedCount] of newsExpectations) {
   const body = sectionBody(label);
   const card = healCardForLabel(label);
   for (const f of checkNewsSection(label, body, card, expectedCount)) fail(f);
+  const previousBody = previousBriefingMd
+    ? sectionBodyFromMarkdown(previousBriefingMd, label, { optional: true, fail: false })
+    : '';
+  for (const f of checkNewsCarryForward(label, body, previousBody, expectedCount)) fail(f);
 }
 
 const amyBody = sectionBody('AMY PROJECTS RECEIVED') || sectionBody('AMY PROJECTS ASSIGNED');
@@ -1588,6 +1666,9 @@ module.exports = {
   checkOtterSpeakerStaleness,
   isHeadlineRescueRow,
   checkNewsSection,
+  checkNewsCarryForward,
+  sectionBodyFromMarkdown,
+  previousDateString,
   NEWS_LABEL_TO_HEAL_CARD,
   newsExpectations,
   // Exported so the refresh pipeline can PRUNE the exact items this validator
