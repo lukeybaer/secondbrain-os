@@ -692,18 +692,52 @@ function briefProgressText(value, max = 170) {
     .trim();
 }
 
-function formatLikelyMatchesForVoice(records, nowMs) {
+function titleLabelText(value, max = 58) {
+  let text = speechSafe(String(value || ''))
+    .replace(/^codex thread:\s*/i, '')
+    .replace(/^claude(?: code)? session:\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  const firstQuestion = text.split('?')[0].trim();
+  if (firstQuestion.length >= 12) text = firstQuestion;
+  const firstClause = text.split(/[,.]/)[0].trim();
+  if (firstClause.length >= 12 && firstClause.length < text.length) text = firstClause;
+  text = text
+    .replace(
+      /^(?:how\s+(?:big|much)\s+(?:is|are|does|do|can|should)\s+|(?:what|why|where|when)\s+(?:is|are|does|do|can|should)\s+)/i,
+      '',
+    )
+    .replace(/^is\s+/i, '')
+    .replace(/^the\s+/i, '')
+    .replace(/\bonly$/i, '')
+    .replace(/\bamy\b/gi, 'Amy')
+    .replace(/\bvapi\b/gi, 'Vapi')
+    .replace(/\s+/g, ' ')
+    .trim();
+  text = text.replace(/^([a-z])/, (m) => m.toUpperCase());
+  if (!max || text.length <= max) return text;
+  return text
+    .slice(0, max)
+    .replace(/\s+\S*$/, '')
+    .replace(/[,:;]+$/, '')
+    .trim();
+}
+
+function formatLikelyMatchesForVoice(records, nowMs, options = {}) {
+  const minItems = options.minItems || 2;
+  const prefix = options.prefix || 'I found a few likely matches';
   const items = uniqueSpineRecords(records)
     .slice(0, 3)
     .map((record) => {
-      const title = briefProgressText(voiceTaskTitle(record, 58), 58) || 'unnamed session';
+      const title = titleLabelText(voiceTaskTitle(record, 58), 58) || 'unnamed session';
       const status = statusForBrief(record && record.status);
       const age = agePhrase(record && (record.updatedAt || record.completedAt || record.createdAt), nowMs);
       return `${title}, ${status}${age ? ', updated ' + age + ' ago' : ''}`;
     })
     .filter(Boolean);
-  if (items.length < 2) return '';
-  return `I found a few likely matches: ${items.join('; ')}.`;
+  if (items.length < minItems) return '';
+  return `${prefix}: ${items.join('; ')}.`;
 }
 
 function formatBriefSpineStatus(liveItems, { query = '' } = {}) {
@@ -784,6 +818,8 @@ function summarizeSpineDetailForVoice({
     if (active.length) candidates = active;
   }
   if (broadStatusQuery) {
+    const queryTerms = searchTerms(query);
+    const hasProjectScoExampleCom = queryTerms.some((term) => PROJECT_SCOPE_TERMS.has(term));
     const broadCandidates = rawScored.filter(
       (x) => (!scoringQuery || x.score > 0) && recordHasVoiceQueryClue(x.record, query),
     );
@@ -816,6 +852,18 @@ function summarizeSpineDetailForVoice({
           .slice(0, maxItems)
           .map((x) => x.record)
       : [];
+    const fuzzyRecentAlternatives = hasProjectScoExampleCom
+      ? rawScored
+          .filter(
+            (x) =>
+              !isLowSignalIngest(x.record) &&
+              isFreshLiveStatusRecord(x.record, nowMs) &&
+              (!wantsSubagentSessions(query) ? !isSubagentSessionRecord(x.record) : true) &&
+              queryTerms.some((term) => normalizeSpineQueryForVoice(recordSourceText(x.record)).includes(term)),
+          )
+          .sort((a, b) => compareSpineCandidates(a, b, nowMs))
+          .map((x) => x.record)
+      : [];
     if (terminalProof.length)
       candidates = terminalProof.map((record) => ({
         record,
@@ -844,6 +892,11 @@ function summarizeSpineDetailForVoice({
           .map((x) => x.record);
         const olderUnique = uniqueSpineRecords(older).slice(0, 1);
         const r = olderUnique[0];
+        const fuzzyList = formatLikelyMatchesForVoice(fuzzyRecentAlternatives, nowMs, {
+          minItems: 2,
+          prefix: `I do not see one clearly labeled ${speechSafe(displayQuery || query)}. Likely recent Codex sessions`,
+        });
+        if (fuzzyList) return fuzzyList;
         if (!r && lowSignalMatches.length) {
           return scopedNoLiveStatusMatch(
             displayQuery || query,

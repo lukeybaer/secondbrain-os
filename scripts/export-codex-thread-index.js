@@ -71,7 +71,10 @@ function readCodexStateRows(statePath = path.join(os.homedir(), '.codex', 'state
     'db = sqlite3.connect(sys.argv[1])',
     'db.row_factory = sqlite3.Row',
     'limit = int(sys.argv[2])',
-    'cols = "id,title,created_at,updated_at,updated_at_ms,archived,cwd"',
+    'available = {r[1] for r in db.execute("PRAGMA table_info(threads)")}',
+    'cols = ["id","title","created_at","updated_at","updated_at_ms","archived","cwd"]',
+    'if "first_user_message" in available: cols.append("first_user_message")',
+    'cols = ",".join(cols)',
     'sql = "SELECT " + cols + " FROM threads ORDER BY COALESCE(updated_at_ms, updated_at * 1000, created_at * 1000, 0) DESC LIMIT ?"',
     'rows = [dict(r) for r in db.execute(sql, (limit,))]',
     'print(json.dumps(rows))',
@@ -141,6 +144,7 @@ function normalizeThreadRow(row, nowMs = Date.now()) {
       row.title ||
       row.name ||
       row.firstUserMessage ||
+      (row.first_user_message ? compactText(row.first_user_message, 120) : '') ||
       row.preview ||
       id ||
       'Codex thread',
@@ -162,7 +166,7 @@ function normalizeThreadRow(row, nowMs = Date.now()) {
     createdAt: coerceIso(row.createdAt || row.created_at || row.createdAtMs || row.created_at_ms),
     cwd: compactText(row.cwd || row.workspace || '', CODEX_THREAD_TEXT_LIMITS.cwd),
     firstUserMessage: compactText(
-      row.firstUserMessage || row.prompt || '',
+      row.firstUserMessage || row.first_user_message || row.prompt || '',
       CODEX_THREAD_TEXT_LIMITS.firstUserMessage,
     ),
     preview: compactText(row.preview || row.summary || '', CODEX_THREAD_TEXT_LIMITS.preview),
