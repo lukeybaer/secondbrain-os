@@ -737,7 +737,9 @@ function formatLikelyMatchesForVoice(records, nowMs, options = {}) {
     })
     .filter(Boolean);
   if (items.length < minItems) return '';
-  return `${prefix}: ${items.join('; ')}.`;
+  const joined =
+    items.length === 2 ? items.join(', and ') : `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+  return `${prefix}: ${joined}.`;
 }
 
 function formatBriefSpineStatus(liveItems, { query = '' } = {}) {
@@ -894,7 +896,7 @@ function summarizeSpineDetailForVoice({
         const r = olderUnique[0];
         const fuzzyList = formatLikelyMatchesForVoice(fuzzyRecentAlternatives, nowMs, {
           minItems: 2,
-          prefix: `I do not see one clearly labeled ${speechSafe(displayQuery || query)}. Likely recent Codex sessions`,
+          prefix: `I do not see one clearly labeled ${speechSafe(displayQuery || query)}, likely recent Codex sessions`,
         });
         if (fuzzyList) return fuzzyList;
         if (!r && lowSignalMatches.length) {
