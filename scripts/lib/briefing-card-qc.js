@@ -11,6 +11,11 @@ const {
   scrubBriefingMarkdown,
   isRealExampleCoAction,
 } = require('./briefing-clean-contract.js');
+const {
+  HEADLINE_ONLY_NOTE_RE,
+  isThreeExampleCoraphArticleSummary,
+  newsSummaryHasSourceFailureProse,
+} = require('./news-summarize.js');
 
 // News card titles carry THIRD-PARTY article prose, not Amy's operational status
 // text. That prose legitimately mentions vendor/process words the operational
@@ -147,6 +152,84 @@ function markdownNumberedRows(body) {
   }
   if (current) rows.push(current);
   return rows;
+}
+
+function markdownNewsArticleBlocks(body) {
+  const rows = [];
+  let current = null;
+  let ExampleCoraph = [];
+  let contentStarted = false;
+
+  const flushExampleCoraph = () => {
+    if (!current || !ExampleCoraph.length) return;
+    current.paras.push(ExampleCoraph.join(' ').replace(/\s+/g, ' ').trim());
+    ExampleCoraph = [];
+  };
+  const flushRow = () => {
+    if (!current) return;
+    flushExampleCoraph();
+    rows.push(current);
+    current = null;
+    contentStarted = false;
+  };
+
+  for (const rawLine of String(body || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const numbered = line.match(/^\d+\.\s+(.+?)\s*$/);
+    if (numbered) {
+      flushRow();
+      current = { title: numbered[1], paras: [] };
+      continue;
+    }
+    if (!current) continue;
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(line)) {
+      flushRow();
+      continue;
+    }
+    if (/^(?:Source:|Google News\b)/i.test(line)) {
+      flushExampleCoraph();
+      contentStarted = true;
+      continue;
+    }
+    if (!line) {
+      if (contentStarted) flushExampleCoraph();
+      continue;
+    }
+    if (!contentStarted) continue;
+    ExampleCoraph.push(line);
+  }
+  flushRow();
+  return rows;
+}
+
+function newsContentFailures({ id, title, body, surface = 'briefing-card' } = {}) {
+  if (!isNewsCardTitle(title)) return [];
+  const rows = markdownNewsArticleBlocks(body);
+  if (!rows.length) return [];
+  const sourceDiagnostics = rows.filter((row) =>
+    newsSummaryHasSourceFailureProse(row.paras.join('\n\n')),
+  );
+  const malformed = rows.filter((row) => {
+    if (row.paras.length === 1 && HEADLINE_ONLY_NOTE_RE.test(row.paras[0])) return false;
+    return !isThreeExampleCoraphArticleSummary(row.paras, { title: row.title });
+  });
+  const prefix = `${surface}:${id}`;
+  const failures = [];
+  if (sourceDiagnostics.length) {
+    failures.push(
+      `${prefix}: NEWS-SOURCE-DIAGNOSTIC ${sourceDiagnostics.length} article row(s) contain source/fetch diagnostic prose instead of an article summary`,
+    );
+  }
+  if (malformed.length) {
+    const sample = malformed
+      .slice(0, 3)
+      .map((row) => row.title || 'untitled')
+      .join('; ');
+    failures.push(
+      `${prefix}: NEWS-PROSE ${malformed.length} article row(s) are not three-ExampleCoraph summaries: ${sample}`,
+    );
+  }
+  return failures;
 }
 
 function covidNewsContentFailures({ id, title, body, surface = 'briefing-card' } = {}) {
@@ -499,6 +582,7 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
 
   failures.push(...systemHealthContentFailures({ id, title, body, surface }));
   failures.push(...tokenUsageContentFailures({ id, title, body, surface }));
+  failures.push(...newsContentFailures({ id, title, body, surface }));
   failures.push(...covidNewsContentFailures({ id, title, body, surface }));
   failures.push(...otterCallHistoryContentFailures({ id, title, body, surface }));
 
@@ -658,6 +742,8 @@ module.exports = {
   splitMarkdownCards,
   systemHealthContentFailures,
   tokenUsageContentFailures,
+  newsContentFailures,
+  markdownNewsArticleBlocks,
   covidNewsContentFailures,
   otterCallHistoryContentFailures,
   isNewsCardTitle,
