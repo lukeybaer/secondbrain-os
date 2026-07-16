@@ -246,7 +246,6 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # different fan-out model and would become a competing writer again.
   if [ "$TEST_MODE" = "1" ]; then
     print_date_generation_lease_dry_run
-    echo "[morning-briefing-run] DRY-RUN (card-controller authority): neo4j-cpu-cap would run: ${NEO4J_CAP_CMD[*]}"
     echo "[morning-briefing-run] DRY-RUN (card-controller authority): would run: (cd $CONTROLLER_ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR ${CONTROLLER_CMD[*]})"
     if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
       echo "[morning-briefing-run] agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
@@ -263,7 +262,6 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   cd "$CONTROLLER_ROOT" || { echo "[morning-briefing-run] cannot cd to deployed controller runtime $CONTROLLER_ROOT" >&2; exit 1; }
   mkdir -p "$LOG_DIR"
   unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
-  "${NEO4J_CAP_CMD[@]}" || echo "[morning-briefing-run] WARNING: Neo4j CPU cap enforcement failed (non-fatal)." >&2
   flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" "${CONTROLLER_CMD[@]}"
   status=$?
   if [ "$status" = "0" ]; then
@@ -350,7 +348,6 @@ mkdir -p "$LOG_DIR"
 
 # flock -n: if a briefing run is already going, this run is a clean no-op. Acquired
 # strictly AFTER the mechanical pass above has released its own separate lock.
-"${NEO4J_CAP_CMD[@]}" || echo "[morning-briefing-run] WARNING: Neo4j CPU cap enforcement failed (non-fatal)." >&2
 flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" "${CMD[@]}"
 status=$?
 
