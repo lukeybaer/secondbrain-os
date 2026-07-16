@@ -9,6 +9,10 @@ const { splitMarkdownCards, qcCard } = require('./briefing-card-qc.js');
 const { askAI } = require('./ask-ai.js');
 const { writeDataArtifact } = require('./data-root.js');
 const {
+  defectiveCardCount,
+  readLiveBoardArtifact,
+} = require('./live-board-truth.js');
+const {
   providerReceiptPath,
   readProviderUsage,
 } = require('./token-usage-receipts.js');
@@ -48,6 +52,7 @@ const CONTENT_HEAL_CARD_CONFIG = Object.freeze({
 });
 
 const CARD_TITLE_OVERRIDES = Object.freeze({
+  blockers: 'BLOCKERS - briefing quality gates',
   shorts_proposals: "TODAY'S 10 SHORTS PROPOSALS",
 });
 
@@ -624,6 +629,78 @@ function produceSystemHealthCardArtifact({
   });
 }
 
+function formatBlockersCardBodyFromLiveBoard(liveBoardEnvelope = {}) {
+  const artifact = liveBoardEnvelope.artifact || null;
+  const cards = Array.isArray(artifact && artifact.cards) ? artifact.cards : [];
+  const defectiveCards = cards.filter(
+    (card) => card && card.status !== 'clean' && card.id !== 'blockers',
+  );
+  const count = defectiveCards.length;
+  const lines = [];
+  if (!artifact || defectiveCardCount(artifact) === null) {
+    return 'Blocked: the live board count source is missing or invalid; cannot render the canonical Blockers count.';
+  }
+  if (count === 0) {
+    lines.push('Clean? yes. Live dashboard QC reports 0 survived defects for this briefing.');
+  } else {
+    lines.push(
+      `Clean? no. Live dashboard QC reports ${count} card${count === 1 ? '' : 's'} needing repair for this briefing.`,
+    );
+  }
+  if (liveBoardEnvelope.stale) {
+    lines.push(
+      `Live card badge count: stale (last verified ${artifact.ts || 'ExampleCo time'}, older than one briefing cycle) -- do not treat this as the current Blockers issue count.`,
+    );
+  } else {
+    lines.push(
+      `Live card badge count: ${count} card(s) needing repair as of ${artifact.ts}.`,
+    );
+  }
+  defectiveCards.forEach((card, index) => {
+    const title = card.title || card.id || `Defective card ${index + 1}`;
+    lines.push('');
+    lines.push(`${index + 1}. ${title}`);
+    if (card.id === 'system_health') {
+      lines.push('Evidence: The health card needs attention; subsystem detail stays in SYSTEM HEALTH.');
+    } else {
+      lines.push('Evidence: This card is not clean in the latest live board.');
+    }
+    lines.push('Next step: refresh this card source and republish.');
+  });
+  return lines.join('\n').trim();
+}
+
+function produceBlockersCardArtifact({ date, dataDir, now = new Date() } = {}) {
+  const title = cardTitle('blockers');
+  const liveBoardEnvelope = readLiveBoardArtifact({
+    dataDir,
+    nowMs: new Date(now).getTime(),
+  });
+  const body = formatBlockersCardBodyFromLiveBoard(liveBoardEnvelope);
+  const qc = qcCard({ id: 'blockers', title, body }, { surface: 'card-artifact' });
+  const missing =
+    !liveBoardEnvelope.artifact || defectiveCardCount(liveBoardEnvelope.artifact) === null;
+  return createCardArtifact({
+    id: 'blockers',
+    title,
+    date,
+    kind: 'data',
+    status: missing ? 'blocked' : qc.ok ? 'clean' : 'defect',
+    generatedAt: now.toISOString(),
+    markdown: `${title}:\n${body}`,
+    source: {
+      mode: 'dashboard-qc-result',
+      path: liveBoardEnvelope.absPath || null,
+      stale: Boolean(liveBoardEnvelope.stale),
+      defectiveCardCount: liveBoardEnvelope.artifact
+        ? defectiveCardCount(liveBoardEnvelope.artifact)
+        : null,
+    },
+    blockedReason: missing ? 'dashboard-qc-result.json missing or invalid.' : '',
+    qc,
+  });
+}
+
 function produceTokenUsageCardArtifact({
   date,
   dataDir = defaultDataDir(),
@@ -1079,6 +1156,9 @@ function produceActionItemsCardArtifact({ date, dataDir, now = new Date() }) {
 }
 
 function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
+  if (card.id === 'blockers') {
+    return produceBlockersCardArtifact({ date, dataDir, now });
+  }
   if (card.id === 'system_health') {
     return produceSystemHealthCardArtifact({ date, dataDir, now });
   }
@@ -1289,6 +1369,7 @@ module.exports = {
   writeCompatibilityMarkdown,
   produceCardArtifact,
   produceSourceBackedLlmCardArtifact,
+  produceBlockersCardArtifact,
   produceSystemHealthCardArtifact,
   produceTokenUsageCardArtifact,
   produceOtterSpeakerParetoCardArtifact,
