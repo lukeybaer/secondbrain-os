@@ -265,6 +265,8 @@ function buildLiveStateItem(record, opts = {}) {
     nextAction: safeText((lastProgressRow && lastProgressRow.nextAction) || record && record.nextAction, 180),
     confidence: sourcePackets.length && !codexTitleOnly ? 'source-backed' : 'title-status-only',
     sourcePackets,
+    sourceKind: record && record._source || '',
+    sourceMtime: record && record._sourceMtime || '',
     record,
   };
 }

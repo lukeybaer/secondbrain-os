@@ -35,6 +35,10 @@ const PROJECT_TERMINAL_PROOF_MS = 24 * 60 * 60 * 1000;
 // The local Codex mirror is expected to sync every few minutes. Older source
 // mtimes are usable as historical evidence, not active/recent proof.
 const CODEX_MIRROR_FRESH_MS = 10 * 60 * 1000;
+// Voice session lookup can still name a recent parent session when the mirror
+// sync is lagging, but only within a bounded window. Older snapshots go back to
+// stale-proof language so Amy does not imply current progress from old data.
+const CODEX_MIRROR_RECENT_EVIDENCE_MS = 4 * 60 * 60 * 1000;
 
 // Default wait policy by origin. Voice commands default to background+notify; the
 // result is spoken if the caller is still on the line, otherwise Telegram.
@@ -401,9 +405,16 @@ function isStaleCodexMirrorRecord(record, nowMs) {
   return nowMs - ts > CODEX_MIRROR_FRESH_MS;
 }
 
-function isActiveOrRecentDetailRecord(record, nowMs) {
+function isTooOldCodexMirrorForRecentEvidence(record, nowMs) {
+  if (!record || record._source !== 'codex-thread-index') return false;
+  const ts = Date.parse(record._sourceMtime || '');
+  if (!Number.isFinite(ts)) return true;
+  return nowMs - ts > CODEX_MIRROR_RECENT_EVIDENCE_MS;
+}
+
+function isPlausiblyRecentDetailRecord(record, nowMs) {
   const ts = recordUpdatedMs(record);
-  if (isStaleCodexMirrorRecord(record, nowMs)) return false;
+  if (isTooOldCodexMirrorForRecentEvidence(record, nowMs)) return false;
   if (!ts || nowMs - ts > RECENT_SESSION_LOOKUP_MS) return false;
   return isActiveDetailRecord(record) || isTerminalDetailRecord(record);
 }
@@ -599,6 +610,11 @@ function staleSourcePhrase(record, nowMs) {
   return age ? ` Snapshot source refreshed ${age} ago, so this may be stale.` : '';
 }
 
+function mirrorCautionLead(record, nowMs) {
+  const phrase = staleMirrorVoicePhrase(record, nowMs).trim();
+  return phrase ? `${phrase} ` : '';
+}
+
 function recordPriority(record) {
   let score = 0;
   if (isActiveDetailRecord(record)) score += 40;
@@ -789,25 +805,37 @@ function formatLikelyMatchesForVoice(records, nowMs, options = {}) {
   if (items.length < minItems) return '';
   const joined =
     items.length === 2 ? items.join(', and ') : `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
-  return `${prefix}: ${joined}.`;
+  const sourceFreshness =
+    recordList.map((record) => mirrorCautionLead(record, nowMs)).find(Boolean) || '';
+  return `${sourceFreshness}${prefix}: ${joined}.`;
 }
 
-function formatBriefSpineStatus(liveItems, { query = '' } = {}) {
+function formatBriefSpineStatus(liveItems, { query = '', nowMs = Date.now() } = {}) {
   const items = Array.isArray(liveItems) ? liveItems.filter(Boolean) : [];
   if (!items.length) return '';
   const item = items[0];
   const objective = briefProgressText(item.objective || query || 'the best match', 90);
-  const status = statusForBrief(item.status);
+  const sourceRecord =
+    item.record ||
+    (item.sourceKind ? { _source: item.sourceKind, _sourceMtime: item.sourceMtime } : item);
+  const sourceFreshness = mirrorCautionLead(sourceRecord, nowMs);
+  const baseStatus = statusForBrief(item.status);
+  // Stale-but-under-cap Codex mirrors can identify a likely session, but they
+  // must not claim live progress. Terminal statuses stay terminal.
+  const status =
+    sourceFreshness && /^(active or recent|active|in progress|running|queued|progress|pending)$/i.test(baseStatus)
+      ? 'a likely recent match'
+      : baseStatus;
   const source = briefSourceLabel(item.source);
   const freshness = item.freshness ? ` updated ${item.freshness}` : '';
   const progress = briefProgressText(item.lastProgress || '', 160);
   if (progress) {
-    return `${objective} is ${status} from ${source}${freshness}: ${progress}.`;
+    return `${sourceFreshness}${objective} is ${status} from ${source}${freshness}: ${progress}.`;
   }
   if (item.confidence === 'title-status-only') {
-    return `${objective} is ${status} from ${source}${freshness}, but I only have title and status, not deeper progress yet.`;
+    return `${sourceFreshness}${objective} is ${status} from ${source}${freshness}, but I only have title and status, not deeper progress yet.`;
   }
-  return `${objective} is ${status} from ${source}${freshness}.`;
+  return `${sourceFreshness}${objective} is ${status} from ${source}${freshness}.`;
 }
 
 function summarizeSpineDetailForVoice({
@@ -881,7 +909,10 @@ function summarizeSpineDetailForVoice({
     const usableBroadCandidates = broadCandidates.filter((x) => !isLowSignalIngest(x.record));
     const lowSignalMatches = broadCandidates.filter((x) => isLowSignalIngest(x.record));
     const freshLive = broadCandidates.filter(
-      (x) => isFreshLiveStatusRecord(x.record, nowMs) && !isLowSignalIngest(x.record),
+      (x) =>
+        isFreshLiveStatusRecord(x.record, nowMs) &&
+        !isStaleCodexMirrorRecord(x.record, nowMs) &&
+        !isLowSignalIngest(x.record),
     );
     const bestLiveRank = freshLive.reduce(
       (max, x) => Math.max(max, liveStatusRank(x.record, nowMs)),
@@ -900,7 +931,7 @@ function summarizeSpineDetailForVoice({
     const recentStatus = usableBroadCandidates
       .filter(
         (x) =>
-          isActiveOrRecentDetailRecord(x.record, nowMs) &&
+          isPlausiblyRecentDetailRecord(x.record, nowMs) &&
           !isLowSignalIngest(x.record) &&
           recordMatchesAnyQueryTerm(x.record, queryTerms),
       )
@@ -923,7 +954,7 @@ function summarizeSpineDetailForVoice({
             (x) =>
               !isLowSignalIngest(x.record) &&
               !isNoisyCodexWorkerRecord(x.record, queryTerms) &&
-              isActiveOrRecentDetailRecord(x.record, nowMs) &&
+              isPlausiblyRecentDetailRecord(x.record, nowMs) &&
               (!wantsSubagentSessions(query) ? !isSubagentSessionRecord(x.record) : true) &&
               recordMatchesAnyQueryTerm(x.record, queryTerms),
           )
@@ -983,7 +1014,7 @@ function summarizeSpineDetailForVoice({
         const age = r ? agePhrase(r.updatedAt || r.completedAt || r.createdAt, nowMs) : '';
         const source = r ? voiceSourceLabel(r) : 'older record';
         const staleMirror = r ? staleMirrorVoicePhrase(r, nowMs) : '';
-        const recentMatch = r ? isActiveOrRecentDetailRecord(r, nowMs) : false;
+        const recentMatch = r ? isPlausiblyRecentDetailRecord(r, nowMs) : false;
         const recentMatchLabel = r && isTerminalDetailRecord(r) ? 'recently completed' : 'recent';
         const evidenceLabel = staleMirror ? 'stale evidence' : 'older evidence';
         const olderClause = r
@@ -1051,7 +1082,7 @@ function summarizeSpineDetailForVoice({
   const likelyMatches = formatLikelyMatchesForVoice(all, nowMs);
   if (likelyMatches) return likelyMatches;
 
-  const brief = formatBriefSpineStatus(liveItems, { query: displayQuery || query });
+  const brief = formatBriefSpineStatus(liveItems, { query: displayQuery || query, nowMs });
   if (brief) return brief;
 
   const lines = [];
