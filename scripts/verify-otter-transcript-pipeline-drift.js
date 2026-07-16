@@ -129,7 +129,22 @@ const MUST_CONTAIN = [
   [
     'ec2-server.js',
     'const matchedPeople = actionPerson;',
-    'voice confirmation UI preselects a people file only after a ExampleCo-confirmed action',
+    'Pareto fallback must not fuzzy-select people files from heard-name/context artifacts',
+  ],
+  [
+    'ec2-server.js',
+    'function concretePeopleFileSuggestionFromHypothesis',
+    'recluster modal suggestions pass through the concrete people-file gate',
+  ],
+  [
+    'ec2-server.js',
+    'ambiguous|no_people_file_match|low_margin|needs_ExampleCo|person_guess|unconfirmed|strictly_rejected',
+    'concrete people-file suggestion gate rejects ambiguous or low-margin identity guesses',
+  ],
+  [
+    'ec2-server.js',
+    '(?:people_file_match|confirmed|full_script_name_hypothesis|strict)',
+    'concrete people-file suggestion gate uses bounded positive evidence tokens',
   ],
   [
     'scripts/voice-confirmation-queue-build.js',
