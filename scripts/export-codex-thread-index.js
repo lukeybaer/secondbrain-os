@@ -13,6 +13,12 @@ const CODEX_STATE_ROW_LIMIT = (() => {
   const parsed = Number.parseInt(process.env.CODEX_THREAD_INDEX_STATE_ROW_LIMIT || '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 5000;
 })();
+const CODEX_THREAD_TEXT_LIMITS = {
+  title: 240,
+  cwd: 260,
+  firstUserMessage: 500,
+  preview: 500,
+};
 
 function readJsonl(file) {
   if (!file || !fs.existsSync(file)) return [];
@@ -46,6 +52,16 @@ function coerceIso(value) {
     }
   }
   return Number.isFinite(ms) ? new Date(ms).toISOString() : '';
+}
+
+function compactText(value, max) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!max || text.length <= max) return text;
+  return text
+    .slice(0, max)
+    .replace(/\s+\S*$/, '')
+    .replace(/[,:;]+$/, '')
+    .trim();
 }
 
 function readCodexStateRows(statePath = path.join(os.homedir(), '.codex', 'state_5.sqlite')) {
@@ -138,15 +154,18 @@ function normalizeThreadRow(row, nowMs = Date.now()) {
       : 'recent';
   return {
     id,
-    title,
-    thread_name: title,
+    title: compactText(title, CODEX_THREAD_TEXT_LIMITS.title),
+    thread_name: compactText(title, CODEX_THREAD_TEXT_LIMITS.title),
     status,
     updatedAt,
     updated_at: updatedAt,
     createdAt: coerceIso(row.createdAt || row.created_at || row.createdAtMs || row.created_at_ms),
-    cwd: row.cwd || row.workspace || '',
-    firstUserMessage: row.firstUserMessage || row.prompt || '',
-    preview: row.preview || row.summary || '',
+    cwd: compactText(row.cwd || row.workspace || '', CODEX_THREAD_TEXT_LIMITS.cwd),
+    firstUserMessage: compactText(
+      row.firstUserMessage || row.prompt || '',
+      CODEX_THREAD_TEXT_LIMITS.firstUserMessage,
+    ),
+    preview: compactText(row.preview || row.summary || '', CODEX_THREAD_TEXT_LIMITS.preview),
     source: row.source || 'codex-session-index',
   };
 }
@@ -237,7 +256,9 @@ if (require.main === module) {
 module.exports = {
   CODEX_STATE_MAX_BUFFER_BYTES,
   CODEX_STATE_ROW_LIMIT,
+  CODEX_THREAD_TEXT_LIMITS,
   coerceIso,
+  compactText,
   exportCodexThreadIndex,
   normalizeThreadRow,
 };

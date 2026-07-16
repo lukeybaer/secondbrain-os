@@ -27,6 +27,7 @@ const {
 const DEFAULT_NO_PROGRESS_MS = 5 * 60 * 1000;
 const DEFAULT_CEILING_MS = 60 * 60 * 1000;
 const LIVE_STATUS_FRESH_MS = 2 * 60 * 60 * 1000;
+const RECENT_COMPLETE_MS = 24 * 60 * 60 * 1000;
 const PROJECT_TERMINAL_PROOF_MS = 24 * 60 * 60 * 1000;
 
 // Default wait policy by origin. Voice commands default to background+notify; the
@@ -202,6 +203,7 @@ const GENERIC_SPINE_TERMS = new Set([
   'task',
   'tasks',
   'progress',
+  'recent',
   'going',
   'thing',
   'that',
@@ -231,6 +233,43 @@ const BROAD_SINGLE_TERM_STATUS_QUERIES = new Set([
   'vapi',
   'voice',
 ]);
+const PROJECT_SCOPE_TERMS = new Set([
+  'amy',
+  'bai',
+  'briefing',
+  'claude',
+  'codex',
+  'dashboard',
+  'graphiti',
+  'itm',
+  'ExampleCo',
+  'ExampleCo',
+  'resilience',
+  'secondbrain',
+  'snack',
+  'spine',
+  'vapi',
+  'voice',
+]);
+const QUERY_FILLER_TERMS = new Set([
+  'a',
+  'an',
+  'and',
+  'about',
+  'but',
+  'for',
+  'in',
+  'into',
+  'me',
+  'my',
+  'of',
+  'on',
+  'or',
+  'the',
+  'to',
+  'with',
+]);
+const SUBAGENT_QUERY_TERMS = new Set(['child', 'companion', 'rung', 'rescue', 'sub', 'subagent']);
 const ACTIVE_DETAIL_STATUSES = new Set([
   'active',
   'active or recent',
@@ -344,6 +383,11 @@ function isFreshTerminalStatusRecord(record, nowMs) {
   return isTerminalDetailRecord(record) && ts > 0 && nowMs - ts <= LIVE_STATUS_FRESH_MS;
 }
 
+function isRecentlyCompleteDetailRecord(record, nowMs) {
+  const ts = recordUpdatedMs(record);
+  return isTerminalDetailRecord(record) && ts > 0 && nowMs - ts <= RECENT_COMPLETE_MS;
+}
+
 function isRecentProjectTerminalProof(record, nowMs) {
   const ts = recordUpdatedMs(record);
   return (
@@ -389,6 +433,7 @@ function recordSourceText(record) {
 }
 
 function isLowSignalIngest(record) {
+  if (record && (record._source === 'codex-thread-index' || record.origin === 'codex')) return false;
   const source = record && record.source && typeof record.source === 'object' ? record.source : {};
   const text = normalizeSearchText(
     [
@@ -415,6 +460,17 @@ function isLowSignalIngest(record) {
 function isAgentSessionRecord(record) {
   const text = normalizeSearchText(recordSourceText(record));
   return /\bcodex\b|\bclaude\b|\bagent\b|\bsession\b|\bworktree\b|\bthread\b|\bcoding\b/.test(text);
+}
+
+function isSubagentSessionRecord(record) {
+  const text = normalizeSearchText(recordSourceText(record));
+  return /\bsubagent\b|\bsub agent\b|\bcompanion task\b|\bcodex companion\b|\brescue rung\b|\bchild session\b|\bcodex amy preload\b/.test(
+    text,
+  );
+}
+
+function wantsSubagentSessions(query) {
+  return searchTerms(query).some((term) => SUBAGENT_QUERY_TERMS.has(term));
 }
 
 function recordSourceLabel(record) {
@@ -605,6 +661,24 @@ function statusForBrief(status) {
   return text;
 }
 
+function clueTermsForVoiceQuery(query) {
+  const terms = searchTerms(query);
+  return terms.filter(
+    (term) =>
+      term.length > 2 &&
+      !PROJECT_SCOPE_TERMS.has(term) &&
+      !GENERIC_SPINE_TERMS.has(term) &&
+      !QUERY_FILLER_TERMS.has(term),
+  );
+}
+
+function recordHasVoiceQueryClue(record, query) {
+  const clues = clueTermsForVoiceQuery(query);
+  if (!clues.length) return true;
+  const text = normalizeSpineQueryForVoice(recordSourceText(record));
+  return clues.some((term) => text.includes(term));
+}
+
 function briefProgressText(value, max = 170) {
   const text = sanitizeLiveStatusSpeech(speechSafe(value || ''))
     .replace(/\bLatest:\s*/i, '')
@@ -616,6 +690,20 @@ function briefProgressText(value, max = 170) {
     .replace(/\s+\S*$/, '')
     .replace(/[,:;]+$/, '')
     .trim();
+}
+
+function formatLikelyMatchesForVoice(records, nowMs) {
+  const items = uniqueSpineRecords(records)
+    .slice(0, 3)
+    .map((record) => {
+      const title = briefProgressText(voiceTaskTitle(record, 58), 58) || 'unnamed session';
+      const status = statusForBrief(record && record.status);
+      const age = agePhrase(record && (record.updatedAt || record.completedAt || record.createdAt), nowMs);
+      return `${title}, ${status}${age ? ', updated ' + age + ' ago' : ''}`;
+    })
+    .filter(Boolean);
+  if (items.length < 2) return '';
+  return `I found a few likely matches: ${items.join('; ')}.`;
 }
 
 function formatBriefSpineStatus(liveItems, { query = '' } = {}) {
@@ -671,11 +759,14 @@ function summarizeSpineDetailForVoice({
       detail: latestHistoryNote(t) || t.resultSummary || t.prompt || '',
       _sortTs: Date.parse(t.updatedAt || t.completedAt || t.createdAt || '') || 0,
     }));
-  const rawScored = [...commandRecords, ...taskRecords].map((r) => ({
+  let rawScored = [...commandRecords, ...taskRecords].map((r) => ({
     record: r,
     score: scoreSpineRecord(r, scoringQuery),
     priority: recordPriority(r),
   }));
+  if (!wantsSubagentSessions(query)) {
+    rawScored = rawScored.filter((x) => !isSubagentSessionRecord(x.record));
+  }
   const scored = rawScored.filter((x) => !scoringQuery || x.score >= 0.34);
   let candidates = scored;
   if (scoringQuery) {
@@ -693,7 +784,9 @@ function summarizeSpineDetailForVoice({
     if (active.length) candidates = active;
   }
   if (broadStatusQuery) {
-    const broadCandidates = rawScored.filter((x) => !scoringQuery || x.score > 0);
+    const broadCandidates = rawScored.filter(
+      (x) => (!scoringQuery || x.score > 0) && recordHasVoiceQueryClue(x.record, query),
+    );
     const usableBroadCandidates = broadCandidates.filter((x) => !isLowSignalIngest(x.record));
     const lowSignalMatches = broadCandidates.filter((x) => isLowSignalIngest(x.record));
     const freshLive = broadCandidates.filter(
@@ -708,8 +801,8 @@ function summarizeSpineDetailForVoice({
       .sort((a, b) => compareSpineCandidates(a, b, nowMs))
       .slice(0, maxItems)
       .map((x) => x.record);
-    const freshTerminal = candidates
-      .filter((x) => isFreshTerminalStatusRecord(x.record, nowMs) && !isLowSignalIngest(x.record))
+    const freshTerminal = usableBroadCandidates
+      .filter((x) => isRecentlyCompleteDetailRecord(x.record, nowMs) && !isLowSignalIngest(x.record))
       .sort((a, b) => compareSpineCandidates(a, b, nowMs))
       .slice(0, maxItems)
       .map((x) => x.record);
@@ -729,12 +822,14 @@ function summarizeSpineDetailForVoice({
         score: 1,
         priority: recordPriority(record),
       }));
-    else if (current.length)
-      candidates = current.map((record) => ({
+    else if (current.length) {
+      const currentAndRecent = uniqueSpineRecords([...current, ...freshTerminal]).slice(0, maxItems);
+      candidates = currentAndRecent.map((record) => ({
         record,
         score: 1,
         priority: recordPriority(record),
       }));
+    }
     else {
       if (freshTerminal.length)
         candidates = freshTerminal.map((record) => ({
@@ -818,6 +913,9 @@ function summarizeSpineDetailForVoice({
       }),
     );
   }
+
+  const likelyMatches = formatLikelyMatchesForVoice(all, nowMs);
+  if (likelyMatches) return likelyMatches;
 
   const brief = formatBriefSpineStatus(liveItems, { query: displayQuery || query });
   if (brief) return brief;

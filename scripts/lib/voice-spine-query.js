@@ -30,6 +30,7 @@ const STATUS_HINT_TERMS = new Set([
   'latest',
   'progress',
   'readiness',
+  'recent',
   'repair',
   'scale',
   'scaleup',
@@ -51,6 +52,8 @@ function normalizeSearchText(value) {
 
 function normalizeSpokenProjectAliases(value) {
   let text = ` ${normalizeSearchText(value)} `;
+  text = text.replace(/\bcode\s+x\b/g, ' codex ');
+  text = text.replace(/\b(?:coda|codec|codecs|kodak)\b/g, ' codex ');
   text = text.replace(/\bpixie\s+pixie\b/g, ' ExampleCo ');
   text = text.replace(/\bpixie\s+(deployment|deploy|scale|scaling|session|status|app|test)\b/g, ' ExampleCo $1 ');
   text = text.replace(
