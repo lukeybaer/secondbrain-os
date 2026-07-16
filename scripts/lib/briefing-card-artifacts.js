@@ -550,7 +550,7 @@ function produceSystemHealthCardArtifact({
     require('../refresh-briefing-generated-sections.js').renderSystemHealthSection;
   const proof =
     markdownForProof === undefined ? readCompatibilityMarkdown({ dataDir, date }) : markdownForProof;
-  const markdown = String(renderer(proof) || '').trim();
+  const markdown = String(renderer(proof, { dataDir, date }) || '').trim();
   const status = systemHealthStatusFromMarkdown(markdown);
   const redRow = firstRedSystemHealthRow(markdown);
   const blockedReason = redRow
@@ -811,6 +811,40 @@ async function produceLlmCardArtifact({ card, date, dataDir, now = new Date() })
 }
 
 function produceSourceBackedLlmCardArtifact({ card, date, dataDir, now = new Date() } = {}) {
+  if (card && card.id === 'reputation_risk') {
+    try {
+      const { buildReputationCard } = require('../cloud-morning-briefing.js');
+      if (typeof buildReputationCard !== 'function') return null;
+      const rendered = buildReputationCard(dataDir, date, { allowLiveRefresh: false });
+      const markdown = `${rendered.title || cardTitle(card)}:\n${rendered.body || rendered.detail || ''}`;
+      if (rendered.real) {
+        return createCardArtifact({
+          id: card.id,
+          title: cardTitle(card),
+          date,
+          kind: 'llm',
+          status: 'clean',
+          generatedAt: now.toISOString(),
+          markdown,
+          source: { mode: 'reputation-scan-artifact' },
+          qc: { ok: true, failures: [] },
+        });
+      }
+      return createCardArtifact({
+        id: card.id,
+        title: cardTitle(card),
+        date,
+        kind: 'llm',
+        status: 'blocked',
+        generatedAt: now.toISOString(),
+        markdown,
+        source: { mode: 'reputation-scan-artifact' },
+        blockedReason: rendered.detail || 'Reputation scan artifact missing or stale.',
+      });
+    } catch {
+      return null;
+    }
+  }
   if (!card || card.id !== 'covid_news') return null;
   try {
     const { formatHealedNewsSection } = require('../cloud-morning-briefing.js');
