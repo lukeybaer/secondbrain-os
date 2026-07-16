@@ -41,6 +41,7 @@ LIVE_DEPS=(
   "scripts/collect-bedrock-budget-usage.js"
   "scripts/ec2-card-controller-run.sh"
   "scripts/ec2-morning-briefing-run.sh"
+  "scripts/briefing-morning-report.js"
   "scripts/install-ec2-card-controller-cron.sh"
   # Wave 4 rung 2: the agentic overnight healer. The morning runner (deployed
   # above) invokes the wrapper, which invokes the driver; ship both so the /opt
@@ -170,6 +171,7 @@ CONTROLLER_RUNTIME_FILES=(
   "scripts/verify-dashboard-cards-live.js"
   "scripts/ec2-card-controller-run.sh"
   "scripts/ec2-morning-briefing-run.sh"
+  "scripts/briefing-morning-report.js"
   "scripts/install-ec2-card-controller-cron.sh"
   "scripts/lib/briefing-card-controller.js"
   "scripts/lib/briefing-source-contracts.js"

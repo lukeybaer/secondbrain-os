@@ -114,10 +114,27 @@ MECH_CMD=("$NODE_BIN" scripts/overnight-self-heal-orchestrator.js --mechanical-o
 # honest-blocked-receipt-on-expiry rail live in scripts/agentic-healer-driver.js.
 HEALER_CMD=(bash scripts/overnight-agentic-healer.sh)
 
+# Deterministic incident report from canonical board truth. It is generated
+# after bounded repair so its evidence describes the board ExampleCo will see.
+REPORT_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/briefing-morning-report.js" --date "$DATE" --data-dir "$DATA_DIR")
+
 TEST_MODE=0
 if [ "${NODE_ENV:-}" = "test" ] || [ "${VITEST:-}" = "true" ] || [ "${BRIEFING_DRY_RUN:-}" = "1" ]; then
   TEST_MODE=1
 fi
+
+write_morning_report() {
+  report_path="$DATA_DIR/agent/briefing-overnight-watch/$DATE-morning-report.html"
+  if [ "$TEST_MODE" = "1" ]; then
+    echo "[morning-briefing-run] DRY-RUN: would reconcile morning report with: ${REPORT_CMD[*]} (output: $report_path)"
+    return 0
+  fi
+  if "${REPORT_CMD[@]}"; then
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) morning-report: reconciled $report_path"
+  else
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) morning-report: FAILED to reconcile $report_path (non-fatal)." >&2
+  fi
+}
 
 # W5 Stage 2 parity snapshot: right after the cloud build, copy the published
 # markdown to a CLOUD-PROVENANCE snapshot the desktop parity runner
@@ -223,6 +240,7 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
     else
       echo "[morning-briefing-run] DRY-RUN (card-controller authority): agentic-healer rung 2 would run after the controller pass: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
     fi
+    write_morning_report
     snapshot_parity_artifact 0
     exit 0
   fi
@@ -252,6 +270,7 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
     healer_status=$?
     echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: finished with exit $healer_status (receipt: $DATA_DIR/agent/overnight-agentic-healer-runs.jsonl)."
   fi
+  write_morning_report
   # W5 parity snapshot AFTER the healer: the healer may have repaired cards
   # and republished the markdown, so the snapshot captures the finished
   # cloud-built board.
@@ -303,6 +322,7 @@ if [ "$TEST_MODE" = "1" ]; then
   else
     echo "[morning-briefing-run] DRY-RUN (test mode): agentic-healer rung 2 would run after the briefing: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
   fi
+  write_morning_report
   snapshot_parity_artifact 0
   exit 0
 fi
@@ -347,6 +367,7 @@ else
   healer_status=$?
   echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: finished with exit $healer_status (receipt: $DATA_DIR/agent/overnight-agentic-healer-runs.jsonl)."
 fi
+write_morning_report
 # W5 parity snapshot AFTER the build. Exit 1 (lock held / fatal) does NOT
 # snapshot: the dated artifact on disk might be the desktop-published copy,
 # and a false cloud-provenance snapshot would fake a PARITY day. The in-flight
