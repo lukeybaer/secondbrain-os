@@ -463,7 +463,7 @@ const SELF_NARRATION_SECTIONS = [
   ['TOKEN USAGE', ['TOKEN USAGE YESTERDAY', 'TOKEN USAGE']],
   ['AWS COSTS', ['AWS COSTS']],
   ['REPUTATION RISK SCAN', ['REPUTATION RISK SCAN']],
-  ['AMY PROJECTS', ['AMY PROJECTS ASSIGNED']],
+  ['AMY PROJECTS', ['AMY PROJECTS RECEIVED', 'AMY PROJECTS ASSIGNED']],
   ['VIRAL TECH CLIP PROPOSALS', ['VIRAL TECH CLIP PROPOSALS']],
   ['MORTGAGE RATE INDEXES', ['MORTGAGE RATE INDEXES']],
 ];
@@ -1184,44 +1184,27 @@ for (const [label, expectedCount] of newsExpectations) {
   for (const f of checkNewsSection(label, body, card, expectedCount)) fail(f);
 }
 
-const amyBody = sectionBody('AMY PROJECTS ASSIGNED');
+const amyBody = sectionBody('AMY PROJECTS RECEIVED') || sectionBody('AMY PROJECTS ASSIGNED');
 const recentAmyQueue = readJsonl('data/agent/dispatch-queue.jsonl').filter((obj) => {
   const source = String(obj.source || '');
-  if (!/(gmail_amy_email|vapi_call|otter)/i.test(source)) return false;
+  if (!/(gmail_amy_email|vapi_command|vapi_inline_command|otter)/i.test(source)) return false;
   const ts = new Date(obj.ts || obj.call_started_at || obj.date || '').getTime();
   return Number.isFinite(ts) && Date.now() - ts <= 24 * 3600 * 1000;
 });
-const recentAgentSessions = [
-  readJson('data/agent-collab/current-session.json'),
-  readJson('data/agent-collab/amy-outbox.json'),
-  readJson('data/agent-collab/codex-outbox.json'),
-].filter((obj) => {
-  if (!obj) return false;
-  const raw = obj.timestamp || obj.last_update || obj.started;
-  const ts =
-    typeof raw === 'number'
-      ? raw * 1000
-      : typeof raw === 'string' && /^\d{10}$/.test(raw)
-        ? Number(raw) * 1000
-        : new Date(raw || '').getTime();
-  return Number.isFinite(ts) && Date.now() - ts <= 24 * 3600 * 1000;
-});
-const recentAmyWorkCount = recentAmyQueue.length + recentAgentSessions.length;
+const recentAmyWorkCount = recentAmyQueue.length;
 if (
   recentAmyWorkCount &&
-  !/^\s*[^\n]*\[(#Amy email|phone call|voice note|session)\]/m.test(amyBody)
+  !/^\s*[^\n]*\[(email #amy|phone call|otter)\]/im.test(amyBody)
 ) {
   fail(
-    `AMY PROJECTS has ${recentAmyWorkCount} recent user-originated task/session item(s) but no rendered rows`,
+    `AMY PROJECTS has ${recentAmyWorkCount} recent received email/phone/Otter item(s) but no rendered rows`,
   );
 }
 if (
-  /No dashboard prompts, #Amy emails, voice notes, phone-call tasks, or agent sessions/i.test(
-    amyBody,
-  ) &&
+  /no open Amy email, phone call, or Otter project/i.test(amyBody) &&
   recentAmyWorkCount
 ) {
-  fail('AMY PROJECTS says zero despite recent #Amy/call/voice/session activity');
+  fail('AMY PROJECTS says zero despite recent #Amy email/phone/Otter activity');
 }
 
 const featureBody = sectionBody('FEATURE BACKLOG');

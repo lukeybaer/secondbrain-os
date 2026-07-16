@@ -263,9 +263,9 @@ const CARD_DEFINITIONS = [
   },
   {
     id: 'amy_projects',
-    match: /^AMY PROJECTS ASSIGNED\b/i,
+    match: /^AMY PROJECTS (?:RECEIVED|ASSIGNED)\b/i,
     always: true,
-    condition: 'Always: Amy projects assigned (last 24h) tile.',
+    condition: 'Always: Amy email, phone call, or Otter projects received tile.',
   },
   {
     id: 'uncommitted_parked',

@@ -1446,7 +1446,7 @@ const MANIFEST_CARD_RENDER = {
     blockerDetail:
       'The reputation scan did not run on the cloud build, so no concerning-items count can be shown honestly. Needs: the reputation scanner plus LinkedIn and Otter data available to the cloud host.',
   },
-  amy_projects: { title: 'AMY PROJECTS ASSIGNED (last 24h)' },
+  amy_projects: { title: 'AMY PROJECTS RECEIVED (email, phone, otter)' },
   uncommitted_parked: { title: 'UNCOMMITTED & PARKED WORK' },
   ai_tech_news: { title: 'AI & TECH NEWS' },
   us_news: { title: 'US NEWS' },
@@ -6883,14 +6883,11 @@ function buildReputationCard(dataDir, date, { allowLiveRefresh = true } = {}) {
 }
 
 function amyProjectLabel(row) {
-  // An interactive PC session registration gets a clear, self-describing label
-  // so ExampleCo can see his own work in the card (not a bare "session").
-  if (isInteractiveSessionTask(row)) return 'Interactive session';
   const source = String((row && (row.source || row.origin || row.kind || row.type)) || '');
-  if (/gmail_amy_email/i.test(source)) return '#Amy email';
+  if (/gmail_amy_email|gmail|email/i.test(source)) return 'email #amy';
   if (/vapi|phone|call/i.test(source)) return 'phone call';
-  if (/otter|voice/i.test(source)) return 'voice note';
-  return 'session';
+  if (/otter/i.test(source)) return 'otter';
+  return 'amy request';
 }
 
 function amyProjectTitle(row) {
@@ -6908,14 +6905,50 @@ function amyProjectTitle(row) {
   return cleanExecutiveFragment(raw, { max: 140 }) || 'User-originated Amy task';
 }
 
-// Dispatch sources that represent genuine ExampleCo-originated work. The OLD filter
-// only matched gmail_amy_email/vapi_call/otter, which DROPPED dashboard
-// dispatches -- the primary briefing surface ExampleCo uses to assign Amy work
-// (ExampleCo 2026-06-22: "AMY PROJECTS ASSIGNED (last 24h): 0" was false). Includes
-// the dashboard + vapi_command + otter_child_dispatch variants seen in the live
-// dispatch-queue.jsonl.
+// Dispatch sources for the AMY PROJECTS RECEIVED card. This card is intentionally
+// not a general activity rollup: only email #Amy, phone-call commands, and Otter
+// #Amy transcript requests belong here.
 const AMY_DISPATCH_SOURCE_RE =
-  /(gmail_amy_email|vapi_call|vapi_command|vapi_inline_command|otter|dashboard|telegram)/i;
+  /(gmail_amy_email|vapi_command|vapi_inline_command|vapi_call|otter_child_dispatch|otter)/i;
+
+function amyDispatchProof(row = {}) {
+  const meta = row.meta || {};
+  return [
+    row.source,
+    row.origin,
+    row.kind,
+    row.type,
+    row.sourceProof,
+    row.replyTo,
+    row.command_id,
+    row.commandName,
+    row.command ? 'raw_command:true' : '',
+    row.routing_type,
+    row.subject,
+    row.title,
+    row.comment,
+    row.text,
+    row.summary,
+    meta.hasAmy === true ? 'hasAmy:true' : '',
+    meta.explicitRequest === true ? 'explicitRequest:true' : '',
+    row.hasAmy === true ? 'hasAmy:true' : '',
+    row.explicitRequest === true ? 'explicitRequest:true' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function isAmyReceivedDispatchRow(row) {
+  const proof = amyDispatchProof(row);
+  if (/gmail_amy_email|#amy|hasamy:true|explicitrequest:true/.test(proof) && /gmail|email|amy_email|#amy/.test(proof))
+    return true;
+  if (/vapi_command|vapi_inline_command|command_id|commandname|raw_command:true|phone_command/.test(proof))
+    return true;
+  if (/otter_child_dispatch|#amy|hasamy:true|explicitrequest:true/.test(proof) && /otter/.test(proof))
+    return true;
+  return false;
+}
 
 // Amy-internal subprocess/automation prompts that self-register into the spine
 // but are NOT user-originated work. Mirrors isAmySubprocessPrompt in
@@ -6931,23 +6964,19 @@ const USER_SPINE_SURFACES = new Set([
   'otter',
   'vapi-call',
   'vapi',
-  'telegram',
-  'telegram-message',
-  'dashboard',
-  'briefing',
 ]);
 
 // Interactive PC session registrations. The spine-session-task hook writes ONE
 // Task per interactive Claude Code / Codex session as spine-session-{sessionId}
 // .json (origin claude-code|codex, kind action, a sessionId, a title derived
-// from the first prompt). ExampleCo's day-to-day work IS this interactive work, so
-// the AMY PROJECTS card must count it -- the card showed 0 because these
-// registrations were never collapsed/labeled as the session-level project they
-// represent. CATEGORY (a session registration), not a literal id: a task is an
-// interactive session registration when its id is the spine-session-{id} form,
-// OR its kind is session/interactive, OR it is an origin claude-code|codex task
-// that ExampleCos a sessionId. Internal sub-tasks of a session (arbitrary ids that
-// merely share a sessionId) are NOT registrations and collapse away.
+// from the first prompt). These are intentionally excluded from AMY PROJECTS
+// RECEIVED because this card is an email/phone/Otter intake backlog, not a
+// general coding-session activity rollup. CATEGORY (a session registration),
+// not a literal id: a task is an interactive session registration when its id is
+// the spine-session-{id} form, OR its kind is session/interactive, OR it is an
+// origin claude-code|codex task that ExampleCos a sessionId. Internal sub-tasks of
+// a session (arbitrary ids that merely share a sessionId) are NOT registrations
+// and collapse away.
 const INTERACTIVE_SESSION_ORIGINS = new Set(['claude-code', 'codex']);
 function sessionIdOf(task) {
   if (!task) return '';
@@ -6985,7 +7014,7 @@ function isInteractiveSessionRegistration(task) {
 // ingest only, never a dispatch, and must NOT be counted. Genuine dispatches
 // (kind action/dispatch/coding), an explicit #Amy request, or a real user
 // surface ARE counted. Amy-internal automation prompts are excluded.
-function isUserOriginatedSpineTask(task) {
+function isAmyReceivedSpineTask(task) {
   if (!task || !task.id) return false;
   const kind = String(task.kind || '');
   const origin = String(task.origin || '');
@@ -6993,25 +7022,16 @@ function isUserOriginatedSpineTask(task) {
   const meta = task.meta || {};
   const explicit = meta.explicitRequest === true || meta.hasAmy === true;
   const title = String(task.title || task.id || '');
+  const sourceJoined = [origin, srcType, task.source && task.source.ref, task.source && task.source.id]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
 
-  // Interactive PC sessions: ExampleCo's own work. Only the session REGISTRATION row
-  // counts (one row per session); internal sub-tasks that merely inherit a
-  // sessionId from a claude-code/codex origin are collapsed away so a busy
-  // session does not explode into hundreds of rows. Amy-internal automation
-  // sessions (briefing/scan/self-heal/news-summary/etc) self-register under the
-  // SAME claude-code/codex origin, so they are excluded via the SHARED
-  // subprocess classifier (the desktop renderer's full pattern list) -- the
-  // narrow local AMY_SUBPROCESS_PROMPT_RE missed known automation titles like
-  // the "<owner>'s executive assistant is drafting ..." template (Codex peer
-  // review 2026-06-23).
-  if (isInteractiveSessionTask(task)) {
-    if (!isInteractiveSessionRegistration(task)) return false; // sub-task, not the session
-    if (isAmySubprocessPrompt(title.trim())) return false; // internal automation
-    return true;
-  }
+  if (!/(gmail|email|otter|vapi|phone|call)/i.test(sourceJoined)) return false;
 
-  // Passive ingest (the bulk of recent spine traffic) is NOT runnable Amy work
-  // unless it ExampleCos an explicit #Amy / explicit-request flag.
+  // Passive Gmail/Otter ingest is not runnable Amy work unless it ExampleCos an
+  // explicit #Amy / explicit-request flag. Phone/vapi command tasks count when
+  // they are action/dispatch-shaped.
   if (kind === 'ingest' && !explicit) return false;
 
   const onUserSurface = USER_SPINE_SURFACES.has(origin) || USER_SPINE_SURFACES.has(srcType);
@@ -7023,6 +7043,10 @@ function isUserOriginatedSpineTask(task) {
   if (!onUserSurface && !explicit && AMY_SUBPROCESS_PROMPT_RE.test(title.trim())) return false;
 
   return true;
+}
+
+function isUserOriginatedSpineTask(task) {
+  return isAmyReceivedSpineTask(task);
 }
 
 function spineTaskTimestampMs(task) {
@@ -7051,36 +7075,16 @@ function recentAmyProjectRows(
     .filter((row) => {
       const source = String((row && row.source) || '');
       if (!AMY_DISPATCH_SOURCE_RE.test(source)) return false;
+      if (!isAmyReceivedDispatchRow(row)) return false;
       const ts = Date.parse((row && (row.ts || row.call_started_at || row.date)) || '');
       return Number.isFinite(ts) && ts >= cutoff;
     })
     .map((row) => ({ row, ts: Date.parse(row.ts || row.call_started_at || row.date || '') }));
-  const fromSessions = (sessionRows || [])
-    .filter(Boolean)
-    .filter((row) => {
-      const raw = row.timestamp || row.last_update || row.started;
-      const ts =
-        typeof raw === 'number'
-          ? raw * 1000
-          : typeof raw === 'string' && /^\d{10}$/.test(raw)
-            ? Number(raw) * 1000
-            : Date.parse(raw || '');
-      return Number.isFinite(ts) && ts >= cutoff;
-    })
-    .map((row) => ({
-      row: { ...row, source: 'session' },
-      ts:
-        typeof row.timestamp === 'number'
-          ? row.timestamp * 1000
-          : Date.parse(row.timestamp || row.last_update || row.started || ''),
-    }));
-  // The authoritative spine Task store is where genuine ExampleCo-assigned work
-  // actually lands (dashboard/telegram/briefing/otter dispatches as kind:action,
-  // explicit #Amy requests, etc). The cloud renderer never read it, so the card
-  // showed 0 even when ExampleCo had assigned work. Read it now, gated to
-  // user-originated work only.
+  // The authoritative spine Task store is where durable email/Otter #Amy and
+  // phone command tasks can land after intake. Read it now, gated to the three
+  // received-project surfaces only.
   const fromSpine = (taskRows || [])
-    .filter(isUserOriginatedSpineTask)
+    .filter(isAmyReceivedSpineTask)
     .map((task) => ({ task, ts: spineTaskTimestampMs(task) }))
     .filter(({ ts }) => Number.isFinite(ts) && ts >= cutoff)
     .map(({ task, ts }) => {
@@ -7115,7 +7119,7 @@ function recentAmyProjectRows(
     return `${minute}|${text}`;
   };
   const seen = new Set();
-  return [...fromDispatch, ...fromSessions, ...fromSpine]
+  return [...fromDispatch, ...fromSpine]
     .sort((a, b) => b.ts - a.ts)
     .filter((entry) => {
       const key = dedupKey(entry);
@@ -7146,14 +7150,11 @@ function recentAmyProjectRows(
 function hasRecentCloudSpineActivity(taskRows, nowMs) {
   const cutoff = nowMs - 24 * 3600 * 1000;
   return (taskRows || []).some((task) => {
-    if (isUserOriginatedSpineTask(task)) return false;
+    if (isAmyReceivedSpineTask(task)) return false;
     const ts = spineTaskTimestampMs(task);
     return Number.isFinite(ts) && ts >= cutoff;
   });
 }
-
-const DESKTOP_SESSIONS_NOT_SYNCED_LINE =
-  'Note: desktop sessions are not synced to the cloud store, so interactive Claude Code/Codex work on the PC does not appear here even while active; the cloud spine only shows non-user-originated activity (passive ingest or internal automation) here.';
 
 function formatAmyProjectsSection(service, opts = {}) {
   const recentRows = recentAmyProjectRows(
@@ -7162,13 +7163,9 @@ function formatAmyProjectsSection(service, opts = {}) {
     opts.taskRows,
     opts.nowMs,
   );
-  const desktopInvisibleNote =
-    !recentRows.length && hasRecentCloudSpineActivity(opts.taskRows, opts.nowMs ?? Date.now())
-      ? DESKTOP_SESSIONS_NOT_SYNCED_LINE
-      : null;
   if (recentRows.length) {
     const lines = [
-      `Status: ${recentRows.length} recent user-originated Amy task/session item${recentRows.length === 1 ? '' : 's'} surfaced in the cloud snapshot.`,
+      `Status: ${recentRows.length} Amy email, phone call, or Otter project${recentRows.length === 1 ? '' : 's'} received in the last 24h.`,
       '',
     ];
     recentRows.slice(0, 12).forEach((row) => {
@@ -7183,45 +7180,34 @@ function formatAmyProjectsSection(service, opts = {}) {
     return lines.join('\n');
   }
   if (service.pendingCount > 0) {
-    // LIST the actual pending items (older backlog), never just a count + a
-    // meta-sentence. ExampleCo 2026-06-22: "Amy projects is empty".
     const items = Array.isArray(service.pendingItems) ? service.pendingItems : [];
+    const amyItems = items.filter((row) => {
+      const joined = [row.source, row.origin, row.kind, row.type, row.replyTo, row.source && row.source.type]
+        .filter(Boolean)
+        .join(' ');
+      return isAmyReceivedDispatchRow({ ...row, sourceProof: joined });
+    });
     const lines = [
-      `Status: ${service.pendingCount} unfinished dispatch item${service.pendingCount === 1 ? '' : 's'} in the cloud queue (older backlog, not from the last 24h).`,
+      `Status: ${amyItems.length || service.pendingCount} open Amy received-project item${(amyItems.length || service.pendingCount) === 1 ? '' : 's'} in the cloud backlog.`,
       '',
     ];
-    items.slice(0, 12).forEach((row) => {
+    amyItems.slice(0, 20).forEach((row) => {
       const label = amyProjectLabel(row);
       const title = amyProjectTitle(row);
       const status = cleanExecutiveFragment(row.status || row.outcome || 'queued', { max: 40 });
       lines.push(`- [${label}] ${title}${status ? ` - ${status}` : ''}`);
     });
-    if (items.length > 12) lines.push(`- ${items.length - 12} more in the queue.`);
-    if (!items.length) {
-      // pendingCount > 0 but no item detail in the snapshot: stay honest, do not
-      // fabricate titles; say where the count came from.
+    if (amyItems.length > 20) lines.push(`- ${amyItems.length - 20} more in the queue.`);
+    if (!amyItems.length) {
       lines.push(
-        '- Item detail was not in the cloud snapshot; the count comes from the live queue/task store.',
+        '- Item detail was not in the cloud snapshot; the live dashboard uses the last 20 received projects as backlog.',
       );
-    }
-    if (desktopInvisibleNote) {
-      lines.push('', desktopInvisibleNote);
     }
     return lines.join('\n');
   }
-  if (desktopInvisibleNote) {
-    // Recent cloud spine activity exists (passive ingest keeps landing) but
-    // none of it is user-originated: this is NOT the same as Amy being idle.
-    // Say so honestly instead of falling to the generic "nothing active" line,
-    // which reads as "Amy did nothing" when ExampleCo may be mid-session on the PC.
-    return [
-      'Status: no cloud-visible dispatch, session, or spine task in the last 24h.',
-      desktopInvisibleNote,
-    ].join('\n');
-  }
   return [
-    'Status: no old Telegram, phone, or spine dispatch is active after the cleanup sweep.',
-    'Outcome: this conversation is the active work item.',
+    'Status: no open Amy email, phone call, or Otter project was captured in the cloud snapshot.',
+    'Outcome: live dashboard drilldown falls back to the last 20 received projects when open items are not available.',
   ].join('\n');
 }
 
@@ -8700,14 +8686,12 @@ function buildCloudMorningBriefing({
       ? legacySection(reputationCard.title, reputationCard.body)
       : null,
     amy_projects: legacySection(
-      'AMY PROJECTS ASSIGNED (last 24h)',
+      'AMY PROJECTS RECEIVED (email, phone, otter)',
       formatAmyProjectsSection(service, {
         dispatchRows,
         sessionRows: agentSessionRows,
         // The authoritative spine Task store (already loaded as taskRows) is
-        // where genuine ExampleCo-assigned dashboard/telegram/briefing/otter dispatches
-        // land. Feed it in so the card counts real recent work, not just the
-        // (often stale) dispatch-queue ledger. ExampleCo 2026-06-22.
+        // where durable email/Otter #Amy and phone-command requests can land.
         taskRows,
         nowMs: now.getTime(),
       }),
