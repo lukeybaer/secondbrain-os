@@ -1872,13 +1872,28 @@ function buildExtractiveExampleCoraph(seed, candidates, used) {
   return trimToSentenceBoundary(ExampleCoraph, ExampleCoRAPH_RICH_MAX_CHARS);
 }
 
-function buildExtractiveSummary(item, sourceText) {
-  const candidates = extractiveSummaryCandidates(sourceText).slice(0, 18);
-  if (candidates.length < 3) return null;
-  const openingSafe = candidates.filter(
-    (candidate) => !(candidate.index === 0 && candidates.length > 4),
-  );
-  const pool = openingSafe.length >= 3 ? openingSafe : candidates;
+function extractiveSummaryCandidatePools(candidates) {
+  const pools = [];
+  const seen = new Set();
+  const addPool = (pool) => {
+    if (!Array.isArray(pool) || pool.length < 3) return;
+    const key = pool.map((candidate) => candidate.index).join(',');
+    if (seen.has(key)) return;
+    seen.add(key);
+    pools.push(pool.slice());
+  };
+
+  // The final article-summary QC rejects a fallback that looks like the source
+  // opening pasted into the card. Prefer body-detail sentences when the article
+  // has enough depth, then fall back to the historical opener-skipping pool.
+  addPool(candidates.filter((candidate) => candidate.index >= 4));
+  addPool(candidates.filter((candidate) => candidate.index >= 2));
+  addPool(candidates.filter((candidate) => !(candidate.index === 0 && candidates.length > 4)));
+  addPool(candidates);
+  return pools;
+}
+
+function buildExtractiveSummaryFromPool(item, sourceText, candidates, pool) {
   const thirds = [
     pool.filter((candidate) => candidate.index <= Math.max(2, Math.floor(candidates.length / 3))),
     pool.filter(
@@ -1912,6 +1927,57 @@ function buildExtractiveSummary(item, sourceText) {
   }
   if (paras.length < 3) return null;
   return normalizeSummary(paras.slice(0, 3).join('\n\n'), item, sourceText);
+}
+
+function buildPostOpeningExtractiveSummary(item, sourceText, candidates) {
+  const pools = [
+    candidates.filter((candidate) => candidate.index >= 4),
+    // Short articles may not have three substantial sentences after the first
+    // four-source-sentence opening. Starting at sentence three still keeps the
+    // first two rendered ExampleCoraphs from being dominated by the source opening.
+    candidates.filter((candidate) => candidate.index >= 3),
+  ];
+  for (const pool of pools) {
+    const usable = pool
+      .slice()
+      .sort((a, b) => a.index - b.index)
+      .filter((candidate) => isSubstantialNewsExampleCoraph(candidate.text) && endsAsProse(candidate.text));
+    for (let i = 0; i <= usable.length - 3; i += 1) {
+      const summary = normalizeSummary(
+        usable
+          .slice(i, i + 3)
+          .map((candidate) => candidate.text)
+          .join('\n\n'),
+        item,
+        sourceText,
+      );
+      if (summary) return summary;
+    }
+    const topScored = usable
+      .slice()
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .slice(0, 3)
+      .sort((a, b) => a.index - b.index);
+    if (topScored.length === 3) {
+      const summary = normalizeSummary(
+        topScored.map((candidate) => candidate.text).join('\n\n'),
+        item,
+        sourceText,
+      );
+      if (summary) return summary;
+    }
+  }
+  return null;
+}
+
+function buildExtractiveSummary(item, sourceText) {
+  const candidates = extractiveSummaryCandidates(sourceText).slice(0, 18);
+  if (candidates.length < 3) return null;
+  for (const pool of extractiveSummaryCandidatePools(candidates)) {
+    const summary = buildExtractiveSummaryFromPool(item, sourceText, candidates, pool);
+    if (summary) return summary;
+  }
+  return buildPostOpeningExtractiveSummary(item, sourceText, candidates);
 }
 
 // Summarize a single substantial body with retry-with-backoff. The body has

@@ -4829,6 +4829,10 @@ function floorSpawnEnabled(env = process.env) {
   return env.NODE_ENV !== 'test' && env.VITEST !== 'true';
 }
 
+function generatedSectionInjectorsEnabled(env = process.env) {
+  return env.NODE_ENV !== 'test' && env.VITEST !== 'true';
+}
+
 function planAlwaysRefreshFloor(env = process.env, floor = ALWAYS_REFRESH_FLOOR) {
   const skip = selfHealRefreshSkip(env);
   const run = [];
@@ -8782,6 +8786,12 @@ function buildCloudMorningBriefing({
     ],
   ]) {
     try {
+      if (!generatedSectionInjectorsEnabled()) {
+        // Vitest builds use isolated temp data roots; these injectors read live
+        // voice artifacts and break that isolation. Production must not set
+        // NODE_ENV=test or VITEST=true.
+        throw new Error('generated section injectors are disabled under test');
+      }
       const injectors = require('./refresh-briefing-generated-sections.js');
       const fn = injectors && injectors[injectorName];
       if (typeof fn !== 'function') throw new Error(`${injectorName} is not exported`);
