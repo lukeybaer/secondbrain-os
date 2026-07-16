@@ -51,27 +51,23 @@ function executeDockerDefault(args, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
 
 function commandFailure(result, action) {
   if (result && result.status === 0) return '';
-  return [
-    action,
-    result && result.error,
-    result && result.stderr,
-    result && result.stdout,
-  ]
+  return [action, result && result.error, result && result.stderr, result && result.stdout]
     .filter(Boolean)
     .join(': ')
     .trim();
 }
 
 function inspectCpus(executeDocker, container, timeoutMs) {
-  const result = executeDocker(
-    ['inspect', '--format', '{{.HostConfig.NanoCpus}}', container],
-    { timeoutMs },
-  );
+  const result = executeDocker(['inspect', '--format', '{{.HostConfig.NanoCpus}}', container], {
+    timeoutMs,
+  });
   const failure = commandFailure(result, 'docker inspect failed');
   if (failure) throw new Error(failure);
   const nanoCpus = Number(String(result.stdout || '').trim());
   if (!Number.isFinite(nanoCpus) || nanoCpus < 0) {
-    throw new Error(`docker inspect returned invalid NanoCpus: ${String(result.stdout || '').trim()}`);
+    throw new Error(
+      `docker inspect returned invalid NanoCpus: ${String(result.stdout || '').trim()}`,
+    );
   }
   return nanoCpus / 1e9;
 }
@@ -116,10 +112,7 @@ function ensureNeo4jCpuCap({
         detail: `${container} CPU cap is ${beforeCpus}; expected ${expectedCpus}.`,
       };
     } else {
-      const update = executeDocker(
-        ['update', `--cpus=${expectedCpus}`, container],
-        { timeoutMs },
-      );
+      const update = executeDocker(['update', `--cpus=${expectedCpus}`, container], { timeoutMs });
       const updateFailure = commandFailure(update, 'docker update failed');
       if (updateFailure) throw new Error(updateFailure);
       const afterCpus = inspectCpus(executeDocker, container, timeoutMs);
@@ -161,11 +154,10 @@ function readNeo4jCpuCapReceipt(dataDir = defaultDataDir()) {
   }
 }
 
-function classifyNeo4jCpuCapReceipt(receipt, {
-  now = new Date(),
-  required = true,
-  maxAgeHours = 36,
-} = {}) {
+function classifyNeo4jCpuCapReceipt(
+  receipt,
+  { now = new Date(), required = true, maxAgeHours = 36 } = {},
+) {
   if (!receipt) {
     return required
       ? { status: 'red', detail: 'Neo4j CPU cap proof is missing.', canAutoHeal: true }
@@ -198,8 +190,17 @@ function classifyNeo4jCpuCapReceipt(receipt, {
   };
 }
 
-function probeNeo4jCpuCap({ dataDir = defaultDataDir(), now = new Date(), required = true } = {}) {
-  return classifyNeo4jCpuCapReceipt(readNeo4jCpuCapReceipt(dataDir), { now, required });
+function isNeo4jCpuCapRequired({ dataDir = defaultDataDir(), env = process.env } = {}) {
+  if (env.REQUIRE_NEO4J_CPU_CAP === '1') return true;
+  return /^\/opt\/secondbrain(?:\/|$)/.test(dataDir.replace(/\\/g, '/'));
+}
+
+function probeNeo4jCpuCap({ dataDir = defaultDataDir(), now = new Date(), required } = {}) {
+  const neo4jCpuCapRequired = required != null ? required : isNeo4jCpuCapRequired({ dataDir });
+  return classifyNeo4jCpuCapReceipt(readNeo4jCpuCapReceipt(dataDir), {
+    now,
+    required: neo4jCpuCapRequired,
+  });
 }
 
 function healNeo4jCpuCap({ dataDir = defaultDataDir(), now = new Date() } = {}) {
@@ -222,6 +223,7 @@ module.exports = {
   ensureNeo4jCpuCap,
   readNeo4jCpuCapReceipt,
   classifyNeo4jCpuCapReceipt,
+  isNeo4jCpuCapRequired,
   probeNeo4jCpuCap,
   healNeo4jCpuCap,
 };

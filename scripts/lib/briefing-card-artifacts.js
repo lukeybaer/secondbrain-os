@@ -804,9 +804,10 @@ async function produceAllCardArtifacts({
   dataDir = defaultDataDir(),
   date,
   now = new Date(),
-  cardTimeoutMs = producerTimeoutMs(),
+  cardTimeoutMs,
   produceCardArtifactFn = produceCardArtifact,
 } = {}) {
+  const timeoutMs = producerTimeoutMs(cardTimeoutMs);
   const artifacts = await mapLimit(CARDS, producerConcurrency(), async (card) => {
     try {
       const work = Promise.resolve().then(() =>
@@ -814,7 +815,7 @@ async function produceAllCardArtifacts({
       );
       return await withProducerTimeout(work, {
         cardId: card.id,
-        timeoutMs: producerTimeoutMs(cardTimeoutMs),
+        timeoutMs,
       });
     } catch (error) {
       const message = String((error && error.message) || error);

@@ -239,7 +239,7 @@ fi
 # independent card producers. Reapply and verify the cap after every release.
 echo "[deploy] enforcing permanent Neo4j CPU cap"
 if ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-  "/usr/bin/node /opt/secondbrain/scripts/ensure-neo4j-cpu-cap.js --apply --data-dir /opt/secondbrain/data"; then
+  "node /opt/secondbrain/scripts/ensure-neo4j-cpu-cap.js --apply --data-dir /opt/secondbrain/data"; then
   echo "[deploy] Neo4j CPU cap: PASS"
 else
   echo "[deploy] WARNING: Neo4j CPU cap proof failed; release remains live and System Health will retain the non-green receipt." >&2
