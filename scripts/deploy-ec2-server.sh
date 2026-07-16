@@ -108,6 +108,14 @@ LIVE_DEPS=(
   # Required by self-heal-health-card.js (deployed above), so it must ship too or
   # the live briefing render throws MODULE_NOT_FOUND on EC2.
   "scripts/self-heal/mechanical-recurrence.js"
+  # Blocker-to-lesson loop (landed 2026-07-16): agentic-healer-driver.js requires
+  # the first two at module load, and ec2-morning-briefing-run.sh invokes the
+  # fallback-capture and rollup entrypoints directly. Missing any of these on
+  # /opt would crash the deployed healer driver with MODULE_NOT_FOUND.
+  "scripts/self-heal/card-blocker-lessons.js"
+  "scripts/self-heal/hardening-backlog-sync.js"
+  "scripts/self-heal/card-blocker-lessons-fallback-capture.js"
+  "scripts/self-heal/card-blocker-lessons-rollup.js"
   # Wave 1 (green-tomorrow): the QC validator is required by a deployed entrypoint, so the
   # blocker-naming fix must ship to /opt, not rely on the build-path sync.
   "scripts/validate-briefing-quality.js"
