@@ -241,6 +241,81 @@ release_date_generation_lease() {
   fi
 }
 
+# LESSONS RUNTIME ROOT (Codex review 2026-07-15): $ROOT defaults to the
+# LEGACY full-build path (/home/ec2-user/secondbrain-current) while the
+# deployed runtime under controller authority is $CONTROLLER_ROOT
+# (/opt/secondbrain). The lesson helpers are best-effort, so pointing them at
+# a root that does not contain scripts/self-heal/ would SILENTLY no-op lesson
+# capture on the real deployment. Resolve the first root that actually
+# contains the helper script (authority prefers the deployed runtime), and
+# log LOUDLY when neither does: fail-open for the briefing, never silent.
+resolve_lessons_root() {
+  probe="scripts/self-heal/card-blocker-lessons-fallback-capture.js"
+  if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
+    first="$CONTROLLER_ROOT"; second="$ROOT"
+  else
+    first="$ROOT"; second="$CONTROLLER_ROOT"
+  fi
+  if [ -f "$first/$probe" ]; then echo "$first"; return 0; fi
+  if [ -f "$second/$probe" ]; then echo "$second"; return 0; fi
+  echo ""
+  return 0
+}
+
+# LESSONS FALLBACK CAPTURE (Codex review 2026-07-12): the primary lesson
+# chokepoint (scripts/agentic-healer-driver.js feedSelfHealHealth) only fires
+# when the agentic healer actually runs. BRIEFING_SKIP_AGENTIC_HEALER=1 makes
+# the whole driver never start, which would otherwise silently mean "no
+# lesson captured" on exactly the days that flag is used. This reads the live
+# board artifact THIS run's own build/publish just wrote (never a stale or
+# missing one) and records one lesson row per still-defective card directly.
+# Best-effort, never fails or blocks this runner.
+run_lessons_fallback_capture() {
+  LESSONS_ROOT="$(resolve_lessons_root)"
+  if [ -z "$LESSONS_ROOT" ]; then
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) lessons-fallback-capture: NO runtime root contains scripts/self-heal (checked $CONTROLLER_ROOT and $ROOT); lesson capture SKIPPED. Deploy the self-heal scripts. (non-fatal)"
+    return 0
+  fi
+  if [ "$TEST_MODE" = "1" ]; then
+    echo "[morning-briefing-run] DRY-RUN: lessons-fallback-capture would run: (cd $LESSONS_ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR $NODE_BIN scripts/self-heal/card-blocker-lessons-fallback-capture.js --date $DATE --reason \"agentic healer skipped this cycle (BRIEFING_SKIP_AGENTIC_HEALER=1)\")"
+    return 0
+  fi
+  ( cd "$LESSONS_ROOT" 2>/dev/null && SECONDBRAIN_DATA_DIR="$DATA_DIR" "$NODE_BIN" scripts/self-heal/card-blocker-lessons-fallback-capture.js --date "$DATE" --reason "agentic healer skipped this cycle (BRIEFING_SKIP_AGENTIC_HEALER=1)" ) \
+    && echo "[morning-briefing-run] $(date -u +%FT%TZ) lessons-fallback-capture: recorded blocked-card lessons without a healer run (root: $LESSONS_ROOT)." \
+    || echo "[morning-briefing-run] $(date -u +%FT%TZ) lessons-fallback-capture: finished non-zero (non-fatal, best-effort)."
+  return 0
+}
+
+# WEEKLY LESSONS ROLLUP (ExampleCo dispatch 2026-07-12 evening, item 4): every
+# Friday (by the CT briefing DATE, not the host clock), append a dated digest
+# of the week's card-blocker lessons (data/agent/card-blocker-lessons.jsonl,
+# fed by the agentic healer's structured lesson capture -- see rung 2 below)
+# to dev-plans/core/briefing.LESSONS.md. Best-effort: it NEVER fails or blocks
+# this runner. Skippable via BRIEFING_SKIP_LESSONS_ROLLUP=1.
+run_weekly_lessons_rollup() {
+  if [ "${BRIEFING_SKIP_LESSONS_ROLLUP:-}" = "1" ]; then
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) lessons-rollup: skipped (BRIEFING_SKIP_LESSONS_ROLLUP=1)."
+    return 0
+  fi
+  DOW="$(date -d "$DATE" +%u 2>/dev/null || echo 0)"
+  if [ "$DOW" != "5" ]; then
+    return 0
+  fi
+  LESSONS_ROOT="$(resolve_lessons_root)"
+  if [ -z "$LESSONS_ROOT" ]; then
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) lessons-rollup: NO runtime root contains scripts/self-heal (checked $CONTROLLER_ROOT and $ROOT); rollup SKIPPED. Deploy the self-heal scripts. (non-fatal)"
+    return 0
+  fi
+  if [ "$TEST_MODE" = "1" ]; then
+    echo "[morning-briefing-run] DRY-RUN: lessons-rollup would run (Friday, $DATE): (cd $LESSONS_ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR $NODE_BIN scripts/self-heal/card-blocker-lessons-rollup.js --date $DATE)"
+    return 0
+  fi
+  ( cd "$LESSONS_ROOT" 2>/dev/null && SECONDBRAIN_DATA_DIR="$DATA_DIR" "$NODE_BIN" scripts/self-heal/card-blocker-lessons-rollup.js --date "$DATE" ) \
+    && echo "[morning-briefing-run] $(date -u +%FT%TZ) lessons-rollup: appended (dev-plans/core/briefing.LESSONS.md, root: $LESSONS_ROOT)." \
+    || echo "[morning-briefing-run] $(date -u +%FT%TZ) lessons-rollup: finished non-zero (non-fatal, best-effort)."
+  return 0
+}
+
 if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # No legacy mechanical pass under card-controller authority. It has a
   # different fan-out model and would become a competing writer again.
@@ -249,11 +324,13 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
     echo "[morning-briefing-run] DRY-RUN (card-controller authority): would run: (cd $CONTROLLER_ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR ${CONTROLLER_CMD[*]})"
     if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
       echo "[morning-briefing-run] agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
+      run_lessons_fallback_capture
     else
       echo "[morning-briefing-run] DRY-RUN (card-controller authority): agentic-healer rung 2 would run after the controller pass: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
     fi
     write_morning_report
     snapshot_parity_artifact 0
+    run_weekly_lessons_rollup
     exit 0
   fi
   if ! acquire_date_generation_lease; then
@@ -276,6 +353,11 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # this runner.
   if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
     echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
+    if [ "$status" = "1" ]; then
+      echo "[morning-briefing-run] lessons-fallback-capture: skipped (exit 1: lock held; this invocation built nothing, so its artifact provenance is unproven)."
+    else
+      run_lessons_fallback_capture
+    fi
   else
     cd "$ROOT" || echo "[morning-briefing-run] WARNING: cannot cd to $ROOT for the agentic healer."
     BRIEFING_DATE="$DATE" SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" SECONDBRAIN_ROOT="$ROOT" "${HEALER_CMD[@]}"
@@ -287,6 +369,7 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # and republished the markdown, so the snapshot captures the finished
   # cloud-built board.
   snapshot_parity_artifact "$status"
+  run_weekly_lessons_rollup
   release_date_generation_lease
   exit 0
 fi
@@ -331,11 +414,13 @@ if [ "$TEST_MODE" = "1" ]; then
   echo "[morning-briefing-run] DRY-RUN (test mode): would run: (cd $ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${CMD[*]})"
   if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
     echo "[morning-briefing-run] agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
+    run_lessons_fallback_capture
   else
     echo "[morning-briefing-run] DRY-RUN (test mode): agentic-healer rung 2 would run after the briefing: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
   fi
   write_morning_report
   snapshot_parity_artifact 0
+  run_weekly_lessons_rollup
   exit 0
 fi
 
@@ -374,6 +459,11 @@ fi
 # can never fail or delay the published briefing (it only heals after it).
 if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
   echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
+  if [ "$status" = "1" ]; then
+    echo "[morning-briefing-run] lessons-fallback-capture: skipped (exit 1: lock held; this invocation built nothing, so its artifact provenance is unproven)."
+  else
+    run_lessons_fallback_capture
+  fi
 else
   BRIEFING_DATE="$DATE" SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" SECONDBRAIN_ROOT="$ROOT" "${HEALER_CMD[@]}"
   healer_status=$?
@@ -389,5 +479,6 @@ if [ "$status" != "1" ]; then
 else
   echo "[morning-briefing-run] parity-snapshot: skipped (exit 1: lock held or fatal; provenance unproven)."
 fi
+run_weekly_lessons_rollup
 release_date_generation_lease
 exit 0

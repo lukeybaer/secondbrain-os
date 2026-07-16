@@ -56,6 +56,12 @@ const KEY_FILES = [
   'scripts/self-heal/mechanical-runbook.js',
   'scripts/self-heal/mechanical-recurrence.js',
   'scripts/self-heal/self-heal-health-card.js',
+  // Section 4h (structured lesson capture, 2026-07-12 evening): the
+  // defect-to-lesson-to-hardening loop.
+  'scripts/self-heal/card-blocker-lessons.js',
+  'scripts/self-heal/hardening-backlog-sync.js',
+  'scripts/self-heal/card-blocker-lessons-rollup.js',
+  'scripts/self-heal/card-blocker-lessons-fallback-capture.js',
 ];
 
 // Runtime artifacts: present on a live box / generated per run, not asserted
@@ -142,6 +148,46 @@ const MUST_CONTAIN = [
     'scripts/self-heal/self-heal-health-card.js',
     'function maskingGuardDefects',
     'doc 4e (ITEM W2a): the SELF-HEAL card itself surfaces the masking-guard recurrence, not just an orchestrator log row',
+  ],
+  [
+    'scripts/self-heal/card-blocker-lessons.js',
+    'function recordFromAgenticHealerReceipt',
+    'doc 4h: every card still blocked at the end of a run writes a durable lesson row (data/agent/card-blocker-lessons.jsonl)',
+  ],
+  [
+    'scripts/self-heal/card-blocker-lessons.js',
+    'function findRecurringDefects',
+    'doc 4h: same card+defectKind on 2+ distinct dates in 14 days is recurring -- the hardening-backlog trigger',
+  ],
+  [
+    'scripts/self-heal/hardening-backlog-sync.js',
+    'function syncHardeningBacklog',
+    'doc 4h: recurring lessons become a scored, idempotent FEATURE BACKLOG entry (category hardening), never ambient pain',
+  ],
+  [
+    'scripts/agentic-healer-driver.js',
+    'cardBlockerLessons.recordFromAgenticHealerReceipt',
+    'doc 4h: feedSelfHealHealth is the single chokepoint that fires lesson capture on every morning/healer run',
+  ],
+  [
+    'scripts/agentic-healer-driver.js',
+    'lessonsByCard',
+    'doc 4h: LESSONS FEED THE HEALER -- the mission prompt ExampleCos prior lessons for each target card',
+  ],
+  [
+    'scripts/agentic-healer-driver.js',
+    'Hoisted OUTSIDE the try block',
+    'doc 4h (Codex pass 2): artifact is hoisted outside the try block so a mid-run crash can still record a lesson for known-defective cards',
+  ],
+  [
+    'scripts/self-heal/hardening-backlog-sync.js',
+    'collision-safe by construction',
+    'doc 4h (Codex pass 2): the hardening-backlog id hash covers the full untruncated card+defectKind identity, never just the truncated slug',
+  ],
+  [
+    'scripts/self-heal/card-blocker-lessons-rollup.js',
+    'function commitAndPushLessonsDoc',
+    'doc 4h (Codex pass 2): briefing.LESSONS.md is git-tracked curated state, so the weekly rollup commits and pushes it, not just a local file write',
   ],
 ];
 
@@ -243,8 +289,11 @@ function checkDrift(repoRoot) {
       );
     }
     if (!/scoped live card QC/i.test(docSrc)) {
+      failures.push('doc no longer states scoped live card QC for one-card healer closure');
+    }
+    if (!/card-blocker-lessons|structured lesson capture/i.test(docSrc)) {
       failures.push(
-        'doc no longer states scoped live card QC for one-card healer closure',
+        'doc no longer states the structured lesson-capture loop (doc 4h: every card still blocked writes a durable lesson row that feeds the next healer run and recurrence into the hardening backlog)',
       );
     }
   }

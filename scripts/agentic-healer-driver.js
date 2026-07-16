@@ -80,6 +80,8 @@ const { spawnSync } = require('node:child_process');
 const ledger = require('./self-heal/briefing-repair-ledger.js');
 const { readLiveBoardArtifact } = require('./lib/live-board-truth.js');
 const healExecutor = require('./lib/heal-executor.js');
+const cardBlockerLessons = require('./self-heal/card-blocker-lessons.js');
+const hardeningBacklogSync = require('./self-heal/hardening-backlog-sync.js');
 
 const REPO = path.resolve(__dirname, '..');
 const IS_WIN = process.platform === 'win32';
@@ -343,6 +345,7 @@ function buildMissionPrompt({
   dataDirPath,
   budgetMinutes,
   worktree,
+  lessonsByCard = {},
 }) {
   const defectLines = targets
     .map(
@@ -353,6 +356,26 @@ function buildMissionPrompt({
   const rawDefects = (artifact && Array.isArray(artifact.defects) ? artifact.defects : [])
     .slice(0, 60)
     .map((d) => `  - ${String(d).slice(0, 300)}`)
+    .join('\n');
+  // STRUCTURED LESSON CAPTURE, item 2 (ExampleCo dispatch 2026-07-12 evening):
+  // lessons feed the healer. The no-repeat-tactics ledger already blocks a
+  // blind retry of a failed tactic; this adds the WHY -- the last (bounded 3)
+  // durable lesson rows from data/agent/card-blocker-lessons.jsonl for each
+  // target card, so the session starts from prior root-cause knowledge
+  // instead of rediscovering it from scratch every night.
+  const lessonBlocks = targets
+    .map((t) => {
+      const rows = lessonsByCard[t.card.id] || lessonsByCard[String(t.card.id).toLowerCase()] || [];
+      if (!rows.length) return '';
+      const body = rows
+        .map(
+          (r) =>
+            `    - ${r.date} [${r.defectKind}] qc: "${String(r.qcMessage || '').slice(0, 160)}" rootCause: "${String(r.rootCauseHypothesis || '').slice(0, 160)}" tried: [${(r.tacticsTried || []).join(', ') || 'none'}] outcome: ${r.outcome}. Harden: ${String(r.hardeningItem || '').slice(0, 160)}`,
+        )
+        .join('\n');
+      return `  card "${t.card.id}" prior lessons (newest first, from data/agent/card-blocker-lessons.jsonl):\n${body}`;
+    })
+    .filter(Boolean)
     .join('\n');
   const wtCwd = (worktree && worktree.cwd) || repoRoot;
   const wtBranch = (worktree && worktree.branch) || '(current branch)';
@@ -366,6 +389,9 @@ function buildMissionPrompt({
     ``,
     `Raw render-QC defect evidence:`,
     rawDefects || '  (no raw defect strings recorded)',
+    ``,
+    `PRIOR LESSONS (what earlier runs already learned about these defects -- read this before re-deriving root cause; each row is a real past blocker with what was tried and its outcome. Rows are capped to the trailing 14 days and ranked by relevance to tonight's defect kinds, but a lesson can still describe a defect that was since fixed: VERIFY each one still applies to today's live board before acting on it):`,
+    lessonBlocks || '  (none recorded yet for these cards)',
     ``,
     `MISSION, per defect:`,
     `1. Read dev-plans/core/briefing.md and dev-plans/core/self-heal.md first. Before editing ANY card, read its skill page: node scripts/card-skill.js <card_id>.`,
@@ -789,7 +815,7 @@ function appendRunLogRow(row, opts = {}) {
   return appendJsonl(runLogPath(opts), { ts: new Date().toISOString(), ...row });
 }
 
-function feedSelfHealHealth({ receipt, opts }) {
+function feedSelfHealHealth({ receipt, opts, artifact = null }) {
   // Per-defect attempt rows in the same repair ledger the SELF-HEAL HEALTH card
   // already reads (defectCounts). A cleared row requires the receipt's live
   // proof, which buildReceipt already enforced.
@@ -845,6 +871,27 @@ function feedSelfHealHealth({ receipt, opts }) {
     },
     opts,
   );
+
+  // STRUCTURED LESSON CAPTURE (ExampleCo dispatch 2026-07-12 evening): every card
+  // still blocked at the end of this run gets one durable lesson row, so the
+  // engineered workflow learns instead of forgetting overnight. This is the
+  // SINGLE chokepoint both scripts/ec2-morning-briefing-run.sh paths (legacy
+  // full-build and card-controller authority) share, since both run this
+  // driver as their last step. Never allowed to crash the healer itself.
+  try {
+    const tacticRows = readTacticRows(opts);
+    cardBlockerLessons.recordFromAgenticHealerReceipt({ receipt, artifact, tacticRows, opts });
+  } catch {
+    // lesson capture is durable evidence, not a healer crash path
+  }
+  // HARDENING BACKLOG (item 3): promote a defect recurring 2+ distinct dates
+  // in 14 days into a scored FEATURE BACKLOG entry so it becomes visible work
+  // instead of ambient pain. Best-effort, never blocks the healer.
+  try {
+    hardeningBacklogSync.syncHardeningBacklog({ opts });
+  } catch {
+    // backlog sync is best-effort; a failure here must never fail the healer
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -915,6 +962,12 @@ async function runAgenticHealer(opts = {}) {
       ledgerOpts,
     );
 
+  // Hoisted OUTSIDE the try block (Codex review 2026-07-12) so a crash AFTER
+  // a fresh defective-card artifact was read still lets the catch block
+  // record a lesson for those known-defective cards instead of losing the
+  // signal entirely to `defectsBefore: null`.
+  let artifact = null;
+
   try {
     // RAIL 1: never run while the briefing lock is held by an active
     // generation. An UNVERIFIABLE lock state (no probe available on this host)
@@ -947,7 +1000,7 @@ async function runAgenticHealer(opts = {}) {
 
     // Fresh defect list from the canonical live board artifact.
     const envelope = (opts.readLiveBoard || readLiveBoardArtifact)({ dataDir: dataDirPath });
-    const artifact = envelope && envelope.artifact;
+    artifact = envelope && envelope.artifact;
     if (!artifact || !Array.isArray(artifact.cards)) {
       const receipt = finishReceipt({
         defectsBefore: null,
@@ -992,7 +1045,7 @@ async function runAgenticHealer(opts = {}) {
         verdictReasonOverride: 'live board artifact reports zero defective cards',
       });
       completeCheckpoint('green', { attempted: 0, cleared: 0 });
-      feedSelfHealHealth({ receipt, opts: ledgerOpts });
+      feedSelfHealHealth({ receipt, opts: ledgerOpts, artifact });
       return receipt;
     }
 
@@ -1019,7 +1072,7 @@ async function runAgenticHealer(opts = {}) {
           'tactics exhausted: every ladder tactic already failed for these defects with unchanged input; needs changed input or ExampleCo steering',
       });
       completeCheckpoint('green', { blocked: 'tactics-exhausted' });
-      feedSelfHealHealth({ receipt, opts: ledgerOpts });
+      feedSelfHealHealth({ receipt, opts: ledgerOpts, artifact });
       return receipt;
     }
 
@@ -1040,7 +1093,7 @@ async function runAgenticHealer(opts = {}) {
           'budget-exhausted: not enough wall clock left to run an honest dev session',
       });
       completeCheckpoint('green', { blocked: 'budget-exhausted' });
-      feedSelfHealHealth({ receipt, opts: ledgerOpts });
+      feedSelfHealHealth({ receipt, opts: ledgerOpts, artifact });
       return receipt;
     }
 
@@ -1063,7 +1116,7 @@ async function runAgenticHealer(opts = {}) {
         verdictReasonOverride: `worktree-unavailable: refusing to run a full-access session in a shared checkout (${worktree.error || 'ExampleCo'})`,
       });
       completeCheckpoint('green', { blocked: 'worktree-unavailable' });
-      feedSelfHealHealth({ receipt, opts: ledgerOpts });
+      feedSelfHealHealth({ receipt, opts: ledgerOpts, artifact });
       return receipt;
     }
 
@@ -1092,6 +1145,29 @@ async function runAgenticHealer(opts = {}) {
     let budgetKilled = false;
     const wallReasons = [];
 
+    // STRUCTURED LESSON CAPTURE, item 2: fetch each target card's last (bounded
+    // 3) durable lesson rows ONCE before the ladder so every rung's mission
+    // prompt starts from prior root-cause knowledge instead of rediscovering
+    // it (data/agent/card-blocker-lessons.jsonl, fed by feedSelfHealHealth at
+    // the end of every prior run).
+    // Staleness + relevance guard (Codex review 2026-07-15): the feed is
+    // capped to the trailing 14 days and, per card, prefers lessons whose
+    // defectKind matches a defect actually on the board TONIGHT, so an old
+    // lesson about an already-fixed defect cannot masquerade as guidance for
+    // a different current one.
+    const kindsByCard = {};
+    for (const d of plan.perDefect) {
+      const id = d.card.id;
+      const kinds = Array.isArray(d.card.defectKinds) ? d.card.defectKinds : [];
+      kindsByCard[id] = [...new Set([...(kindsByCard[id] || []), ...kinds])];
+    }
+    const lessonsByCard = cardBlockerLessons.lastLessonsByCard(
+      [...new Set(plan.perDefect.map((d) => d.card.id))],
+      ledgerOpts,
+      3,
+      { nowDate: date, kindsByCard },
+    );
+
     for (const tactic of ladder) {
       if (!pending.length) break;
       const viable = pending.filter(
@@ -1109,6 +1185,7 @@ async function runAgenticHealer(opts = {}) {
         dataDirPath,
         budgetMinutes: Math.round(sessionBudgetMs / 60000),
         worktree,
+        lessonsByCard,
       });
       log(
         `[agentic-healer] spawning ${tactic} for ${viable.length} defect(s), budget ${Math.round(sessionBudgetMs / 60000)}m, worktree ${worktree.cwd}.`,
@@ -1229,7 +1306,7 @@ async function runAgenticHealer(opts = {}) {
         : {}),
     });
 
-    feedSelfHealHealth({ receipt, opts: ledgerOpts });
+    feedSelfHealHealth({ receipt, opts: ledgerOpts, artifact });
     completeCheckpoint('green', {
       attempted: receipt.perDefect.length,
       cleared: receipt.cleared,
@@ -1243,6 +1320,25 @@ async function runAgenticHealer(opts = {}) {
   } catch (e) {
     const crash = String((e && e.stack) || e).slice(0, 1000);
     completeCheckpoint('red', { crash });
+    // STRUCTURED LESSON CAPTURE (Codex review 2026-07-12): if the crash
+    // happened AFTER a fresh, non-stale defective-card artifact was read
+    // (artifact is only ever assigned past that point, see the hoisted
+    // declaration above), still record a lesson for those known-defective
+    // cards instead of silently losing the signal to `defectsBefore: null`.
+    if (artifact && Array.isArray(artifact.cards)) {
+      try {
+        const tacticRows = readTacticRows(ledgerOpts);
+        cardBlockerLessons.recordFromLiveBoardArtifact({
+          date,
+          artifact,
+          tacticRows,
+          reasonNote: `healer driver crashed mid-run: ${String((e && e.message) || e).slice(0, 300)}`,
+          opts: ledgerOpts,
+        });
+      } catch {
+        // lesson capture must never compound a crash
+      }
+    }
     const receipt = finishReceipt({
       defectsBefore: null,
       tactic: null,
