@@ -7049,6 +7049,36 @@ function isUserOriginatedSpineTask(task) {
   return isAmyReceivedSpineTask(task);
 }
 
+function amyProjectRowHasCompletedResult(row = {}) {
+  const result = row.result && typeof row.result === 'object' ? row.result : {};
+  const meta = row.meta && typeof row.meta === 'object' ? row.meta : {};
+  return Boolean(
+    row.resultSummary ||
+      row.output ||
+      row.resultRef ||
+      row.deliverableUrl ||
+      row.deliverable_url ||
+      result.summary ||
+      result.output ||
+      result.deliverableUrl ||
+      result.url ||
+      meta.deliverableUrl ||
+      meta.resultUrl,
+  );
+}
+
+function amyProjectDisplayStatus(row = {}) {
+  const status = cleanExecutiveFragment(row.status || row.outcome || 'queued', { max: 40 });
+  if (row.error) return status;
+  if (
+    amyProjectRowHasCompletedResult(row) &&
+    /queued|pending|running|progress|awaiting|backlog/i.test(status)
+  ) {
+    return 'done';
+  }
+  return status;
+}
+
 function spineTaskTimestampMs(task) {
   // For an interactive session, RECENCY is "last worked", so prefer updatedAt: a
   // long thread opened yesterday but actively worked today is recent work and
@@ -7127,7 +7157,7 @@ function recentAmyProjectRows(
       seen.add(key);
       return true;
     })
-    .map(({ row }) => row);
+    .map(({ row }) => ({ ...row, status: amyProjectDisplayStatus(row) }));
 }
 
 // True when the EC2 spine store shows SOME activity in the last 24h (proof the
@@ -7194,7 +7224,7 @@ function formatAmyProjectsSection(service, opts = {}) {
     amyItems.slice(0, 20).forEach((row) => {
       const label = amyProjectLabel(row);
       const title = amyProjectTitle(row);
-      const status = cleanExecutiveFragment(row.status || row.outcome || 'queued', { max: 40 });
+      const status = amyProjectDisplayStatus(row);
       lines.push(`- [${label}] ${title}${status ? ` - ${status}` : ''}`);
     });
     if (amyItems.length > 20) lines.push(`- ${amyItems.length - 20} more in the queue.`);
