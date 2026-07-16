@@ -730,10 +730,7 @@ function formatLikelyMatchesForVoice(records, nowMs, options = {}) {
   const items = uniqueSpineRecords(records)
     .slice(0, 3)
     .map((record) => {
-      const title = titleLabelText(voiceTaskTitle(record, 58), 58) || 'unnamed session';
-      const status = statusForBrief(record && record.status);
-      const age = agePhrase(record && (record.updatedAt || record.completedAt || record.createdAt), nowMs);
-      return `${title}, ${status}${age ? ', updated ' + age + ' ago' : ''}`;
+      return titleLabelText(voiceTaskTitle(record, 58), 58) || 'unnamed session';
     })
     .filter(Boolean);
   if (items.length < minItems) return '';
