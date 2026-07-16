@@ -42,6 +42,8 @@ LIVE_DEPS=(
   "scripts/ec2-card-controller-run.sh"
   "scripts/ec2-morning-briefing-run.sh"
   "scripts/briefing-morning-report.js"
+  "scripts/run-scheduled-skill.js"
+  "scripts/post-release-scheduled-skill-canary.js"
   "scripts/install-ec2-card-controller-cron.sh"
   # Wave 4 rung 2: the agentic overnight healer. The morning runner (deployed
   # above) invokes the wrapper, which invokes the driver; ship both so the /opt
@@ -230,6 +232,19 @@ if ! bash "$ROOT/scripts/lib/atomic-release.sh" \
   --sha "$SHA" --source-root "$ROOT" --host "$HOST" --key "$KEY"; then
   echo "[deploy] ATOMIC RELEASE FAILED: the primitive either failed verification, or swapped and then rolled back on a health failure. /opt is unchanged from the last good release. See the [atomic-release] lines above." >&2
   exit 1
+fi
+
+# Observational post-release scheduled-skill rescue canary. The release has
+# already passed atomic swap + /health, so this proof never rolls good code
+# back. It forces the Claude rung to fail, proves the Codex rescue reaches a
+# real isolated worktree from the source checkout, and writes a runtime receipt
+# that System Health grades as current, historical, or failed.
+echo "[deploy] running post-release scheduled-skill rescue canary (observational, no rollback)"
+if ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  "/usr/bin/node /opt/secondbrain/scripts/post-release-scheduled-skill-canary.js --release-root /opt/secondbrain --source-root /home/ec2-user/secondbrain-current --data-dir /opt/secondbrain/data --release-sha '$SHA'"; then
+  echo "[deploy] post-release scheduled-skill rescue canary: PASS"
+else
+  echo "[deploy] WARNING: post-release scheduled-skill rescue canary failed; release remains live and System Health will show the current proof failure." >&2
 fi
 
 echo "[deploy] auditing curated entrypoint + controller closure exists locally"

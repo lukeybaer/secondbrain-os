@@ -32,9 +32,15 @@ const { classifyRunOutput, nextRung } = require('./lib/skill-runner-ladder.js');
 const {
   ensureCodexWorktree,
   isSharedCheckout,
+  probeWorkTree,
+  proveWorktreeIsolation,
   resolveCodexSourceRoot,
 } = require('./lib/codex-worktree.js');
 const { landScanOutputs } = require('./lib/scan-output-lander.js');
+const {
+  buildRescueCanaryReceipt,
+  writeRescueCanaryReceipt,
+} = require('./lib/scheduled-skill-rescue-canary.js');
 
 // Git-worthy output areas a scheduled skill legitimately produces: its own
 // LESSONS.md / skill files and Tier-2 memory (contact scans, notes). Tracked
@@ -49,6 +55,12 @@ if (!skillName) {
   process.exit(1);
 }
 
+const CANARY_MODE = process.env.RUN_SCHEDULED_SKILL_CANARY === '1';
+const CANARY_SENTINEL = String(
+  process.env.RUN_SCHEDULED_SKILL_CANARY_SENTINEL ||
+    'SECOND_BRAIN_SCHEDULED_SKILL_RESCUE_OK:ExampleCo',
+);
+
 const SECONDBRAIN_ROOT = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
 const DATA_DIR = process.env.SECONDBRAIN_DATA_DIR || path.join(SECONDBRAIN_ROOT, 'data');
 const CODEX_SOURCE_ROOT = resolveCodexSourceRoot(SECONDBRAIN_ROOT);
@@ -57,6 +69,40 @@ const skillFile = path.join(SECONDBRAIN_ROOT, 'scheduled-tasks', skillName, 'SKI
 const directConfigFile = path.join(SECONDBRAIN_ROOT, 'scheduled-tasks', skillName, 'direct.json');
 const HAS_DIRECT_CONFIG = fs.existsSync(directConfigFile);
 const OUTCOMES_LEDGER = path.join(DATA_DIR, 'agent', 'scheduled-skill-outcomes.jsonl');
+
+function recordRescueCanary({ rung = 'none', observedOutput = '', worktreeRoot = '', failureReason = '' } = {}) {
+  const releaseRoot =
+    process.env.RUN_SCHEDULED_SKILL_CANARY_RELEASE_ROOT || SECONDBRAIN_ROOT;
+  const sourceRoot =
+    process.env.RUN_SCHEDULED_SKILL_CANARY_SOURCE_ROOT || CODEX_REPO_ROOT;
+  const expectedDataDir =
+    process.env.RUN_SCHEDULED_SKILL_CANARY_EXPECTED_DATA_DIR || DATA_DIR;
+  let worktreeProof = { proven: false, state: 'unproven', reason: 'no worktree was produced' };
+  if (worktreeRoot) {
+    try {
+      worktreeProof = proveWorktreeIsolation(worktreeRoot);
+    } catch (error) {
+      worktreeProof = { proven: false, state: 'unproven', reason: error.message };
+    }
+  }
+  const receipt = buildRescueCanaryReceipt({
+    releaseSha: process.env.RUN_SCHEDULED_SKILL_CANARY_RELEASE_SHA || '',
+    releaseRoot,
+    releaseRootState: probeWorkTree(releaseRoot),
+    sourceRoot,
+    sourceRootState: probeWorkTree(sourceRoot),
+    worktreeRoot,
+    worktreeProof,
+    runtimeDataDir: DATA_DIR,
+    expectedDataDir,
+    forcedClaudeFailure: CANARY_MODE,
+    rung,
+    expectedSentinel: CANARY_SENTINEL,
+    observedOutput,
+    failureReason,
+  });
+  return writeRescueCanaryReceipt(DATA_DIR, receipt).receipt;
+}
 
 // Log file: per-skill, in the same backups dir other scripts use
 const logDir = path.join(os.homedir(), 'AppData', 'Roaming', 'secondbrain', 'backups');
@@ -80,6 +126,10 @@ const CLAUDE_CLI_JS_WIN = path.join(
 );
 
 function appendOutcome(row) {
+  // The post-release canary is synthetic proof, not a due scheduled task. Its
+  // dedicated receipt feeds System Health without turning forced fallback into
+  // a yellow row in the real scheduled-task outcomes ledger.
+  if (CANARY_MODE) return;
   try {
     fs.mkdirSync(path.dirname(OUTCOMES_LEDGER), { recursive: true });
     fs.appendFileSync(
@@ -130,6 +180,14 @@ if (process.env.RUN_SCHEDULED_SKILL_ISOLATED !== '1' && NEEDS_ISOLATED_RERUN) {
       SECONDBRAIN_ROOT: isolated.cwd,
       SECONDBRAIN_DATA_DIR: DATA_DIR,
       RUN_SCHEDULED_SKILL_ISOLATED: '1',
+      ...(CANARY_MODE
+        ? {
+            RUN_SCHEDULED_SKILL_CANARY_RELEASE_ROOT:
+              process.env.RUN_SCHEDULED_SKILL_CANARY_RELEASE_ROOT || SECONDBRAIN_ROOT,
+            RUN_SCHEDULED_SKILL_CANARY_SOURCE_ROOT: CODEX_REPO_ROOT,
+            RUN_SCHEDULED_SKILL_CANARY_WORKTREE_ROOT: isolated.cwd,
+          }
+        : {}),
     };
     fs.appendFileSync(logFile, `[isolation] re-running in ${isolated.cwd}\n`);
     const childOpts = {
@@ -146,6 +204,20 @@ if (process.env.RUN_SCHEDULED_SKILL_ISOLATED !== '1' && NEEDS_ISOLATED_RERUN) {
     );
     if (child.error) {
       throw child.error;
+    }
+    if (CANARY_MODE) {
+      const remove = spawnSync(
+        'git',
+        ['-C', CODEX_REPO_ROOT, 'worktree', 'remove', '--force', isolated.cwd],
+        { encoding: 'utf8', timeout: 60000 },
+      );
+      if (remove.status === 0 && isolated.branch) {
+        spawnSync('git', ['-C', CODEX_REPO_ROOT, 'branch', '-D', isolated.branch], {
+          encoding: 'utf8',
+          timeout: 60000,
+        });
+      }
+      process.exit(Number.isFinite(child.status) ? child.status : 1);
     }
     // LAND STEP (2026-07-12 shared-checkout writer fix): the child ran in an
     // isolated worktree, so its git-worthy outputs (LESSONS.md append, contact
@@ -201,6 +273,9 @@ if (process.env.RUN_SCHEDULED_SKILL_ISOLATED !== '1' && NEEDS_ISOLATED_RERUN) {
     process.exit(Number.isFinite(child.status) ? child.status : 1);
   } catch (e) {
     const output = `Codex isolation failed before scheduled skill could run: ${e.message}`;
+    if (CANARY_MODE) {
+      recordRescueCanary({ failureReason: output });
+    }
     appendOutcome({
       rung: 'isolation',
       ok: false,
@@ -316,6 +391,10 @@ function runDirectConfigIfPresent() {
 runDirectConfigIfPresent();
 
 function runClaudeRung() {
+  if (CANARY_MODE) {
+    const output = 'Not logged in. Forced Claude failure for post-release rescue canary.';
+    return { verdict: classifyRunOutput(0, output), output, exitCode: 0 };
+  }
   if (process.platform === 'win32') {
     if (!fs.existsSync(CLAUDE_CLI_JS_WIN)) {
       return {
@@ -339,6 +418,8 @@ function runClaudeRung() {
   return { verdict: classifyRunOutput(result.status, output), output, exitCode: result.status };
 }
 
+let lastCodexCwd = '';
+
 function runCodexRung() {
   // OpenAI-subscription rescue rung (approved plan P1). workspace-write
   // sandbox: the skill needs to edit repo files, but codex stays inside the
@@ -352,11 +433,19 @@ function runCodexRung() {
       purpose: `scheduled-skill-${skillName}`,
       branchPrefix: 'codex/scheduled-skill',
     }).cwd;
+    lastCodexCwd = codexCwd;
   } catch (e) {
     return {
       verdict: 'failed',
       output: `Codex isolation failed: ${e.message}`,
       exitCode: -1,
+    };
+  }
+  if (CANARY_MODE) {
+    return {
+      verdict: classifyRunOutput(0, CANARY_SENTINEL),
+      output: CANARY_SENTINEL,
+      exitCode: 0,
     };
   }
   const codexPrompt = [
@@ -403,6 +492,23 @@ while (rung) {
     `[ladder] rung ${rung} ${lastResult.verdict} (exit ${lastResult.exitCode})\n`,
   );
   rung = nextRung(rung);
+}
+
+if (CANARY_MODE) {
+  const receipt = recordRescueCanary({
+    rung: lastResult && lastResult.verdict === 'ok' ? rung : 'none',
+    observedOutput: lastResult ? lastResult.output : '',
+    worktreeRoot:
+      lastCodexCwd || process.env.RUN_SCHEDULED_SKILL_CANARY_WORKTREE_ROOT || SECONDBRAIN_ROOT,
+    failureReason:
+      lastResult && lastResult.verdict !== 'ok'
+        ? `all canary ladder rungs failed; last verdict ${lastResult.verdict}`
+        : '',
+  });
+  console.log(
+    `[scheduled-skill-canary] ${receipt.ok ? 'PASS' : 'FAIL'} ${receipt.releaseSha} ${receipt.failures.join(', ')}`,
+  );
+  process.exit(receipt.ok ? 0 : 1);
 }
 
 if (lastResult.verdict === 'ok') {
