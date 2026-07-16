@@ -12,6 +12,8 @@ const {
   providerReceiptPath,
   readProviderUsage,
 } = require('./token-usage-receipts.js');
+const { listCallSummaryArtifacts } = require('./otter-exec-summary-artifacts.js');
+const { renderOtterSpeakerParetoCard } = require('./otter-speaker-pareto-card.js');
 
 const SCHEMA_VERSION = 1;
 const CARD_ARTIFACT_REL_DIR = path.join('agent', 'briefing-cards');
@@ -638,6 +640,111 @@ function produceTokenUsageCardArtifact({
   });
 }
 
+function produceOtterSpeakerParetoCardArtifact({
+  date,
+  dataDir,
+  now = new Date(),
+  renderOtterSpeakerParetoSectionFn = null,
+} = {}) {
+  const aggregatePath = path.join(dataDir, 'agent', 'otter-call-exec-summaries.json');
+  const aggregate = readJson(aggregatePath);
+  const source = {
+    mode: 'otter-per-call-summary-renderer',
+    aggregate: path.relative(dataDir, aggregatePath).replace(/\\/g, '/'),
+  };
+  if (
+    !aggregate ||
+    aggregate.schemaVersion !== 2 ||
+    aggregate.source !== 'per-call-artifacts'
+  ) {
+    const reason = 'Otter per-call summary aggregate is missing or invalid.';
+    return createCardArtifact({
+      id: 'otter_speaker_pareto',
+      title: cardTitle('otter_speaker_pareto'),
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `${cardTitle('otter_speaker_pareto')}:\nBlocked: ${reason}`,
+      source: { ...source, missing: true },
+      blockedReason: reason,
+      qc: { ok: false, failures: [reason] },
+    });
+  }
+
+  const perCallArtifacts = listCallSummaryArtifacts(dataDir);
+  const clean = perCallArtifacts.filter((artifact) => artifact.status === 'clean').length;
+  const blocked = perCallArtifacts.length - clean;
+  const renderer = renderOtterSpeakerParetoSectionFn || renderOtterSpeakerParetoCard;
+  const rendered = renderer({ date, dataDir, aggregate });
+  if (rendered && typeof rendered === 'object' && rendered.blockedReason) {
+    const reason = String(rendered.blockedReason);
+    return createCardArtifact({
+      id: 'otter_speaker_pareto',
+      title: cardTitle('otter_speaker_pareto'),
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `${cardTitle('otter_speaker_pareto')}:\nBlocked: ${reason}`,
+      source: { ...source, perCallArtifacts: perCallArtifacts.length, clean, blocked },
+      blockedReason: reason,
+      qc: { ok: false, failures: [reason] },
+    });
+  }
+  const markdown = String(
+    rendered && typeof rendered === 'object' ? rendered.markdown || '' : rendered || '',
+  ).trim();
+  if (!markdown) {
+    const reason = 'Otter per-call summary renderer returned no content.';
+    return createCardArtifact({
+      id: 'otter_speaker_pareto',
+      title: cardTitle('otter_speaker_pareto'),
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `${cardTitle('otter_speaker_pareto')}:\nBlocked: ${reason}`,
+      source: { ...source, perCallArtifacts: perCallArtifacts.length, clean, blocked },
+      blockedReason: reason,
+      qc: { ok: false, failures: [reason] },
+    });
+  }
+
+  const parsed = splitMarkdownCards(markdown)[0] || {
+    title: cardTitle('otter_speaker_pareto'),
+    body: markdown,
+  };
+  const qc = qcCard(
+    {
+      id: 'otter_speaker_pareto',
+      title: parsed.title || cardTitle('otter_speaker_pareto'),
+      body: parsed.body || '',
+    },
+    { surface: 'card-artifact' },
+  );
+  return createCardArtifact({
+    id: 'otter_speaker_pareto',
+    title: cardTitle('otter_speaker_pareto'),
+    date,
+    kind: 'data',
+    status: qc.ok ? 'clean' : 'defect',
+    generatedAt: now.toISOString(),
+    markdown,
+    source: {
+      ...source,
+      ...(rendered && typeof rendered === 'object' ? rendered.source || {} : {}),
+      perCallArtifacts: perCallArtifacts.length,
+      clean,
+      blocked,
+      aggregateGeneratedAt: aggregate.generatedAt || null,
+      lastRun: aggregate.lastRun || null,
+    },
+    blockedReason: '',
+    qc,
+  });
+}
+
 function representedByMergePartnerArtifact({ card, date, dataDir, now = new Date() } = {}) {
   const partnerId = RECIPROCAL_MERGE_PARTNERS[card && card.id];
   if (!partnerId) return null;
@@ -755,6 +862,9 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
       });
     }
     return produceTokenUsageCardArtifact({ date, dataDir, now });
+  }
+  if (card.id === 'otter_speaker_pareto') {
+    return produceOtterSpeakerParetoCardArtifact({ date, dataDir, now });
   }
   const existing = existingSourceArtifact({ dataDir, date, id: card.id });
   if (!existing || isMissingSourcePlaceholderArtifact(existing)) {
@@ -939,6 +1049,7 @@ module.exports = {
   produceSourceBackedLlmCardArtifact,
   produceSystemHealthCardArtifact,
   produceTokenUsageCardArtifact,
+  produceOtterSpeakerParetoCardArtifact,
   produceAllCardArtifacts,
   producerTimeoutMs,
   withProducerTimeout,
