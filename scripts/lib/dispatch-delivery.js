@@ -612,7 +612,14 @@ function staleSourcePhrase(record, nowMs) {
 
 function mirrorCautionLead(record, nowMs) {
   const phrase = staleMirrorVoicePhrase(record, nowMs).trim();
-  return phrase ? `${phrase} ` : '';
+  if (!phrase) return '';
+  if (/Codex mirror timestamp is missing/i.test(phrase)) return '';
+  const inline = phrase
+    .replace(
+      /^The Codex mirror itself is (.+?) old, so this may be stale\.$/i,
+      'Using a Codex mirror that is $1 old, so this may be stale',
+    );
+  return `${inline}, `;
 }
 
 function recordPriority(record) {
