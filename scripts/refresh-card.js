@@ -1103,12 +1103,13 @@ function summarizeArtifactPublish(artifacts) {
   return `clean=${counts.clean} blocked=${counts.blocked} defect=${counts.defect} stale=${counts.stale}`;
 }
 
-async function publishArtifactUnion({ dataDir, date, now = new Date() }) {
+async function publishArtifactUnion({ dataDir, date, refreshedCardId = '', now = new Date() }) {
   const union = readCardArtifactUnion({ dataDir, date, allowMarkdownFallback: true });
   const board = writeLiveBoardArtifactFromCardArtifacts({
     dataDir,
     date,
     artifacts: union.artifacts,
+    refreshedCardId,
     now,
   });
   return { union, board };
@@ -1121,7 +1122,7 @@ async function refreshOneCardArtifact({ cardId, date, dataDir, publish, verify }
     `[refresh-card] produced artifact card='${cardId}' status=${artifact.status} path=${artifactPath}`,
   );
   if (publish) {
-    const { union, board } = await publishArtifactUnion({ dataDir, date });
+    const { union, board } = await publishArtifactUnion({ dataDir, date, refreshedCardId: cardId });
     console.log(
       `[refresh-card] published artifact union cards=${union.artifacts.length} ${summarizeArtifactPublish(
         union.artifacts,

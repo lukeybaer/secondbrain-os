@@ -384,6 +384,14 @@ function liveBoardArtifactFromCardArtifacts(artifacts, { date, now = new Date() 
       asOf: artifact.generatedAt || ts,
     };
   });
+  return liveBoardArtifactFromCards(cards, { date, now, source: 'per-card-artifacts' });
+}
+
+function liveBoardArtifactFromCards(
+  cards,
+  { date, now = new Date(), source = 'per-card-artifacts' } = {},
+) {
+  const ts = now.toISOString();
   return {
     ts,
     date,
@@ -396,12 +404,38 @@ function liveBoardArtifactFromCardArtifacts(artifacts, { date, now = new Date() 
     defects: cards
       .filter((card) => card.status !== 'clean')
       .map((card) => `${card.status.toUpperCase()}: ${card.id} ${card.defectKinds.join(', ')}`),
-    source: 'per-card-artifacts',
+    source,
   };
 }
 
-function writeLiveBoardArtifactFromCardArtifacts({ dataDir, date, artifacts, now = new Date() }) {
-  const artifact = liveBoardArtifactFromCardArtifacts(artifacts, { date, now });
+function readExistingLiveBoardArtifact(dataDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dataDir, BOARD_ARTIFACT_REL), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function writeLiveBoardArtifactFromCardArtifacts({
+  dataDir,
+  date,
+  artifacts,
+  refreshedCardId = '',
+  now = new Date(),
+}) {
+  let artifact = liveBoardArtifactFromCardArtifacts(artifacts, { date, now });
+  const previous = refreshedCardId ? readExistingLiveBoardArtifact(dataDir) : null;
+  if (previous && previous.date === date && Array.isArray(previous.cards)) {
+    const previousById = new Map(previous.cards.map((card) => [card.id, card]));
+    const cards = artifact.cards.map((card) =>
+      card.id === refreshedCardId ? card : previousById.get(card.id) || card,
+    );
+    artifact = liveBoardArtifactFromCards(cards, {
+      date,
+      now,
+      source: 'per-card-artifacts-scoped',
+    });
+  }
   const absPath = writeDataArtifact(BOARD_ARTIFACT_REL, artifact, { dataDir });
   return { artifact, absPath };
 }
