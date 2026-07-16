@@ -72,12 +72,40 @@ function normalizeId(value) {
 
 let targetAliasesCache = null;
 let queueVoiceAliasesCache = null;
+let probeIndexCache = null;
 const enrichedTextCache = new Map();
 
-function reviewClipPath(probePath) {
-  return String(probePath || '')
-    .replace(/\\/g, '/')
-    .replace(/-dur-[0-9.]+\.wav$/, '-dur-30.00.wav');
+function normalizeClipPath(probePath) {
+  return String(probePath || '').replace(/\\/g, '/');
+}
+
+function clipExists(repoRelPath) {
+  return Boolean(repoRelPath) && fs.existsSync(path.join(repo, repoRelPath));
+}
+
+function probeIndex() {
+  if (!probeIndexCache) probeIndexCache = readJson(probeIndexPath, {});
+  return probeIndexCache;
+}
+
+function probeIndexClipPath(otid, label) {
+  for (const probe of probeIndex().probes || []) {
+    if (String(probe?.otid || '') !== String(otid || '')) continue;
+    if (String(probe?.speaker_model_label || '') !== String(label || '')) continue;
+    const audio = normalizeClipPath(probe?.probe_audio_path);
+    if (clipExists(audio)) return audio;
+  }
+  return '';
+}
+
+function reviewClipPath(probePath, otid = '', label = '') {
+  const raw = normalizeClipPath(probePath);
+  if (clipExists(raw)) return raw;
+  const fromIndex = probeIndexClipPath(otid, label);
+  if (fromIndex) return fromIndex;
+  const legacyThirty = raw.replace(/-dur-[0-9.]+\.wav$/, '-dur-30.00.wav');
+  if (legacyThirty !== raw && clipExists(legacyThirty)) return legacyThirty;
+  return raw;
 }
 
 function queueVoiceAliases(targetValue) {
@@ -242,7 +270,7 @@ function trackTextFromEnriched(otid, label) {
 }
 
 function rowsFromProbeIndex() {
-  const index = readJson(probeIndexPath, {});
+  const index = probeIndex();
   const aliases = targetAliases();
   const rosterByOtid = loadRosterByOtid();
   const out = [];
@@ -310,7 +338,7 @@ function rowsFromRecluster() {
       const label = String(member?.speaker_model_label || '');
       const call = rosterByOtid.get(otid);
       const text = trackTextFromEnriched(otid, label);
-      const audio = reviewClipPath(member?.probe_audio_path || '').replace(/\\/g, '/');
+      const audio = reviewClipPath(member?.probe_audio_path || '', otid, label);
       out.push({
         date: call?.date || dateFromValue(member?.date || member?.start_time || ''),
         title: call?.title || member?.title || otid || 'untitled',
@@ -354,7 +382,7 @@ function rowsFromBriefingQueue() {
     const label = String(row?.sample?.speaker_model_label || row?.speaker_model_label || '');
     const call = rosterByOtid.get(otid);
     const text = trackTextFromEnriched(otid, label);
-    const audio = reviewClipPath(row?.probe_audio_path || row?.source_probe_audio_path || '').replace(/\\/g, '/');
+    const audio = reviewClipPath(row?.probe_audio_path || row?.source_probe_audio_path || '', otid, label);
     out.push({
       date: call?.date || dateFromValue(row?.last_seen || row?.first_seen || ''),
       title: call?.title || row?.sample?.title || otid || 'untitled',
@@ -386,11 +414,12 @@ function rowsFromEnriched() {
       const segments = (doc.segments || []).filter(
         (segment) => String(segment.speaker_model_label) === String(label),
       );
-      const audio = String(track.probe_audio_path || '').replace(/\\/g, '/');
+      const otid = doc.otid || doc.id || fileName.replace(/\.json$/, '');
+      const audio = reviewClipPath(track.probe_audio_path || '', otid, label);
       out.push({
         date: dateFromValue(doc.start_time || doc.created_at || doc.date),
         title: doc.title || doc.otid || fileName.replace(/\.json$/, ''),
-        otid: doc.otid || doc.id || fileName.replace(/\.json$/, ''),
+        otid,
         label,
         segmentCount: segments.length,
         wordCount: segments.reduce((sum, segment) => sum + Number(segment.word_count || String(segment.text || '').split(/\s+/).filter(Boolean).length || 0), 0),
