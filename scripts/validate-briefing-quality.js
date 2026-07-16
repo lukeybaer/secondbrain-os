@@ -10,6 +10,7 @@ const { isHeadlineOnlyExampleCoraphs } = require('./lib/news-summarize.js');
 const {
   TEST_CATEGORY_LABELS,
   isInformationalTestsRowText,
+  readTestsHealthProof,
 } = require('./lib/system-health-tests-row.js');
 const {
   readFreshestBacklogReceipt,
@@ -1615,8 +1616,11 @@ for (const f of checkHealthBlockersReverseConsistency(md)) fail(f);
 // never a ExampleCo blocker. -> feedback_clean_means_dashboard_card_data_complete_not_validator_pass
 for (const f of checkDashboardCardCompleteness(md, date)) fail(f);
 // (b) Tests-truth: recorded test failures/staleness must surface as RED in
-// SYSTEM HEALTH, never as a clean briefing.
-for (const f of checkTestsTruth(md, readJson('data/agent/tests-blocked.json'))) fail(f);
+// SYSTEM HEALTH, never as a clean briefing. Use the same proof bundle as the
+// System Health producer so a newer green land-gate receipt can supersede an
+// older failed tests-blocked.json.
+const testsHealthProof = readTestsHealthProof({ repo: REPO, dataDir: DATA_DIR });
+for (const f of checkTestsTruth(md, testsHealthProof.tests)) fail(f);
 // (c) Token-freshness: stale source data cannot render as a current percentage
 // without an explicit staleness acknowledgment or a token blocker.
 for (const f of checkTokenFreshness(md, readJson('data/agent/claude-plan-usage.json'))) fail(f);
