@@ -18,6 +18,32 @@ KEY="${SB_KEY:-$HOME/.ssh/sb-key.pem}"
 [ -f "$KEY" ] || KEY="$HOME/.ssh/secondbrain-backend-key.pem"
 HOST="ec2-user@ExampleCo"
 ROOT="$(git rev-parse --show-toplevel)"
+
+# A linked worktree can become clean and fully merged while this long-running
+# deploy still needs it for post-swap closure checks and receipt generation.
+# Lock it before any deploy work so the git janitor cannot reap the source tree
+# mid-run. The main worktree is never lockable and does not need this lease.
+WORKTREE_LOCK_OWNED=0
+GIT_DIR_ABS="$(git -C "$ROOT" rev-parse --absolute-git-dir)"
+GIT_COMMON_DIR_ABS="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
+cleanup_worktree_lock() {
+  if [ "$WORKTREE_LOCK_OWNED" -eq 1 ]; then
+    git -C "$ROOT" worktree unlock "$ROOT" >/dev/null 2>&1 || true
+  fi
+}
+if [ "$GIT_DIR_ABS" != "$GIT_COMMON_DIR_ABS" ]; then
+  if [ -f "$GIT_DIR_ABS/locked" ]; then
+    echo "[deploy] source worktree already locked; preserving the caller-owned lease"
+  elif git -C "$ROOT" worktree lock --reason "active EC2 deploy $$" "$ROOT"; then
+    WORKTREE_LOCK_OWNED=1
+    echo "[deploy] source worktree lease acquired"
+  else
+    echo "[deploy] FAIL: could not lock linked source worktree $ROOT" >&2
+    exit 1
+  fi
+fi
+trap cleanup_worktree_lock EXIT
+
 SRC="$ROOT/ec2-server.js"
 LIVE_DEPS=(
   "scripts/lib/voice-cloud-runtime.js"
@@ -212,7 +238,11 @@ cleanup_deploy_lock() {
     "[ \"\$(cat $DEPLOY_LOCK 2>/dev/null)\" = \"$DEPLOY_LOCK_TOKEN\" ] && rm -f $DEPLOY_LOCK" \
     2>/dev/null || true
 }
-trap cleanup_deploy_lock EXIT
+cleanup_deploy_locks() {
+  cleanup_deploy_lock
+  cleanup_worktree_lock
+}
+trap cleanup_deploy_locks EXIT
 
 # ============================================================================
 # LIVE WRITE: delegated to the atomic-release primitive (the SOLE /opt writer).
