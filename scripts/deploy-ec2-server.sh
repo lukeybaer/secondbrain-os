@@ -44,6 +44,7 @@ LIVE_DEPS=(
   "scripts/briefing-morning-report.js"
   "scripts/run-scheduled-skill.js"
   "scripts/post-release-scheduled-skill-canary.js"
+  "scripts/ensure-neo4j-cpu-cap.js"
   "scripts/install-ec2-card-controller-cron.sh"
   # Wave 4 rung 2: the agentic overnight healer. The morning runner (deployed
   # above) invokes the wrapper, which invokes the driver; ship both so the /opt
@@ -232,6 +233,16 @@ if ! bash "$ROOT/scripts/lib/atomic-release.sh" \
   --sha "$SHA" --source-root "$ROOT" --host "$HOST" --key "$KEY"; then
   echo "[deploy] ATOMIC RELEASE FAILED: the primitive either failed verification, or swapped and then rolled back on a health failure. /opt is unchanged from the last good release. See the [atomic-release] lines above." >&2
   exit 1
+fi
+
+# Neo4j is enrichment and must not consume the host capacity needed by the
+# independent card producers. Reapply and verify the cap after every release.
+echo "[deploy] enforcing permanent Neo4j CPU cap"
+if ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  "/usr/bin/node /opt/secondbrain/scripts/ensure-neo4j-cpu-cap.js --apply --data-dir /opt/secondbrain/data"; then
+  echo "[deploy] Neo4j CPU cap: PASS"
+else
+  echo "[deploy] WARNING: Neo4j CPU cap proof failed; release remains live and System Health will retain the non-green receipt." >&2
 fi
 
 # Observational post-release scheduled-skill rescue canary. The release has

@@ -764,6 +764,27 @@ function producerConcurrency() {
   return Number.isInteger(n) && n > 0 ? n : 4;
 }
 
+function producerTimeoutMs(value = process.env.BRIEFING_CARD_PRODUCER_TIMEOUT_MS) {
+  const n = Number(value || 60000);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 60000;
+}
+
+async function withProducerTimeout(work, { cardId, timeoutMs }) {
+  let timer;
+  const timeout = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`Card producer timed out after ${timeoutMs}ms: ${cardId}`);
+      error.code = 'CARD_PRODUCER_TIMEOUT';
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([Promise.resolve(work), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function mapLimit(items, limit, fn) {
   const results = new Array(items.length);
   let next = 0;
@@ -779,11 +800,24 @@ async function mapLimit(items, limit, fn) {
   return results;
 }
 
-async function produceAllCardArtifacts({ dataDir = defaultDataDir(), date, now = new Date() } = {}) {
+async function produceAllCardArtifacts({
+  dataDir = defaultDataDir(),
+  date,
+  now = new Date(),
+  cardTimeoutMs = producerTimeoutMs(),
+  produceCardArtifactFn = produceCardArtifact,
+} = {}) {
   const artifacts = await mapLimit(CARDS, producerConcurrency(), async (card) => {
     try {
-      return await produceCardArtifact({ cardId: card.id, dataDir, date, now });
+      const work = Promise.resolve().then(() =>
+        produceCardArtifactFn({ cardId: card.id, dataDir, date, now }),
+      );
+      return await withProducerTimeout(work, {
+        cardId: card.id,
+        timeoutMs: producerTimeoutMs(cardTimeoutMs),
+      });
     } catch (error) {
+      const message = String((error && error.message) || error);
       return createCardArtifact({
         id: card.id,
         title: cardTitle(card),
@@ -791,9 +825,11 @@ async function produceAllCardArtifacts({ dataDir = defaultDataDir(), date, now =
         kind: isLlmCard(card.id) ? 'llm' : 'data',
         status: 'blocked',
         generatedAt: now.toISOString(),
-        markdown: `${cardTitle(card)}:\nBlocked: ${String((error && error.message) || error)}`,
-        blockedReason: String((error && error.message) || error),
-        source: { mode: 'producer-exception' },
+        markdown: `${cardTitle(card)}:\nBlocked: ${message}`,
+        blockedReason: message,
+        source: {
+          mode: error && error.code === 'CARD_PRODUCER_TIMEOUT' ? 'producer-timeout' : 'producer-exception',
+        },
       });
     }
   });
@@ -869,6 +905,8 @@ module.exports = {
   produceSystemHealthCardArtifact,
   produceTokenUsageCardArtifact,
   produceAllCardArtifacts,
+  producerTimeoutMs,
+  withProducerTimeout,
   listCardArtifactDates,
   briefingArtifactWatchdog,
 };
