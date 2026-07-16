@@ -38,6 +38,15 @@ const RECIPROCAL_MERGE_PARTNERS = Object.freeze({
   video_approval_queue: 'content_pipeline',
 });
 
+const CONTENT_HEAL_CARD_CONFIG = Object.freeze({
+  ai_tech_news: { key: 'aitech', label: 'AI & TECH NEWS' },
+  us_news: { key: 'us', label: 'US NEWS' },
+  world_news: { key: 'world', label: 'WORLD NEWS' },
+  us_immigration_news: { key: 'immigration', label: 'US IMMIGRATION NEWS' },
+  mortgage_industry_news: { key: 'mortgage', label: 'MORTGAGE INDUSTRY NEWS' },
+  covid_news: { key: 'covid', label: 'COVID-19 TREATMENTS & NEWS', minimum: 1 },
+});
+
 function defaultDataDir() {
   return (
     process.env.SECONDBRAIN_DATA_DIR ||
@@ -121,6 +130,26 @@ function readJson(file) {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
     return null;
+  }
+}
+
+function readJsonl(file, limit = 200) {
+  try {
+    return fs
+      .readFileSync(file, 'utf8')
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-limit)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
   }
 }
 
@@ -845,20 +874,22 @@ function produceSourceBackedLlmCardArtifact({ card, date, dataDir, now = new Dat
       return null;
     }
   }
-  if (!card || card.id !== 'covid_news') return null;
+  const contentConfig = card ? CONTENT_HEAL_CARD_CONFIG[card.id] : null;
+  if (!contentConfig) return null;
   try {
     const { formatHealedNewsSection } = require('../cloud-morning-briefing.js');
     if (typeof formatHealedNewsSection !== 'function') return null;
     const rendered = formatHealedNewsSection(
       dataDir,
       date,
-      'covid',
-      'COVID-19 TREATMENTS & NEWS',
+      contentConfig.key,
+      contentConfig.label,
     );
     const markdown = String((rendered && rendered.markdown) || '').trim();
     const state = (rendered && rendered.state) || {};
     const count = Number(state.count || 0);
-    if (!markdown || state.ok !== true || count < 1 || state.source === 'missing') return null;
+    const minimum = Number(contentConfig.minimum || state.target || card.newsTarget || 1);
+    if (!markdown || state.ok !== true || count < minimum || state.source === 'missing') return null;
     return createCardArtifact({
       id: card.id,
       title: cardTitle(card),
@@ -869,7 +900,7 @@ function produceSourceBackedLlmCardArtifact({ card, date, dataDir, now = new Dat
       markdown,
       source: {
         mode: 'content-heal',
-        cardKey: 'covid',
+        cardKey: contentConfig.key,
         count,
         renderer: 'formatHealedNewsSection',
       },
@@ -880,9 +911,146 @@ function produceSourceBackedLlmCardArtifact({ card, date, dataDir, now = new Dat
   }
 }
 
+function produceAmyProjectsCardArtifact({ date, dataDir, now = new Date() }) {
+  try {
+    const {
+      formatAmyProjectsSection,
+      normalizeCommandQueue,
+      readTaskRows,
+      summarizeServiceState,
+    } = require('../cloud-morning-briefing.js');
+    if (typeof formatAmyProjectsSection !== 'function') return null;
+    const queueRows = normalizeCommandQueue(
+      readJson(path.join(dataDir, 'agent', 'command-queue.json'), []),
+    );
+    const dispatchRows = readJsonl(path.join(dataDir, 'agent', 'dispatch-queue.jsonl'), 500);
+    const sessionRows = [
+      readJson(path.join(dataDir, 'agent-collab', 'current-session.json')),
+      readJson(path.join(dataDir, 'agent-collab', 'amy-outbox.json')),
+      readJson(path.join(dataDir, 'agent-collab', 'codex-outbox.json')),
+    ].filter(Boolean);
+    const taskRows = readTaskRows(dataDir);
+    const healthRows = readJsonl(path.join(dataDir, 'agent', 'channel-health.jsonl'), 100);
+    const service = summarizeServiceState({ healthRows, queueRows, taskRows, simulatePcOff: false });
+    const title = 'AMY PROJECTS RECEIVED (email, phone, otter)';
+    const body = formatAmyProjectsSection(service, {
+      dispatchRows,
+      sessionRows,
+      taskRows,
+      nowMs: now.getTime(),
+    });
+    const markdown = `${title}:\n${String(body || '').trim()}`;
+    const qc = qcCard({ id: 'amy_projects', title, body }, { surface: 'card-artifact' });
+    return createCardArtifact({
+      id: 'amy_projects',
+      title,
+      date,
+      kind: 'data',
+      status: qc.ok ? 'clean' : 'defect',
+      generatedAt: now.toISOString(),
+      markdown,
+      source: { mode: 'amy-projects-received', renderer: 'formatAmyProjectsSection' },
+      qc,
+    });
+  } catch (error) {
+    return createCardArtifact({
+      id: 'amy_projects',
+      title: 'AMY PROJECTS RECEIVED (email, phone, otter)',
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `AMY PROJECTS RECEIVED (email, phone, otter):\nBlocked: ${String(
+        (error && error.message) || error,
+      )}`,
+      blockedReason: String((error && error.message) || error),
+      source: { mode: 'amy-projects-received' },
+    });
+  }
+}
+
+function produceActionItemsCardArtifact({ date, dataDir, now = new Date() }) {
+  try {
+    const {
+      actionSourceIntegrityIssue,
+      extractActionItems,
+      extractApprovalQueue,
+      extractOpenCommitments,
+      formatActionCommitmentsBlockedSection,
+      formatActionCommitmentsSection,
+    } = require('../cloud-morning-briefing.js');
+    const source = readJson(path.join(dataDir, 'briefing-action-items.json')) || {};
+    const generatedMs = Date.parse(source.lastFullReviewAt || source.generatedAt || '');
+    const stale =
+      !Number.isFinite(generatedMs) || now.getTime() - generatedMs > 24 * 3600 * 1000;
+    const issue =
+      typeof actionSourceIntegrityIssue === 'function'
+        ? actionSourceIntegrityIssue(source, dataDir)
+        : null;
+    const title = 'ACTION ITEMS & OPEN COMMITMENTS';
+    if (issue || stale) {
+      const body = formatActionCommitmentsBlockedSection([]);
+      return createCardArtifact({
+        id: 'action_items',
+        title,
+        date,
+        kind: 'data',
+        status: 'blocked',
+        generatedAt: now.toISOString(),
+        markdown: `${title}:\n${body}\n\nStatus: ${issue || 'Action-item source is stale.'}`,
+        blockedReason: issue || 'Action-item source is stale.',
+        source: { mode: 'briefing-action-items', generatedAt: source.generatedAt || null },
+      });
+    }
+    const actionItems = extractActionItems(source);
+    const openCommitments = extractOpenCommitments(source);
+    const approvalQueue = extractApprovalQueue(source);
+    const body = formatActionCommitmentsSection(actionItems, openCommitments, approvalQueue);
+    const qc = qcCard({ id: 'action_items', title, body }, { surface: 'card-artifact' });
+    return createCardArtifact({
+      id: 'action_items',
+      title,
+      date,
+      kind: 'data',
+      status: qc.ok ? 'clean' : 'defect',
+      generatedAt: now.toISOString(),
+      markdown: `${title}:\n${body}`,
+      source: {
+        mode: 'briefing-action-items',
+        generatedAt: source.generatedAt || null,
+        actionItems: actionItems.length,
+        openCommitments: openCommitments.length,
+      },
+      qc,
+    });
+  } catch (error) {
+    return createCardArtifact({
+      id: 'action_items',
+      title: 'ACTION ITEMS & OPEN COMMITMENTS',
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `ACTION ITEMS & OPEN COMMITMENTS:\nBlocked: ${String(
+        (error && error.message) || error,
+      )}`,
+      blockedReason: String((error && error.message) || error),
+      source: { mode: 'briefing-action-items' },
+    });
+  }
+}
+
 function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
   if (card.id === 'system_health') {
     return produceSystemHealthCardArtifact({ date, dataDir, now });
+  }
+  if (card.id === 'action_items') {
+    const artifact = produceActionItemsCardArtifact({ date, dataDir, now });
+    if (artifact) return artifact;
+  }
+  if (card.id === 'amy_projects') {
+    const artifact = produceAmyProjectsCardArtifact({ date, dataDir, now });
+    if (artifact) return artifact;
   }
   if (card.id === 'token_usage') {
     const existing = existingSourceArtifact({ dataDir, date, id: card.id });

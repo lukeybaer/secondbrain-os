@@ -794,11 +794,19 @@ function dropVerifiedReplies() {
 
 function recordReplyVerifier(verifier, droppedReplies = 0) {
   const data = loadExisting();
+  const finalUnansweredCount = Array.isArray(data.unansweredEmails)
+    ? data.unansweredEmails.filter((item) => {
+        if (isPinnedActionItem(item)) return true;
+        const r = Date.parse(item && item.repliedAt ? item.repliedAt : '');
+        const s = Date.parse(item && item.sentAt ? item.sentAt : '');
+        return !(Number.isFinite(r) && Number.isFinite(s) && r > s);
+      }).length
+    : 0;
   data.reviewWindow = {
     ...(data.reviewWindow || {}),
     replyVerifier: verifier,
     droppedReplies,
-    finalUnansweredCount: activeUnansweredEmails(data).length,
+    finalUnansweredCount,
   };
   if (verifier && verifier.ok && !verifier.skipped && !data.lastReplyVerificationAt) {
     data.lastReplyVerificationAt = new Date().toISOString();
