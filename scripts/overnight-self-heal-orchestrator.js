@@ -33,10 +33,14 @@ const { buildClaudeCliEnv, isCliFailureOutput } = require('./lib/cli-output-guar
 const { refreshIfNeeded } = require('./claude-token-refresh.js');
 // Phase 4a desired-state reconciler pieces (each pure + DI-able):
 const repairLedger = require('./self-heal/briefing-repair-ledger.js');
+const cardRepairTx = require('./self-heal/card-repair-transaction.js');
 const { executorHealthRow } = require('./lib/executor-health-row.js');
 const { assertModeEquivalence, loadRunGraph } = require('./lib/briefing-heal-run-graph.js');
 const { createBudget, phaseExhausted, budgetExhaustedRed } = require('./lib/heal-error-budget.js');
-const { applyVideoDelete, isTerminallyExcludedFromStuckScan } = require('./lib/video-delete-state.js');
+const {
+  applyVideoDelete,
+  isTerminallyExcludedFromStuckScan,
+} = require('./lib/video-delete-state.js');
 // ITEM W2a: the C1 mechanical-first heal tier (defect-class -> mechanical
 // action, run BEFORE any LLM worker) + the 3-day recurrence masking guard.
 const mechanicalRunbook = require('./self-heal/mechanical-runbook.js');
@@ -2258,7 +2262,11 @@ function backendHealthProbe({ port = 3001, runner = spawnSync, attempts = 10, sl
     timeout: attempts * sleepSec * 1000 + 20_000,
     maxBuffer: 1024 * 1024,
   });
-  const code = (String(res && res.stdout ? res.stdout : '').trim().split(/\s+/).pop() || '000');
+  const code =
+    String(res && res.stdout ? res.stdout : '')
+      .trim()
+      .split(/\s+/)
+      .pop() || '000';
   return { ok: code === '200', code };
 }
 
@@ -4442,9 +4450,7 @@ async function runOrchestrator(opts = {}) {
           videoApprovalBlockerText(blocker),
         );
       if (videoApprovalCandidate) {
-        const videoApprovalRawDefects = Array.isArray(blocker.rawDefects)
-          ? blocker.rawDefects
-          : [];
+        const videoApprovalRawDefects = Array.isArray(blocker.rawDefects) ? blocker.rawDefects : [];
         const videoApprovalEvidence = blocker.evidence || '';
         const videoApprovalDefect = 'video_approval_queue:VIDEO-APPROVAL-QUALITY';
         const videoApprovalTactic =
@@ -4455,6 +4461,48 @@ async function runOrchestrator(opts = {}) {
           evidence: videoApprovalEvidence,
           rawDefects: videoApprovalRawDefects,
         });
+
+        // Card Repair Transaction: create at detection (pilot: video_approval_queue)
+        let vaqTx = null;
+        try {
+          vaqTx = cardRepairTx.create(
+            date,
+            {
+              defectId: videoApprovalDefect,
+              cardId: 'video_approval_queue',
+              type: 'VIDEO-APPROVAL-QUALITY',
+              source: 'render-qc',
+              severity: 'red',
+              owner: 'Amy',
+              inputHash: videoApprovalInputHash,
+            },
+            ledgerOpts,
+          );
+          cardRepairTx.advance(
+            date,
+            vaqTx.runId,
+            'classified',
+            {
+              owner: 'Amy',
+              failureLayer: 'content',
+              executor: 'mechanical',
+            },
+            ledgerOpts,
+          );
+          cardRepairTx.advance(
+            date,
+            vaqTx.runId,
+            'planned',
+            {
+              tacticId: videoApprovalTactic,
+              tacticHash: videoApprovalInputHash,
+            },
+            ledgerOpts,
+          );
+        } catch (txErr) {
+          logRun({ stage: 'card-repair-tx-create', error: txErr.message });
+        }
+
         if (
           recordRepairLedger &&
           repairLedger.tacticAlreadyFailed(
@@ -4465,6 +4513,24 @@ async function runOrchestrator(opts = {}) {
             ledgerOpts,
           )
         ) {
+          if (vaqTx) {
+            try {
+              cardRepairTx.advance(
+                date,
+                vaqTx.runId,
+                'duplicate_tactic_blocked',
+                {
+                  reason: repairLedger.tacticExhaustedReason(
+                    videoApprovalDefect,
+                    videoApprovalTactic,
+                  ),
+                },
+                ledgerOpts,
+              );
+            } catch (txErr) {
+              logRun({ stage: 'card-repair-tx-dup-block', error: txErr.message });
+            }
+          }
           logRun({
             stage: 'no-repeat-tactic',
             pass: passNumber,
@@ -4478,12 +4544,40 @@ async function runOrchestrator(opts = {}) {
         }
         const videoApproval = videoApprovalRepair(blocker, { repoRoot: REPO });
         if (videoApproval && videoApproval.cleared) {
+          if (vaqTx) {
+            try {
+              cardRepairTx.advance(
+                date,
+                vaqTx.runId,
+                'repaired',
+                {
+                  changedFiles: videoApproval.actions || [],
+                  fix: `${videoApproval.repaired || 0} item(s) repaired`,
+                },
+                ledgerOpts,
+              );
+              cardRepairTx.advance(
+                date,
+                vaqTx.runId,
+                'refreshed',
+                {
+                  ownerCardId: 'video_approval_queue',
+                  affectedCardIds: ['video_approval_queue'],
+                  dependentCardIds: ['blockers'],
+                },
+                ledgerOpts,
+              );
+            } catch (txErr) {
+              logRun({ stage: 'card-repair-tx-advance', error: txErr.message });
+            }
+          }
           logRun({
             stage: 'video-approval-queue-repair',
             blocker: blocker.title,
             repaired: videoApproval.repaired,
             actions: (videoApproval.actions || []).slice(0, 10),
             status: 'cleared',
+            txRunId: vaqTx && vaqTx.runId,
           });
           refreshOnlyResults.push({
             status: 'cleared',
@@ -4492,7 +4586,8 @@ async function runOrchestrator(opts = {}) {
             ownerCardId: 'video_approval_queue',
             affectedCardIds: ['video_approval_queue'],
             dependentCardIds: ['blockers'],
-            transactionState: 'mechanical_preflight_repaired',
+            transactionState: 'refreshed',
+            txRunId: vaqTx && vaqTx.runId,
             rawDefectCount: Number(blocker.rawDefectCount || 0),
             rawDefects: videoApprovalRawDefects,
             evidence: videoApprovalEvidence,
