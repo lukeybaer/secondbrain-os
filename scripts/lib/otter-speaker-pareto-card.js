@@ -24,6 +24,7 @@ function readJson(file) {
 function cleanCell(value, fallback = '-') {
   const text = String(value || '')
     .replace(/[\r\n|]+/g, ' ')
+    .replace(/(\d+)\.\s+(\d)/g, '$1.$2')
     .replace(/\s+/g, ' ')
     .trim();
   return text || fallback;
