@@ -39,11 +39,13 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 const { writeSidecar, clearSidecar } = require('./lib/collector-degrade.js');
+const { ctDateKey, writeProviderReceipt } = require('./lib/token-usage-receipts.js');
 
 const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
+const DATA_DIR = process.env.SECONDBRAIN_DATA_DIR || path.join(REPO, 'data');
 const OUT_PATH = path.join(
-  process.env.SECONDBRAIN_DATA_DIR || path.join(REPO, 'data'),
+  DATA_DIR,
   'agent',
   'claude-plan-usage.json',
 );
@@ -150,12 +152,35 @@ function writeDegradeSidecar(errText) {
   return block;
 }
 
+function writeUsageReceipt({ status, payload = null, errorText = '' } = {}) {
+  const ownerAction = /invalid_ExampleCo|credentials|refresh token|access token expired|run .*login|not logged in/i.test(
+    errorText,
+  );
+  return writeProviderReceipt({
+    dataDir: DATA_DIR,
+    date: process.env.TOKEN_USAGE_RECEIPT_DATE || ctDateKey(),
+    provider: 'claude',
+    observedAt: new Date().toISOString(),
+    status,
+    source: 'https://claude.ai/api/oauth/usage',
+    payload,
+    defect:
+      status === 'clean'
+        ? null
+        : {
+            code: ownerAction ? 'owner_action_required' : 'probe_failed',
+            detail: errorText || 'Claude plan usage probe failed.',
+          },
+  });
+}
+
 async function main() {
   let token;
   try { token = readAccessToken(); }
   catch (e) {
     console.error(`[collect-claude-plan-usage] ${e.message}`);
     writeDegradeSidecar(e.message);
+    writeUsageReceipt({ status: 'blocked', errorText: e.message });
     process.exit(2);
   }
   let raw;
@@ -167,6 +192,7 @@ async function main() {
   catch (e) {
     console.error(`[collect-claude-plan-usage] ${e.message}`);
     writeDegradeSidecar(e.message);
+    writeUsageReceipt({ status: 'blocked', errorText: e.message });
     process.exit(1);
   }
   const flat = flatten(raw);
@@ -179,6 +205,7 @@ async function main() {
   };
   fs.mkdirSync(path.dirname(OUT_PATH), { recursive: true });
   fs.writeFileSync(OUT_PATH, JSON.stringify(out, null, 2));
+  writeUsageReceipt({ status: 'clean', payload: out });
   // Clear any stale degrade sidecar on a clean read so the fault does not linger.
   clearSidecar(OUT_PATH);
   console.log(`[collect-claude-plan-usage] wrote ${OUT_PATH}`);
@@ -192,4 +219,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { fetchUsage, fetchUsageWithRetry, flatten };
+module.exports = { fetchUsage, fetchUsageWithRetry, flatten, writeUsageReceipt };

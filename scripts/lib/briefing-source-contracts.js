@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { summaryNamesPersonAsParticipant } = require('../verify-dashboard-cards-live.js');
+const { readProviderUsage } = require('./token-usage-receipts.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -492,17 +493,24 @@ function previousIsoDate(isoDate) {
 function tokenUsageArtifactParts(date) {
   return [
     ['agent', `token-usage-${previousIsoDate(date)}.json`],
-    ['agent', 'claude-plan-usage.json'],
-    ['agent', 'codex-token-usage-week.json'],
-    ['agent', 'bedrock-budget-usage.json'],
+    ['agent', 'token-usage-receipts', date, 'claude.json'],
+    ['agent', 'token-usage-receipts', date, 'codex.json'],
+    ['agent', 'token-usage-receipts', date, 'bedrock.json'],
   ];
 }
 
 function planUsageIsCurrent({ dataDir, date, now = Date.now() }) {
-  const plan = readJson(dataFile(dataDir, 'agent', 'claude-plan-usage.json'));
-  const generatedAt = Date.parse(plan && plan.generated_at);
+  const state = readProviderUsage({
+    dataDir,
+    date,
+    provider: 'claude',
+    now: new Date(now),
+  });
+  const plan = state.payload;
+  const generatedAt = Date.parse(state.observedAt || (plan && plan.generated_at));
   const resetDate = String((plan && plan.weekly_all_models_resets_at) || '').slice(0, 10);
   return (
+    state.state === 'fresh' &&
     Number.isFinite(generatedAt) &&
     now - generatedAt <= 24 * 60 * 60 * 1000 &&
     (!resetDate || resetDate >= String(date || ''))
@@ -514,9 +522,15 @@ function tokenUsageEvidence({ dataDir, date }) {
 }
 
 async function refreshTokenUsage({ dataDir, date, runCommand, node, cwd }) {
+  const receiptEnv = { TOKEN_USAGE_RECEIPT_DATE: date };
   const commands = [
-    [['scripts/collect-daily-token-usage.js', '--date', previousIsoDate(date)], 4 * 60 * 1000],
-    [['scripts/collect-codex-token-usage.js'], 4 * 60 * 1000],
+    [
+      ['scripts/collect-daily-token-usage.js', '--date', previousIsoDate(date)],
+      4 * 60 * 1000,
+      receiptEnv,
+    ],
+    [['scripts/collect-codex-token-usage.js'], 4 * 60 * 1000, receiptEnv],
+    [['scripts/collect-bedrock-budget-usage.js'], 4 * 60 * 1000, receiptEnv],
   ];
   // The Claude plan endpoint is Cloudflare-protected. A current durable
   // snapshot is already the authoritative proof the card renders, so do not
@@ -528,6 +542,7 @@ async function refreshTokenUsage({ dataDir, date, runCommand, node, cwd }) {
       45 * 1000,
       {
         CLAUDE_PLAN_USAGE_ATTEMPTS: '1',
+        TOKEN_USAGE_RECEIPT_DATE: date,
       },
     ]);
   }

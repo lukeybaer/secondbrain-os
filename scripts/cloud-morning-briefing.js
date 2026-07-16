@@ -55,6 +55,10 @@ const { formatDeployParityRow } = require('./lib/deploy-parity-row.js');
 const { computeSpeakerFreshness } = require('./lib/speaker-freshness.js');
 const { resolveDataArtifact } = require('./lib/data-root.js');
 const {
+  providerReceiptPath,
+  readProviderUsage,
+} = require('./lib/token-usage-receipts.js');
+const {
   INFORMATIONAL_TESTS_ROW,
   formatTestsHealthRow,
   formatTestsHealthRows,
@@ -8046,14 +8050,21 @@ function formatTokenUsageSection(
   const codexPath = path.join(agentDir, 'codex-token-usage-week.json');
   const bedrockPath = path.join(agentDir, 'bedrock-budget-usage.json');
   const usage = readJson(usagePath, null);
-  const plan = readJson(planPath, null);
-  const codex = readJson(codexPath, null);
-  const bedrock = readJson(bedrockPath, null);
+  const providerNow = new Date();
+  const claudeState = readProviderUsage({ dataDir, date, provider: 'claude', now: providerNow });
+  const codexState = readProviderUsage({ dataDir, date, provider: 'codex', now: providerNow });
+  const bedrockState = readProviderUsage({ dataDir, date, provider: 'bedrock', now: providerNow });
+  const plan = claudeState.payload;
+  const codex = codexState.payload;
+  const bedrock = bedrockState.payload;
   const refreshed = Math.max(
     fileMtimeMs(usagePath) || 0,
     fileMtimeMs(planPath) || 0,
     fileMtimeMs(codexPath) || 0,
     fileMtimeMs(bedrockPath) || 0,
+    fileMtimeMs(providerReceiptPath(dataDir, date, 'claude')) || 0,
+    fileMtimeMs(providerReceiptPath(dataDir, date, 'codex')) || 0,
+    fileMtimeMs(providerReceiptPath(dataDir, date, 'bedrock')) || 0,
   );
   const lines = [`Data refreshed: ${formatCtDateTime(refreshed || Date.now())}`];
 
@@ -8098,8 +8109,12 @@ function formatTokenUsageSection(
     );
   }
 
-  if (plan && typeof plan.weekly_all_models_percent === 'number') {
-    const planGeneratedMs = plan.generated_at ? new Date(plan.generated_at).getTime() : NaN;
+  if (claudeState.state === 'fresh' && plan && typeof plan.weekly_all_models_percent === 'number') {
+    const planGeneratedMs = claudeState.observedAt
+      ? new Date(claudeState.observedAt).getTime()
+      : plan.generated_at
+        ? new Date(plan.generated_at).getTime()
+        : NaN;
     const resetIso = String(plan.weekly_all_models_resets_at || '').slice(0, 10);
     const ageHrs = Number.isFinite(planGeneratedMs)
       ? Math.max(0, Math.round((Date.now() - planGeneratedMs) / 3600000))
@@ -8117,15 +8132,39 @@ function formatTokenUsageSection(
         `Claude Max (Max 20x): ${plan.weekly_all_models_percent}% of weekly subscription burned (resets ${resetIso}).`,
       );
     }
+  } else if (claudeState.state === 'stale' && plan && typeof plan.weekly_all_models_percent === 'number') {
+    const planGeneratedMs = Date.parse(claudeState.observedAt || plan.generated_at || '');
+    const ageHrs = Number.isFinite(planGeneratedMs)
+      ? Math.max(0, Math.round((Date.now() - planGeneratedMs) / 3600000))
+      : 'ExampleCo';
+    lines.push(
+      `Claude Max: live usage endpoint did not refresh -- last reading ${plan.weekly_all_models_percent}% is ${ageHrs}h stale (from ${formatCtDateTime(planGeneratedMs || 0)}), not current. Run scripts/collect-claude-plan-usage.js to refresh the authoritative percent.`,
+    );
+  } else if (claudeState.state === 'blocked' || claudeState.state === 'inconclusive') {
+    lines.push(
+      `Claude Max: usage source ${claudeState.state} (${claudeState.defect?.code || 'probe_failed'}). ${claudeState.defect?.detail || 'No current provider proof exists.'}`,
+    );
   } else {
     lines.push(
       'Claude Max: live usage reading unavailable. Need: the plan usage snapshot synced to the briefing data store.',
     );
   }
 
-  if (codex && typeof codex.weekly_used_percent === 'number') {
+  if (codexState.state === 'fresh' && codex && typeof codex.weekly_used_percent === 'number') {
     lines.push(
       `Codex (${codex.plan || 'plan'}): ${codex.weekly_used_percent}% of weekly subscription burned (resets ${(codex.weekly_resets_at || '').slice(0, 10)}). ${(Number(codex.weekly_input_tokens || 0) / 1e6).toFixed(1)}M billed input + ${(Number(codex.weekly_output_tokens || 0) / 1e6).toFixed(2)}M output across ${codex.sessions || 0} sessions this week.`,
+    );
+  } else if (codexState.state === 'stale' && codex && typeof codex.weekly_used_percent === 'number') {
+    const generatedMs = Date.parse(codexState.observedAt || codex.generated_at || '');
+    const ageHrs = Number.isFinite(generatedMs)
+      ? Math.max(0, Math.round((Date.now() - generatedMs) / 3600000))
+      : 'ExampleCo';
+    lines.push(
+      `Codex: live usage reading did not refresh, last reading ${codex.weekly_used_percent}% is ${ageHrs}h stale (from ${formatCtDateTime(generatedMs || 0)}), not current. Run scripts/collect-codex-token-usage.js to refresh.`,
+    );
+  } else if (codexState.state === 'blocked' || codexState.state === 'inconclusive') {
+    lines.push(
+      `Codex: usage source ${codexState.state} (${codexState.defect?.code || 'probe_failed'}). ${codexState.defect?.detail || 'No current provider proof exists.'}`,
     );
   } else {
     lines.push(
@@ -8133,7 +8172,7 @@ function formatTokenUsageSection(
     );
   }
 
-  if (bedrock && typeof bedrock.limit === 'number' && bedrock.limit > 0) {
+  if (bedrockState.state === 'fresh' && bedrock && typeof bedrock.limit === 'number' && bedrock.limit > 0) {
     const used = Number(bedrock.actual || 0);
     const cap = Number(bedrock.limit || 0);
     const pct =
@@ -8142,6 +8181,14 @@ function formatTokenUsageSection(
         : Math.round((used / Math.max(1, cap)) * 1000) / 10;
     lines.push(
       `Bedrock fallback lane (funded $${cap.toFixed(0)}/mo cap): $${used.toFixed(2)} of $${cap.toFixed(2)} ${bedrock.unit || 'USD'} used this month, ${pct}%. Hard cap, no auto-raise.`,
+    );
+  } else if (bedrockState.state === 'stale' && bedrock && typeof bedrock.limit === 'number') {
+    lines.push(
+      `Bedrock fallback lane: budget usage receipt is stale (${bedrockState.defect?.staleBySeconds || 0}s beyond freshness). Run scripts/collect-bedrock-budget-usage.js.`,
+    );
+  } else if (bedrockState.state === 'blocked' || bedrockState.state === 'inconclusive') {
+    lines.push(
+      `Bedrock fallback lane: usage source ${bedrockState.state} (${bedrockState.defect?.code || 'probe_failed'}). ${bedrockState.defect?.detail || 'No current provider proof exists.'}`,
     );
   } else {
     lines.push(

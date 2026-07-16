@@ -35,12 +35,14 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { ctDateKey, writeProviderReceipt } = require('./lib/token-usage-receipts.js');
 
 const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
 const HOME = process.env.USERPROFILE || os.homedir();
 const SESSIONS_ROOT = process.env.CODEX_SESSIONS_DIR || path.join(HOME, '.codex', 'sessions');
+const DATA_DIR = process.env.SECONDBRAIN_DATA_DIR || path.join(REPO, 'data');
 const OUT_PATH = path.join(
-  process.env.SECONDBRAIN_DATA_DIR || path.join(REPO, 'data'),
+  DATA_DIR,
   'agent',
   'codex-token-usage-week.json',
 );
@@ -171,6 +173,22 @@ function main() {
 
   fs.mkdirSync(path.dirname(OUT_PATH), { recursive: true });
   fs.writeFileSync(OUT_PATH, JSON.stringify(report, null, 2));
+  writeProviderReceipt({
+    dataDir: DATA_DIR,
+    date: process.env.TOKEN_USAGE_RECEIPT_DATE || ctDateKey(end),
+    provider: 'codex',
+    observedAt: report.generated_at,
+    status: typeof report.weekly_used_percent === 'number' ? 'clean' : 'blocked',
+    source: SESSIONS_ROOT,
+    payload: report,
+    defect:
+      typeof report.weekly_used_percent === 'number'
+        ? null
+        : {
+            code: 'unsupported_field',
+            detail: 'No weekly Codex rate-limit percentage was present in the scanned rollouts.',
+          },
+  });
   console.log(`[collect-codex-token-usage] wrote ${OUT_PATH}`);
   console.log(`  window: ${report.window.start} to ${report.window.end} (${days}d)`);
   console.log(`  plan: ${report.plan}`);

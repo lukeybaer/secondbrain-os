@@ -8,6 +8,10 @@ const { CARDS, getCardById } = require('./briefing-card-manifest.js');
 const { splitMarkdownCards, qcCard } = require('./briefing-card-qc.js');
 const { askAI } = require('./ask-ai.js');
 const { writeDataArtifact } = require('./data-root.js');
+const {
+  providerReceiptPath,
+  readProviderUsage,
+} = require('./token-usage-receipts.js');
 
 const SCHEMA_VERSION = 1;
 const CARD_ARTIFACT_REL_DIR = path.join('agent', 'briefing-cards');
@@ -485,6 +489,9 @@ function tokenUsageSourceArtifactPaths(dataDir, date) {
   const agentDir = path.join(dataDir || defaultDataDir(), 'agent');
   return [
     path.join(agentDir, `token-usage-${previousIsoDate(date)}.json`),
+    providerReceiptPath(dataDir || defaultDataDir(), date, 'claude'),
+    providerReceiptPath(dataDir || defaultDataDir(), date, 'codex'),
+    providerReceiptPath(dataDir || defaultDataDir(), date, 'bedrock'),
     path.join(agentDir, 'claude-plan-usage.json'),
     path.join(agentDir, 'codex-token-usage-week.json'),
     path.join(agentDir, 'bedrock-budget-usage.json'),
@@ -542,6 +549,20 @@ function produceTokenUsageCardArtifact({
   const renderer =
     formatTokenUsageSectionFn || require('../cloud-morning-briefing.js').formatTokenUsageSection;
   const body = String(renderer(dataDir, date) || '').trim();
+  const providerStates = ['claude', 'codex', 'bedrock'].map((provider) =>
+    readProviderUsage({ dataDir, date, provider, now }),
+  );
+  const failures = providerStates
+    .filter((state) => state.state !== 'fresh')
+    .map((state) => {
+      const label = state.provider.charAt(0).toUpperCase() + state.provider.slice(1);
+      const detail = state.defect?.detail || `${state.provider} usage is ${state.state}`;
+      return `${label} usage ${state.state}: ${detail}`;
+    });
+  const dailyUsagePath = path.join(dataDir, 'agent', `token-usage-${previousIsoDate(date)}.json`);
+  if (!fs.existsSync(dailyUsagePath)) {
+    failures.unshift(`Daily usage missing: ${path.basename(dailyUsagePath)}`);
+  }
   if (!body) {
     return createCardArtifact({
       id: 'token_usage',
@@ -560,7 +581,7 @@ function produceTokenUsageCardArtifact({
     title: cardTitle('token_usage'),
     date,
     kind: 'data',
-    status: 'clean',
+    status: failures.length ? 'blocked' : 'clean',
     generatedAt: now.toISOString(),
     markdown: `${cardTitle('token_usage')}:\n${body}`,
     source: {
@@ -571,8 +592,15 @@ function produceTokenUsageCardArtifact({
         'agent/codex-token-usage-week.json',
         'agent/bedrock-budget-usage.json',
       ],
+      providerReceipts: providerStates.map((state) => ({
+        provider: state.provider,
+        state: state.state,
+        path: path.relative(dataDir, state.file).replace(/\\/g, '/'),
+        sourceMode: state.sourceMode,
+      })),
     },
-    qc: { ok: true, failures: [] },
+    blockedReason: failures[0] || '',
+    qc: { ok: failures.length === 0, failures },
   });
 }
 

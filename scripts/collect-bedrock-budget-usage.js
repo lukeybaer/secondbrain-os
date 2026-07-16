@@ -16,6 +16,7 @@ const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { writeSidecar, clearSidecar } = require('./lib/collector-degrade.js');
+const { ctDateKey, writeProviderReceipt } = require('./lib/token-usage-receipts.js');
 
 // Resolve the AWS account id at runtime (never hardcode it -- the literal is a
 // PII denylist token and this file ships in the public-sync allowlist). Env
@@ -36,8 +37,9 @@ function getAccountId() {
 }
 const BUDGET_NAME = process.env.BEDROCK_BUDGET_NAME || 'amy-llm-fallback-bedrock';
 const SECONDBRAIN_ROOT = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
+const DATA_DIR = process.env.SECONDBRAIN_DATA_DIR || path.join(SECONDBRAIN_ROOT, 'data');
 const OUT_PATH = path.join(
-  process.env.SECONDBRAIN_DATA_DIR || path.join(SECONDBRAIN_ROOT, 'data'),
+  DATA_DIR,
   'agent',
   'bedrock-budget-usage.json',
 );
@@ -86,6 +88,26 @@ function fetchBudget() {
   return { budget_name: BUDGET_NAME, limit, actual, forecast, unit, percent };
 }
 
+function writeUsageReceipt({ status, payload = null, errorText = '' } = {}) {
+  const ownerAction = /accessdenied|not authorized|account id|configure aws|credentials/i.test(errorText);
+  return writeProviderReceipt({
+    dataDir: DATA_DIR,
+    date: process.env.TOKEN_USAGE_RECEIPT_DATE || ctDateKey(),
+    provider: 'bedrock',
+    observedAt: new Date().toISOString(),
+    status,
+    source: 'aws budgets describe-budget',
+    payload,
+    defect:
+      status === 'clean'
+        ? null
+        : {
+            code: ownerAction ? 'owner_action_required' : 'probe_failed',
+            detail: errorText || 'Bedrock budget usage probe failed.',
+          },
+  });
+}
+
 function main() {
   let payload;
   try {
@@ -106,6 +128,7 @@ function main() {
         `[collect-bedrock-budget-usage] degrade sidecar (${block.degrade_state}${block.healer_excluded ? ', healer-excluded' : ''}) -> ${sidecar}`,
       );
     }
+    writeUsageReceipt({ status: 'blocked', errorText: e.message });
     // exit 2 for a structural provisioning fault (loud, human-owned), 1 otherwise.
     process.exit(block && block.degrade_state === 'provisioning' ? 2 : 1);
   }
@@ -118,6 +141,7 @@ function main() {
   };
   fs.mkdirSync(path.dirname(OUT_PATH), { recursive: true });
   fs.writeFileSync(OUT_PATH, JSON.stringify(out, null, 2));
+  writeUsageReceipt({ status: 'clean', payload: out });
   console.log(`[collect-bedrock-budget-usage] wrote ${OUT_PATH}`);
   console.log(
     `  Bedrock lane: $${payload.actual.toFixed(2)} of $${payload.limit.toFixed(2)} ${payload.unit} (${payload.percent}%)`,
@@ -126,4 +150,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { fetchBudget };
+module.exports = { fetchBudget, writeUsageReceipt };
