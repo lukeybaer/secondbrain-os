@@ -682,7 +682,7 @@ function newsSummaryShapeDefects(card, tile) {
   }
   if (bad.length) {
     defects.push(
-    `NEWS-PROSE: ${card.id} (${tile.name}) ${bad.length} rendered article row(s) are not three-ExampleCoraph summaries of their article: ${sample}`,
+      `NEWS-PROSE: ${card.id} (${tile.name}) ${bad.length} rendered article row(s) are not three-ExampleCoraph summaries of their article: ${sample}`,
     );
   }
   return defects;
@@ -2043,9 +2043,16 @@ function voiceConfirmationDefects(card, tile) {
   const text = `${tile.face || ''} ${tile.body || ''} ${tile.inner || ''}`;
   const defects = [];
   if (/\bPast-7-day Otter archive health:\s*RED\b/i.test(text)) {
-    defects.push(
-      `VOICE-HEALTH-HIDDEN-RED: ${card.id} (${tile.name}) renders green while the detail says past-7-day Otter archive health is RED`,
-    );
+    // Only flag as HIDDEN-RED when the tile itself is not already red/defect.
+    // When the tile is already red, the RED archive health is consistently
+    // surfaced and is not hidden behind a green facade -- the "hidden" in
+    // VOICE-HEALTH-HIDDEN-RED refers specifically to a green tile that
+    // conceals the underlying RED probe result.
+    if (tile.status !== 'red') {
+      defects.push(
+        `VOICE-HEALTH-HIDDEN-RED: ${card.id} (${tile.name}) renders green while the detail says past-7-day Otter archive health is RED`,
+      );
+    }
   }
   if (/\b0\s+proposed names\b/i.test(text) && /\bpeople-file suggestion:/i.test(text)) {
     defects.push(
@@ -2496,8 +2503,9 @@ function blockersUnderReportDefects(tiles) {
 function blockersFalseCleanDefects(card, tile) {
   if (!tile || card.id !== 'blockers') return [];
   const text = `${tile.body || ''}\n${tile.inner || ''}`;
-  const saysClean =
-    /Clean\?\s*yes\.\s*Live dashboard QC reports\s+0\s+survived defects/i.test(text);
+  const saysClean = /Clean\?\s*yes\.\s*Live dashboard QC reports\s+0\s+survived defects/i.test(
+    text,
+  );
   const badge = text.match(/Live card badge count:\s*(\d+)\s+defective card\(s\)/i);
   const badgeCount = badge ? Number(badge[1]) : 0;
   if (saysClean && Number.isFinite(badgeCount) && badgeCount > 0) {
