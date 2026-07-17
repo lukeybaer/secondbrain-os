@@ -2764,6 +2764,7 @@ function localTokenCandidates() {
     process.env.SB_BRIEFING_ENV_FILE,
     path.join(process.cwd(), '.env'),
     path.join(__dirname, '..', '.env'),
+    '/opt/secondbrain-shared/.env',
     '/opt/secondbrain/.env',
   ]
     .filter(Boolean)
@@ -2953,6 +2954,7 @@ module.exports = {
   EXIT_OK,
   EXIT_DEFECT,
   EXIT_UNREACHABLE,
+  localTokenCandidates,
 };
 
 if (require.main === module) main();
