@@ -332,31 +332,38 @@ function localCensus() {
   return { sessions: out, nestedExcluded };
 }
 
-/** One paginated ListObjectsV2 over transcripts/, grouped by session id. */
-function s3Evidence(bin, bucket) {
+/**
+ * Walk every page of a ListObjectsV2 result and group evidence by session id.
+ *
+ * `fetchPage(continuationToken)` returns the parsed s3api response body. Kept
+ * injectable so pagination is unit-testable without AWS -- the bug below shipped
+ * precisely because this logic had no test.
+ *
+ * THE 2026-07-18 FALSE-RED BUG (why this is written so defensively):
+ *   The first version passed `--max-keys 1000` and then advanced on
+ *   `body.NextToken`. That field only exists when the CLI paginates for you via
+ *   `--max-items`. With `--max-keys` the API returns `IsTruncated` +
+ *   `NextContinuationToken` instead, so `NextToken` was always undefined, the
+ *   loop exited after ONE page, and the audit saw 1000 of 10416 objects. Every
+ *   session outside that first page was reported "no S3 objects" -- 291 of 300
+ *   on the machine ExampleCo ran it on, all of them false, and `--repair` would have
+ *   re-uploaded them for nothing.
+ *
+ *   A verifier that silently sees less than the truth is worse than no verifier:
+ *   it burns the credibility of every real red it will ever report. So this now
+ *   fails CLOSED. If the response says truncated but hands back no token, we
+ *   throw rather than return a partial picture that would read as data loss.
+ */
+export function collectEvidence(fetchPage, opts = {}) {
+  const maxPages = opts.maxPages || 5000;
   const bySession = new Map();
   let token = null;
   let pages = 0;
+  let objects = 0;
   do {
-    const args = [
-      's3api', 'list-objects-v2',
-      '--bucket', bucket,
-      '--prefix', 'transcripts/',
-      '--max-keys', '1000',
-      '--output', 'json',
-    ];
-    if (token) args.push('--starting-token', token);
-    const r = aws(bin, args, 180000);
-    if (r.status !== 0) {
-      throw new Error(`s3 list failed: ${(r.stderr || '').trim().slice(0, 300)}`);
-    }
-    let body;
-    try {
-      body = JSON.parse(r.stdout || '{}');
-    } catch (e) {
-      throw new Error(`s3 list returned unparseable JSON: ${e.message}`);
-    }
+    const body = fetchPage(token) || {};
     for (const obj of body.Contents || []) {
+      objects++;
       const meta = parseTranscriptKey(obj.Key);
       if (!meta) continue;
       const entry = {
@@ -370,10 +377,47 @@ function s3Evidence(bin, bucket) {
       if (!bySession.has(meta.sessionId)) bySession.set(meta.sessionId, []);
       bySession.get(meta.sessionId).push(entry);
     }
-    token = body.NextToken || null;
     pages++;
-  } while (token && pages < 500);
+    const truncated = body.IsTruncated === true;
+    const next = body.NextContinuationToken || body.NextToken || null;
+    if (truncated && !next) {
+      throw new Error(
+        `s3 list reported IsTruncated with no continuation token after ${pages} page(s); ` +
+          `refusing to audit against a partial object listing`,
+      );
+    }
+    token = truncated ? next : null;
+  } while (token && pages < maxPages);
+  if (token) {
+    throw new Error(`s3 list still truncated after ${maxPages} pages; refusing to audit partial evidence`);
+  }
+  bySession.set('__meta__', { pages, objects });
   return bySession;
+}
+
+/** One fully paginated ListObjectsV2 over transcripts/, grouped by session id. */
+function s3Evidence(bin, bucket) {
+  return collectEvidence((token) => {
+    const args = [
+      's3api', 'list-objects-v2',
+      '--bucket', bucket,
+      '--prefix', 'transcripts/',
+      '--max-keys', '1000',
+      '--output', 'json',
+    ];
+    // ListObjectsV2 resumes with --continuation-token. NOT --starting-token,
+    // which belongs to the CLI's own --max-items paginator and is ignored here.
+    if (token) args.push('--continuation-token', token);
+    const r = aws(bin, args, 180000);
+    if (r.status !== 0) {
+      throw new Error(`s3 list failed: ${(r.stderr || '').trim().slice(0, 300)}`);
+    }
+    try {
+      return JSON.parse(r.stdout || '{}');
+    } catch (e) {
+      throw new Error(`s3 list returned unparseable JSON: ${e.message}`);
+    }
+  });
 }
 
 function loadUnresolved() {
@@ -432,6 +476,7 @@ export function runAudit(opts = {}) {
   const unresolvedIds = loadUnresolved();
   const audit = selectAuditSet(census, unresolvedIds, limit);
   const evidence = s3Evidence(bin, bucket);
+  const evidenceMeta = evidence.get('__meta__') || { pages: 0, objects: 0 };
 
   const results = [];
   for (const c of audit) {
@@ -489,6 +534,13 @@ export function runAudit(opts = {}) {
     audited: results.length,
     // Known uncovered class, surfaced so it can never read as "all uploaded".
     subagentTranscriptsExcluded: nestedExcluded,
+    // How much evidence this verdict rests on. Published because the 2026-07-18
+    // false-red came from silently reading one page: a receipt claiming
+    // hundreds of missing sessions off a single page of objects is self-evidently
+    // untrustworthy, and now you can see that from the receipt alone.
+    s3ListPages: evidenceMeta.pages,
+    s3ListObjects: evidenceMeta.objects,
+    s3DistinctSessions: evidence.size - 1, // minus the __meta__ entry
     counts: summary.counts,
     unresolved: summary.unresolved.length,
     unresolvedSample: summary.unresolved.slice(0, 25),
