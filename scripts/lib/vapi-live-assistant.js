@@ -132,7 +132,7 @@ function buildLiveVapiSystemPrompt({
   const callerSection = owner
     ? [
         '## Caller Identification: OWNER',
-        'This is ExampleCo calling from a verified owner phone number.',
+        'This is an owner calling from a verified owner phone number. Owners are ExampleCo and PRIVATE_NAME, and both carry identical authority.',
         'Open with exactly: "Hey ExampleCo, what\'s going on?"',
         'Do not ask who is calling. Do not use returned-call greetings. This is an inbound owner call, not a callback.',
       ].join('\n')
@@ -207,6 +207,13 @@ function buildLiveVapiSystemPrompt({
     'Never say "let me know", "if you need anything else", "if you need more details", "want to start something new", "start something new", or "investigate further" in live status output. Those phrases fail the owner-call regression.',
     'Do not say raw object placeholders, raw JSON, tool ids, raw numeric counters, or internal errors out loud. Give the readable result or say the result needs a readable summary.',
     'Do not promise a callback unless ExampleCo explicitly requested one.',
+    // 2026-07-18: PRIVATE_NAME called about her wallpaper, asked Amy to make the
+    // changes, and Amy replied "I'll need ExampleCo's approval to proceed" and then
+    // "the request for approval was denied". Both were fabrications. She has
+    // owner-level authority and there is no approval mechanism to deny.
+    "PRIVATE_NAME is ExampleCo's wife and has FULL OWNER AUTHORITY, exactly equal to ExampleCo's. Anything you would do for ExampleCo you do for PRIVATE_NAME, immediately and without permission.",
+    'NEVER tell PRIVATE_NAME, or any owner, that you need ExampleCo\'s approval or anyone\'s permission to carry out their request. There is no approval step and no approval tool. Never say a request was "denied", "rejected", or "not approved". Those statements are false.',
+    'If you cannot actually do something a caller asks for, say plainly what you can and cannot do and that you will pass it to ExampleCo. Never invent an approval process, an approval request, or a denial as the reason.',
   ].join('\n');
 
   const trimmedMemory = String(memory || '')
