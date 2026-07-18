@@ -47,6 +47,15 @@ const DEVOPS_RELEASE_FILES = new Set([
   'scripts/render-core-components-html.js',
 ]);
 
+// Docs under dev-plans/ carry their own structural invariant (every *.html
+// plan holds a row in dev-plans/INDEX.md, and every row resolves on disk) but
+// were structurally OUTSIDE the land gate: no sibling test derives from a
+// dev-plans/ path, so plans landed without ever running the index test and it
+// rotted red unnoticed (2026-07-18: 40 plans on disk, 37 rows, 1 dangling).
+// Mirror of the DEVOPS_RELEASE_FILES mapping, as a prefix instead of a set.
+const DEV_PLANS_TEST = 'scripts/__tests__/dev-plans-index.test.js';
+const DEV_PLANS_PREFIX = 'dev-plans/';
+
 const PUBLIC_SYNC_GATE_FILES = new Set([
   '.github/workflows/sync-to-public.yml',
   'data/agent/pii-allowlist.json',
@@ -100,6 +109,11 @@ function isPublicSyncGateFile(file) {
   return PUBLIC_SYNC_GATE_FILES.has(f);
 }
 
+function isDevPlansFile(file) {
+  const f = String(file || '').replace(/\\/g, '/');
+  return f.startsWith(DEV_PLANS_PREFIX);
+}
+
 // affectedTestScope(changedFiles) -> de-duplicated array of test paths/globs.
 // ALWAYS includes the core guards. NEVER returns '**/*'.
 function affectedTestScope(changedFiles) {
@@ -116,6 +130,9 @@ function affectedTestScope(changedFiles) {
     }
     if (isPublicSyncGateFile(file)) {
       scope.add(PII_SCREEN_TEST);
+    }
+    if (isDevPlansFile(file)) {
+      scope.add(DEV_PLANS_TEST);
     }
   }
 
@@ -245,7 +262,9 @@ module.exports = {
   CORE_GUARDS,
   DEVOPS_RELEASE_TEST,
   PII_SCREEN_TEST,
+  DEV_PLANS_TEST,
   siblingTestFor,
   isDevopsReleaseFile,
   isPublicSyncGateFile,
+  isDevPlansFile,
 };
