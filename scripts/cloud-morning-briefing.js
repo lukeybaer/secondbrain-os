@@ -9173,37 +9173,6 @@ async function runCloudBriefing({
       finalOk && previousReceipt && previousReceipt.notifiedAt ? previousReceipt.notifiedAt : null,
   };
 
-  // Telegram briefing-link delivery (2026-07-03). Fires on EVERY publish,
-  // clean OR blocked, because ExampleCo wants the link each morning regardless of
-  // blocker status. Dedupe (one message per publish state per day, with a
-  // blocked -> clean re-notify) and failure honesty (a failed send never
-  // fails the publish; the marker + receipt record notify status) live in
-  // scripts/lib/briefing-notify.js.
-  const underTest = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
-  const briefingNotifySend = briefingNotifier || (underTest ? null : notifyWithFallback);
-  if (publish && notify && briefingNotifySend) {
-    // The 5:30 cron has a minimal env: backfill TELEGRAM_* / SB_BRIEFING_TOKEN
-    // from the .env next to the data dir before building the tokenized URL.
-    loadBriefingNotifyEnv(dataDir);
-    const capToken = token || process.env.SB_BRIEFING_TOKEN || '';
-    const url = buildBriefingDashboardUrl(baseUrl, capToken);
-    const blockerCount = finalOk ? 0 : ((finalQc && finalQc.failures) || []).length;
-    const notifyResult = await notifyBriefingPublished({
-      dataDir,
-      date,
-      clean: finalOk,
-      blockerCount,
-      url,
-      send: briefingNotifySend,
-    });
-    if (notifyResult.status === 'sent') {
-      receipt.notifiedAt = notifyResult.sentAt;
-    } else if (notifyResult.status === 'skipped-duplicate' && notifyResult.sentAt) {
-      receipt.notifiedAt = receipt.notifiedAt || notifyResult.sentAt;
-    }
-    receipt.notifyResult = notifyResult;
-  }
-
   // PUBLISH-THEN-LABEL render-QC gate (dev-plans/core/briefing.md). The markdown
   // contract above only proves the section text exists; this single render-QC runs
   // against the FINAL PUBLISHED product (the live rendered tiles) and stamps each
@@ -9365,6 +9334,32 @@ async function runCloudBriefing({
       receipt.dashboardRenderQc = { ran: false, retry: true, error: (e && e.message) || String(e) };
       console.warn(`[dashboard-qc] render QC threw, treated as retry: ${(e && e.message) || e}`);
     }
+  }
+
+  // Telegram delivery must follow live render QC. Markdown validation is not
+  // the board ExampleCo sees and cannot truthfully say how many cards are green.
+  // Production's 5:29 status runner uses this same notifier directly; this
+  // branch remains for supervised/manual `--notify` publishes.
+  const underTest = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+  const briefingNotifySend = briefingNotifier || (underTest ? null : notifyWithFallback);
+  if (publish && notify && briefingNotifySend) {
+    loadBriefingNotifyEnv(dataDir);
+    const capToken = token || process.env.SB_BRIEFING_TOKEN || '';
+    const url = buildBriefingDashboardUrl(baseUrl, capToken);
+    const notifyResult = await notifyBriefingPublished({
+      dataDir,
+      date,
+      artifact: receipt.dashboardQcArtifact,
+      phase: 'current',
+      url,
+      send: briefingNotifySend,
+    });
+    if (notifyResult.status === 'sent') {
+      receipt.notifiedAt = notifyResult.sentAt;
+    } else if (notifyResult.status === 'skipped-duplicate' && notifyResult.sentAt) {
+      receipt.notifiedAt = receipt.notifiedAt || notifyResult.sentAt;
+    }
+    receipt.notifyResult = notifyResult;
   }
 
   writeJsonAtomic(receiptPath, receipt);

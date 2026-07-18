@@ -1,38 +1,18 @@
-// briefing-notify.js
-//
-// 2026-07-03 ExampleCo: "I never receive the Telegram link when the 5:30 AM CT
-// briefing publishes." Root cause was two-layered: the EC2 cron wrapper
-// (scripts/ec2-morning-briefing-run.sh) never passed --notify, and even with
-// it, kind 'briefing-link' was missing from the notify-with-fallback policy
-// allowlist so the send was silently suppressed. The notify branch was also
-// gated on a clean publish, so a published-blocked briefing never delivered
-// the link at all.
-//
-// This lib owns the briefing-link delivery contract:
-//  - ONE Telegram message per published briefing per day PER PUBLISH STATE
-//    (clean | blocked). A same-day regen in the same state never re-sends.
-//  - The blocked -> clean transition DOES re-send ("Briefing now clean").
-//  - Message shape per the link-only policy (memory/feedback_telegram_policy.md,
-//    ExampleCo 2026-06-09 "Links are ok but briefing summaries and 404s no"): one
-//    status line plus the tokenized dashboard link, nothing chatty.
-//  - Failure honesty: a failed send NEVER fails the publish. The failure is
-//    logged and recorded in the marker so the publish receipt shows notify
-//    status, and a failed send does not dedupe (the next publish retries).
-//  - Cron-safe env: the 5:30 cron runs with a minimal environment; the
-//    Telegram creds and SB_BRIEFING_TOKEN live in the .env NEXT TO the data
-//    dir (/opt/secondbrain/.env next to /opt/secondbrain/data on EC2). Missing
-//    keys are backfilled from that file; already-set keys are never clobbered.
-//
-// Dedup state lives in its own marker file in <dataDir>/agent, keyed by date,
-// following the egress-owned dedup principle (scripts/lib/notification-dedup.js):
-// no upstream artifact rewrite can wipe it and cause a re-send.
+#!/usr/bin/env node
+'use strict';
+
+// One truthful Telegram pointer for the morning briefing. Status comes only
+// from the canonical live-board artifact written by render QC. The 5:29/5:30
+// notification is a current-state snapshot. A later terminal notification is
+// sent only when the state changes to clean or genuinely blocked after repair.
 
 const fs = require('fs');
 const path = require('path');
-const { loadDotEnvIfPresent } = require('./notify-with-fallback.js');
+const { spawnSync } = require('child_process');
+const { buildBriefingDashboardUrl } = require('./briefing-auth.js');
+const { defectiveCardCount, isStale, readLiveBoardArtifact } = require('./live-board-truth.js');
+const { loadDotEnvIfPresent, notifyWithFallback } = require('./notify-with-fallback.js');
 
-// Backfill missing env keys from the .env that sits next to the data dir.
-// /opt/secondbrain/data -> /opt/secondbrain/.env. Never overrides set keys.
 function loadBriefingNotifyEnv(dataDir, env = process.env) {
   if (!dataDir) return;
   loadDotEnvIfPresent(path.resolve(dataDir, '..', '.env'), env);
@@ -40,6 +20,41 @@ function loadBriefingNotifyEnv(dataDir, env = process.env) {
 
 function briefingNotifyMarkerPath(dataDir, date) {
   return path.join(dataDir, 'agent', `briefing-notify-${date}.json`);
+}
+
+function acquireBriefingNotifyLease(dataDir, date, nowMs = Date.now()) {
+  const file = briefingNotifyMarkerPath(dataDir, date) + '.lock';
+  const token = `${process.pid}-${nowMs}-${Math.random().toString(16).slice(2)}`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs.openSync(file, 'wx');
+      fs.writeFileSync(fd, token);
+      fs.closeSync(fd);
+      return { file, token };
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') throw error;
+      try {
+        if (nowMs - fs.statSync(file).mtimeMs > 2 * 60 * 1000) {
+          fs.unlinkSync(file);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+function releaseBriefingNotifyLease(lease) {
+  if (!lease) return;
+  try {
+    if (fs.readFileSync(lease.file, 'utf8') === lease.token) fs.unlinkSync(lease.file);
+  } catch {
+    // Best effort. A stale lease is recoverable after two minutes.
+  }
 }
 
 function readMarker(dataDir, date) {
@@ -54,56 +69,109 @@ function writeMarker(dataDir, date, marker) {
   const file = briefingNotifyMarkerPath(dataDir, date);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(marker, null, 2));
+    fs.writeFileSync(file, JSON.stringify(marker, null, 2) + '\n');
   } catch (e) {
     console.warn(`[briefing-notify] could not write marker ${file}: ${e.message}`);
   }
   return file;
 }
 
-// One status line plus the link. Nothing chatty (link-only policy).
-function buildBriefingNotifyText({ clean, blockerCount = 0, url = '', transition = false } = {}) {
-  let statusLine;
-  if (clean) {
-    statusLine = transition ? 'Briefing now clean' : 'Briefing ready: clean';
-  } else if (blockerCount > 0) {
-    statusLine = `Briefing blocked: ${blockerCount} blocker${blockerCount === 1 ? '' : 's'} after retries exhausted`;
-  } else {
-    statusLine = 'Briefing blocked after retries exhausted';
+function safeTitle(value) {
+  return String(value || '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function summarizeWork(cards, limit = 4) {
+  const titles = (Array.isArray(cards) ? cards : [])
+    .filter((card) => card && card.status !== 'clean')
+    .map((card) => safeTitle(card.title || card.id))
+    .filter(Boolean);
+  const shown = titles.slice(0, limit);
+  if (titles.length > limit) shown.push(`and ${titles.length - limit} more`);
+  return shown.join(', ');
+}
+
+// Validate the artifact before quoting it. A wrong-day, stale, unreachable,
+// or incomplete artifact is "unavailable", never yesterday's count dressed
+// up as today's status.
+function briefingBoardStatus({ artifact, date, nowMs = Date.now(), refresh = null } = {}) {
+  if (refresh && refresh.verified === false) {
+    return { state: 'unavailable', reason: refresh.reason || 'live-refresh-unavailable' };
   }
-  return [statusLine, url].filter(Boolean).join('\n');
+  if (!artifact || artifact.date !== date) {
+    return { state: 'unavailable', reason: artifact ? 'wrong-date' : 'missing-artifact' };
+  }
+  if (artifact.ran !== true || isStale(artifact, nowMs)) {
+    return { state: 'unavailable', reason: artifact.ran !== true ? 'not-live-verified' : 'stale' };
+  }
+  const cards = Array.isArray(artifact.cards) ? artifact.cards : [];
+  const defective = defectiveCardCount(artifact);
+  if (!cards.length || !Number.isFinite(defective) || defective < 0 || defective > cards.length) {
+    return { state: 'unavailable', reason: 'invalid-card-count' };
+  }
+  const total = cards.length;
+  const green = total - defective;
+  return {
+    state: defective === 0 ? 'clean' : 'ongoing',
+    green,
+    total,
+    defective,
+    work: summarizeWork(cards),
+    artifactTs: artifact.ts || null,
+  };
 }
 
-// The Telegram kind for a publish event. A clean publish is the ordinary
-// once-daily link. A BLOCKED publish is the one authorized health push (ExampleCo
-// 2026-07-12): by the time the 5:30 publish lands blocked, the overnight
-// self-heal, the pre-briefing mechanical pass, and the build's own card
-// repairs have all already run, so "published blocked" IS "genuinely blocked
-// after retries exhausted". It rides its own kind so the egress policy can
-// allow it explicitly instead of it drowning under suppressed health noise.
-function briefingNotifyKind(clean) {
-  return clean ? 'briefing-link' : 'briefing-blocked';
+function notificationState(status, phase = 'current') {
+  if (!status || status.state === 'unavailable') return 'unavailable';
+  if (status.state === 'clean') return 'clean';
+  return phase === 'final' ? 'blocked' : 'ongoing';
 }
 
-// Send the briefing link for a publish event, marker-deduped by date + state.
-// Returns { status: 'sent' | 'skipped-duplicate' | 'failed' | 'suppressed',
-//           state, sentAt?, reason?, transition, marker }.
-// Never throws: any transport error becomes status 'failed'.
-async function notifyBriefingPublished({
+function buildBriefingNotifyText({ status, phase = 'current', url = '', transition = false } = {}) {
+  const state = notificationState(status, phase);
+  let line;
+  if (state === 'clean') {
+    line = transition
+      ? `Briefing now clean: ${status.green}/${status.total} cards green.`
+      : `Briefing ready: ${status.green}/${status.total} cards green.`;
+  } else if (state === 'ongoing') {
+    line = `Briefing live: ${status.green}/${status.total} cards green. Work is ongoing`;
+    if (status.work) line += ` on: ${status.work}`;
+    line += '.';
+  } else if (state === 'blocked') {
+    line = `Briefing final: ${status.green}/${status.total} cards green. Repair window ended`;
+    if (status.work) line += ` with: ${status.work}`;
+    line += '.';
+  } else {
+    line = 'Briefing live: current card status unavailable.';
+  }
+  return [line, url].filter(Boolean).join('\n');
+}
+
+function briefingNotifyKind(stateOrClean) {
+  const state =
+    typeof stateOrClean === 'boolean' ? (stateOrClean ? 'clean' : 'blocked') : stateOrClean;
+  return state === 'blocked' ? 'briefing-blocked' : 'briefing-link';
+}
+
+async function notifyBriefingPublishedUnlocked({
   dataDir,
   date,
-  clean,
-  blockerCount = 0,
+  artifact,
+  phase = 'current',
+  refresh = null,
   url = '',
   send,
   now = () => new Date(),
 } = {}) {
-  const state = clean ? 'clean' : 'blocked';
+  const instant = now();
+  const status = briefingBoardStatus({ artifact, date, nowMs: instant.getTime(), refresh });
+  const state = notificationState(status, phase);
   const markerFile = briefingNotifyMarkerPath(dataDir, date);
   const prior = readMarker(dataDir, date);
 
-  // Dedupe on delivered sends only: a failed or suppressed attempt must not
-  // swallow the next publish's retry.
   if (prior && prior.state === state && prior.status === 'sent') {
     return {
       status: 'skipped-duplicate',
@@ -111,26 +179,23 @@ async function notifyBriefingPublished({
       sentAt: prior.sentAt || null,
       transition: false,
       marker: markerFile,
+      board: status,
     };
   }
 
   const transition = Boolean(
-    clean && prior && prior.state === 'blocked' && prior.status === 'sent',
+    state === 'clean' && prior && prior.state !== 'clean' && prior.status === 'sent',
   );
   loadBriefingNotifyEnv(dataDir);
-  const text = buildBriefingNotifyText({ clean, blockerCount, url, transition });
-  const ts = now().toISOString();
-
+  const text = buildBriefingNotifyText({ status, phase, url, transition });
+  const ts = instant.toISOString();
   let outcome;
   try {
     const result = await send({
       text,
-      kind: briefingNotifyKind(clean),
-      source: 'cloud-morning-briefing',
+      kind: briefingNotifyKind(state),
+      source: 'briefing-status',
       priority: 'normal',
-      // The per-day per-state marker above owns briefing-link dedupe. The
-      // generic 24h text-hash ledger would wrongly suppress tomorrow's
-      // identical clean message when the crons run less than 24h apart.
       dedup: false,
     });
     if (result && result.ok && !result.suppressed && result.channel === 'telegram') {
@@ -151,14 +216,17 @@ async function notifyBriefingPublished({
   }
   if (outcome.status !== 'sent') {
     console.warn(
-      `[briefing-notify] link NOT delivered for ${date} (${state}): ${outcome.status} ${outcome.reason || ''}`,
+      `[briefing-notify] not delivered for ${date} (${state}): ${outcome.status} ${outcome.reason || ''}`,
     );
   }
 
   writeMarker(dataDir, date, {
     date,
+    phase,
     state,
-    blockerCount,
+    green: status.green ?? null,
+    total: status.total ?? null,
+    artifactTs: status.artifactTs || null,
     transition,
     updatedAt: ts,
     ...outcome,
@@ -166,14 +234,122 @@ async function notifyBriefingPublished({
       ? { state: prior.state, status: prior.status, sentAt: prior.sentAt || null }
       : null,
   });
+  return { ...outcome, state, transition, marker: markerFile, board: status };
+}
 
-  return { ...outcome, state, transition, marker: markerFile };
+async function notifyBriefingPublished(args = {}) {
+  let lease;
+  try {
+    lease = acquireBriefingNotifyLease(args.dataDir, args.date);
+  } catch (error) {
+    return {
+      status: 'failed',
+      state: 'unavailable',
+      reason: `notify-lease-error: ${String((error && error.message) || error).slice(0, 160)}`,
+      marker: briefingNotifyMarkerPath(args.dataDir, args.date),
+    };
+  }
+  if (!lease) {
+    return {
+      status: 'skipped-inflight',
+      state: 'inflight',
+      transition: false,
+      marker: briefingNotifyMarkerPath(args.dataDir, args.date),
+    };
+  }
+  try {
+    return await notifyBriefingPublishedUnlocked(args);
+  } finally {
+    releaseBriefingNotifyLease(lease);
+  }
+}
+
+function refreshLiveBoard({ dataDir, date, timeoutMs = 55000 } = {}) {
+  const verifier = path.resolve(__dirname, '..', 'verify-dashboard-cards-live.js');
+  const result = spawnSync(
+    process.execPath,
+    [verifier, '--date', date, '--write-artifact', '--data-dir', dataDir],
+    {
+      cwd: path.resolve(__dirname, '..', '..'),
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      env: { ...process.env, SECONDBRAIN_DATA_DIR: dataDir },
+      maxBuffer: 2 * 1024 * 1024,
+    },
+  );
+  // Exit 0 = clean and exit 1 = verified defects. Both wrote authoritative
+  // artifact state. Exit 2/timeout/spawn failure means truth is unavailable.
+  const verified = result.status === 0 || result.status === 1;
+  return {
+    verified,
+    status: result.status,
+    reason: verified ? null : result.error ? 'refresh-error' : `refresh-exit-${result.status}`,
+  };
+}
+
+function parseArgs(argv) {
+  const opts = { phase: 'current', refresh: false };
+  for (let i = 2; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--date') opts.date = argv[++i];
+    else if (arg === '--data-dir') opts.dataDir = argv[++i];
+    else if (arg === '--phase') opts.phase = argv[++i];
+    else if (arg === '--refresh-artifact') opts.refresh = true;
+    else if (arg === '--url') opts.url = argv[++i];
+  }
+  return opts;
+}
+
+async function main() {
+  const opts = parseArgs(process.argv);
+  if (!opts.date || !opts.dataDir || !['current', 'final'].includes(opts.phase)) {
+    console.error(
+      'Usage: briefing-notify.js --date YYYY-MM-DD --data-dir DIR --phase current|final [--refresh-artifact]',
+    );
+    process.exitCode = 2;
+    return;
+  }
+  loadBriefingNotifyEnv(opts.dataDir);
+  const refresh = opts.refresh ? refreshLiveBoard(opts) : null;
+  const envelope = readLiveBoardArtifact({ dataDir: opts.dataDir });
+  const url =
+    opts.url ||
+    buildBriefingDashboardUrl(
+      process.env.BRIEFING_PUBLIC_BASE_URL || 'http://ExampleCo:3001/briefing',
+      process.env.SB_BRIEFING_TOKEN || '',
+    );
+  const result = await notifyBriefingPublished({
+    dataDir: opts.dataDir,
+    date: opts.date,
+    artifact: envelope.artifact,
+    phase: opts.phase,
+    refresh,
+    url,
+    send: notifyWithFallback,
+  });
+  console.log(JSON.stringify(result));
+  if (result.status === 'failed' || result.status === 'suppressed') process.exitCode = 1;
+}
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(
+      `[briefing-notify] failed internally: ${String((error && error.message) || error).slice(0, 200)}`,
+    );
+    process.exitCode = 1;
+  });
 }
 
 module.exports = {
   notifyBriefingPublished,
   buildBriefingNotifyText,
+  briefingBoardStatus,
+  notificationState,
   briefingNotifyKind,
+  refreshLiveBoard,
+  parseArgs,
   loadBriefingNotifyEnv,
   briefingNotifyMarkerPath,
+  acquireBriefingNotifyLease,
+  releaseBriefingNotifyLease,
 };

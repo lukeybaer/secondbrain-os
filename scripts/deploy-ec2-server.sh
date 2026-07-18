@@ -72,6 +72,7 @@ LIVE_DEPS=(
   "scripts/post-release-scheduled-skill-canary.js"
   "scripts/ensure-neo4j-cpu-cap.js"
   "scripts/install-ec2-card-controller-cron.sh"
+  "scripts/install-ec2-self-heal-cron.sh"
   # Wave 4 rung 2: the agentic overnight healer. The morning runner (deployed
   # above) invokes the wrapper, which invokes the driver; ship both so the /opt
   # copy never drifts behind a land (feedback_ec2_build_path_silent_revert).
@@ -210,6 +211,7 @@ CONTROLLER_RUNTIME_FILES=(
   "scripts/ec2-morning-briefing-run.sh"
   "scripts/briefing-morning-report.js"
   "scripts/install-ec2-card-controller-cron.sh"
+  "scripts/lib/briefing-notify.js"
   "scripts/lib/briefing-card-controller.js"
   "scripts/lib/briefing-source-contracts.js"
 )
@@ -281,6 +283,18 @@ if ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
   echo "[deploy] Neo4j CPU cap: PASS"
 else
   echo "[deploy] WARNING: Neo4j CPU cap proof failed; release remains live and System Health will retain the non-green receipt." >&2
+fi
+
+# Cron must execute the immutable deployed morning runner, not a stale /home
+# checkout. The authority-aware installer preserves the current authority
+# marker while normalizing the 5:30 line to /opt/secondbrain.
+echo "[deploy] normalizing morning briefing cron to the deployed runtime"
+if ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  'cron_tmp=$(mktemp); crontab -l 2>/dev/null | grep -v "ec2-morning-briefing-run.sh" > "$cron_tmp" || true; grep -q "^CRON_TZ=America/Chicago$" "$cron_tmp" || printf "%s\n" "CRON_TZ=America/Chicago" >> "$cron_tmp"; printf "%s\n" "30 5 * * * /opt/secondbrain/scripts/ec2-morning-briefing-run.sh >> /opt/secondbrain/logs/morning-briefing-cron.log 2>&1" >> "$cron_tmp"; crontab "$cron_tmp"; rm -f "$cron_tmp"'; then
+  echo "[deploy] morning briefing cron: PASS"
+else
+  echo "[deploy] CRON FAIL: release is live but the 5:30 runner was not normalized to /opt/secondbrain." >&2
+  exit 1
 fi
 
 # Observational post-release scheduled-skill rescue canary. The release has

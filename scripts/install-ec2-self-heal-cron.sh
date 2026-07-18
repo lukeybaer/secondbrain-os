@@ -14,12 +14,15 @@
 set -euo pipefail
 
 ROOT="${SECONDBRAIN_ROOT:-/home/ec2-user/secondbrain-current}"
+CONTROLLER_ROOT="${SECONDBRAIN_CONTROLLER_ROOT:-/opt/secondbrain}"
 LOG_DIR="${SELFHEAL_LOG_DIR:-/opt/secondbrain/logs}"
 RUNNER="$ROOT/scripts/ec2-self-heal-run.sh"
+MORNING_RUNNER="$CONTROLLER_ROOT/scripts/ec2-morning-briefing-run.sh"
 CRON_TZ_LINE="CRON_TZ=America/Chicago"
 # 2:45 and 3:00 CT (the pre-briefing diagnostic -> self-heal chain, before 5:30 CT).
 CRON_LINE_1="45 2 * * * $RUNNER >> $LOG_DIR/self-heal-cron.log 2>&1"
 CRON_LINE_2="0 3 * * * $RUNNER >> $LOG_DIR/self-heal-cron.log 2>&1"
+MORNING_LINE="30 5 * * * $MORNING_RUNNER >> $LOG_DIR/morning-briefing-cron.log 2>&1"
 
 mkdir -p "$LOG_DIR"
 chmod +x "$RUNNER" 2>/dev/null || true
@@ -30,12 +33,14 @@ tmp="$(mktemp)"
 # lines (e.g. the otter backfill) are preserved untouched.
 crontab -l 2>/dev/null \
   | grep -v 'ec2-self-heal-run.sh' \
+  | grep -v 'ec2-morning-briefing-run.sh' \
   | grep -v '^CRON_TZ=America/Chicago$' \
   > "$tmp" || true
 # CRON_TZ must precede the schedule lines it applies to.
 printf '%s\n' "$CRON_TZ_LINE" >> "$tmp"
 printf '%s\n' "$CRON_LINE_1" >> "$tmp"
 printf '%s\n' "$CRON_LINE_2" >> "$tmp"
+printf '%s\n' "$MORNING_LINE" >> "$tmp"
 crontab "$tmp"
 rm -f "$tmp"
 
@@ -43,3 +48,4 @@ echo "Installed EC2 pre-briefing self-heal cron (2:45 + 3:00 AM CT, CRON_TZ=Amer
 echo "$CRON_TZ_LINE"
 echo "$CRON_LINE_1"
 echo "$CRON_LINE_2"
+echo "$MORNING_LINE"

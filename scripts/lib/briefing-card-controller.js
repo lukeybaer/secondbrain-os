@@ -1030,12 +1030,11 @@ async function runCardController(options = {}, injected = {}) {
       : 'clean';
   if (options.notify) {
     loadBriefingNotifyEnv(dataDir);
-    const clean = receipt.final.defectiveCardCount === 0;
     receipt.notify = await notifyBriefingPublished({
       dataDir,
       date,
-      clean,
-      blockerCount: Number(receipt.final.defectiveCardCount || 0),
+      artifact: finalArtifact,
+      phase: 'final',
       url: buildBriefingDashboardUrl(
         process.env.BRIEFING_PUBLIC_BASE_URL || 'http://ExampleCo:3001/briefing',
         process.env.SB_BRIEFING_TOKEN || '',

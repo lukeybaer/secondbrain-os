@@ -1,23 +1,30 @@
-import * as fs from "fs";
-import * as http from "http";
-import { getConfig } from "./config";
-import { isNotifyCategoryAllowed, type NotifyCategory } from "./notify-policy";
+import * as fs from 'fs';
+import * as http from 'http';
+import { createRequire } from 'node:module';
+import { getConfig } from './config';
+import { isNotifyCategoryAllowed, type NotifyCategory } from './notify-policy';
 import {
   createApproval,
   getApproval,
   resolveApproval,
   getLatestPendingApproval,
   type DbApproval,
-} from "./database-sqlite";
+} from './database-sqlite';
 
-export type { NotifyCategory } from "./notify-policy";
+export type { NotifyCategory } from './notify-policy';
+
+const require = createRequire(import.meta.url);
+const { isCliFailureOutput } = require('../../scripts/lib/cli-output-guard.js') as {
+  isCliFailureOutput: (text: string) => boolean;
+};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface PendingApproval {
   id: string;
   call_id?: string;
-  request_type: 'share_pii' | 'transfer_call' | 'commit_to_action' | 'reputation_risk' | 'content_approval';
+  request_type:
+    'share_pii' | 'transfer_call' | 'commit_to_action' | 'reputation_risk' | 'content_approval';
   description: string;
   data_category?: string;
   created_at: string;
@@ -58,12 +65,12 @@ function log(label: string, err: ExampleCo): void {
 
 async function postJson(method: string, body: Record<string, ExampleCo>): Promise<ExampleCo> {
   const res = await fetch(apiUrl(method), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const json = await res.json() as { ok: boolean; description?: string };
-  if (!json.ok) throw new Error(`Telegram ${method} error: ${json.description ?? "ExampleCo"}`);
+  const json = (await res.json()) as { ok: boolean; description?: string };
+  if (!json.ok) throw new Error(`Telegram ${method} error: ${json.description ?? 'ExampleCo'}`);
   return json;
 }
 
@@ -75,34 +82,34 @@ function buildMultipart(
   mimeType: string,
 ): { body: Buffer; boundary: string } {
   const boundary = `----SBBoundary${Date.now().toString(16)}`;
-  const CRLF = "\r\n";
+  const CRLF = '\r\n';
   const parts: Buffer[] = [];
 
   for (const [name, value] of Object.entries(fields)) {
     parts.push(
       Buffer.from(
         `--${boundary}${CRLF}` +
-        `Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}` +
-        `${value}${CRLF}`,
-        "utf-8",
+          `Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}` +
+          `${value}${CRLF}`,
+        'utf-8',
       ),
     );
   }
 
-  const fileName = filePath.split(/[\\/]/).pop() ?? "file";
+  const fileName = filePath.split(/[\\/]/).pop() ?? 'file';
   const fileData = fs.readFileSync(filePath);
   parts.push(
     Buffer.from(
       `--${boundary}${CRLF}` +
-      `Content-Disposition: form-data; name="${fileField}"; filename="${fileName}"${CRLF}` +
-      `Content-Type: ${mimeType}${CRLF}${CRLF}`,
-      "utf-8",
+        `Content-Disposition: form-data; name="${fileField}"; filename="${fileName}"${CRLF}` +
+        `Content-Type: ${mimeType}${CRLF}${CRLF}`,
+      'utf-8',
     ),
     fileData,
-    Buffer.from(CRLF, "utf-8"),
+    Buffer.from(CRLF, 'utf-8'),
   );
 
-  parts.push(Buffer.from(`--${boundary}--${CRLF}`, "utf-8"));
+  parts.push(Buffer.from(`--${boundary}--${CRLF}`, 'utf-8'));
   return { body: Buffer.concat(parts), boundary };
 }
 
@@ -115,12 +122,12 @@ async function postMultipart(
 ): Promise<ExampleCo> {
   const { body, boundary } = buildMultipart(fields, fileField, filePath, mimeType);
   const res = await fetch(apiUrl(method), {
-    method: "POST",
-    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+    method: 'POST',
+    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
     body,
   });
-  const json = await res.json() as { ok: boolean; description?: string };
-  if (!json.ok) throw new Error(`Telegram ${method} error: ${json.description ?? "ExampleCo"}`);
+  const json = (await res.json()) as { ok: boolean; description?: string };
+  if (!json.ok) throw new Error(`Telegram ${method} error: ${json.description ?? 'ExampleCo'}`);
   return json;
 }
 
@@ -150,6 +157,10 @@ function notifyAllowed(chatId: string, category?: NotifyCategory): boolean {
   return isNotifyCategoryAllowed(category);
 }
 
+function isRawProviderError(text: string): boolean {
+  return isCliFailureOutput(String(text || ''));
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function sendMessage(
@@ -157,14 +168,18 @@ export async function sendMessage(
   text: string,
   category?: NotifyCategory,
 ): Promise<void> {
+  if (isRawProviderError(text)) {
+    console.warn('[telegram] suppressed raw provider error at sendMessage egress');
+    return;
+  }
   if (!notifyAllowed(chatId, category)) {
     console.log(`[telegram] suppressed owner message (no allowed category): ${text.slice(0, 80)}`);
     return;
   }
   try {
-    await postJson("sendMessage", { chat_id: chatId, text });
+    await postJson('sendMessage', { chat_id: chatId, text });
   } catch (err) {
-    log("sendMessage", err);
+    log('sendMessage', err);
   }
 }
 
@@ -174,34 +189,36 @@ export async function sendVideo(
   caption: string,
   category?: NotifyCategory,
 ): Promise<void> {
+  if (isRawProviderError(caption)) {
+    console.warn('[telegram] suppressed raw provider error at sendVideo egress');
+    return;
+  }
   if (!notifyAllowed(chatId, category)) {
-    console.log("[telegram] suppressed owner video (no allowed category)");
+    console.log('[telegram] suppressed owner video (no allowed category)');
     return;
   }
   try {
-    await postMultipart(
-      "sendVideo",
-      { chat_id: chatId, caption },
-      "video",
-      videoPath,
-      "video/mp4",
-    );
+    await postMultipart('sendVideo', { chat_id: chatId, caption }, 'video', videoPath, 'video/mp4');
   } catch (err) {
-    log("sendVideo", err);
+    log('sendVideo', err);
   }
 }
 
 export async function sendPhoto(chatId: string, photoPath: string, caption: string): Promise<void> {
+  if (isRawProviderError(caption)) {
+    console.warn('[telegram] suppressed raw provider error at sendPhoto egress');
+    return;
+  }
   try {
     await postMultipart(
-      "sendPhoto",
+      'sendPhoto',
       { chat_id: chatId, caption },
-      "photo",
+      'photo',
       photoPath,
-      "image/jpeg",
+      'image/jpeg',
     );
   } catch (err) {
-    log("sendPhoto", err);
+    log('sendPhoto', err);
   }
 }
 
@@ -210,7 +227,10 @@ export async function sendPhoto(chatId: string, photoPath: string, caption: stri
  * The owner Telegram prompt is suppressed by notify-policy unless the policy
  * explicitly changes.
  */
-export async function sendApprovalRequest(chatId: string, approval: PendingApproval): Promise<void> {
+export async function sendApprovalRequest(
+  chatId: string,
+  approval: PendingApproval,
+): Promise<void> {
   void chatId;
   // Persist to SQLite (upsert — caller may have already inserted)
   try {
@@ -256,20 +276,20 @@ export function setOnMessage(cb: OnMessageCallback): void {
  */
 export function startWebhook(port: number, webhookPath: string): void {
   const server = http.createServer((req, res) => {
-    if (req.method !== "POST" || req.url !== webhookPath) {
+    if (req.method !== 'POST' || req.url !== webhookPath) {
       res.writeHead(404).end();
       return;
     }
 
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => {
-      res.writeHead(200).end("ok");
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      res.writeHead(200).end('ok');
       try {
-        const update = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as TelegramUpdate;
+        const update = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as TelegramUpdate;
         handleUpdate(update);
       } catch (err) {
-        log("webhook parse", err);
+        log('webhook parse', err);
       }
     });
   });
@@ -278,7 +298,7 @@ export function startWebhook(port: number, webhookPath: string): void {
     console.log(`[telegram] webhook listening on port ${port} at ${webhookPath}`);
   });
 
-  server.on("error", (err) => log("webhook server", err));
+  server.on('error', (err) => log('webhook server', err));
 }
 
 // ── Internal update handler ───────────────────────────────────────────────────
@@ -310,15 +330,15 @@ function handleUpdate(update: TelegramUpdate): void {
   // Try to match "YES <id>" / "NO <id>" first, then bare "YES" / "NO"
   const yesNoMatch = upper.match(/^(YES|NO)\s*([A-Za-z0-9_-]*)$/);
   if (yesNoMatch) {
-    const approved = yesNoMatch[1] === "YES";
+    const approved = yesNoMatch[1] === 'YES';
     const explicitId = yesNoMatch[2] || null;
 
     const dbApproval: DbApproval | null = explicitId
       ? getApproval(explicitId)
       : getLatestPendingApproval();
 
-    if (dbApproval && dbApproval.status === "pending") {
-      const newStatus = approved ? "approved" : "denied";
+    if (dbApproval && dbApproval.status === 'pending') {
+      const newStatus = approved ? 'approved' : 'denied';
       resolveApproval(dbApproval.id, newStatus, text);
       resolveCallbacks.get(dbApproval.id)?.({ approved, data: text });
       resolveCallbacks.delete(dbApproval.id);

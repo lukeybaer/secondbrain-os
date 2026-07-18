@@ -81,11 +81,9 @@ const ALLOWED_KINDS = new Set([
   // (scripts/lib/briefing-notify.js) dedupes one message per publish state per
   // day via a marker file, so this cannot become morning spam.
   'briefing-link',
-  // Briefing genuinely blocked after retries exhausted (ExampleCo 2026-07-12: the
-  // ONE health push he wants). Sent by scripts/lib/briefing-notify.js when a
-  // publish lands blocked (the overnight self-heal + mechanical pass + build
-  // repairs have already run by then, so a blocked publish IS retries
-  // exhausted). Same per-day per-state marker dedupe as briefing-link.
+  // Briefing genuinely blocked after the post-publish repair window. The
+  // initial 5:30 state uses briefing-link and says work is ongoing; only the
+  // terminal notifier after the healer may use this kind.
   'briefing-blocked',
   // Laptop-hosted channel offline for more than the CT-daytime threshold
   // (scripts/lib/channel-health-monitor.js, 2026-07-12 flap fix). Ordinary

@@ -34,7 +34,9 @@ const CLI_FAILURE_PATTERNS = [
   /rate limit exceeded/i,
   // Raw HTTP error strings from Anthropic API / Claude CLI
   // e.g. "HTTP 404 not_found_error: model: claude-3-5-sonnet-20241022"
-  /HTTP [45]\d\d/,
+  // Provider wrappers are inconsistent: observed variants include
+  // "HTTP 404", "http404", "http_404", "http-404", and "HTTP/404".
+  /\bhttps?[\s\/:_-]*[45]\d\d\b/i,
   /\b404 Not Found\b/i,
   /not_found_error/i,
   /overloaded_error/i,

@@ -47,6 +47,10 @@ The hard preflight to build reads `scripts/lib/briefing-heal-run-graph.json` and
 
 Babysitting means a REAL-TIME play-by-play, not passive waiting for the completion/push event (`feedback_realtime_watch_not_passive_wait.md`). Each heal session streams its live output to a tailable log at `data/agent/heal-sessions/<slug>-<uniq>.log` (the orchestrator wires `onStream` into `heal-executor`). Tail those logs and each worktree's `git status`/HEAD as the run goes, and fix the MOMENT something breaks (a failing command, a missing dependency, a hang), then re-run. Do not wait the 30-minute session budget to confirm a failure you can already see. The heals run worktree-isolated, so `node_modules` is junctioned into each heal worktree (`scripts/lib/isolated-heal-session.js`) or the session cannot run tests and just burns its budget.
 
+## Morning communication
+
+The 5:30 Telegram message is a current-state checkpoint, not a completion claim. Refresh live render QC, quote `green/total` only from the fresh same-date `dashboard-qc-result.json`, name non-green cards as work ongoing, and include the tokenized dashboard link. The 5:29 server attempt and 5:30 runner fallback share one marker. After the bounded healer, send another message only for a real state transition: every card now clean, or the terminal repair window ended non-clean. Never translate a pre-healer markdown failure into "retries exhausted."
+
 ## Key files
 
 - Self-healer: `scripts/overnight-self-heal-orchestrator.js` (parallel fan-out, `--observe`/`--parallel`/`--midday`, mode-announce), `scripts/lib/heal-scheduler.js`, `scripts/lib/isolated-heal-session.js` (worktree + node_modules junction + serialized landing), `scripts/health-self-heal.js`, `scripts/lib/heal-executor.js`, `scripts/lib/channel-health-monitor.js` (probes).

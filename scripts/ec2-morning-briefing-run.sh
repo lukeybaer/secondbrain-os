@@ -87,7 +87,7 @@ export HOME
 # The morning run must create the dated briefing markdown before any per-card
 # artifact union can be meaningful. refresh-card --all is a repaint helper, not
 # the 5:30 generator.
-CMD=("$NODE_BIN" scripts/cloud-morning-briefing.js --date "$DATE" --publish --notify)
+CMD=("$NODE_BIN" scripts/cloud-morning-briefing.js --date "$DATE" --publish)
 
 # The old card-controller authority switch is now only a deployed-root selector.
 # It no longer runs a competing final-pass writer; both branches publish the
@@ -118,11 +118,38 @@ CAP_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/ensure-neo4j-cpu-cap.js" --apply 
 # Deterministic incident report from canonical board truth. It is generated
 # after bounded repair so its evidence describes the board ExampleCo will see.
 REPORT_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/briefing-morning-report.js" --date "$DATE" --data-dir "$DATA_DIR")
+STATUS_CURRENT_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/lib/briefing-notify.js" --date "$DATE" --data-dir "$DATA_DIR" --phase current --refresh-artifact)
+STATUS_FINAL_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/lib/briefing-notify.js" --date "$DATE" --data-dir "$DATA_DIR" --phase final --refresh-artifact)
 
 TEST_MODE=0
 if [ "${NODE_ENV:-}" = "test" ] || [ "${VITEST:-}" = "true" ] || [ "${BRIEFING_DRY_RUN:-}" = "1" ]; then
   TEST_MODE=1
 fi
+
+notify_briefing_state() {
+  phase="$1"
+  if [ "$phase" = "final" ]; then
+    state_cmd=("${STATUS_FINAL_CMD[@]}")
+  else
+    state_cmd=("${STATUS_CURRENT_CMD[@]}")
+  fi
+  if [ "$TEST_MODE" = "1" ]; then
+    echo "[morning-briefing-run] DRY-RUN: would send $phase live-board status with: ${state_cmd[*]}"
+    return 0
+  fi
+  if timeout --kill-after=5s 65s "${state_cmd[@]}"; then
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) briefing-$phase-notify: handled."
+  else
+    notify_status=$?
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) briefing-$phase-notify: exit $notify_status; recorded internally, briefing continues." >&2
+  fi
+  return 0
+}
+
+# ExampleCo's 5:30 contract is a current-state pointer, not a premature terminal
+# verdict. This runs before the full build and is marker-deduped with the 5:29
+# in-process fallback. It quotes only a fresh live render-QC artifact.
+notify_briefing_state current
 
 # Docker Compose owns the permanent limit. This bounded recheck runs before
 # either morning path and cannot gate independent card production.
@@ -328,6 +355,7 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
     else
       echo "[morning-briefing-run] DRY-RUN (card-controller authority): agentic-healer rung 2 would run after the controller pass: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
     fi
+    notify_briefing_state final
     write_morning_report
     snapshot_parity_artifact 0
     run_weekly_lessons_rollup
@@ -363,6 +391,11 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
     BRIEFING_DATE="$DATE" SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" SECONDBRAIN_ROOT="$ROOT" "${HEALER_CMD[@]}"
     healer_status=$?
     echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: finished with exit $healer_status (receipt: $DATA_DIR/agent/overnight-agentic-healer-runs.jsonl)."
+  fi
+  if [ "$status" != "1" ]; then
+    notify_briefing_state final
+  else
+    echo "[morning-briefing-run] briefing-final-notify: skipped because this invocation did not own a completed build."
   fi
   write_morning_report
   # W5 parity snapshot AFTER the healer: the healer may have repaired cards
@@ -418,6 +451,7 @@ if [ "$TEST_MODE" = "1" ]; then
   else
     echo "[morning-briefing-run] DRY-RUN (test mode): agentic-healer rung 2 would run after the briefing: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
   fi
+  notify_briefing_state final
   write_morning_report
   snapshot_parity_artifact 0
   run_weekly_lessons_rollup
@@ -468,6 +502,11 @@ else
   BRIEFING_DATE="$DATE" SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" SECONDBRAIN_ROOT="$ROOT" "${HEALER_CMD[@]}"
   healer_status=$?
   echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: finished with exit $healer_status (receipt: $DATA_DIR/agent/overnight-agentic-healer-runs.jsonl)."
+fi
+if [ "$status" != "1" ]; then
+  notify_briefing_state final
+else
+  echo "[morning-briefing-run] briefing-final-notify: skipped because this invocation did not own a completed build."
 fi
 write_morning_report
 # W5 parity snapshot AFTER the build. Exit 1 (lock held / fatal) does NOT
