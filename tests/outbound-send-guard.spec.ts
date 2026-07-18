@@ -74,6 +74,81 @@ describe('outbound-send-guard hook', () => {
     expect(runHook('AMY_SEND_OK=yes python scripts/send-gmail.py x/')).toBe(2);
   });
 
+  /**
+   * 2026-07-18 gap: ExampleCo said "email it to her". Amy drafted the mail signed
+   * "Love, ExampleCo" by default, which tripped the exact-text-approval rule and
+   * converted an execute instruction into a request for permission. Root cause
+   * was the identity default, so the identity default is what gets enforced.
+   *
+   * Category, not literal: any sign-off shape that reads as ExampleCo alone, in any
+   * payload the command references, under an AMY_SEND_OK=amy claim.
+   */
+  describe('identity verification under AMY_SEND_OK=amy', () => {
+    function payloadDir(body: string): string {
+      const dir = mkdtempSync(path.join(tmpdir(), 'osg-body-'));
+      writeFileSync(
+        path.join(dir, 'msg.json'),
+        JSON.stringify({ to: 'a@b.com', subject: 'S', body }),
+      );
+      return dir;
+    }
+
+    const ExampleCo_SIGNOFFS = [
+      'Hi there,\n\nSome content.\n\nLove,\nExampleCo\n',
+      'Hi there,\n\nSome content.\n\nThanks,\nExampleCo\n',
+      'Hi there,\n\nSome content.\n\n- ExampleCo\n',
+      'Hi there,\n\nSome content.\n\nExampleCo\n',
+      'Hi there,\n\nSome content.\n\nBest,\nExampleCo\n',
+    ];
+
+    it.each(ExampleCo_SIGNOFFS)('blocks a ExampleCo-signed body claiming Amy identity: %j', (body) => {
+      const dir = payloadDir(body);
+      expect(runHook(`AMY_SEND_OK=amy python scripts/send-gmail.py "${dir}"`)).toBe(2);
+    });
+
+    it('allows the same body when ExampleCo actually approved the exact text', () => {
+      const dir = payloadDir(ExampleCo_SIGNOFFS[0]);
+      expect(runHook(`AMY_SEND_OK=ExampleCo-approved python scripts/send-gmail.py "${dir}"`)).toBe(0);
+    });
+
+    it('allows genuine Amy sign-offs', () => {
+      for (const body of [
+        'Hi,\n\nContent.\n\nAmy\n(ExampleCo ExampleCo\'s assistant)\n',
+        'Hi,\n\nContent.\n\nThanks,\nExampleCo (via Amy)\n',
+      ]) {
+        expect(runHook(`AMY_SEND_OK=amy python scripts/send-gmail.py "${payloadDir(body)}"`)).toBe(0);
+      }
+    });
+
+    it('does not mistake a mid-body mention of ExampleCo for a signature', () => {
+      const body = 'Hi,\n\nExampleCo asked me to send this over.\nExampleCo is travelling this week.\n\nAmy\n';
+      expect(runHook(`AMY_SEND_OK=amy python scripts/send-gmail.py "${payloadDir(body)}"`)).toBe(0);
+    });
+
+    it('catches a ExampleCo-signed body passed inline via --body', () => {
+      expect(
+        runHook('AMY_SEND_OK=amy python scripts/send-gmail.py --to a@b.com --subject S --body "Hey,\n\nStuff.\n\nLove,\nExampleCo\n"'),
+      ).toBe(2);
+    });
+  });
+
+  /**
+   * This box is PowerShell-primary. The original token regex only matched the
+   * bash prefix form, so the real send on 2026-07-18 ExampleCod a PowerShell
+   * attestation the guard could not see.
+   */
+  it('recognises the PowerShell attestation form', () => {
+    expect(
+      runHook("$env:AMY_SEND_OK = 'amy'; python scripts/send-gmail.py data/outbound/x/", 'PowerShell'),
+    ).toBe(0);
+    expect(
+      runHook('$env:AMY_SEND_OK = "ExampleCo-approved"; python scripts/send-gmail.py x/', 'PowerShell'),
+    ).toBe(0);
+    expect(
+      runHook("$env:AMY_SEND_OK = 'maybe'; python scripts/send-gmail.py x/", 'PowerShell'),
+    ).toBe(2);
+  });
+
   it('ignores unrelated commands', () => {
     expect(runHook('git status')).toBe(0);
     expect(runHook('python scripts/sb-session-search.py search "email"')).toBe(0);

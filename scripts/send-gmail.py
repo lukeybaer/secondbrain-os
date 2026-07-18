@@ -41,8 +41,14 @@ JSON schema (one email per file):
     "body": "Plain text body",
     "reply_to": "optional-reply-to@example.com",
     "in_reply_to": "<original-msg-id@example.com>",
-    "references": "<original-msg-id@example.com>"
+    "references": "<original-msg-id@example.com>",
+    "attachments": ["C:/path/to/file.png", "/path/to/report.pdf"]
   }
+
+The attachments field is optional. Each entry is a filesystem path; the MIME
+type is inferred from the extension and the basename becomes the filename the
+recipient sees. A missing file raises rather than sending a silently empty
+email. On the CLI use --attach PATH (repeat the flag for multiple files).
 
 The in_reply_to and references fields are optional. Set them when replying
 to an existing thread so Gmail renders the reply inside the original thread.
@@ -57,6 +63,7 @@ on to the next file instead of aborting the whole batch.
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import smtplib
 import ssl
@@ -141,7 +148,30 @@ def build_message(payload: dict, sender: str) -> EmailMessage:
     if payload.get("references"):
         msg["References"] = payload["references"]
     msg.set_content(payload["body"])
+    attach_files(msg, payload.get("attachments") or [])
     return msg
+
+
+def attach_files(msg: EmailMessage, paths: Iterable[str | os.PathLike]) -> None:
+    """Attach each file to msg, inferring the MIME type from the extension.
+
+    Fails loudly on a missing file: a silently attachment-less email looks
+    delivered but isn't, and the caller has no way to notice.
+    """
+    for raw in paths:
+        path = Path(raw).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"attachment not found: {path}")
+        ctype, encoding = mimetypes.guess_type(path.name)
+        if ctype is None or encoding is not None:
+            ctype = "application/octet-stream"
+        maintype, subtype = ctype.split("/", 1)
+        msg.add_attachment(
+            path.read_bytes(),
+            maintype=maintype,
+            subtype=subtype,
+            filename=path.name,
+        )
 
 
 def send_one(smtp: smtplib.SMTP, path: Path, sender: str) -> bool:
@@ -190,7 +220,7 @@ def parse_flag_args(argv: list[str]) -> dict | None:
     """Parse --to / --subject / --body style flags into a payload dict.
     Returns None if no recognized flags are present (falls back to file mode)."""
     flags = {"--to", "--subject", "--body", "--cc", "--bcc", "--reply-to",
-             "--in-reply-to", "--references"}
+             "--in-reply-to", "--references", "--attach"}
     if not any(a in flags for a in argv):
         return None
     payload: dict = {}
@@ -217,6 +247,8 @@ def parse_flag_args(argv: list[str]) -> dict | None:
             payload["in_reply_to"] = argv[i + 1]; i += 2; continue
         if a == "--references" and i + 1 < len(argv):
             payload["references"] = argv[i + 1]; i += 2; continue
+        if a == "--attach" and i + 1 < len(argv):
+            payload.setdefault("attachments", []).append(argv[i + 1]); i += 2; continue
         i += 1
     return payload
 
@@ -234,7 +266,7 @@ def main(argv: list[str]) -> int:
         print(
             "usage:\n"
             "  send-gmail.py <file.json | directory>\n"
-            "  send-gmail.py --to EMAIL --subject SUBJ --body TEXT [--cc ... --in-reply-to ... --references ...]",
+            "  send-gmail.py --to EMAIL --subject SUBJ --body TEXT [--cc ... --attach FILE --in-reply-to ... --references ...]",
             file=sys.stderr,
         )
         return 2
