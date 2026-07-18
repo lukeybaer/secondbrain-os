@@ -13,7 +13,8 @@
  *     those are the cleanest paraphrase of the owner's ask.
  *  3. Create one spine action task per directive, then append a matching
  *     legacy queue receipt for dashboard/backfill compatibility.
- *  4. Telegram-ping the owner so they see what was captured.
+ *  4. Send one deduped Telegram brief after every non-ExampleCo conversation;
+ *     owner directive captures use the same voice-followup channel.
  *
  * Triggered by the 2026-05-01 incident: ExampleCo asked for an immigration news
  * section on a Vapi call; Amy verbally said "Got it" but invoked no tool,
@@ -127,6 +128,105 @@ function isOwnerCall(customer, ownerPhones) {
   });
 }
 
+function callTranscript(msg, callObj) {
+  return String(
+    (msg && msg.transcript) ||
+      (msg && msg.artifact && msg.artifact.transcript) ||
+      (callObj && callObj.transcript) ||
+      '',
+  ).trim();
+}
+
+function callSummary(msg, callObj) {
+  return String(
+    (msg && msg.analysis && msg.analysis.summary) ||
+      (msg && msg.summary) ||
+      (callObj && callObj.summary) ||
+      '',
+  ).replace(/\s+/g, ' ').trim();
+}
+
+function callerTurns(transcript) {
+  return String(transcript || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .map((line) => line.match(/^(?:User|Caller|Customer):\s*(.+)$/i))
+    .filter(Boolean)
+    .map((match) => match[1].replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
+
+function transcriptSummaryFallback(transcript) {
+  const turns = callerTurns(transcript);
+  if (!turns.length) return '';
+  let text = turns.slice(0, 3).join(' ');
+  const introduction = text.match(/^this is\s+([^.!?]+)[.!?]\s*(.+)$/i);
+  if (introduction) text = `${introduction[1].trim()}: ${introduction[2].trim()}`;
+  if (text.length > 700) text = text.slice(0, 697).replace(/\s+\S*$/, '') + '...';
+  return text;
+}
+
+function callDurationSeconds(callObj) {
+  const explicit = Number(callObj && callObj.durationSeconds);
+  if (Number.isFinite(explicit) && explicit >= 0) return Math.round(explicit);
+  const start = Date.parse((callObj && callObj.startedAt) || '');
+  const end = Date.parse((callObj && callObj.endedAt) || '');
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  return Math.round((end - start) / 1000);
+}
+
+function formatCallDuration(seconds) {
+  if (!Number.isFinite(seconds)) return '';
+  const whole = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(whole / 60);
+  const remainder = whole % 60;
+  if (!minutes) return `${remainder}s`;
+  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+}
+
+function endedWithoutConversation(callObj, transcript) {
+  if (callerTurns(transcript).length) return false;
+  const reason = String((callObj && callObj.endedReason) || '').toLowerCase();
+  return /(?:did-not-answer|customer-busy|call-rejected|invalid-number|number-unavailable|failed-to-connect|no-route)/.test(
+    reason,
+  );
+}
+
+function buildThirdPartyCallBrief(msg, callObj) {
+  const transcript = callTranscript(msg, callObj);
+  if (endedWithoutConversation(callObj, transcript)) return null;
+  const generatedSummary = callSummary(msg, callObj);
+  const groundedSummary = generatedSummary || transcriptSummaryFallback(transcript);
+  if (!groundedSummary) return null;
+
+  const customer = (callObj && callObj.customer) || (msg && msg.call && msg.call.customer) || {};
+  const name = String(customer.name || '').replace(/\s+/g, ' ').trim();
+  const phone = String(customer.number || '').trim();
+  const party = name && phone ? `${name} (${phone})` : name || phone || 'ExampleCo caller';
+  const type = String((callObj && callObj.type) || '').toLowerCase();
+  const direction = type.includes('inbound') ? 'Inbound' : type.includes('outbound') ? 'Outbound' : '';
+  const duration = formatCallDuration(callDurationSeconds(callObj));
+  const endedReason = String((callObj && callObj.endedReason) || '').replace(/[-_]+/g, ' ').trim();
+  const facts = [direction, duration, endedReason].filter(Boolean);
+  const lines = [`Phone call with ${party}`];
+  if (facts.length) lines.push(facts.join(' | '));
+  lines.push('', `Summary: ${groundedSummary}`);
+  return lines.join('\n');
+}
+
+function sendVoiceFollowup(deps, sendMessage, payload) {
+  const notify =
+    typeof deps.notify === 'function'
+      ? deps.notify
+      : ({ text, kind, source, dedupKey }) =>
+          sendMessage(text, {
+            raw: true,
+            kind,
+            extras: { source, dedup_key: dedupKey },
+          });
+  Promise.resolve(notify(payload)).catch(() => {});
+}
+
 /**
  * Process an end-of-call-report event. Pure function in spirit: all I/O
  * and external sends go through injected dependencies so tests can
@@ -134,7 +234,9 @@ function isOwnerCall(customer, ownerPhones) {
  *
  * deps = {
  *   ownerPhones: string[],     // OWNER_PHONES from ec2-server.js env
+ *   ExampleCoPhones?: string[],     // ExampleCo identities only; controls third-party summaries
  *   sendMessage: (text) => Promise<void>,
+ *   notify?: (payload) => Promise<object>, // notify-with-fallback in production
  *   queuePath?: string,         // override for tests
  *   rawDir?: string,            // override for tests
  *   nowIso?: () => string,      // override for tests (deterministic ts)
@@ -142,15 +244,13 @@ function isOwnerCall(customer, ownerPhones) {
  */
 function handleEndOfCallReport(msg, callObj, deps = {}) {
   const ownerPhones = Array.isArray(deps.ownerPhones) ? deps.ownerPhones : [];
+  const ExampleCoPhones = Array.isArray(deps.ExampleCoPhones) ? deps.ExampleCoPhones : ownerPhones;
   const sendMessage = typeof deps.sendMessage === 'function' ? deps.sendMessage : () => Promise.resolve();
   const nowIso = typeof deps.nowIso === 'function' ? deps.nowIso : () => new Date().toISOString();
 
   const callId = (callObj && callObj.id) || (msg && msg.callId) || 'ExampleCo';
-  const transcript = (msg && msg.transcript) || '';
-  const summary =
-    (msg && msg.analysis && msg.analysis.summary) ||
-    (msg && msg.summary) ||
-    '';
+  const transcript = callTranscript(msg, callObj);
+  const summary = callSummary(msg, callObj);
   const customer =
     (callObj && callObj.customer && callObj.customer.number) ||
     (msg && msg.call && msg.call.customer && msg.call.customer.number) ||
@@ -210,10 +310,36 @@ function handleEndOfCallReport(msg, callObj, deps = {}) {
     spineTaskId = null;
   }
 
+  // Every completed conversation with someone other than ExampleCo gets one
+  // grounded Telegram brief. This is separate from the owner authorization
+  // gate: PRIVATE_NAME or another authorized principal is still "not ExampleCo" and must
+  // be summarized to him. Empty no-answer events have no conversation to
+  // summarize and therefore do not notify.
+  const thirdPartyBrief = !isOwnerCall(customer, ExampleCoPhones)
+    ? buildThirdPartyCallBrief(msg, callObj)
+    : null;
+  if (thirdPartyBrief) {
+    sendVoiceFollowup(deps, sendMessage, {
+      text: thirdPartyBrief,
+      source: 'vapi-end-of-call',
+      kind: 'voice-followup',
+      dedupKey: `third-party-call:${callId}`,
+      raw: true,
+    });
+  }
+
   // 2) Only mine directives from owner calls. Random inbounds get archived
   //    but never auto-dispatched.
   if (!isOwnerCall(customer, ownerPhones)) {
-    return { archived: !!rawPath, rawPath, directives: [], skipped: 'non-owner', spineTaskId, sideEffectAudit };
+    return {
+      archived: !!rawPath,
+      rawPath,
+      directives: [],
+      skipped: 'non-owner',
+      spineTaskId,
+      sideEffectAudit,
+      thirdPartyBrief: !!thirdPartyBrief,
+    };
   }
 
   const recentContext = appendRecentOwnerCallContext(
@@ -323,7 +449,13 @@ function handleEndOfCallReport(msg, callObj, deps = {}) {
   });
   lines.push('');
   lines.push('Queued for processing. process-dispatches.js will route them.');
-  Promise.resolve(sendMessage(lines.join('\n'))).catch(() => {});
+  sendVoiceFollowup(deps, sendMessage, {
+    text: lines.join('\n'),
+    source: 'vapi-end-of-call-directives',
+    kind: 'voice-followup',
+    dedupKey: `owner-call-directives:${callId}`,
+    raw: true,
+  });
 
   return {
     archived: !!rawPath,
@@ -343,6 +475,10 @@ module.exports = {
   hasExplicitAmyTrigger,
   hasExplicitUserAmyTrigger,
   isOwnerCall,
+  callTranscript,
+  callSummary,
+  transcriptSummaryFallback,
+  buildThirdPartyCallBrief,
   handleEndOfCallReport,
   getDispatchQueuePath,
   getVapiRawDir,

@@ -112,11 +112,17 @@ function appendJsonl(filePath, obj) {
   }
 }
 
-function sendTelegramOnce({ token, chatId, text, timeoutMs = 10000 }) {
+function buildTelegramMessageBody({ chatId, text, parseMode = 'Markdown' }) {
+  const payload = { chat_id: chatId, text };
+  if (parseMode) payload.parse_mode = parseMode;
+  return JSON.stringify(payload);
+}
+
+function sendTelegramOnce({ token, chatId, text, timeoutMs = 10000, parseMode = 'Markdown' }) {
   return new Promise((resolve) => {
     if (!token || !chatId) return resolve({ ok: false, reason: 'missing_token_or_chat' });
     const url = `https://api.telegram.org/bot${token}/sendMessage`;
-    const body = JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' });
+    const body = buildTelegramMessageBody({ chatId, text, parseMode });
     const req = https.request(
       url,
       {
@@ -165,6 +171,7 @@ async function notifyWithFallback({
   dedup = true,
   dedupKey,
   reactive = false,
+  raw = false,
 } = {}) {
   if (!text || typeof text !== 'string') {
     throw new Error('notifyWithFallback: text is required');
@@ -223,7 +230,12 @@ async function notifyWithFallback({
   const chatId = chatIdOverride || process.env.TELEGRAM_CHAT_ID || process.env.ExampleCo_CHAT_ID || '';
   const attempts = [];
   for (let i = 0; i < 2; i++) {
-    const result = await sendTelegramOnce({ token, chatId, text });
+    const result = await sendTelegramOnce({
+      token,
+      chatId,
+      text,
+      parseMode: raw ? null : 'Markdown',
+    });
     attempts.push({ attempt: i + 1, ...result });
     if (result.ok) {
       if (dedup !== false) recordNotification({ kind, key: dedupKey, text });
@@ -260,6 +272,7 @@ async function notifyWithFallback({
 module.exports = {
   notifyWithFallback,
   sendTelegramOnce,
+  buildTelegramMessageBody,
   telegramKindAllowed,
   ALLOWED_KINDS,
   loadDotEnvIfPresent,
