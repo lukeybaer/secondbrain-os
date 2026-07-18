@@ -80,6 +80,27 @@ export function judgeHost(host, receipt, nowMs, opts = {}) {
       unresolved,
     };
   }
+  // A receipt that only looked at part of the machine cannot certify the whole
+  // machine. 2026-07-18: oldpc reported "318 audited, 0 missing, green" while
+  // holding 6582 local sessions, six of which were pinned sidebar sessions that
+  // had never been uploaded. Both numbers were already in the receipt and this
+  // check ignored them. Coverage of a sample is not coverage.
+  const localTotal = Number(receipt.localSessionsTotal) || 0;
+  const audited = Number(receipt.audited) || 0;
+  if (localTotal > 0 && audited < localTotal) {
+    return {
+      host,
+      status: 'red',
+      reason: `only ${audited} of ${localTotal} local sessions were audited (${localTotal - audited} never checked)`,
+      ageMs,
+      unaudited: localTotal - audited,
+    };
+  }
+  // Bounded repair is fine; silently dropping the remainder is not.
+  const deferred = Number(receipt.repairsDeferred) || 0;
+  if (deferred > 0) {
+    return { host, status: 'red', reason: `${deferred} repair(s) deferred and still pending`, ageMs };
+  }
   if (Number(receipt.repairFailures) > 0) {
     return { host, status: 'red', reason: `${receipt.repairFailures} repair upload(s) failed`, ageMs };
   }
@@ -95,7 +116,6 @@ export function judgeHost(host, receipt, nowMs, opts = {}) {
       return { host, status: 'yellow', reason: `newest session is ${Math.round(lagMs / 3600000)}h ahead of AWS`, ageMs, lagMs };
     }
   }
-  const audited = Number(receipt.audited) || 0;
   return { host, status: 'green', reason: `${audited} sessions verified on S3`, ageMs, audited };
 }
 

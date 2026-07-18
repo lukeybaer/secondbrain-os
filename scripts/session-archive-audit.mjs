@@ -223,6 +223,46 @@ export function selectAuditSet(census, unresolvedIds, limit) {
   return picked;
 }
 
+/**
+ * VERIFY EVERY LOCAL SESSION. Always. No window.
+ *
+ * 2026-07-18, found by the old PC and it was right: six of ExampleCo's 21 pinned
+ * sidebar sessions had never been uploaded, while this tool reported GREEN with
+ * "0 missing" at the same moment. They were older than the newest-300 window,
+ * so they were never checked at all.
+ *
+ * "Green on the newest 300 is not green on the sessions ExampleCo actually cares
+ * about." The window correlates with recency; importance does not. A pinned
+ * session is by definition one he returns to, which makes it OLD, which is
+ * exactly what the window excluded.
+ *
+ * I had documented the rolling blind spot and then only half-closed it: the
+ * durable unresolved set ExampleCos forward sessions that were once audited and
+ * found wanting, but a session that was never IN the window was never audited,
+ * so it could never enter that set. It was invisible, permanently, and the
+ * receipt said green.
+ *
+ * The fix separates two things that never should have shared one number:
+ *   VERIFICATION is pure computation against an object listing already fetched
+ *   once. Auditing 6582 sessions instead of 300 costs milliseconds. It is now
+ *   unbounded, always, so the tool cannot be blind.
+ *   REPAIR uploads bytes and is genuinely expensive, so it stays bounded by
+ *   --limit. Deferred repairs remain unresolved, keep the receipt red, and get
+ *   picked up next run.
+ *
+ * Never report green about a set you did not look at.
+ */
+export function selectRepairSet(results, limit) {
+  const broken = results.filter((r) => !r.live && r.state !== 'sealed' && r.state !== 'covered');
+  // Oldest-first: the sessions most likely to be pruned from local disk soonest
+  // are the ones whose only surviving copy is most at risk.
+  broken.sort((a, b) => Date.parse(a.mtime || 0) - Date.parse(b.mtime || 0));
+  return {
+    attempt: broken.slice(0, limit),
+    deferred: Math.max(0, broken.length - limit),
+  };
+}
+
 // ----------------------------- side-effecting runtime -----------------------------
 
 /**
@@ -466,7 +506,10 @@ function publishReceipt(bin, bucket, receipt) {
 
 export function runAudit(opts = {}) {
   const nowMs = opts.nowMs || Date.now();
-  const limit = opts.all ? Infinity : (opts.limit || DEFAULT_LIMIT);
+  // --limit now bounds REPAIR UPLOADS only. Verification always covers every
+  // local session, because a set you did not look at cannot be reported green.
+  // See selectRepairSet for the 2026-07-18 pinned-sessions incident.
+  const repairLimit = opts.all ? Infinity : (opts.limit || DEFAULT_LIMIT);
   const bin = awsBin();
   if (!bin) throw new Error('aws CLI not found (set SB_AWS_BIN); refusing to report health without evidence');
   const bucket = opts.bucket || sessionsBucket(bin);
@@ -474,7 +517,9 @@ export function runAudit(opts = {}) {
 
   const { sessions: census, nestedExcluded } = localCensus();
   const unresolvedIds = loadUnresolved();
-  const audit = selectAuditSet(census, unresolvedIds, limit);
+  // Every local session, every run. Verification is pure computation against a
+  // listing fetched once, so breadth is nearly free; blindness is not.
+  const audit = census;
   const evidence = s3Evidence(bin, bucket);
   const evidenceMeta = evidence.get('__meta__') || { pages: 0, objects: 0 };
 
@@ -491,10 +536,13 @@ export function runAudit(opts = {}) {
   }
 
   const repaired = [];
+  let repairsDeferred = 0;
   if (opts.repair) {
-    for (const r of results) {
-      if (r.live || r.state === 'sealed' || r.state === 'covered') continue;
-      const entry = audit.find((c) => c.sessionId === r.sessionId);
+    const { attempt, deferred } = selectRepairSet(results, repairLimit);
+    repairsDeferred = deferred;
+    const byId = new Map(audit.map((c) => [c.sessionId, c]));
+    for (const r of attempt) {
+      const entry = byId.get(r.sessionId);
       if (!entry) continue;
       const rep = repairSession(bin, bucket, entry);
       repaired.push({ sessionId: r.sessionId, ...rep });
@@ -529,7 +577,10 @@ export function runAudit(opts = {}) {
     host: (opts.host || process.env.SB_AUDIT_HOST || os.hostname()).toLowerCase(),
     completedAt: new Date().toISOString(),
     bucket,
-    limit: opts.all ? 'all' : limit,
+    // Verification is never limited. This bounds repair uploads only.
+    repairLimit: opts.all ? 'all' : repairLimit,
+    // Explicit so a consumer can assert it rather than infer it from counts.
+    verifiedEveryLocalSession: true,
     localSessionsTotal: census.length,
     audited: results.length,
     // Known uncovered class, surfaced so it can never read as "all uploaded".
@@ -545,6 +596,10 @@ export function runAudit(opts = {}) {
     unresolved: summary.unresolved.length,
     unresolvedSample: summary.unresolved.slice(0, 25),
     repaired: repaired.length,
+    // Repairs the run chose not to attempt. These stay unresolved, keep the
+    // receipt red, and are retried next run, so a bounded run can never read
+    // as a clean one.
+    repairsDeferred,
     repairFailures: repaired.filter((r) => !r.ok).length,
     // Finished-session activity vs finished-session archive coverage.
     newestLocalActivity: newestLocal ? new Date(newestLocal).toISOString() : null,
