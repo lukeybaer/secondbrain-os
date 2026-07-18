@@ -518,11 +518,17 @@ const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fil
 if (invokedDirectly) {
   const argv = process.argv.slice(2);
   const limitArg = argv.indexOf('--limit');
+  const hostArg = argv.indexOf('--host');
   const opts = {
     all: argv.includes('--all'),
     repair: argv.includes('--repair'),
     noReceipt: argv.includes('--no-receipt'),
     limit: limitArg >= 0 ? Number(argv[limitArg + 1]) : DEFAULT_LIMIT,
+    // --host pins the identity the receipt publishes under. The scheduled task
+    // passes it explicitly so a machine's receipt always lands under the name
+    // the accountability registry is watching, rather than whatever
+    // os.hostname() happens to return after a rename or reimage.
+    host: hostArg >= 0 ? argv[hostArg + 1] : undefined,
   };
   try {
     const r = runAudit(opts);
