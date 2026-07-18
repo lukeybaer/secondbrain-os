@@ -1823,6 +1823,9 @@ function acquireLock({ lockPath = LOCK_PATH, isPidAlive = pidIsAlive } = {}) {
       if (age < LOCK_STALE_MS && holder && isPidAlive(holder)) {
         return {
           ok: false,
+          // busy = a LIVE holder: the only failure worth waiting out
+          // (acquireLockWithWait keys on this, never on the reason text).
+          busy: true,
           reason: `another orchestrator instance is running (lock age ${Math.round(age / 1000)}s)`,
         };
       }
@@ -1848,6 +1851,41 @@ function releaseLock() {
     if (holder === String(process.pid)) fs.unlinkSync(LOCK_PATH);
   } catch {
     /* best effort */
+  }
+}
+
+// SECOND SCHEDULED PASS MUST COUNT (2026-07-18): the 2:45 and 3:00 CT cron
+// runs exist so the night gets TWO real heal attempts, but the 3:00 run always
+// found the 2:45 run's lock still held and exited instantly, so the second
+// scheduled pass never did any work. This bounded wait turns "two schedules"
+// into "two attempts" without ever allowing concurrent orchestrators: it waits
+// only for a LIVE holder (busy), re-probing until the holder finishes or the
+// wait budget runs out. Any other acquisition failure returns immediately.
+// The CLI reads the wait from SELF_HEAL_LOCK_WAIT_MS (default 0 so direct and
+// briefing-runner invocations keep the old instant-skip behavior); the
+// scheduled wrapper scripts/ec2-self-heal-run.sh opts in.
+const DEFAULT_LOCK_WAIT_MS = 45 * 60 * 1000;
+const LOCK_WAIT_POLL_MS = 30 * 1000;
+
+async function acquireLockWithWait({
+  lockPath = LOCK_PATH,
+  isPidAlive = pidIsAlive,
+  waitMs = DEFAULT_LOCK_WAIT_MS,
+  pollMs = LOCK_WAIT_POLL_MS,
+  now = Date.now,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  onWait = null,
+} = {}) {
+  const deadline = now() + Math.max(0, Number(waitMs) || 0);
+  let waited = false;
+  for (;;) {
+    const attempt = acquireLock({ lockPath, isPidAlive });
+    if (attempt.ok || !attempt.busy) return { ...attempt, waited };
+    const remaining = deadline - now();
+    if (remaining <= 0) return { ...attempt, waited };
+    if (!waited && onWait) onWait(attempt.reason);
+    waited = true;
+    await sleep(Math.min(pollMs, remaining));
   }
 }
 
@@ -5548,6 +5586,8 @@ module.exports = {
   defaultTokenRefresh,
   shouldRunAuthPreflight,
   acquireLock,
+  acquireLockWithWait,
+  DEFAULT_LOCK_WAIT_MS,
   pidIsAlive,
   parseRenderQcDefects,
   renderQcDefectsToBlockers,
@@ -5575,24 +5615,34 @@ module.exports = {
 };
 
 if (require.main === module) {
-  const lock = acquireLock();
-  if (!lock.ok) {
-    console.error('[orchestrator] skipping run:', lock.reason);
-    process.exit(0);
-  }
-  process.on('exit', releaseLock);
-  process.on('SIGINT', () => {
-    releaseLock();
-    process.exit(130);
-  });
-  process.on('SIGTERM', () => {
-    releaseLock();
-    process.exit(143);
-  });
-  runOrchestrator()
-    .then((result) => {
-      console.log('[orchestrator] done:', JSON.stringify(result));
-      process.exit(0);
+  // SELF_HEAL_LOCK_WAIT_MS: how long a scheduled invocation waits for a live
+  // lock holder to finish before skipping. Default 0 keeps direct and
+  // briefing-runner invocations instant; scripts/ec2-self-heal-run.sh sets it
+  // so the 3:00 CT pass waits out the 2:45 pass instead of always no-opping.
+  acquireLockWithWait({
+    waitMs: Number(process.env.SELF_HEAL_LOCK_WAIT_MS) || 0,
+    onWait: (reason) =>
+      console.error('[orchestrator] lock busy; waiting for the holder to finish:', reason),
+  })
+    .then((lock) => {
+      if (!lock.ok) {
+        console.error('[orchestrator] skipping run:', lock.reason);
+        process.exit(0);
+      }
+      if (lock.waited) console.error('[orchestrator] lock acquired after waiting; starting pass.');
+      process.on('exit', releaseLock);
+      process.on('SIGINT', () => {
+        releaseLock();
+        process.exit(130);
+      });
+      process.on('SIGTERM', () => {
+        releaseLock();
+        process.exit(143);
+      });
+      return runOrchestrator().then((result) => {
+        console.log('[orchestrator] done:', JSON.stringify(result));
+        process.exit(0);
+      });
     })
     .catch((e) => {
       console.error('[orchestrator] threw:', e && e.message ? e.message : e);

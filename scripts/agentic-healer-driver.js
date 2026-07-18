@@ -59,8 +59,29 @@
 // model starve the other by claiming a wall (the input hash includes the
 // briefing date, so the next day re-unlocks the first rung forever). The
 // ladder is 2 rungs, so proving a wall costs at most one bounded extra
-// session. Only a budget kill stops the ladder early (no second doomed
-// session).
+// session.
+//
+// FAIR-SPLIT BUDGET (2026-07-18): the remaining agentic budget is split evenly
+// across the rungs that can still run, instead of winner-take-all. On
+// 2026-07-17 the claude rung consumed 38.9 of 39 minutes, was budget-killed,
+// and the codex fallback (empirically the highest-yield minutes of the night)
+// never got a turn; on 2026-07-18 claude happened to exit early and codex
+// cleared 3/5 in 5.7 minutes. Same code, opposite outcomes, decided purely by
+// when rung 1 stopped. Now each rung gets its slice, and the ladder stops
+// early only when the REMAINING wall clock cannot fund an honest session
+// (below MIN_SESSION_MS), never because one rung burned its own slice.
+//
+// WATCHDOG KILLS ARE EXECUTOR FAULTS, NOT CONSUMED TACTICS (2026-07-18): a
+// session terminated by the executor watchdog (budget, hang, idle,
+// nested-background-task, contract-miss) was interrupted, not refuted. Its
+// tactic row is recorded as 'executor-fault' so the no-repeat guard leaves the
+// tactic retryable; reporting stays honest (nothing cleared without proof).
+//
+// EVIDENCE-DRIVEN TRIAGE (2026-07-18): before any budget is spent, a defect
+// whose OWN evidence names a missing credential, a different host, or a
+// pending human decision is escalated to a human with a concrete action
+// instead of burning the night on a session that cannot succeed. Shape
+// classification over evidence text only: no defect ids, no per-defect rules.
 //
 // RECEIPTS: one 'started' row at launch (so a backstop kill still leaves
 // durable evidence) and one 'final' row per run appended to
@@ -102,6 +123,9 @@ const RECEIPTS_REL = path.join('agent', 'overnight-agentic-healer-runs.jsonl');
 const TACTICS_REL = path.join('agent', 'self-heal-tactics.jsonl');
 const RUN_LOG_REL = path.join('agent', 'overnight-self-heal-runs.jsonl');
 const ARTIFACT_REL = path.join('agent', 'dashboard-qc-result.json');
+// Durable escalation records: each row ExampleCos the exact action a human should
+// take for a defect the triage gate classified as human-gated (2026-07-18).
+const ESCALATIONS_REL = path.join('agent', 'self-heal-escalations.jsonl');
 
 // The tactic ladder. Each rung is one full-dev-session executor. The no-repeat
 // gate is per (defect, tactic, inputHash): if the claude session already failed
@@ -133,6 +157,10 @@ function runLogPath(opts = {}) {
 
 function pinnedArtifactPath(opts = {}) {
   return path.join(dataDir(opts), ARTIFACT_REL);
+}
+
+function escalationsPath(opts = {}) {
+  return path.join(dataDir(opts), ESCALATIONS_REL);
 }
 
 function appendJsonl(absPath, row) {
@@ -180,7 +208,15 @@ function tacticAlreadyFailed(rows, defect, tactic, inputHash) {
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const row = rows[i];
     if (!row || ledger.normDefectKey(row.defect) !== defectKey) continue;
-    if (String(row.outcome || '').toLowerCase() === 'cleared') return false;
+    const outcome = String(row.outcome || '').toLowerCase();
+    if (outcome === 'cleared') return false;
+    // An 'executor-fault' row records a session the executor's own watchdog
+    // killed (budget/hang/idle/etc). The tactic was interrupted, not refuted,
+    // so it neither resets the memory nor consumes the tactic: it stays
+    // retryable (2026-07-17/18: 10 of 29 ledger attempts ended in a SIGKILL,
+    // and the no-repeat guard permanently barred approaches that were working
+    // when they got shot).
+    if (outcome === 'executor-fault') continue;
     if (
       String(row.tacticKey || ledger.tacticKey(row.tactic)) === tKey &&
       String(row.inputHash || '') === hash
@@ -189,6 +225,16 @@ function tacticAlreadyFailed(rows, defect, tactic, inputHash) {
     }
   }
   return false;
+}
+
+// The durable tactic-row outcome for one defect after one session. Live proof
+// beats everything ('cleared' stays cleared even from a killed session). A
+// non-cleared defect from a session the executor watchdog killed is an
+// 'executor-fault' (interrupted, retryable), never a consumed 'failed' tactic.
+function tacticRowOutcome(outcome, session) {
+  if (outcome === 'cleared') return 'cleared';
+  if (session && session.watchdog && session.watchdog.killed) return 'executor-fault';
+  return 'failed';
 }
 
 // The tactic input hash covers exactly what the tactic acts on: briefing date,
@@ -251,6 +297,113 @@ function planTactics({ date, defectiveCards, tacticRows, tactics = TACTIC_LADDER
     exhausted: perDefect,
     perDefect,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Evidence-driven triage: human-gated defects are routed, not retried
+// ---------------------------------------------------------------------------
+
+// 2026-07-17 incident: the entire night's budget went to a defect whose own
+// evidence said it needed a credential on another host -- nothing an EC2
+// session could ever clear -- while tractable defects starved. The gate below
+// classifies each defect from its OWN evidence text BEFORE any session budget
+// is spent: evidence naming a missing/expired credential, a different host, or
+// a pending human decision means no agentic session can clear it tonight, so
+// the defect is escalated to a human with the concrete action, and the budget
+// goes to tractable work. SHAPE/KEYWORD classification over the evidence text
+// only: no defect ids, no per-defect runbooks (capability, not prescription).
+const HUMAN_GATE_CLASSIFIERS = [
+  {
+    kind: 'missing-credential',
+    // A credential-shaped artifact the evidence says is absent, expired, or
+    // refused (either word order).
+    re: /(?:\b(?:missing|expired|invalid|revoked|absent|denied|unauthorized|forbidden|no)\b[^.\n]{0,80}\b(?:credential|token|api[\s-]?key|secret|password|passphrase|oauth|cookie|deploy key|ssh key)s?\b)|(?:\b(?:credential|token|api[\s-]?key|secret|password|passphrase|oauth|cookie|deploy key|ssh key)s?\b[^.\n]{0,80}\b(?:missing|expired|invalid|revoked|absent|denied|unauthorized|forbidden|not\s+(?:set|found|present|configured|available|provisioned)|needs?\s+(?:re-?provision|refresh|renew)\w*)\b)/i,
+    action: (excerpt) =>
+      `Provide or refresh the credential the evidence names, then let the next scheduled heal pass retry. Evidence: "${excerpt}"`,
+  },
+  {
+    kind: 'different-host',
+    // The fix lives on a host this healer is not running on.
+    re: /\b(?:on|from|requires?|needs?)\s+(?:the\s+)?(?:desktop|laptop|another|other|a\s+different)\s+(?:host|machine|pc|box|computer)\b|\bnot\s+(?:available|present|installed|reachable|possible)\s+(?:on|from)\s+this\s+host\b|\bonly\s+(?:available|present|installed|runs?)\s+on\b[^.\n]{0,40}\b(?:host|machine|desktop|pc)\b/i,
+    action: (excerpt) =>
+      `Run the required step on the host the evidence names; this host cannot. Evidence: "${excerpt}"`,
+  },
+  {
+    kind: 'human-decision',
+    // The evidence names a person or a pending human decision (approval,
+    // ratification, sign-off, a choice only an owner can make).
+    re: /\b(?:needs?|requires?|awaiting|waiting\s+(?:on|for)|pending|blocked\s+on)\b[^.\n]{0,80}\b(?:ExampleCo|PRIVATE_NAME|human|owner)\b|\b(?:ExampleCo|PRIVATE_NAME|human|owner)(?:'s)?\b[^.\n]{0,80}\b(?:decision|approval|approve|ratif\w+|sign[\s-]?off|steer\w*|choose|choice|confirm\w*|nam(?:e|ing)\b)|\bhuman\s+decision\b|\bratif(?:y|ication)\b/i,
+    action: (excerpt) =>
+      `A human decision gates this defect; make the call the evidence names and record it, then the healer can act. Evidence: "${excerpt}"`,
+  },
+];
+
+// The single evidence line containing the match, bounded, so the escalation
+// record ExampleCos the exact text a human needs to act on.
+function evidenceExcerpt(text, matchIndex, matchText) {
+  const s = String(text || '');
+  const lineStart = s.lastIndexOf('\n', matchIndex) + 1;
+  let lineEnd = s.indexOf('\n', matchIndex + String(matchText || '').length);
+  if (lineEnd === -1) lineEnd = s.length;
+  return s.slice(lineStart, lineEnd).trim().slice(0, 240);
+}
+
+function classifyHumanGate(evidenceText) {
+  const text = String(evidenceText || '');
+  if (!text.trim()) return null;
+  for (const classifier of HUMAN_GATE_CLASSIFIERS) {
+    const m = text.match(classifier.re);
+    if (!m) continue;
+    const excerpt = evidenceExcerpt(text, m.index, m[0]);
+    return { kind: classifier.kind, excerpt, action: classifier.action(excerpt) };
+  }
+  return null;
+}
+
+// The evidence text for one card: its own defect-kind labels plus every raw
+// render-QC defect string that names the card (by id, id-with-spaces, or
+// rendered title). No evidence, no escalation: a defect only routes to a human
+// when its OWN text says a human is the gate.
+function defectEvidenceText(card, artifact) {
+  const id = String((card && card.id) || '').toLowerCase();
+  const spacedId = id.replace(/_/g, ' ');
+  const title = String((card && card.title) || '').toLowerCase();
+  const names = [...new Set([id, spacedId, title])].filter((n) => n.trim());
+  const raw = artifact && Array.isArray(artifact.defects) ? artifact.defects : [];
+  const mine = raw.filter((d) => {
+    const s = String(d).toLowerCase();
+    return names.some((n) => s.includes(n));
+  });
+  return [...((card && card.defectKinds) || []).map(String), ...mine].join('\n');
+}
+
+function triageDefects({ date, defectiveCards, artifact }) {
+  const escalations = [];
+  const actionableCards = [];
+  for (const card of defectiveCards) {
+    const gate = classifyHumanGate(defectEvidenceText(card, artifact));
+    if (gate) {
+      escalations.push({
+        card,
+        defect: defectKeyForCard(card),
+        inputHash: defectInputHash(date, card),
+        kind: gate.kind,
+        excerpt: gate.excerpt,
+        action: gate.action,
+      });
+    } else {
+      actionableCards.push(card);
+    }
+  }
+  return { escalations, actionableCards };
+}
+
+function readEscalationRows(opts = {}) {
+  return readJsonlRows(escalationsPath(opts));
+}
+
+function appendEscalationRow(row, opts = {}) {
+  return appendJsonl(escalationsPath(opts), row);
 }
 
 // ---------------------------------------------------------------------------
@@ -705,6 +858,14 @@ function buildReceipt(input) {
   const clearedCount = perDefect.filter((o) => o.outcome === 'cleared').length;
   const survivedCount = perDefect.filter((o) => o.outcome === 'survived').length;
   const unverifiedCount = perDefect.filter((o) => o.outcome === 'unverified').length;
+  // THREE-OUTCOME REPORTING (2026-07-18): cleared vs escalated_to_human vs
+  // failed_to_fix. A human-gated defect routed with a concrete action is not a
+  // healer failure; folding it into one "blocked" bucket is why the same
+  // human-gated defect got re-attempted every night.
+  const escalatedCount = perDefect.filter((o) => o.outcome === 'escalated_to_human').length;
+  const failedToFixCount = perDefect.length - clearedCount - escalatedCount;
+  const threeWaySplit = () =>
+    `${clearedCount} cleared, ${escalatedCount} escalated_to_human, ${failedToFixCount} failed_to_fix (${survivedCount} survived, ${unverifiedCount} unverified)`;
 
   let verdict;
   let verdictReason;
@@ -712,7 +873,7 @@ function buildReceipt(input) {
     verdict = verdictOverride;
     verdictReason = verdictReasonOverride || '';
     // Even an override may never smuggle a cleared verdict past the proof rule.
-    if (verdict === 'cleared' && (clearedCount === 0 || survivedCount + unverifiedCount > 0)) {
+    if (verdict === 'cleared' && clearedCount !== perDefect.length) {
       verdict = clearedCount > 0 ? 'partial' : 'blocked';
       verdictReason = `override rejected: cleared verdict requires every defect cleared with live proof. ${verdictReason}`;
       schemaViolations.push('cleared verdict override without full live proof was rejected');
@@ -725,10 +886,13 @@ function buildReceipt(input) {
     verdictReason = 'every target defect verified clean on the fresh live board artifact';
   } else if (clearedCount > 0) {
     verdict = 'partial';
-    verdictReason = `${clearedCount} cleared with live proof, ${survivedCount} survived, ${unverifiedCount} unverified`;
+    verdictReason = `some defects cleared with live proof: ${threeWaySplit()}`;
+  } else if (escalatedCount > 0 && failedToFixCount === 0) {
+    verdict = 'escalated';
+    verdictReason = `every defect is human-gated with a concrete action recorded: ${threeWaySplit()}`;
   } else {
     verdict = 'blocked';
-    verdictReason = `no defect cleared with live proof (${survivedCount} survived, ${unverifiedCount} unverified)`;
+    verdictReason = `no defect cleared with live proof: ${threeWaySplit()}`;
   }
 
   const sessionSummary = (s) =>
@@ -794,10 +958,20 @@ function buildReceipt(input) {
       outcome: o.outcome,
       proof: o.proof || null,
       reason: o.reason || '',
+      // The concrete human action rides on escalated_to_human outcomes.
+      ...(o.action ? { action: o.action } : {}),
     })),
     cleared: clearedCount,
     survived: survivedCount,
     unverified: unverifiedCount,
+    escalatedToHuman: escalatedCount,
+    failedToFix: failedToFixCount,
+    // The three-outcome night summary every consumer reads (2026-07-18).
+    outcomeSummary: {
+      cleared: clearedCount,
+      escalated_to_human: escalatedCount,
+      failed_to_fix: failedToFixCount,
+    },
     // Self-reported genuine-wall reasons per rung: recorded evidence, never a
     // ladder stop condition (Codex review 2026-07-12, pass 2).
     wallReasons,
@@ -820,7 +994,14 @@ function feedSelfHealHealth({ receipt, opts, artifact = null }) {
   // already reads (defectCounts). A cleared row requires the receipt's live
   // proof, which buildReceipt already enforced.
   for (const d of receipt.perDefect) {
-    if (d.outcome === 'skipped-no-repeat' || d.outcome === 'not-attempted') continue;
+    // escalated_to_human never attempted a tactic: no attempt row, so the
+    // repair ledger stays honest and the no-repeat guard is untouched.
+    if (
+      d.outcome === 'skipped-no-repeat' ||
+      d.outcome === 'not-attempted' ||
+      d.outcome === 'escalated_to_human'
+    )
+      continue;
     try {
       ledger.recordAttempt(
         receipt.date,
@@ -857,10 +1038,16 @@ function feedSelfHealHealth({ receipt, opts, artifact = null }) {
       agenticHealer: true,
       attempted: receipt.perDefect.length,
       cleared: receipt.cleared,
+      // Three-outcome night summary (2026-07-18): cleared vs escalated vs
+      // failed, so a human-gated defect stops reading as a nightly failure.
+      escalatedToHuman: receipt.escalatedToHuman || 0,
+      failedToFix: receipt.failedToFix || 0,
       verdict: receipt.verdict,
       blockers: receipt.perDefect.map((d) => ({
         title: d.defect,
         cleared: d.outcome === 'cleared',
+        escalatedToHuman: d.outcome === 'escalated_to_human',
+        ...(d.action ? { action: d.action } : {}),
         timedOut: !!(
           receipt.session &&
           receipt.session.watchdog &&
@@ -1049,10 +1236,67 @@ async function runAgenticHealer(opts = {}) {
       return receipt;
     }
 
-    // RAIL 2: no-repeat tactics gate.
+    // TRIAGE GATE (2026-07-18): before any budget is spent, route defects
+    // whose OWN evidence says the fix is outside this healer's reach (a
+    // missing credential, a different host, a human decision) to a human with
+    // the concrete action, instead of burning the night's budget on a session
+    // that cannot succeed. The escalation record is durable; no tactic is
+    // consumed for an escalated defect.
+    const triage = (opts.triageDefects || triageDefects)({ date, defectiveCards, artifact });
+    for (const esc of triage.escalations) {
+      appendEscalationRow(
+        {
+          ts: new Date(now()).toISOString(),
+          date,
+          runId,
+          defect: esc.defect,
+          cardId: esc.card.id,
+          kind: esc.kind,
+          action: esc.action,
+          evidence: esc.excerpt,
+        },
+        ledgerOpts,
+      );
+      log(
+        `[agentic-healer] escalated to human, no budget spent (${esc.kind}): ${esc.card.id} -> ${esc.action}`,
+      );
+    }
+    const escalatedOutcomes = triage.escalations.map((esc) => ({
+      card: esc.card,
+      defect: esc.defect,
+      inputHash: esc.inputHash,
+      tactic: null,
+      outcome: 'escalated_to_human',
+      proof: null,
+      action: esc.action,
+      reason: `human-gated (${esc.kind}): ${esc.excerpt}`,
+    }));
+    if (!triage.actionableCards.length) {
+      log('[agentic-healer] every live defect is human-gated; no session spawned.');
+      const receipt = finishReceipt({
+        defectsBefore,
+        tactic: null,
+        outcomes: escalatedOutcomes,
+      });
+      completeCheckpoint('green', {
+        attempted: 0,
+        cleared: 0,
+        escalatedToHuman: escalatedOutcomes.length,
+        verdict: receipt.verdict,
+      });
+      feedSelfHealHealth({ receipt, opts: ledgerOpts, artifact });
+      return receipt;
+    }
+
+    // RAIL 2: no-repeat tactics gate (over the tractable defects only).
     const ladder = opts.tactics || TACTIC_LADDER;
     const tacticRows = readTacticRows(ledgerOpts);
-    const plan = planTactics({ date, defectiveCards, tacticRows, tactics: ladder });
+    const plan = planTactics({
+      date,
+      defectiveCards: triage.actionableCards,
+      tacticRows,
+      tactics: ladder,
+    });
     if (!plan.tactic) {
       log(
         '[agentic-healer] every ladder tactic already failed with unchanged input; honest blocked verdict.',
@@ -1061,12 +1305,15 @@ async function runAgenticHealer(opts = {}) {
         defectsBefore,
         tactic: null,
         skippedTactics: plan.skipped,
-        outcomes: plan.skipped.map((s) => ({
-          ...s,
-          outcome: 'skipped-no-repeat',
-          proof: null,
-          reason: s.reason,
-        })),
+        outcomes: [
+          ...plan.skipped.map((s) => ({
+            ...s,
+            outcome: 'skipped-no-repeat',
+            proof: null,
+            reason: s.reason,
+          })),
+          ...escalatedOutcomes,
+        ],
         verdictOverride: 'blocked',
         verdictReasonOverride:
           'tactics exhausted: every ladder tactic already failed for these defects with unchanged input; needs changed input or ExampleCo steering',
@@ -1082,12 +1329,15 @@ async function runAgenticHealer(opts = {}) {
         defectsBefore,
         tactic: plan.tactic,
         skippedTactics: plan.skipped,
-        outcomes: plan.targets.map((t) => ({
-          ...t,
-          outcome: 'not-attempted',
-          proof: null,
-          reason: 'budget exhausted before a session could start',
-        })),
+        outcomes: [
+          ...plan.targets.map((t) => ({
+            ...t,
+            outcome: 'not-attempted',
+            proof: null,
+            reason: 'budget exhausted before a session could start',
+          })),
+          ...escalatedOutcomes,
+        ],
         verdictOverride: 'blocked',
         verdictReasonOverride:
           'budget-exhausted: not enough wall clock left to run an honest dev session',
@@ -1106,12 +1356,15 @@ async function runAgenticHealer(opts = {}) {
         tactic: plan.tactic,
         skippedTactics: plan.skipped,
         worktree,
-        outcomes: plan.targets.map((t) => ({
-          ...t,
-          outcome: 'not-attempted',
-          proof: null,
-          reason: `isolated worktree unavailable: ${worktree.error || 'ExampleCo'}`,
-        })),
+        outcomes: [
+          ...plan.targets.map((t) => ({
+            ...t,
+            outcome: 'not-attempted',
+            proof: null,
+            reason: `isolated worktree unavailable: ${worktree.error || 'ExampleCo'}`,
+          })),
+          ...escalatedOutcomes,
+        ],
         verdictOverride: 'blocked',
         verdictReasonOverride: `worktree-unavailable: refusing to run a full-access session in a shared checkout (${worktree.error || 'ExampleCo'})`,
       });
@@ -1125,8 +1378,10 @@ async function runAgenticHealer(opts = {}) {
     // board. A rung that leaves defects surviving is a failed tactic; the next
     // viable rung runs while budget remains, INCLUDING after a self-reported
     // genuine wall (a wall claim is the child's own text and must not starve
-    // the other rung; the wall reasons are recorded per rung). Only a budget
-    // kill stops the ladder early (no second doomed session).
+    // the other rung; the wall reasons are recorded per rung) and INCLUDING
+    // after a watchdog kill of an earlier rung (2026-07-18: the kill only
+    // consumed that rung's own slice, never the whole night). The ladder stops
+    // early only when the remaining wall clock cannot fund an honest session.
     const gitProbe = opts.gitProbe || probeOriginMaster;
     const originMasterBefore = gitProbe(repoRoot);
     const spawnSession = opts.spawnSession || defaultSpawnSession;
@@ -1142,7 +1397,10 @@ async function runAgenticHealer(opts = {}) {
     let lastSession = null;
     let lastVerification = null;
     let usedTactic = plan.tactic;
-    let budgetKilled = false;
+    // True only when the loop stopped because the REMAINING wall clock could
+    // not fund an honest session (fair-split semantics, 2026-07-18), never
+    // merely because one rung's watchdog killed that rung's own slice.
+    let budgetExhaustedBreak = false;
     const wallReasons = [];
 
     // STRUCTURED LESSON CAPTURE, item 2: fetch each target card's last (bounded
@@ -1168,14 +1426,26 @@ async function runAgenticHealer(opts = {}) {
       { nowDate: date, kindsByCard },
     );
 
-    for (const tactic of ladder) {
+    for (let rungIndex = 0; rungIndex < ladder.length; rungIndex += 1) {
+      const tactic = ladder[rungIndex];
       if (!pending.length) break;
       const viable = pending.filter(
         (t) => !tacticAlreadyFailed(tacticRows, t.defect, tactic, t.inputHash),
       );
       if (!viable.length) continue;
-      const sessionBudgetMs = deadlineMs - now() - VERIFY_RESERVE_MS;
-      if (sessionBudgetMs < MIN_SESSION_MS) break;
+      const availableMs = deadlineMs - now() - VERIFY_RESERVE_MS;
+      if (availableMs < MIN_SESSION_MS) {
+        budgetExhaustedBreak = true;
+        break;
+      }
+      // FAIR-SPLIT BUDGET (2026-07-18): split the remaining budget evenly
+      // across the rungs that can still run instead of handing the first rung
+      // every remaining minute. The fallback rung is empirically the
+      // highest-yield minute of the night; it must never be starved by rung 1
+      // happening to run long (2026-07-17: claude took 38.9 of 39 minutes,
+      // codex never got a turn, night cleared 0/4).
+      const remainingRungs = Math.max(1, ladder.length - rungIndex);
+      const sessionBudgetMs = Math.max(MIN_SESSION_MS, Math.floor(availableMs / remainingRungs));
 
       const prompt = buildMissionPrompt({
         date,
@@ -1217,6 +1487,9 @@ async function runAgenticHealer(opts = {}) {
       });
 
       // Durable tactic rows for this rung, per defect, before any next rung.
+      // A watchdog-killed session writes 'executor-fault' rows (interrupted,
+      // not refuted): the no-repeat guard leaves the tactic retryable while
+      // the receipt still reports honestly that nothing cleared (2026-07-18).
       for (const o of outcomes) {
         appendTacticRow(
           {
@@ -1226,8 +1499,9 @@ async function runAgenticHealer(opts = {}) {
             tactic,
             tacticKey: ledger.tacticKey(tactic),
             inputHash: o.inputHash,
-            outcome: o.outcome === 'cleared' ? 'cleared' : 'failed',
+            outcome: tacticRowOutcome(o.outcome, session),
             reason: String(o.reason || session.escalationReason || '').slice(0, 300),
+            ...(session.watchdog ? { watchdog: String(session.watchdog.kind || '') } : {}),
             runId,
           },
           ledgerOpts,
@@ -1244,36 +1518,48 @@ async function runAgenticHealer(opts = {}) {
         // child's own escalation text (Codex review 2026-07-12, pass 2).
         wallReasons.push(`${tactic}: ${String(session.escalationReason || 'wall').slice(0, 200)}`);
       }
-      if (session.watchdog && session.watchdog.kind === 'budget') {
-        budgetKilled = true;
-        break;
-      }
+      // NOTE (2026-07-18): a budget-killed rung no longer stops the ladder.
+      // Under the fair split the kill only consumed that rung's own slice;
+      // the top-of-loop check decides whether the next rung still has an
+      // honest slice, so the fallback rung is never starved by rung 1.
     }
 
+    // The night is budget-exhausted when the loop stopped for lack of usable
+    // clock, or the LAST rung was budget-killed with no honest session's
+    // worth of clock left behind it.
+    const budgetExhausted =
+      budgetExhaustedBreak ||
+      (!!(lastSession && lastSession.watchdog && lastSession.watchdog.kind === 'budget') &&
+        deadlineMs - now() - VERIFY_RESERVE_MS < MIN_SESSION_MS);
+
     // Assemble final per-defect outcomes: verified outcomes first, then the
-    // never-attempted (exhausted or out-of-budget/walled) defects, honestly.
-    const finalOutcomes = plan.perDefect.map((d) => {
-      const o = outcomesByDefect.get(ledger.normDefectKey(d.defect));
-      if (o) return o;
-      if (exhaustedKeys.has(ledger.normDefectKey(d.defect))) {
+    // never-attempted (exhausted or out-of-budget/walled) defects, honestly,
+    // then the human-gated defects the triage gate escalated before any spend.
+    const finalOutcomes = [
+      ...plan.perDefect.map((d) => {
+        const o = outcomesByDefect.get(ledger.normDefectKey(d.defect));
+        if (o) return o;
+        if (exhaustedKeys.has(ledger.normDefectKey(d.defect))) {
+          return {
+            ...d,
+            tactic: null,
+            outcome: 'skipped-no-repeat',
+            proof: null,
+            reason: 'no-repeat: every ladder tactic already failed with unchanged input',
+          };
+        }
         return {
           ...d,
           tactic: null,
-          outcome: 'skipped-no-repeat',
+          outcome: 'not-attempted',
           proof: null,
-          reason: 'no-repeat: every ladder tactic already failed with unchanged input',
+          reason: budgetExhausted
+            ? 'budget exhausted before this defect could be attempted'
+            : 'no viable rung remained for this defect within budget',
         };
-      }
-      return {
-        ...d,
-        tactic: null,
-        outcome: 'not-attempted',
-        proof: null,
-        reason: budgetKilled
-          ? 'budget exhausted before this defect could be attempted'
-          : 'no viable rung remained for this defect within budget',
-      };
-    });
+      }),
+      ...escalatedOutcomes,
+    ];
 
     const originMasterAfter = gitProbe(repoRoot);
     const anyCleared = finalOutcomes.some((o) => o.outcome === 'cleared');
@@ -1298,10 +1584,10 @@ async function runAgenticHealer(opts = {}) {
       },
       wallReasons,
       outcomes: finalOutcomes,
-      ...(budgetKilled && !anyCleared
+      ...(budgetExhausted && !anyCleared
         ? {
             verdictOverride: 'blocked',
-            verdictReasonOverride: `budget-exhausted: the ${usedTactic} session hit its wall-clock budget and the live board shows no cleared defect; honest blocked, never a false clear`,
+            verdictReasonOverride: `budget-exhausted: the night's wall clock ran out (last rung ${usedTactic}) and the live board shows no cleared defect; honest blocked, never a false clear`,
           }
         : {}),
     });
@@ -1310,6 +1596,7 @@ async function runAgenticHealer(opts = {}) {
     completeCheckpoint('green', {
       attempted: receipt.perDefect.length,
       cleared: receipt.cleared,
+      escalatedToHuman: receipt.escalatedToHuman,
       verdict: receipt.verdict,
       tacticsTried,
     });
@@ -1403,12 +1690,19 @@ module.exports = {
   tacticsPath,
   runLogPath,
   pinnedArtifactPath,
+  escalationsPath,
   readTacticRows,
   appendTacticRow,
   tacticAlreadyFailed,
+  tacticRowOutcome,
   defectInputHash,
   defectKeyForCard,
   planTactics,
+  classifyHumanGate,
+  defectEvidenceText,
+  triageDefects,
+  readEscalationRows,
+  appendEscalationRow,
   briefingLockHeld,
   ensureSessionWorktree,
   buildMissionPrompt,

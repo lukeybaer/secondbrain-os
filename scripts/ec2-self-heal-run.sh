@@ -27,8 +27,13 @@
 # Install the cron (2:45 + 3:00 AM CT) with scripts/install-ec2-self-heal-cron.sh on
 # EC2. The operator installs this on EC2; nothing here SSHes anywhere.
 #
-# IDEMPOTENT: `flock -n` makes a second invocation a clean no-op while one run is
-# mid-flight (the orchestrator also holds its own internal lock). LOGGED: every run
+# TWO SCHEDULED PASSES = TWO REAL ATTEMPTS (2026-07-18): the 2:45 and 3:00 CT
+# crons exist so the night gets two heal attempts, but `flock -n` made the 3:00
+# run exit instantly while the 2:45 run still held the lock, so the second pass
+# never did any work. `flock -w` now WAITS (bounded) for the holder to finish,
+# then runs a real second pass. Concurrency is still impossible: the wait only
+# ends when the lock is free. The orchestrator's own internal lock gets the
+# same bounded-wait budget via SELF_HEAL_LOCK_WAIT_MS. LOGGED: every run
 # prints a dated header.
 #
 # TEST-GATED: under NODE_ENV=test / VITEST / SELFHEAL_DRY_RUN=1 it prints the command
@@ -40,6 +45,11 @@ ROOT="${SECONDBRAIN_ROOT:-/home/ec2-user/secondbrain-current}"
 DATA_DIR="${SECONDBRAIN_DATA_DIR:-/opt/secondbrain/data}"
 LOG_DIR="${SELFHEAL_LOG_DIR:-/opt/secondbrain/logs}"
 LOCK="/tmp/secondbrain-self-heal-run.lock"
+# Bounded lock wait so the second scheduled pass (3:00 CT) waits out the first
+# (2:45 CT) instead of instantly skipping. 45 minutes covers a full first pass
+# and still leaves headroom before the 5:30 briefing.
+LOCK_WAIT_SECONDS="${SELFHEAL_LOCK_WAIT_SECONDS:-2700}"
+SELF_HEAL_LOCK_WAIT_MS="${SELF_HEAL_LOCK_WAIT_MS:-$((LOCK_WAIT_SECONDS * 1000))}"
 NODE_BIN="${NODE_BIN:-/usr/bin/node}"
 # Cron has a minimal env: pin HOME so buildClaudeCliEnv's default token path resolves.
 HOME="${HOME:-/home/ec2-user}"
@@ -101,15 +111,18 @@ fi
 cd "$ROOT" || { echo "[self-heal-run] cannot cd to $ROOT" >&2; exit 1; }
 mkdir -p "$LOG_DIR"
 
-# flock -n: if a self-heal run is already going, this run is a clean no-op.
-flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" "${CMD[@]}"
+# flock -w: if a self-heal run is already going, WAIT (bounded) for it to
+# finish, then run a real second pass. Two scheduled passes = two attempts.
+flock -w "$LOCK_WAIT_SECONDS" "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" \
+  SELF_HEAL_LOCK_WAIT_MS="$SELF_HEAL_LOCK_WAIT_MS" "${CMD[@]}"
 status=$?
 
 if [ "$status" = "0" ]; then
   echo "[self-heal-run] $(date -u +%FT%TZ) done (exit 0)."
 elif [ "$status" = "1" ]; then
-  # flock returns 1 when the lock is held -> a prior run is still going. Benign.
-  echo "[self-heal-run] $(date -u +%FT%TZ) skipped: a self-heal run is already going (lock held) OR the orchestrator reported a fatal; see the run log."
+  # flock returns 1 when the wait budget expired with the lock still held ->
+  # the prior run outlived the whole wait window. Benign but logged.
+  echo "[self-heal-run] $(date -u +%FT%TZ) skipped: a prior self-heal run held the lock for the whole ${LOCK_WAIT_SECONDS}s wait window OR the orchestrator reported a fatal; see the run log."
 else
   echo "[self-heal-run] $(date -u +%FT%TZ) finished with exit $status; see $LOG_DIR/self-heal-cron.log and the orchestrator run log."
 fi
