@@ -46,8 +46,23 @@ function formatCentralDate(now = new Date()) {
   }
 }
 
+// This list is pushed verbatim to the Vapi assistant and REPLACES whatever it
+// had. Anything missing here is silently unsubscribed on the next config push.
+//
+// 'end-of-call-report' is load bearing and must never be dropped: it is the
+// only event that fires the post-call pipeline in ec2-server.js, which archives
+// the raw transcript, extracts owner directives, and appends to
+// data/agent/dispatch-queue.jsonl. Every in-call event can keep flowing while
+// that one is missing, so the failure is invisible from the logs: calls look
+// healthy, and nothing is archived and no work is ever queued.
+//
+// 2026-07-18: it WAS missing. PRIVATE_NAME phoned Amy with wallpaper changes, the
+// webhook received all 13 subscribed event types for the call, no
+// end-of-call-report ever arrived, nothing was archived and no task was
+// created. Regression test: scripts/__tests__/vapi-live-server-messages.test.js
 const VAPI_LIVE_SERVER_MESSAGES = [
   'conversation-update',
+  'end-of-call-report',
   'function-call',
   'hang',
   'model-output',
