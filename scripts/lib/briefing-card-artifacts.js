@@ -191,13 +191,19 @@ function cardForMarkdownTitle(title) {
   }) || null;
 }
 
-function inferMarkdownSectionStatus(body) {
+function inferMarkdownSectionStatus(body, cardId = '') {
   const lines = String(body || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
   const first = lines[0] || '';
   const firstFew = lines.slice(0, 4).join('\n');
+  if (
+    String(cardId || '') === 'voice_confirmation' &&
+    /\bPast-7-day Otter archive health:\s*RED\b/i.test(String(body || ''))
+  ) {
+    return 'blocked';
+  }
   if (/^(HARD-BLOCKED|BLOCKED\b|Blocked:|This card is held\b)/i.test(first)) return 'blocked';
   if (/^Status:\s*(blocked|red|stale|unavailable)\b/i.test(firstFew)) return 'blocked';
   if (/^Severity:\s*(red|blocked)\b/i.test(firstFew)) return 'blocked';
@@ -211,7 +217,7 @@ function markdownSectionToArtifact(section, { date, generatedAt = new Date().toI
   const card = cardForMarkdownTitle(section && section.title);
   if (!card) return null;
   const body = String(section.body || '').trim();
-  const status = inferMarkdownSectionStatus(body);
+  const status = inferMarkdownSectionStatus(body, card.id);
   return normalizeArtifactQuality(createCardArtifact({
     id: card.id,
     title: section.title,
