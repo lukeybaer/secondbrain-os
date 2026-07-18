@@ -70,4 +70,41 @@ function computeLast7DisplayStatus(last7) {
   return l7.status || '';
 }
 
-module.exports = { computeLast7DisplayStatus };
+// Tile-status guard for the VOICE CONFIRMATION card: the per-card artifact body
+// may carry a stale archive-health label (e.g. "GREEN" when the artifact was
+// generated, "RED" by the time the dashboard renders because the coverage report
+// re-ran). The live coverage JSON (via parseVoiceConfirmationBody ->
+// otterTextAudioCoverageSummary) is authoritative. When the two diverge, the
+// tile status must reflect the WORSE of the body-parsed stat and the live
+// archive health so a stale GREEN artifact body can never hide a live RED state.
+//
+// Hierarchy: red(3) > yellow(2) > green(1). "GREEN with timestamp warnings" maps
+// to rank 1 (same as green) so it never UPGRADES a tile above green. PRIVATE_NAME or
+// empty statuses rank 0 -- never let a missing live status downgrade an honest
+// body-parsed status.
+//
+// Provenance: this shipped as an UNTRACKED hot-patch applied directly to the
+// running release /opt/secondbrain during the 2026-07-18 incident and existed in
+// no git history, so the next deploy-ec2-server.sh would have silently destroyed
+// an anti-greenwashing guard. Forward-ported here 2026-07-18 so prod and master
+// agree and the guard is version-controlled. See dev-plans/core/briefing.md.
+function _archiveStatusRank(s) {
+  const lower = String(s || '').toLowerCase();
+  if (lower === 'red') return 3;
+  if (lower === 'yellow') return 2;
+  if (lower.startsWith('green')) return 1;
+  return 0;
+}
+
+function upgradeVoiceConfirmationStat(stat, data) {
+  if (!stat || !data || data.kind !== 'voiceConfirmation') return stat;
+  const coverage = data.textAudioCoverage;
+  if (!coverage) return stat;
+  const liveL7Status = String((coverage.last7 || {}).status || '').toLowerCase();
+  if (_archiveStatusRank(liveL7Status) > _archiveStatusRank(stat.status || '')) {
+    return { ...stat, status: liveL7Status };
+  }
+  return stat;
+}
+
+module.exports = { computeLast7DisplayStatus, upgradeVoiceConfirmationStat };

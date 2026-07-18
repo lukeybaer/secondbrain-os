@@ -110,20 +110,29 @@ function eligibleRawCounts(root, since, until) {
 // the CT "today", so a same-day gap on the new UTC date looked like a past-day
 // gap and flipped coverage red every night. Fix: treat both today-CT AND today-UTC
 // as "still arriving" since either can legitimately be in-flight.
+//
+// "Parity" is a legacy name: the check is SUFFICIENCY (s3 >= gmail), not equality.
+// See the shortfall comment inside for why an S3 surplus is healthy.
 function evaluateGmailS3Parity(j, todayCt) {
   if (!j) return { green: false, detail: 'missing Gmail S3 parity proof', ageH: null };
   const ageH = Math.round((Date.now() - Date.parse(j.generated_at || 0)) / 3600000);
   const fresh = ageH <= 30;
-  const countMatch = (j.gmail_count || 0) === (j.s3_raw_eml_count || 0);
+  // SUFFICIENCY, not equality. The S3 raw archive is APPEND-ONLY while the Gmail
+  // mailbox is MUTABLE (mail gets deleted, archived out of the queried range), so
+  // s3_raw_eml_count drifting ABOVE gmail_count is the expected healthy steady
+  // state, not coverage loss. An equality assertion scored that healthy surplus as
+  // a gap and held the whole check red. Only a SHORTFALL (fewer raw .eml in S3
+  // than live Gmail messages) means something was never mirrored.
+  const shortfall = Math.max(0, (j.gmail_count || 0) - (j.s3_raw_eml_count || 0));
+  const countSufficient = shortfall === 0;
   const missingDays = Array.isArray(j.missing_days) ? j.missing_days.map(String) : [];
   const todayUtc = new Date().toISOString().slice(0, 10);
   const todaySet = new Set([todayCt, todayUtc]);
   const onlyTodayMissing = missingDays.length > 0 && missingDays.every((d) => todaySet.has(d));
-  const green = fresh && (countMatch || onlyTodayMissing);
-  const shortfall = Math.max(0, (j.gmail_count || 0) - (j.s3_raw_eml_count || 0));
+  const green = fresh && (countSufficient || onlyTodayMissing);
   const detail = !fresh
     ? `Gmail S3 parity proof is stale (${ageH}h old, threshold 30h)`
-    : onlyTodayMissing && !countMatch
+    : onlyTodayMissing && !countSufficient
       ? `S3 parity current; ${shortfall} same-day email(s) still syncing (${j.s3_raw_eml_count || 0}/${j.gmail_count || 0}), past days fully mirrored`
       : j.detail || `${j.s3_raw_eml_count || 0}/${j.gmail_count || 0} raw emails in S3`;
   return { green, detail, ageH };
@@ -235,10 +244,16 @@ function coverageHealth(opts = {}) {
   const gmailS3 = gmailS3Health(root);
   const lifetime = lifetimeHealth(root);
   const disk = diskHealth(root);
+  // gmail_s3 is DELIBERATELY absent from this roll-up. It measures the Gmail ->
+  // S3 raw-archive mirror, which is a different subsystem from the knowledge
+  // graph. Folding it in meant a Graphiti that was demonstrably healthy
+  // (containers up for days, node count growing, episodes landing hours ago)
+  // rendered RED under the Graphiti label, sending every reader to debug the
+  // wrong system. It stays fully visible as its own row on summary.gmail_s3,
+  // and surfaces in the detail line below when it is not green.
   const status = maxStatus([
     ...rows.map((r) => r.status),
     provider ? provider.status : 'red',
-    gmailS3.status,
     lifetime.status,
     disk.status,
     graphiti && /healthy|green/.test(String(graphiti.status)) ? 'green' : 'red',
@@ -248,10 +263,16 @@ function coverageHealth(opts = {}) {
     generated_at: normalizeIso(new Date()),
     status,
     range: { since, until },
-    detail:
+    detail: [
       status === 'green'
-        ? 'raw source counts, event log, Graphiti receipts, lifetime replay, provider chain, Gmail S3, and disk all pass'
+        ? 'raw source counts, event log, Graphiti receipts, lifetime replay, provider chain, and disk all pass'
         : 'one or more Graphiti coverage checks is not green',
+      gmailS3.status === 'green'
+        ? null
+        : `separate subsystem gmail_s3 is ${gmailS3.status}: ${gmailS3.detail}`,
+    ]
+      .filter(Boolean)
+      .join('; '),
     rows,
     provider,
     graphiti,
