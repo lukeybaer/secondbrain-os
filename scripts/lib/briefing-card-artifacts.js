@@ -1104,12 +1104,14 @@ function produceAmyProjectsCardArtifact({ date, dataDir, now = new Date() }) {
 function produceActionItemsCardArtifact({ date, dataDir, now = new Date() }) {
   try {
     const {
+      ACTION_ITEMS_CLOUD_DEFAULT_LIMIT,
       actionSourceIntegrityIssue,
       extractActionItems,
       extractApprovalQueue,
       extractOpenCommitments,
       formatActionCommitmentsBlockedSection,
       formatActionCommitmentsSection,
+      standingReminderCommitmentLines,
     } = require('../cloud-morning-briefing.js');
     const source = readJson(path.join(dataDir, 'briefing-action-items.json')) || {};
     const generatedMs = Date.parse(source.lastFullReviewAt || source.generatedAt || '');
@@ -1120,8 +1122,16 @@ function produceActionItemsCardArtifact({ date, dataDir, now = new Date() }) {
         ? actionSourceIntegrityIssue(source, dataDir)
         : null;
     const title = 'ACTION ITEMS & OPEN COMMITMENTS';
+    // Standing reminders are direct owner dispatches, not Gmail-derived rows.
+    // The full morning builder preserves them when Gmail is blocked; a targeted
+    // card refresh must produce that same truthful floor instead of replacing it
+    // with only the Gmail-repair notice.
+    const standingCommitments =
+      typeof standingReminderCommitmentLines === 'function'
+        ? standingReminderCommitmentLines(dataDir, now)
+        : [];
     if (issue || stale) {
-      const body = formatActionCommitmentsBlockedSection([]);
+      const body = formatActionCommitmentsBlockedSection(standingCommitments);
       return createCardArtifact({
         id: 'action_items',
         title,
@@ -1135,7 +1145,9 @@ function produceActionItemsCardArtifact({ date, dataDir, now = new Date() }) {
       });
     }
     const actionItems = extractActionItems(source);
-    const openCommitments = extractOpenCommitments(source);
+    const openCommitments = [
+      ...new Set([...standingCommitments, ...extractOpenCommitments(source)]),
+    ].slice(0, ACTION_ITEMS_CLOUD_DEFAULT_LIMIT);
     const approvalQueue = extractApprovalQueue(source);
     const body = formatActionCommitmentsSection(actionItems, openCommitments, approvalQueue);
     const qc = qcCard({ id: 'action_items', title, body }, { surface: 'card-artifact' });
