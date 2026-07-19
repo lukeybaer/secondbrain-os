@@ -94,6 +94,10 @@ set +a
 
 "${COMPOSE[@]}" -f docker-compose.graphiti.yml build graphiti
 REPLACEMENT_STARTED=1
+# A prior emergency rollback may have recreated this container directly with
+# `docker run`, so Compose cannot assume it owns the existing name. The new
+# image is built before this removal, and rollback is armed before it happens.
+docker rm -f secondbrain-graphiti >/dev/null 2>&1 || true
 "${COMPOSE[@]}" -f docker-compose.graphiti.yml up -d --no-deps graphiti
 wait_for_health
 
