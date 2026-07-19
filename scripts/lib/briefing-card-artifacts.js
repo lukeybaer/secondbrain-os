@@ -8,14 +8,8 @@ const { CARDS, getCardById } = require('./briefing-card-manifest.js');
 const { splitMarkdownCards, qcCard } = require('./briefing-card-qc.js');
 const { askAI } = require('./ask-ai.js');
 const { writeDataArtifact } = require('./data-root.js');
-const {
-  defectiveCardCount,
-  readLiveBoardArtifact,
-} = require('./live-board-truth.js');
-const {
-  providerReceiptPath,
-  readProviderUsage,
-} = require('./token-usage-receipts.js');
+const { defectiveCardCount, readLiveBoardArtifact } = require('./live-board-truth.js');
+const { providerReceiptPath, readProviderUsage } = require('./token-usage-receipts.js');
 const { listCallSummaryArtifacts } = require('./otter-exec-summary-artifacts.js');
 const { renderOtterSpeakerParetoCard } = require('./otter-speaker-pareto-card.js');
 
@@ -70,7 +64,9 @@ function defaultDataDir() {
 }
 
 function normalizeStatus(status) {
-  const s = String(status || '').trim().toLowerCase();
+  const s = String(status || '')
+    .trim()
+    .toLowerCase();
   return ['clean', 'defect', 'blocked', 'stale'].includes(s) ? s : 'blocked';
 }
 
@@ -78,8 +74,13 @@ function cardTitle(cardOrId) {
   const card = typeof cardOrId === 'string' ? getCardById(cardOrId) : cardOrId;
   const id = card ? card.id : String(cardOrId || '');
   if (CARD_TITLE_OVERRIDES[id]) return CARD_TITLE_OVERRIDES[id];
-  if (!card) return String(cardOrId || '').replace(/_/g, ' ').toUpperCase();
-  return String(card.title || card.id || '').replace(/_/g, ' ').toUpperCase();
+  if (!card)
+    return String(cardOrId || '')
+      .replace(/_/g, ' ')
+      .toUpperCase();
+  return String(card.title || card.id || '')
+    .replace(/_/g, ' ')
+    .toUpperCase();
 }
 
 function isLlmCard(id) {
@@ -174,7 +175,10 @@ function writeJsonAtomic(file, value) {
 
 function writeCardArtifact({ dataDir, date, artifact }) {
   if (!artifact || !artifact.id) throw new Error('card artifact requires id');
-  return writeJsonAtomic(artifactPathFor({ dataDir, date: date || artifact.date, id: artifact.id }), artifact);
+  return writeJsonAtomic(
+    artifactPathFor({ dataDir, date: date || artifact.date, id: artifact.id }),
+    artifact,
+  );
 }
 
 function readCardArtifact({ dataDir, date, id }) {
@@ -185,10 +189,12 @@ function readCardArtifact({ dataDir, date, id }) {
 
 function cardForMarkdownTitle(title) {
   const text = String(title || '');
-  return CARDS.find((card) => {
-    const re = new RegExp(card.match.source, card.match.flags.includes('i') ? 'i' : '');
-    return re.test(text);
-  }) || null;
+  return (
+    CARDS.find((card) => {
+      const re = new RegExp(card.match.source, card.match.flags.includes('i') ? 'i' : '');
+      return re.test(text);
+    }) || null
+  );
 }
 
 function inferMarkdownSectionStatus(body, cardId = '') {
@@ -209,7 +215,11 @@ function inferMarkdownSectionStatus(body, cardId = '') {
   if (/^Severity:\s*(red|blocked)\b/i.test(firstFew)) return 'blocked';
   if (/^(Source unavailable|Source expired|Unavailable)\b:?/i.test(first)) return 'blocked';
   if (/^\u2717\s/.test(first)) return 'blocked';
-  if (/did not produce content on the cloud build|Broken for a known reason self-heal could not fix/i.test(firstFew)) {
+  if (
+    /did not produce content on the cloud build|Broken for a known reason self-heal could not fix/i.test(
+      firstFew,
+    )
+  ) {
     return 'blocked';
   }
   if (/held back rather than shown as today|more than 24 hours old/i.test(first)) return 'blocked';
@@ -221,21 +231,23 @@ function markdownSectionToArtifact(section, { date, generatedAt = new Date().toI
   if (!card) return null;
   const body = String(section.body || '').trim();
   const status = inferMarkdownSectionStatus(body, card.id);
-  return normalizeArtifactQuality(createCardArtifact({
-    id: card.id,
-    title: section.title,
-    date,
-    kind: isLlmCard(card.id) ? 'llm' : 'data',
-    status,
-    generatedAt,
-    markdown: `${section.title}:\n${body}`,
-    source: { mode: 'markdown-fallback', path: `briefings/briefing-${date}.md` },
-    blockedReason: status === 'blocked' ? body.split(/\r?\n/)[0].slice(0, 200) : '',
-    qc: {
-      ok: status === 'clean',
-      failures: status === 'clean' ? [] : [body.split(/\r?\n/)[0].slice(0, 200) || 'blocked'],
-    },
-  }));
+  return normalizeArtifactQuality(
+    createCardArtifact({
+      id: card.id,
+      title: section.title,
+      date,
+      kind: isLlmCard(card.id) ? 'llm' : 'data',
+      status,
+      generatedAt,
+      markdown: `${section.title}:\n${body}`,
+      source: { mode: 'markdown-fallback', path: `briefings/briefing-${date}.md` },
+      blockedReason: status === 'blocked' ? body.split(/\r?\n/)[0].slice(0, 200) : '',
+      qc: {
+        ok: status === 'clean',
+        failures: status === 'clean' ? [] : [body.split(/\r?\n/)[0].slice(0, 200) || 'blocked'],
+      },
+    }),
+  );
 }
 
 function markdownPathFor(dataDir, date) {
@@ -279,7 +291,11 @@ function artifactContentFailures(artifact) {
   if (status !== 'clean') return [];
   const markdown = artifactMarkdown(artifact);
   const failures = [];
-  if (/did not produce content on the cloud build|Broken for a known reason self-heal could not fix/i.test(markdown)) {
+  if (
+    /did not produce content on the cloud build|Broken for a known reason self-heal could not fix/i.test(
+      markdown,
+    )
+  ) {
     failures.push('card ExampleCos broken cloud-build fallback copy');
   }
   const parsed = splitMarkdownCards(markdown)[0] || {
@@ -289,12 +305,12 @@ function artifactContentFailures(artifact) {
   return uniqueList([
     ...failures,
     ...qcCard(
-    {
-      id: artifact.id,
-      title: parsed.title || artifact.title || cardTitle(artifact.id),
-      body: parsed.body || '',
-    },
-    { surface: 'card-artifact' },
+      {
+        id: artifact.id,
+        title: parsed.title || artifact.title || cardTitle(artifact.id),
+        body: parsed.body || '',
+      },
+      { surface: 'card-artifact' },
     ).failures,
   ]);
 }
@@ -380,7 +396,9 @@ function isRepresentedByMergePartnerArtifact(artifact) {
 }
 
 function renderableArtifacts(artifacts) {
-  return orderArtifacts(artifacts).filter((artifact) => !isRepresentedByMergePartnerArtifact(artifact));
+  return orderArtifacts(artifacts).filter(
+    (artifact) => !isRepresentedByMergePartnerArtifact(artifact),
+  );
 }
 
 function artifactsToBriefingMarkdown(
@@ -439,7 +457,11 @@ function statusToLiveStatus(status) {
 function artifactDefectKinds(artifact) {
   const failures =
     artifact && artifact.qc && Array.isArray(artifact.qc.failures) ? artifact.qc.failures : [];
-  return uniqueList([...(failures || []), artifact && artifact.blockedReason, artifact && artifact.status]);
+  return uniqueList([
+    ...(failures || []),
+    artifact && artifact.blockedReason,
+    artifact && artifact.status,
+  ]);
 }
 
 function liveBoardArtifactFromCardArtifacts(artifacts, { date, now = new Date() } = {}) {
@@ -510,7 +532,13 @@ function writeLiveBoardArtifactFromCardArtifacts({
   return { artifact, absPath };
 }
 
-function writeCompatibilityMarkdown({ dataDir, date, artifacts, now = new Date(), mode = 'off-cycle' }) {
+function writeCompatibilityMarkdown({
+  dataDir,
+  date,
+  artifacts,
+  now = new Date(),
+  mode = 'off-cycle',
+}) {
   const markdown = artifactsToBriefingMarkdown(artifacts, {
     date,
     generatedAt: now.toISOString(),
@@ -528,15 +556,19 @@ function isMissingSourcePlaceholderArtifact(artifact) {
   const reason = `${artifact.blockedReason || ''}\n${artifact.markdown || ''}`;
   return (
     normalizeStatus(artifact.status) !== 'clean' &&
-    ((source.missing === true || source.mode === 'data') &&
-      /deterministic source artifact missing/i.test(reason) ||
-      /did not produce content on the cloud build|Broken for a known reason self-heal could not fix/i.test(reason))
+    (((source.missing === true || source.mode === 'data') &&
+      /deterministic source artifact missing/i.test(reason)) ||
+      /did not produce content on the cloud build|Broken for a known reason self-heal could not fix/i.test(
+        reason,
+      ))
   );
 }
 
 function existingSourceArtifact({ dataDir, date, id }) {
   const current = readCardArtifact({ dataDir, date, id });
-  const fallback = readMarkdownFallbackArtifacts({ dataDir, date }).find((artifact) => artifact.id === id);
+  const fallback = readMarkdownFallbackArtifacts({ dataDir, date }).find(
+    (artifact) => artifact.id === id,
+  );
   if (current) {
     if (fallback && isMissingSourcePlaceholderArtifact(current)) {
       return {
@@ -619,13 +651,13 @@ function produceSystemHealthCardArtifact({
     renderSystemHealthSectionFn ||
     require('../refresh-briefing-generated-sections.js').renderSystemHealthSection;
   const proof =
-    markdownForProof === undefined ? readCompatibilityMarkdown({ dataDir, date }) : markdownForProof;
+    markdownForProof === undefined
+      ? readCompatibilityMarkdown({ dataDir, date })
+      : markdownForProof;
   const markdown = String(renderer(proof, { dataDir, date }) || '').trim();
   const status = systemHealthStatusFromMarkdown(markdown);
   const redRow = firstRedSystemHealthRow(markdown);
-  const blockedReason = redRow
-    ? redRow.replace(/^\u2717\s+/, '').slice(0, 220)
-    : '';
+  const blockedReason = redRow ? redRow.replace(/^\u2717\s+/, '').slice(0, 220) : '';
   return createCardArtifact({
     id: 'system_health',
     title: cardTitle('system_health'),
@@ -636,9 +668,7 @@ function produceSystemHealthCardArtifact({
     markdown,
     source: { mode: 'system-health-renderer' },
     blockedReason:
-      status === 'blocked'
-        ? blockedReason || 'System Health still has red subsystem rows.'
-        : '',
+      status === 'blocked' ? blockedReason || 'System Health still has red subsystem rows.' : '',
     qc: {
       ok: status === 'clean',
       failures: status === 'clean' ? [] : [blockedReason || 'System Health red subsystem rows'],
@@ -669,16 +699,16 @@ function formatBlockersCardBodyFromLiveBoard(liveBoardEnvelope = {}) {
       `Live card badge count: stale (last verified ${artifact.ts || 'ExampleCo time'}, older than one briefing cycle) -- do not treat this as the current Blockers issue count.`,
     );
   } else {
-    lines.push(
-      `Live card badge count: ${count} card(s) needing repair as of ${artifact.ts}.`,
-    );
+    lines.push(`Live card badge count: ${count} card(s) needing repair as of ${artifact.ts}.`);
   }
   defectiveCards.forEach((card, index) => {
     const title = card.title || card.id || `Defective card ${index + 1}`;
     lines.push('');
     lines.push(`${index + 1}. ${title}`);
     if (card.id === 'system_health') {
-      lines.push('Evidence: The health card needs attention; subsystem detail stays in SYSTEM HEALTH.');
+      lines.push(
+        'Evidence: The health card needs attention; subsystem detail stays in SYSTEM HEALTH.',
+      );
     } else {
       lines.push('Evidence: This card is not clean in the latest live board.');
     }
@@ -794,11 +824,7 @@ function produceOtterSpeakerParetoCardArtifact({
     mode: 'otter-per-call-summary-renderer',
     aggregate: path.relative(dataDir, aggregatePath).replace(/\\/g, '/'),
   };
-  if (
-    !aggregate ||
-    aggregate.schemaVersion !== 2 ||
-    aggregate.source !== 'per-call-artifacts'
-  ) {
+  if (!aggregate || aggregate.schemaVersion !== 2 || aggregate.source !== 'per-call-artifacts') {
     const reason = 'Otter per-call summary aggregate is missing or invalid.';
     return createCardArtifact({
       id: 'otter_speaker_pareto',
@@ -992,12 +1018,7 @@ function produceSourceBackedLlmCardArtifact({ card, date, dataDir, now = new Dat
   try {
     const { formatHealedNewsSection } = require('../cloud-morning-briefing.js');
     if (typeof formatHealedNewsSection !== 'function') return null;
-    const rendered = formatHealedNewsSection(
-      dataDir,
-      date,
-      contentConfig.key,
-      contentConfig.label,
-    );
+    const rendered = formatHealedNewsSection(dataDir, date, contentConfig.key, contentConfig.label);
     const markdown = String((rendered && rendered.markdown) || '').trim();
     const state = (rendered && rendered.state) || {};
     const count = Number(state.count || 0);
@@ -1063,7 +1084,12 @@ function produceAmyProjectsCardArtifact({ date, dataDir, now = new Date() }) {
     ].filter(Boolean);
     const taskRows = readTaskRows(dataDir);
     const healthRows = readJsonl(path.join(dataDir, 'agent', 'channel-health.jsonl'), 100);
-    const service = summarizeServiceState({ healthRows, queueRows, taskRows, simulatePcOff: false });
+    const service = summarizeServiceState({
+      healthRows,
+      queueRows,
+      taskRows,
+      simulatePcOff: false,
+    });
     const title = 'AMY PROJECTS RECEIVED (email, phone, otter)';
     const body = formatAmyProjectsSection(service, {
       dispatchRows,
@@ -1111,16 +1137,35 @@ function produceActionItemsCardArtifact({ date, dataDir, now = new Date() }) {
       extractOpenCommitments,
       formatActionCommitmentsBlockedSection,
       formatActionCommitmentsSection,
+      inspectActionSource,
       standingReminderCommitmentLines,
     } = require('../cloud-morning-briefing.js');
     const source = readJson(path.join(dataDir, 'briefing-action-items.json')) || {};
-    const generatedMs = Date.parse(source.lastFullReviewAt || source.generatedAt || '');
-    const stale =
-      !Number.isFinite(generatedMs) || now.getTime() - generatedMs > 24 * 3600 * 1000;
-    const issue =
-      typeof actionSourceIntegrityIssue === 'function'
-        ? actionSourceIntegrityIssue(source, dataDir)
-        : null;
+    // Producer parity (frozen supervised run 20260719103219-9552bdcc): the
+    // clean/blocked decision is the full build's inspectActionSource, never a
+    // locally re-derived variant. The legacy math here graded staleness on
+    // lastFullReviewAt FIRST (the full build grades the newest of both stamps)
+    // and skipped latestActionRefreshIssue, so the per-card rebuild could
+    // disagree with the 5:30 build on the identical data state. The typeof
+    // fallback keeps a skewed deployed copy honest rather than throwing.
+    const inspection =
+      typeof inspectActionSource === 'function'
+        ? inspectActionSource(dataDir, now)
+        : (() => {
+            const generatedMs = Date.parse(source.lastFullReviewAt || source.generatedAt || '');
+            const legacyStale =
+              !Number.isFinite(generatedMs) || now.getTime() - generatedMs > 24 * 3600 * 1000;
+            const legacyIssue =
+              typeof actionSourceIntegrityIssue === 'function'
+                ? actionSourceIntegrityIssue(source, dataDir)
+                : null;
+            return {
+              stale: legacyStale,
+              issue: legacyIssue,
+              blocked: Boolean(legacyIssue || legacyStale),
+            };
+          })();
+    const issue = inspection.issue;
     const title = 'ACTION ITEMS & OPEN COMMITMENTS';
     // Standing reminders are direct owner dispatches, not Gmail-derived rows.
     // The full morning builder preserves them when Gmail is blocked; a targeted
@@ -1130,7 +1175,7 @@ function produceActionItemsCardArtifact({ date, dataDir, now = new Date() }) {
       typeof standingReminderCommitmentLines === 'function'
         ? standingReminderCommitmentLines(dataDir, now)
         : [];
-    if (issue || stale) {
+    if (inspection.blocked) {
       const body = formatActionCommitmentsBlockedSection(standingCommitments);
       return createCardArtifact({
         id: 'action_items',
@@ -1242,13 +1287,18 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
   });
 }
 
-async function produceCardArtifact({ cardId, date, dataDir = defaultDataDir(), now = new Date() } = {}) {
+async function produceCardArtifact({
+  cardId,
+  date,
+  dataDir = defaultDataDir(),
+  now = new Date(),
+} = {}) {
   const card = getCardById(cardId);
   if (!card) throw new Error(`ExampleCo briefing card '${cardId}'`);
   const artifact = isLlmCard(card.id)
-    // A partial source-backed content-heal card is a real blocked artifact and
-    // must not fall through to generic LLM-unavailable copy.
-    ? produceSourceBackedLlmCardArtifact({ card, date, dataDir, now }) ||
+    ? // A partial source-backed content-heal card is a real blocked artifact and
+      // must not fall through to generic LLM-unavailable copy.
+      produceSourceBackedLlmCardArtifact({ card, date, dataDir, now }) ||
       produceLlmCardArtifact({ card, date, dataDir, now })
     : produceDataCardArtifact({ card, date, dataDir, now });
   return normalizeArtifactQuality(await artifact);
@@ -1324,7 +1374,10 @@ async function produceAllCardArtifacts({
         markdown: `${cardTitle(card)}:\nBlocked: ${message}`,
         blockedReason: message,
         source: {
-          mode: error && error.code === 'CARD_PRODUCER_TIMEOUT' ? 'producer-timeout' : 'producer-exception',
+          mode:
+            error && error.code === 'CARD_PRODUCER_TIMEOUT'
+              ? 'producer-timeout'
+              : 'producer-exception',
         },
       });
     }
@@ -1354,7 +1407,9 @@ function briefingArtifactWatchdog({ dataDir = defaultDataDir(), date, now = new 
   const missing = CARDS.map((card) => card.id).filter(
     (id) => !union.artifacts.some((artifact) => artifact.id === id),
   );
-  const blocked = union.artifacts.filter((artifact) => artifact.status === 'blocked').map((a) => a.id);
+  const blocked = union.artifacts
+    .filter((artifact) => artifact.status === 'blocked')
+    .map((a) => a.id);
   const stale = union.artifacts.filter((artifact) => artifact.status === 'stale').map((a) => a.id);
   return {
     ok: present === total && missing.length === 0,

@@ -4333,10 +4333,10 @@ function runNodeHealer(scriptName, args, dataDir, { timeout = 120000, env = {} }
   };
 }
 
-function hoursSinceIso(value) {
+function hoursSinceIso(value, nowMs = Date.now()) {
   const t = value ? new Date(value).getTime() : NaN;
   if (!Number.isFinite(t)) return Infinity;
-  return Math.max(0, (Date.now() - t) / 3600000);
+  return Math.max(0, (nowMs - t) / 3600000);
 }
 
 // Human relative-time for subsystem evidence ("last write 12m ago"). Plain
@@ -4577,12 +4577,22 @@ function actionSourceIntegrityIssue(actionSource, dataDir) {
   return null;
 }
 
-function inspectActionSource(dataDir) {
+// The ONE clean/blocked authority for the action-items source, shared by the
+// 5:30 full build and the per-card artifact producer
+// (produceActionItemsCardArtifact in scripts/lib/briefing-card-artifacts.js).
+// Producer parity 2026-07-19: the per-card path used to re-derive its own
+// staleness (lastFullReviewAt first, not newest stamp) and skipped
+// latestActionRefreshIssue, so rebuild(x) could grade differently than
+// build(x) for the identical data state. Grade through this function only.
+function inspectActionSource(dataDir, now = new Date()) {
+  const nowMs = now instanceof Date ? now.getTime() : Number(now) || Date.now();
   const actionSource = readJson(path.join(dataDir, 'briefing-action-items.json'), null);
   const stamps = actionSource
     ? [actionSource.lastFullReviewAt, actionSource.generatedAt].filter(Boolean)
     : [];
-  const newestActionAge = stamps.length ? Math.min(...stamps.map(hoursSinceIso)) : Infinity;
+  const newestActionAge = stamps.length
+    ? Math.min(...stamps.map((stamp) => hoursSinceIso(stamp, nowMs)))
+    : Infinity;
   const issue =
     actionSourceIntegrityIssue(actionSource, dataDir) || latestActionRefreshIssue(dataDir);
   return {
@@ -8325,7 +8335,9 @@ function buildCloudMorningBriefing({
   const buildTargeted = (...ids) =>
     refreshTargetAllows(narrowSelfHealRefresh, refreshTargetSet, ...ids);
   const actionRaw = readJson(path.join(dataDir, 'briefing-action-items.json'), []);
-  const actionSourceStatus = inspectActionSource(dataDir);
+  // Thread the build's injected clock so a fixture run near the 24h staleness
+  // boundary grades identically here and in the per-card artifact producer.
+  const actionSourceStatus = inspectActionSource(dataDir, now);
   const actionItems = actionSourceStatus.blocked ? [] : extractActionItems(actionRaw);
   // Standing reminders are a durable floor that survives a blocked email source.
   // Merge them ahead of the email-derived commitments (deduped) when the source
@@ -9539,6 +9551,12 @@ module.exports = {
   formatUncommittedParkedWorkSection,
   ACTION_ITEMS_CLOUD_DEFAULT_LIMIT,
   actionSourceIntegrityIssue,
+  // Producer parity (2026-07-19): the per-card artifact producer and the
+  // card-controller source contract consume the SAME grading and refresh gate
+  // the full build uses, so rebuild(x) == build(x) for the same data state.
+  inspectActionSource,
+  actionItemsNeedRefresh,
+  writeGmailScanHeartbeat,
   shouldRefreshActionItemsForCloud,
   qcSeamSections,
   extractOpenCommitments,

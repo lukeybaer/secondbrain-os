@@ -12,7 +12,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { summaryNamesPersonAsParticipant } = require('../verify-dashboard-cards-live.js');
 const { readProviderUsage } = require('./token-usage-receipts.js');
-const { readExecSummaryRecord: readOtterExecSummaryRecord } = require('./otter-exec-summary-artifacts.js');
+const {
+  readExecSummaryRecord: readOtterExecSummaryRecord,
+} = require('./otter-exec-summary-artifacts.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -423,12 +425,70 @@ async function refreshContent({ dataDir, date, cardIds = [], runCommand, node, c
 function actionItemsEvidence({ dataDir }) {
   return evidenceForFiles(dataDir, [
     ['briefing-action-items.json'],
+    // Both heartbeat surfaces: the stable .json snapshot AND the append-only
+    // .jsonl the refresh gate (actionItemsNeedRefresh) actually reads. Evidence
+    // must track what the gate consumes or a skip/refresh decision is invisible
+    // to the durable receipt (Codex peer review b7e87031510f).
     ['agent', 'gmail-scan-heartbeat.json'],
+    ['agent', 'gmail-scan-heartbeat.jsonl'],
   ]);
 }
 
-async function refreshActionItems({ dataDir, date, runCommand, node, cwd } = {}) {
-  return refreshCommandSet({
+function actionItemsBuilderHelpers() {
+  try {
+    return require('../cloud-morning-briefing.js');
+  } catch {
+    return null;
+  }
+}
+
+async function refreshActionItems({ dataDir, date, runCommand, node, cwd, builderHelpers } = {}) {
+  // Producer parity with the 5:30 full build (rebuild(x) == build(x)): the
+  // morning builder runs the regenerator ONLY when shouldRefreshActionItemsForCloud
+  // says the source needs it (stale review, integrity issue, or stale Gmail
+  // heartbeat). Rerunning it against a fresh reply-verified source can only
+  // degrade the shared state: an IMAP failure inside the rerun silently falls
+  // back to the local archive and drops the reply-verification proof, which is
+  // exactly how the SAME day's data graded clean at 5:30 and blocked in the
+  // per-card rebuild (frozen supervised run 20260719103219-9552bdcc). When the
+  // source is fresh and proven, skip the mutation so the target render reads
+  // the same state the full build read.
+  //
+  // Intentional divergence from the narrow self-heal lane: the full build's
+  // SELF_HEAL_REFRESH_CARDS path force-refreshes a live-QC-named action_items
+  // target even when fresh. The controller's source lane plans ALL cards
+  // (bootstrap and supervised runs alike), so an unconditional force here is
+  // the exact degrade vector this gate removes. When the source itself is
+  // broken, the gate's integrity/staleness checks fire and the regenerator
+  // still runs.
+  const helpers = builderHelpers === undefined ? actionItemsBuilderHelpers() : builderHelpers;
+  if (!helpers || typeof helpers.shouldRefreshActionItemsForCloud !== 'function') {
+    // FAIL CLOSED (Codex peer review b7e87031510f): with no gate available we
+    // cannot prove the source needs a rewrite, and an unconditional
+    // regeneration is the known degrade vector. Preserving the source is safe
+    // on both axes: a fresh source renders clean, a genuinely stale source
+    // still grades honestly blocked by the artifact producer.
+    return {
+      ok: true,
+      family: 'action-items',
+      skipped: true,
+      skipReason: 'refresh-gate-unavailable: preserving source state instead of a blind rewrite',
+      results: [],
+      evidence: actionItemsEvidence({ dataDir }),
+    };
+  }
+  if (!helpers.shouldRefreshActionItemsForCloud({ dataDir })) {
+    return {
+      ok: true,
+      family: 'action-items',
+      skipped: true,
+      skippedFreshSource: true,
+      skipReason: 'source-fresh-and-proven: full-build gate says no refresh needed',
+      results: [],
+      evidence: actionItemsEvidence({ dataDir }),
+    };
+  }
+  const outcome = await refreshCommandSet({
     family: 'action-items',
     dataDir,
     date,
@@ -451,6 +511,17 @@ async function refreshActionItems({ dataDir, date, runCommand, node, cwd } = {})
     ],
     evidence: actionItemsEvidence,
   });
+  // The full build stamps the Gmail-scan heartbeat after a successful
+  // regeneration (refreshActionItemsForCloud); mirror it so the data state the
+  // per-card lane produces is the state the full build would have produced.
+  if (outcome.ok && helpers && typeof helpers.writeGmailScanHeartbeat === 'function') {
+    try {
+      helpers.writeGmailScanHeartbeat(dataDir, 'card-controller-action-items');
+    } catch {
+      // Non-fatal, matching the full build's heartbeat handling.
+    }
+  }
+  return outcome;
 }
 
 function simpleEvidence(parts) {

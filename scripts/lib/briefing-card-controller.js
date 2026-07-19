@@ -21,11 +21,7 @@ const { buildBriefingDashboardUrl } = require('./briefing-auth.js');
 const { notifyWithFallback } = require('./notify-with-fallback.js');
 const { loadBriefingNotifyEnv, notifyBriefingPublished } = require('./briefing-notify.js');
 const { getSourceContract, controllerSourceEnv } = require('./briefing-source-contracts.js');
-const {
-  DERIVED_CARD_IDS,
-  MANIFEST_CARD_RENDER,
-  markdownPathFor,
-} = require('../refresh-card.js');
+const { DERIVED_CARD_IDS, MANIFEST_CARD_RENDER, markdownPathFor } = require('../refresh-card.js');
 const {
   defectKey,
   hashTacticInput,
@@ -84,7 +80,10 @@ function writeJsonAtomic(file, value) {
 }
 
 function makeRunId(now = new Date()) {
-  const stamp = now.toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+  const stamp = now
+    .toISOString()
+    .replace(/[-:.TZ]/g, '')
+    .slice(0, 14);
   return `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
 }
 
@@ -105,7 +104,11 @@ function primaryCardIds() {
 }
 
 function normalizeStatus(status) {
-  return String(status || '').trim().toLowerCase() || 'ExampleCo';
+  return (
+    String(status || '')
+      .trim()
+      .toLowerCase() || 'ExampleCo'
+  );
 }
 
 function statusMap(artifact) {
@@ -152,9 +155,11 @@ function mutualMergePartnerIds(cardId) {
     .map((partnerId) => String(partnerId || '').toLowerCase())
     .filter((partnerId) => {
       const partner = getCardById(partnerId);
-      return partner
-        && Array.isArray(partner.mergedInto)
-        && partner.mergedInto.map((value) => String(value || '').toLowerCase()).includes(id);
+      return (
+        partner &&
+        Array.isArray(partner.mergedInto) &&
+        partner.mergedInto.map((value) => String(value || '').toLowerCase()).includes(id)
+      );
     });
 }
 
@@ -162,11 +167,17 @@ function effectiveGreenGuardStatus(statuses, cardId) {
   const id = String(cardId || '').toLowerCase();
   const ownStatus = statuses.get(id) || 'missing';
   if (ownStatus === 'clean') return 'clean';
-  const cleanPartner = mutualMergePartnerIds(id).find((partnerId) => statuses.get(partnerId) === 'clean');
+  const cleanPartner = mutualMergePartnerIds(id).find(
+    (partnerId) => statuses.get(partnerId) === 'clean',
+  );
   return cleanPartner ? 'clean' : ownStatus;
 }
 
-function unrelatedGreenRegressions(beforeArtifact, afterArtifact, { cardId, protectedCardIds = [] } = {}) {
+function unrelatedGreenRegressions(
+  beforeArtifact,
+  afterArtifact,
+  { cardId, protectedCardIds = [] } = {},
+) {
   const before = statusMap(beforeArtifact);
   const after = statusMap(afterArtifact);
   const excluded = new Set([
@@ -182,11 +193,11 @@ function unrelatedGreenRegressions(beforeArtifact, afterArtifact, { cardId, prot
   return regressions;
 }
 
-function greenRegressions(beforeArtifact, afterArtifact, {
-  cardId,
-  protectedCardIds = [],
-  protectTarget = false,
-} = {}) {
+function greenRegressions(
+  beforeArtifact,
+  afterArtifact,
+  { cardId, protectedCardIds = [], protectTarget = false } = {},
+) {
   const regressions = unrelatedGreenRegressions(beforeArtifact, afterArtifact, {
     cardId,
     protectedCardIds,
@@ -194,10 +205,10 @@ function greenRegressions(beforeArtifact, afterArtifact, {
   const targetId = String(cardId || '').toLowerCase();
   const after = statusMap(afterArtifact);
   if (
-    protectTarget
-    && targetId
-    && cardStatus(beforeArtifact, targetId) === 'clean'
-    && effectiveGreenGuardStatus(after, targetId) !== 'clean'
+    protectTarget &&
+    targetId &&
+    cardStatus(beforeArtifact, targetId) === 'clean' &&
+    effectiveGreenGuardStatus(after, targetId) !== 'clean'
   ) {
     regressions.push({
       id: targetId,
@@ -211,10 +222,7 @@ function greenRegressions(beforeArtifact, afterArtifact, {
 function controllerImplementationDigest(contract = {}) {
   // A new implementation is changed input. Otherwise the no-spin ledger would
   // incorrectly suppress the first retry after an actual code repair.
-  const files = [
-    __filename,
-    path.join(REPO_ROOT, 'scripts', 'refresh-card.js'),
-  ];
+  const files = [__filename, path.join(REPO_ROOT, 'scripts', 'refresh-card.js')];
   if (contract && typeof contract.refresh === 'function') {
     files.push(path.join(REPO_ROOT, 'scripts', 'lib', 'briefing-source-contracts.js'));
   }
@@ -230,12 +238,20 @@ function controllerImplementationDigest(contract = {}) {
 
 function cardEntry(artifact, cardId) {
   const id = String(cardId || '').toLowerCase();
-  return (Array.isArray(artifact && artifact.cards) ? artifact.cards : []).find(
-    (card) => card && String(card.id || '').toLowerCase() === id,
-  ) || null;
+  return (
+    (Array.isArray(artifact && artifact.cards) ? artifact.cards : []).find(
+      (card) => card && String(card.id || '').toLowerCase() === id,
+    ) || null
+  );
 }
 
-function hasVerifiedScopedLiveResult({ command, beforeArtifact, afterArtifact, cardId, date } = {}) {
+function hasVerifiedScopedLiveResult({
+  command,
+  beforeArtifact,
+  afterArtifact,
+  cardId,
+  date,
+} = {}) {
   if (command && command.verified === true) return true;
   const afterCard = cardEntry(afterArtifact, cardId);
   if (!afterCard || !afterArtifact || afterArtifact.retry === true) return false;
@@ -246,8 +262,9 @@ function hasVerifiedScopedLiveResult({ command, beforeArtifact, afterArtifact, c
   const afterCardTs = Date.parse(afterCard.asOf);
   const timestampAdvanced =
     (Number.isFinite(afterTs) && (!Number.isFinite(beforeTs) || afterTs > beforeTs)) ||
-    (Number.isFinite(afterCardTs) && (!Number.isFinite(beforeCardTs) || afterCardTs > beforeCardTs));
-  const stdout = String(command && command.stdout || '');
+    (Number.isFinite(afterCardTs) &&
+      (!Number.isFinite(beforeCardTs) || afterCardTs > beforeCardTs));
+  const stdout = String((command && command.stdout) || '');
   const escapedCardId = String(cardId || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const printedScopedProof =
     afterArtifact.ran === true &&
@@ -256,7 +273,9 @@ function hasVerifiedScopedLiveResult({ command, beforeArtifact, afterArtifact, c
   const printedArtifactUnionProof =
     Number(command && command.exitCode) === 0 &&
     String(afterArtifact.source || '') === 'per-card-artifacts' &&
-    new RegExp(`\\[refresh-card\\] produced artifact card='${escapedCardId}' status=`).test(stdout) &&
+    new RegExp(`\\[refresh-card\\] produced artifact card='${escapedCardId}' status=`).test(
+      stdout,
+    ) &&
     stdout.includes('[refresh-card] published artifact union');
   return timestampAdvanced && (printedScopedProof || printedArtifactUnionProof);
 }
@@ -346,19 +365,22 @@ function recoverIncompleteTransaction(dataDir) {
   }
 }
 
-function leaseOwnerAlive(lease, {
-  hostname = os.hostname(),
-  pidAlive = (pid) => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      return !!(error && error.code === 'EPERM');
-    }
-  },
-} = {}) {
+function leaseOwnerAlive(
+  lease,
+  {
+    hostname = os.hostname(),
+    pidAlive = (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        return !!(error && error.code === 'EPERM');
+      }
+    },
+  } = {},
+) {
   const pid = Number(lease && lease.pid);
-  const ownerHost = String(lease && lease.hostname || '');
+  const ownerHost = String((lease && lease.hostname) || '');
   if (!Number.isInteger(pid) || pid <= 0) return null;
   if (ownerHost && ownerHost !== hostname) return null;
   return !!pidAlive(pid);
@@ -377,7 +399,15 @@ function acquireLease({
 }) {
   const file = path.join(controllerDir(dataDir), 'active-lease.json');
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const body = { runId, mode, date, acquiredAt: new Date(now).toISOString(), leaseMs, pid, hostname };
+  const body = {
+    runId,
+    mode,
+    date,
+    acquiredAt: new Date(now).toISOString(),
+    leaseMs,
+    pid,
+    hostname,
+  };
   const tryWrite = () => {
     try {
       fs.writeFileSync(file, `${JSON.stringify(body, null, 2)}\n`, { flag: 'wx' });
@@ -391,7 +421,8 @@ function acquireLease({
   if (fresh) return fresh;
   const existing = readJson(file, {});
   const acquiredAt = Date.parse(existing && existing.acquiredAt);
-  const stale = !Number.isFinite(acquiredAt) || now - acquiredAt > Number(existing.leaseMs || leaseMs);
+  const stale =
+    !Number.isFinite(acquiredAt) || now - acquiredAt > Number(existing.leaseMs || leaseMs);
   const ownerAlive = leaseOwnerAlive(existing, { hostname, pidAlive });
   const deadOwner = ownerAlive === false;
   if (!stale && !deadOwner) return { acquired: false, file, lease: existing, stale: false };
@@ -412,13 +443,18 @@ function releaseLease(lease, runId) {
   if (current && current.runId === runId && fs.existsSync(lease.file)) fs.unlinkSync(lease.file);
 }
 
-function runProcess(command, args, { cwd = REPO_ROOT, env = process.env, timeoutMs = DEFAULT_REFRESH_TIMEOUT_MS } = {}) {
+function runProcess(
+  command,
+  args,
+  { cwd = REPO_ROOT, env = process.env, timeoutMs = DEFAULT_REFRESH_TIMEOUT_MS } = {},
+) {
   return new Promise((resolve) => {
     // The cloud uses GNU timeout as a child-owned deadline as well as this
     // parent's process-group fallback. If the controller itself is stopped,
     // its child still has a finite lifetime instead of becoming an orphaned
     // writer. Windows keeps the in-process fallback for local test/dev use.
-    const externalTimeout = process.platform !== 'win32' && Number.isFinite(timeoutMs) && timeoutMs > 0;
+    const externalTimeout =
+      process.platform !== 'win32' && Number.isFinite(timeoutMs) && timeoutMs > 0;
     const childCommand = externalTimeout ? 'timeout' : command;
     const childArgs = externalTimeout
       ? ['--kill-after=15s', `${Math.max(1, Math.ceil(timeoutMs / 1000))}s`, command, ...args]
@@ -449,30 +485,37 @@ function runProcess(command, args, { cwd = REPO_ROOT, env = process.env, timeout
     child.stderr.on('data', (chunk) => {
       stderr = `${stderr}${chunk}`.slice(-200000);
     });
-    child.on('error', (error) => finish({ exitCode: 1, error: String(error && error.message || error), timedOut }));
-    child.on('close', (code, signal) => finish({
-      exitCode: Number(code == null ? 1 : code),
-      signal,
-      timedOut: timedOut || Number(code) === 124,
-    }));
-    timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGTERM');
-        else child.kill('SIGTERM');
-      } catch {
-        // The process may have completed in the race before the timeout.
-      }
-      killGraceTimer = setTimeout(() => {
+    child.on('error', (error) =>
+      finish({ exitCode: 1, error: String((error && error.message) || error), timedOut }),
+    );
+    child.on('close', (code, signal) =>
+      finish({
+        exitCode: Number(code == null ? 1 : code),
+        signal,
+        timedOut: timedOut || Number(code) === 124,
+      }),
+    );
+    timer = setTimeout(
+      () => {
+        timedOut = true;
         try {
-          if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
-          else child.kill('SIGKILL');
+          if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGTERM');
+          else child.kill('SIGTERM');
         } catch {
-          // The child may have exited in the grace window.
+          // The process may have completed in the race before the timeout.
         }
-        finish({ exitCode: 124, timedOut: true, signal: 'SIGKILL' });
-      }, 15 * 1000);
-    }, timeoutMs + 20 * 1000);
+        killGraceTimer = setTimeout(() => {
+          try {
+            if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
+            else child.kill('SIGKILL');
+          } catch {
+            // The child may have exited in the grace window.
+          }
+          finish({ exitCode: 124, timedOut: true, signal: 'SIGKILL' });
+        }, 15 * 1000);
+      },
+      timeoutMs + 20 * 1000,
+    );
   });
 }
 
@@ -496,14 +539,16 @@ async function mapWithConcurrency(items, limit, worker) {
   const concurrency = Math.max(1, Math.min(list.length || 1, Number(limit) || 1));
   const results = new Array(list.length);
   let next = 0;
-  await Promise.all(Array.from({ length: concurrency }, async () => {
-    while (true) {
-      const index = next;
-      next += 1;
-      if (index >= list.length) return;
-      results[index] = await worker(list[index], index);
-    }
-  }));
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (true) {
+        const index = next;
+        next += 1;
+        if (index >= list.length) return;
+        results[index] = await worker(list[index], index);
+      }
+    }),
+  );
   return results;
 }
 
@@ -513,7 +558,10 @@ function currentEvidence(contract, dataDir, date) {
       ? contract.evidence({ dataDir, date })
       : { digest: 'no-source-evidence', facts: {} };
   } catch (error) {
-    return { digest: 'source-evidence-error', facts: { error: String(error && error.message || error) } };
+    return {
+      digest: 'source-evidence-error',
+      facts: { error: String((error && error.message) || error) },
+    };
   }
 }
 
@@ -536,7 +584,9 @@ function controllerPaths({ dataDir, date, runId }) {
 function cardShellTitle(cardId) {
   const render = MANIFEST_CARD_RENDER[cardId];
   if (render && render.title) return String(render.title).replace(/:\s*$/, '');
-  return String(cardId || '').replace(/_/g, ' ').toUpperCase();
+  return String(cardId || '')
+    .replace(/_/g, ' ')
+    .toUpperCase();
 }
 
 function controllerShellMarkdown({ date, now = new Date(), mode = 'overnight' }) {
@@ -562,7 +612,10 @@ function controllerShellMarkdown({ date, now = new Date(), mode = 'overnight' })
     if (card.id === 'blockers') {
       lines.push('', 'Issue count: card refresh in progress. This new board is not a clean claim.');
     } else if (card.id === 'system_health') {
-      lines.push('', 'Controller bootstrap: every subsystem remains unverified until its owning card passes scoped live QC.');
+      lines.push(
+        '',
+        'Controller bootstrap: every subsystem remains unverified until its owning card passes scoped live QC.',
+      );
     } else {
       lines.push('', 'Card refresh pending: fresh data and scoped live QC are still in progress.');
     }
@@ -595,7 +648,9 @@ function isFullyUnverifiedBootstrap({ markdown, artifact, date }) {
     /^Briefing mode:\s*cloud card-controller bootstrap\./m.test(String(markdown || '')) ||
     /^Controller state:\s*cloud card-controller bootstrap\./m.test(String(markdown || ''));
   const hasCanonicalHeading = /^# Daily Briefing\b/m.test(String(markdown || ''));
-  const hasCanonicalMode = /^Briefing mode:\s*(?:overnight|off-cycle)\s*$/m.test(String(markdown || ''));
+  const hasCanonicalMode = /^Briefing mode:\s*(?:overnight|off-cycle)\s*$/m.test(
+    String(markdown || ''),
+  );
   const cards = Array.isArray(artifact && artifact.cards) ? artifact.cards : [];
   const defects = Array.isArray(artifact && artifact.defects) ? artifact.defects : [];
   const expectedPending = new Set(
@@ -647,22 +702,28 @@ async function runCardController(options = {}, injected = {}) {
   const getContract = injected.getSourceContract || getSourceContract;
   const commandRunner = injected.runCommand || runProcess;
   const startedAtMs = Number.isFinite(options.startedAtMs) ? options.startedAtMs : Date.now();
-  const maxRunMs = Number.isFinite(options.maxRunMs) && options.maxRunMs > 0 ? options.maxRunMs : null;
+  const maxRunMs =
+    Number.isFinite(options.maxRunMs) && options.maxRunMs > 0 ? options.maxRunMs : null;
   const deadlineAtMs = maxRunMs ? startedAtMs + maxRunMs : null;
-  const targetRefresh = injected.runTargetRefresh || ((context) =>
-    commandRunner(process.execPath, [
-      'scripts/refresh-card.js',
-      context.cardId,
-      '--date',
-      context.date,
-      '--publish',
-      '--verify',
-    ], {
-      cwd: REPO_ROOT,
-      env: controllerSourceEnv(context.dataDir),
-      timeoutMs: context.timeoutMs || options.refreshTimeoutMs || DEFAULT_REFRESH_TIMEOUT_MS,
-    })
-  );
+  const targetRefresh =
+    injected.runTargetRefresh ||
+    ((context) =>
+      commandRunner(
+        process.execPath,
+        [
+          'scripts/refresh-card.js',
+          context.cardId,
+          '--date',
+          context.date,
+          '--publish',
+          '--verify',
+        ],
+        {
+          cwd: REPO_ROOT,
+          env: controllerSourceEnv(context.dataDir),
+          timeoutMs: context.timeoutMs || options.refreshTimeoutMs || DEFAULT_REFRESH_TIMEOUT_MS,
+        },
+      ));
   const paths = controllerPaths({ dataDir, date, runId });
   let before = readArtifact();
   let plan = resolvePlan({ cards: options.cards, artifact: before });
@@ -692,7 +753,14 @@ async function runCardController(options = {}, injected = {}) {
     return receipt;
   }
 
-  const lease = acquireLease({ dataDir, runId, mode, date, now: now.getTime(), leaseMs: options.leaseMs });
+  const lease = acquireLease({
+    dataDir,
+    runId,
+    mode,
+    date,
+    now: now.getTime(),
+    leaseMs: options.leaseMs,
+  });
   if (!lease.acquired) {
     receipt.outcome = 'lease-held';
     receipt.lease = lease.lease || null;
@@ -750,13 +818,15 @@ async function runCardController(options = {}, injected = {}) {
           humanActionToken: humanActionToken || null,
           mode,
         });
-        const noSpin = cardIds.every((cardId) => tacticAlreadyFailed(
-          date,
-          defectKey({ cardId, defectType: 'SOURCE-REFRESH' }),
-          tactic,
-          tacticInputHash,
-          { dataDir },
-        ));
+        const noSpin = cardIds.every((cardId) =>
+          tacticAlreadyFailed(
+            date,
+            defectKey({ cardId, defectType: 'SOURCE-REFRESH' }),
+            tactic,
+            tacticInputHash,
+            { dataDir },
+          ),
+        );
         if (noSpin) {
           return {
             family: contract.family,
@@ -768,7 +838,8 @@ async function runCardController(options = {}, injected = {}) {
             implementationDigest,
             beforeEvidence,
             afterEvidence: beforeEvidence,
-            error: 'The identical source refresh already failed with unchanged source evidence today.',
+            error:
+              'The identical source refresh already failed with unchanged source evidence today.',
             commands: [],
           };
         }
@@ -793,22 +864,28 @@ async function runCardController(options = {}, injected = {}) {
           cardIds,
           ok: !!(result && result.ok),
           noSpin: false,
+          // A contract may intentionally preserve a fresh proven source instead
+          // of rewriting it (producer parity, frozen run 20260719103219). The
+          // receipt must say so explicitly, or a skip is indistinguishable from
+          // a refresh that ran. undefined drops out of the JSON receipt.
+          skipped: result && result.skipped === true ? true : undefined,
+          skipReason: (result && result.skipReason) || undefined,
           tactic,
           tacticInputHash,
           implementationDigest,
           beforeEvidence,
           afterEvidence,
-          error: error || String(result && result.error || ''),
+          error: error || String((result && result.error) || ''),
           // Keep the durable receipt inspectable without accidentally storing a
           // multi-megabyte child-process transcript on every overnight run.
           commands: Array.isArray(result && result.results)
             ? result.results.map((row) => ({
-              args: row.args || [],
-              ok: !!row.ok,
-              exitCode: Number(row.result && row.result.exitCode),
-              timedOut: !!(row.result && row.result.timedOut),
-              stderr: String(row.result && row.result.stderr || '').slice(-2000),
-            }))
+                args: row.args || [],
+                ok: !!row.ok,
+                exitCode: Number(row.result && row.result.exitCode),
+                timedOut: !!(row.result && row.result.timedOut),
+                stderr: String((row.result && row.result.stderr) || '').slice(-2000),
+              }))
             : [],
         };
       },
@@ -817,27 +894,33 @@ async function runCardController(options = {}, injected = {}) {
     for (const source of sourceResults) {
       if (source.ok || source.noSpin) continue;
       for (const cardId of source.cardIds) {
-        recordAttempt(date, {
-          defect: { cardId, defectType: 'SOURCE-REFRESH' },
-          tactic: source.tactic,
-          tacticInputHash: source.tacticInputHash,
-          repairImplementationDigest: source.implementationDigest,
-          humanActionToken: options.humanActionToken ? String(options.humanActionToken) : null,
-          ownerCardId: cardId,
-          affectedCardIds: [cardId],
-          dependentCardIds: [],
-          sourceHashes: { [source.family || 'card-local']: source.beforeEvidence.digest },
-          qcScope: [],
-          qcResult: 'source-failed',
-          fix: 'source-failed',
-          reflection: source.error || `Source family '${source.family}' failed before target render.`,
-        }, { dataDir });
+        recordAttempt(
+          date,
+          {
+            defect: { cardId, defectType: 'SOURCE-REFRESH' },
+            tactic: source.tactic,
+            tacticInputHash: source.tacticInputHash,
+            repairImplementationDigest: source.implementationDigest,
+            humanActionToken: options.humanActionToken ? String(options.humanActionToken) : null,
+            ownerCardId: cardId,
+            affectedCardIds: [cardId],
+            dependentCardIds: [],
+            sourceHashes: { [source.family || 'card-local']: source.beforeEvidence.digest },
+            qcScope: [],
+            qcResult: 'source-failed',
+            fix: 'source-failed',
+            reflection:
+              source.error || `Source family '${source.family}' failed before target render.`,
+          },
+          { dataDir },
+        );
       }
     }
     persist();
 
     const sourceByCard = new Map();
-    for (const source of sourceResults) for (const cardId of source.cardIds) sourceByCard.set(cardId, source);
+    for (const source of sourceResults)
+      for (const cardId of source.cardIds) sourceByCard.set(cardId, source);
 
     // This is intentionally a single lane. refresh-card atomically splices into
     // the same briefing file, so parallel publishes would race even though card
@@ -846,7 +929,8 @@ async function runCardController(options = {}, injected = {}) {
       if (receipt.frozen) break;
       if (deadlineAtMs && Date.now() >= deadlineAtMs) {
         receipt.timeBudgetExhausted = true;
-        receipt.timeBudgetReason = 'Controller deadline reached before the next scoped card repair; no new target was started.';
+        receipt.timeBudgetReason =
+          'Controller deadline reached before the next scoped card repair; no new target was started.';
         break;
       }
       const cardId = item.cardId;
@@ -856,9 +940,10 @@ async function runCardController(options = {}, injected = {}) {
       const evidence = currentEvidence(contract, dataDir, date);
       const defects = defectCodesForCard(attemptBefore, cardId);
       const verificationInputs = verificationInputsForCard(attemptBefore, cardId);
-      const tactic = source && typeof contract.refresh === 'function'
-        ? `source:${contract.family}+targeted-refresh`
-        : `targeted-refresh:${contract.family || 'card-local'}`;
+      const tactic =
+        source && typeof contract.refresh === 'function'
+          ? `source:${contract.family}+targeted-refresh`
+          : `targeted-refresh:${contract.family || 'card-local'}`;
       const implementationDigest = controllerImplementationDigest(contract);
       const humanActionToken = options.humanActionToken ? String(options.humanActionToken) : '';
       const tacticInput = {
@@ -871,13 +956,15 @@ async function runCardController(options = {}, injected = {}) {
         mode,
       };
       const tacticInputHash = hashTacticInput(tacticInput);
-      const noSpin = verificationInputs.every((code) => tacticAlreadyFailed(
-        date,
-        defectKey({ cardId, defectType: code }),
-        tactic,
-        tacticInputHash,
-        { dataDir },
-      ));
+      const noSpin = verificationInputs.every((code) =>
+        tacticAlreadyFailed(
+          date,
+          defectKey({ cardId, defectType: code }),
+          tactic,
+          tacticInputHash,
+          { dataDir },
+        ),
+      );
       const cardReceipt = {
         cardId,
         forced: item.forced,
@@ -901,12 +988,16 @@ async function runCardController(options = {}, injected = {}) {
         cardReceipt.reflection = `source family '${contract.family}' failed before card render; target refresh was not attempted.`;
       } else if (noSpin) {
         cardReceipt.outcome = 'no-spin-skip';
-        cardReceipt.reflection = 'The identical tactic with identical live/source evidence already failed today.';
+        cardReceipt.reflection =
+          'The identical tactic with identical live/source evidence already failed today.';
       } else {
         const markdown = markdownPathFor(dataDir, date);
         const backups = {
           markdown: snapshotFile(markdown, path.join(paths.backupDir, `${cardId}.md`)),
-          artifact: snapshotFile(paths.artifact, path.join(paths.backupDir, `${cardId}.dashboard-qc.json`)),
+          artifact: snapshotFile(
+            paths.artifact,
+            path.join(paths.backupDir, `${cardId}.dashboard-qc.json`),
+          ),
         };
         cardReceipt.backups = {
           markdownExisted: backups.markdown.existed,
@@ -934,7 +1025,11 @@ async function runCardController(options = {}, injected = {}) {
               : options.refreshTimeoutMs || DEFAULT_REFRESH_TIMEOUT_MS,
           });
         } catch (error) {
-          command = { exitCode: 1, timedOut: false, stderr: String((error && error.stack) || error) };
+          command = {
+            exitCode: 1,
+            timedOut: false,
+            stderr: String((error && error.stack) || error),
+          };
         }
         const attemptAfter = readArtifact();
         // A full-card practice is still only allowed to move cards red -> green.
@@ -954,7 +1049,7 @@ async function runCardController(options = {}, injected = {}) {
           exitCode: Number(command && command.exitCode),
           timedOut: !!(command && command.timedOut),
           verifiedLive,
-          stderr: String(command && command.stderr || '').slice(-4000),
+          stderr: String((command && command.stderr) || '').slice(-4000),
         };
         cardReceipt.statusAfter = cardStatus(attemptAfter, cardId);
         cardReceipt.defectsAfter = defectCodesForCard(attemptAfter, cardId);
@@ -970,13 +1065,16 @@ async function runCardController(options = {}, injected = {}) {
           restoreSnapshot(backups.markdown);
           restoreSnapshot(backups.artifact);
           cardReceipt.outcome = 'rolled-back-unverified-target';
-          cardReceipt.reflection = 'Rolled back: targeted write did not produce fresh scoped live-QC proof, so a partial markdown/artifact update cannot remain published.';
+          cardReceipt.reflection =
+            'Rolled back: targeted write did not produce fresh scoped live-QC proof, so a partial markdown/artifact update cannot remain published.';
         } else if (cardReceipt.statusAfter !== 'clean') {
           cardReceipt.outcome = 'target-remains-nonclean';
-          cardReceipt.reflection = 'Targeted refresh completed but scoped live QC still reports the card non-clean.';
+          cardReceipt.reflection =
+            'Targeted refresh completed but scoped live QC still reports the card non-clean.';
         } else {
           cardReceipt.outcome = 'cleared';
-          cardReceipt.reflection = 'Targeted refresh and scoped live QC passed without regressing any unrelated green card.';
+          cardReceipt.reflection =
+            'Targeted refresh and scoped live QC passed without regressing any unrelated green card.';
         }
         clearActiveTransaction(dataDir, runId);
       }
@@ -984,21 +1082,25 @@ async function runCardController(options = {}, injected = {}) {
       const qcResult = cardReceipt.outcome === 'cleared' ? 'cleared' : cardReceipt.outcome;
       if (cardReceipt.outcome !== 'source-no-spin-skip') {
         for (const code of verificationInputs) {
-          recordAttempt(date, {
-            defect: { cardId, defectType: code },
-            tactic,
-            tacticInputHash,
-            repairImplementationDigest: implementationDigest,
-            humanActionToken: humanActionToken || null,
-            ownerCardId: cardId,
-            affectedCardIds: [cardId],
-            dependentCardIds: DERIVED_CARD_IDS,
-            sourceHashes: { [contract.family || 'card-local']: evidence.digest },
-            qcScope: [cardId],
-            qcResult,
-            fix: cardReceipt.outcome,
-            reflection: cardReceipt.reflection,
-          }, { dataDir });
+          recordAttempt(
+            date,
+            {
+              defect: { cardId, defectType: code },
+              tactic,
+              tacticInputHash,
+              repairImplementationDigest: implementationDigest,
+              humanActionToken: humanActionToken || null,
+              ownerCardId: cardId,
+              affectedCardIds: [cardId],
+              dependentCardIds: DERIVED_CARD_IDS,
+              sourceHashes: { [contract.family || 'card-local']: evidence.digest },
+              qcScope: [cardId],
+              qcResult,
+              fix: cardReceipt.outcome,
+              reflection: cardReceipt.reflection,
+            },
+            { dataDir },
+          );
         }
       }
       cardReceipt.finishedAt = new Date().toISOString();
@@ -1025,9 +1127,9 @@ async function runCardController(options = {}, injected = {}) {
     ? 'frozen-after-rollback'
     : receipt.timeBudgetExhausted
       ? 'time-budget-exhausted'
-    : receipt.cards.some((card) => card.outcome !== 'cleared')
-      ? 'needs-attention'
-      : 'clean';
+      : receipt.cards.some((card) => card.outcome !== 'cleared')
+        ? 'needs-attention'
+        : 'clean';
   if (options.notify) {
     loadBriefingNotifyEnv(dataDir);
     receipt.notify = await notifyBriefingPublished({
