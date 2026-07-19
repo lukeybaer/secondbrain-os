@@ -13,6 +13,7 @@ import hashlib
 import html
 import imaplib
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import time
 import zipfile
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
@@ -77,6 +79,43 @@ SMS_ARCHIVE_EXTENSIONS = {".csv", ".txt", ".xlsx", ".pdf", ".vcf", ".url"}
 SMS_MEDIA_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".mov", ".mp4",
     ".mp3", ".m4a", ".3gp", ".wav", ".amr",
+}
+MIGRATED_TEXT_EXTENSIONS = {
+    ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".jsonl",
+    ".html", ".htm", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    ".conf", ".log", ".adoc", ".rst", ".sql", ".py", ".js", ".jsx",
+    ".ts", ".tsx", ".css", ".scss", ".less", ".vim", ".pl", ".pm",
+    ".rb", ".go", ".rs", ".java", ".c", ".cc", ".cpp", ".h", ".hpp",
+    ".sh", ".ps1", ".bat", ".cmd", ".properties", ".gradle", ".sln",
+    ".csproj", ".vcxproj", ".tex", ".rtf", ".url", ".vcf", ".rels",
+    ".svg", ".xsd", ".xslt", ".dtd", ".manifest", ".config",
+}
+MIGRATED_DOCUMENT_EXTENSIONS = {
+    ".pdf", ".docx", ".pptx", ".xlsx", ".xlsm",
+}
+MIGRATED_IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff",
+}
+MIGRATED_CONTENT_MAX_BYTES = 16 * 1024 * 1024
+MIGRATED_SENSITIVE_PARTS = {
+    ".ssh", ".gnupg", "session storage", "sessions", "cookies", "local storage",
+    "indexeddb", "password stores", "password-store", "credential stores",
+}
+MIGRATED_SENSITIVE_NAMES = {
+    ".env", "login data", "web data", "cookies", "credentials", "secrets.json",
+    "key4.db", "logins.json", "signons.sqlite", "wallet.dat", "id_rsa", "id_dsa",
+    "id_ecdsa", "id_ed25519", ".npmrc", ".pypirc", ".netrc", "auth.json",
+    "service-account.json",
+}
+MIGRATED_PRIVATE_KEY_EXTENSIONS = {".pem", ".p12", ".pfx", ".key", ".ppk", ".kdbx"}
+MIGRATED_NOISY_PARTS = {
+    "node_modules", ".git", "vendor", "dist", "build", "target", "coverage",
+    "__pycache__", ".cache", "cache", "temp", "tmp",
+}
+MIGRATED_CODE_EXTENSIONS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".less", ".vim",
+    ".pl", ".pm", ".rb", ".go", ".rs", ".java", ".c", ".cc", ".cpp",
+    ".h", ".hpp", ".sh", ".ps1", ".bat", ".cmd", ".dll", ".exe",
 }
 
 
@@ -520,7 +559,7 @@ def extract_text_from_zip_xml(path):
         return ""
 
 
-def extract_attachment_text(path, content_type=""):
+def extract_attachment_text(path, content_type="", write_sidecar=True):
     path = Path(path)
     ext = path.suffix.lower()
     text = ""
@@ -542,13 +581,255 @@ def extract_attachment_text(path, content_type=""):
     if not text and ext in (".docx", ".pptx", ".xlsx", ".xlsm"):
         text = extract_text_from_zip_xml(path)
     text = clean_text(text)
-    if text:
+    if text and write_sidecar:
         sidecar = path.with_suffix(path.suffix + ".text.txt")
         try:
             sidecar.write_text(text, encoding="utf-8")
         except Exception:
             pass
     return text
+
+
+def iso_utc(value):
+    if not value:
+        return None
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith("D:") and len(raw) >= 16:
+            raw = raw[2:16]
+            try:
+                return datetime.strptime(raw, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).isoformat()
+            except Exception:
+                return None
+        try:
+            value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def filename_date(path):
+    stem = Path(path).stem
+    patterns = [
+        (r"(?<!\d)((?:19|20)\d{2})[-_. ]([01]\d)[-_. ]([0-3]\d)(?!\d)", "%Y%m%d"),
+        (r"(?<!\d)((?:19|20)\d{2})([01]\d)([0-3]\d)(?!\d)", "%Y%m%d"),
+        (r"(?<!\d)([01]\d)[-_. ]([0-3]\d)[-_. ]((?:19|20)\d{2})(?!\d)", "%m%d%Y"),
+    ]
+    for pattern, fmt in patterns:
+        match = re.search(pattern, stem)
+        if not match:
+            continue
+        try:
+            dt = datetime.strptime("".join(match.groups()), fmt).replace(hour=12, tzinfo=timezone.utc)
+            return dt.isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def embedded_file_times(path):
+    path = Path(path)
+    ext = path.suffix.lower()
+    created = None
+    modified = None
+    try:
+        if ext == ".docx" and docx:
+            props = docx.Document(str(path)).core_properties
+            created, modified = props.created, props.modified
+        elif ext == ".pptx" and pptx:
+            props = pptx.Presentation(str(path)).core_properties
+            created, modified = props.created, props.modified
+        elif ext in (".xlsx", ".xlsm") and openpyxl:
+            wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+            created, modified = wb.properties.created, wb.properties.modified
+            wb.close()
+        elif ext == ".pdf" and pypdf:
+            meta = pypdf.PdfReader(str(path)).metadata or {}
+            created = getattr(meta, "creation_date", None) or meta.get("/CreationDate")
+            modified = getattr(meta, "modification_date", None) or meta.get("/ModDate")
+        elif ext in MIGRATED_IMAGE_EXTENSIONS and Image:
+            with Image.open(str(path)) as image:
+                exif = image.getexif()
+                raw_created = exif.get(36867) or exif.get(306)
+                if raw_created:
+                    created = datetime.strptime(str(raw_created), "%Y:%m:%d %H:%M:%S")
+    except Exception:
+        pass
+    return iso_utc(created), iso_utc(modified)
+
+
+def migrated_file_sensitivity(relative_path):
+    rel = Path(relative_path)
+    parts = [part.lower() for part in rel.parts]
+    name = rel.name.lower()
+    ext = rel.suffix.lower()
+    if any(part in MIGRATED_SENSITIVE_PARTS for part in parts):
+        return "secret_or_session_store"
+    if name in MIGRATED_SENSITIVE_NAMES or name.startswith(".env."):
+        return "credential_or_secret_file"
+    if re.search(r"(?:credential|secret|password|access[-_]?token|refresh[-_]?token)", name):
+        return "credential_or_secret_file"
+    if ext in MIGRATED_PRIVATE_KEY_EXTENSIONS:
+        return "private_key_or_encrypted_vault"
+    if re.fullmatch(r"id_(rsa|dsa|ecdsa|ed25519)(\.pub)?", name) and not name.endswith(".pub"):
+        return "private_key"
+    return None
+
+
+def migrated_file_is_noisy(relative_path):
+    return any(part.lower() in MIGRATED_NOISY_PARTS for part in Path(relative_path).parts)
+
+
+def migrated_file_looks_textual(path):
+    try:
+        sample = Path(path).read_bytes()[:8192]
+    except Exception:
+        return False
+    if not sample or b"\x00" in sample:
+        return False
+    printable = sum(1 for byte in sample if byte in b"\t\n\r" or 32 <= byte <= 126 or byte >= 128)
+    return printable / len(sample) >= 0.90
+
+
+def migrated_graphiti_eligible(relative_path, extension, extraction_status, sensitivity):
+    rel = Path(relative_path)
+    parts = [part.lower() for part in rel.parts]
+    if sensitivity or extraction_status != "text_extracted":
+        return False
+    if extension in MIGRATED_CODE_EXTENSIONS or migrated_file_is_noisy(rel):
+        return False
+    if any(part in {"taxes", "recruiting", "resumes", "personal", "_job applications"} for part in parts):
+        return False
+    return extension in (MIGRATED_DOCUMENT_EXTENSIONS | MIGRATED_TEXT_EXTENSIONS)
+
+
+def migrated_timestamp_metadata(path):
+    stat = Path(path).stat()
+    fs_created = datetime.fromtimestamp(stat.st_ctime, timezone.utc).isoformat()
+    fs_modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+    embedded_created, embedded_modified = embedded_file_times(path)
+    dated_name = filename_date(path)
+    if embedded_modified:
+        best, provenance = embedded_modified, "embedded_modified"
+    elif embedded_created:
+        best, provenance = embedded_created, "embedded_created"
+    elif dated_name:
+        best, provenance = dated_name, "filename_date"
+    else:
+        best, provenance = fs_modified, "filesystem_modified_after_aws_transfer"
+    return {
+        "best_timestamp": best,
+        "timestamp_provenance": provenance,
+        "filesystem_created": fs_created,
+        "filesystem_modified": fs_modified,
+        "filesystem_mtime_ns": stat.st_mtime_ns,
+        "embedded_created": embedded_created,
+        "embedded_modified": embedded_modified,
+        "filename_date": dated_name,
+    }
+
+
+def prepare_migrated_file(path, source_root):
+    path = Path(path).resolve()
+    source_root = Path(source_root).resolve()
+    relative_path = path.relative_to(source_root).as_posix()
+    stat = path.stat()
+    extension = path.suffix.lower()
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    sensitivity = migrated_file_sensitivity(relative_path)
+    noisy = migrated_file_is_noisy(relative_path)
+    checksum = sha256_file(path)
+    source_id = relative_path
+    item_id = item_id_for("migrated-file", source_id, str(path))
+
+    extraction_status = "metadata_only_unsupported"
+    extracted = ""
+    if sensitivity:
+        extraction_status = "metadata_only_sensitive"
+    elif noisy:
+        extraction_status = "metadata_only_vendor_or_generated"
+    elif stat.st_size > MIGRATED_CONTENT_MAX_BYTES:
+        extraction_status = "metadata_only_size_limit"
+    elif extension in MIGRATED_TEXT_EXTENSIONS or (not extension and migrated_file_looks_textual(path)):
+        try:
+            extracted = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            extracted = ""
+        extraction_status = "text_extracted" if extracted.strip() else "text_empty_or_unreadable"
+    elif extension in (MIGRATED_DOCUMENT_EXTENSIONS | MIGRATED_IMAGE_EXTENSIONS):
+        extracted = extract_attachment_text(path, content_type, write_sidecar=False)
+        extraction_status = "text_extracted" if extracted else (
+            "ocr_unavailable" if extension in MIGRATED_IMAGE_EXTENSIONS and not tesseract_path()
+            else "text_empty_or_unreadable"
+        )
+
+    times = migrated_timestamp_metadata(path)
+    graphiti_eligible = migrated_graphiti_eligible(
+        relative_path, extension, extraction_status, sensitivity
+    )
+    catalog = (
+        f"Migrated file catalog entry. Relative path: {relative_path}. "
+        f"Filename: {path.name}. Extension: {extension or '[none]'}. MIME: {content_type}."
+    )
+    body = catalog + (("\n\n" + extracted) if extracted else "")
+    metadata = {
+        "absolute_path": str(path),
+        "source_relative_path": relative_path,
+        "migration_root": str(source_root),
+        "filename": path.name,
+        "extension": extension,
+        "mime_type": content_type,
+        "size": stat.st_size,
+        "sha256": checksum,
+        **times,
+        "extraction_status": extraction_status,
+        "extracted_text_chars": len(clean_text(extracted)) if extracted else 0,
+        "sensitivity": sensitivity,
+        "vendor_or_generated": noisy,
+        "graphiti_eligible": graphiti_eligible,
+        "original_timestamp_note": (
+            "AWS S3 sync did not retain source filesystem timestamps; embedded document/image "
+            "metadata or a filename date is preferred when present."
+        ),
+    }
+    item = {
+        "id": item_id,
+        "source": "migrated-file",
+        "source_id": source_id,
+        "kind": "migrated-file",
+        "title": path.name,
+        "author": "",
+        "recipients": "ExampleCo",
+        "created_at": times["best_timestamp"],
+        "raw_path": str(path),
+        "checksum": checksum,
+        "metadata_json": safe_json_dumps(metadata),
+    }
+    return {"item": item, "body": body, "metadata": metadata}
+
+
+def prepare_migrated_file_safe(job):
+    path, source_root = job
+    try:
+        return {"ok": True, "prepared": prepare_migrated_file(path, source_root)}
+    except Exception as exc:
+        return {"ok": False, "path": str(path), "error": str(exc)[:500]}
+
+
+def store_prepared_migrated_file(con, prepared):
+    item = prepared["item"]
+    if item_checksum_matches(con, item["id"], item.get("checksum")):
+        return 0
+    upsert_item(con, item, prepared.get("body") or "", [])
+    return 1
+
+
+def index_migrated_file(con, path, source_root):
+    return store_prepared_migrated_file(con, prepare_migrated_file(path, source_root))
 
 
 def html_to_text(value):
@@ -981,7 +1262,7 @@ def detect_source(path):
     return "file"
 
 
-def index_file(con, path, source=None, copy_external=False):
+def index_file(con, path, source=None, copy_external=False, source_root=None):
     path = Path(path)
     if not path.exists() or not path.is_file():
         return 0
@@ -990,6 +1271,8 @@ def index_file(con, path, source=None, copy_external=False):
     if copy_external and not str(path.resolve()).lower().startswith(str(REPO.resolve()).lower()):
         path = archive_external_file(path, kind)
     try:
+        if kind == "migrated-file":
+            return index_migrated_file(con, path, source_root or path.parent)
         if kind == "gmail-json":
             return 1 if index_gmail_message_json(con, path) else 0
         if kind == "eml":
@@ -1099,6 +1382,213 @@ def index_path(con, path, source=None, copy_external=False, limit=0, max_seconds
                     break
     con.commit()
     return count
+
+
+def write_json_atomic(path, value):
+    path = Path(path)
+    ensure_parent(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(safe_json_dumps(value, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def migrated_rows(con, source_root):
+    wanted_root = str(Path(source_root).resolve()).lower()
+    rows = []
+    for row in con.execute(
+        "SELECT id, source_id, title, created_at, raw_path, checksum, metadata_json, indexed_at "
+        "FROM items WHERE source = 'migrated-file' ORDER BY source_id"
+    ):
+        try:
+            meta = json.loads(row["metadata_json"] or "{}")
+        except Exception:
+            meta = {}
+        if str(meta.get("migration_root") or "").lower() != wanted_root:
+            continue
+        rows.append((row, meta))
+    return rows
+
+
+def write_migrated_manifest(con, source_root, manifest_path):
+    manifest_path = Path(manifest_path)
+    ensure_parent(manifest_path)
+    tmp = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="\n") as out:
+        for row, meta in migrated_rows(con, source_root):
+            record = {
+                "item_id": row["id"],
+                "absolute_path": row["raw_path"],
+                "source_relative_path": meta.get("source_relative_path") or row["source_id"],
+                "filename": meta.get("filename") or row["title"],
+                "extension": meta.get("extension"),
+                "mime_type": meta.get("mime_type"),
+                "size": meta.get("size"),
+                "sha256": row["checksum"],
+                "created_at": row["created_at"],
+                "filesystem_created": meta.get("filesystem_created"),
+                "filesystem_modified": meta.get("filesystem_modified"),
+                "embedded_created": meta.get("embedded_created"),
+                "embedded_modified": meta.get("embedded_modified"),
+                "filename_date": meta.get("filename_date"),
+                "timestamp_provenance": meta.get("timestamp_provenance"),
+                "extraction_status": meta.get("extraction_status"),
+                "extracted_text_chars": meta.get("extracted_text_chars", 0),
+                "sensitivity": meta.get("sensitivity"),
+                "graphiti_eligible": bool(meta.get("graphiti_eligible")),
+                "indexed_at": row["indexed_at"],
+            }
+            out.write(safe_json_dumps(record) + "\n")
+    os.replace(tmp, manifest_path)
+
+
+def migrated_coverage(con, source_root, scanned_files, scanned_bytes, errors, complete):
+    rows = migrated_rows(con, source_root)
+    status_counts = {}
+    provenance_counts = {}
+    indexed_bytes = 0
+    graphiti_eligible = 0
+    sensitive = 0
+    extracted_items = 0
+    extracted_chars = 0
+    for _, meta in rows:
+        status = meta.get("extraction_status") or "ExampleCo"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        provenance = meta.get("timestamp_provenance") or "ExampleCo"
+        provenance_counts[provenance] = provenance_counts.get(provenance, 0) + 1
+        indexed_bytes += int(meta.get("size") or 0)
+        graphiti_eligible += 1 if meta.get("graphiti_eligible") else 0
+        sensitive += 1 if meta.get("sensitivity") else 0
+        chars = int(meta.get("extracted_text_chars") or 0)
+        if chars:
+            extracted_items += 1
+            extracted_chars += chars
+    return {
+        "schema_version": 1,
+        "generated_at": now_iso(),
+        "source_root": str(Path(source_root).resolve()),
+        "complete": bool(complete),
+        "scanned_files": scanned_files,
+        "scanned_bytes": scanned_bytes,
+        "indexed_items": len(rows),
+        "indexed_bytes": indexed_bytes,
+        "coverage_matches_scan": len(rows) == scanned_files and indexed_bytes == scanned_bytes,
+        "sha256_coverage": len(rows),
+        "extracted_text_items": extracted_items,
+        "extracted_text_chars": extracted_chars,
+        "metadata_only_items": len(rows) - extracted_items,
+        "sensitive_metadata_only_items": sensitive,
+        "graphiti_eligible_items": graphiti_eligible,
+        "extraction_status_counts": status_counts,
+        "timestamp_provenance_counts": provenance_counts,
+        "ocr_available": bool(tesseract_path()),
+        "errors": errors,
+        "incremental_refresh": (
+            "Rerun index-migrated with the same root, database, manifest, and receipt. "
+            "Files with unchanged size and nanosecond mtime retain their prior SHA-256 and extraction; "
+            "changed files are re-hashed and re-extracted."
+        ),
+        "timestamp_limitation": (
+            "The AWS transfer did not preserve original filesystem mtimes. Embedded metadata and "
+            "filename dates are recorded when available; otherwise the filesystem time reflects migration."
+        ),
+    }
+
+
+def index_migrated_path(con, source_root, manifest_path, receipt_path, limit=0, max_seconds=0, workers=1):
+    source_root = Path(source_root).resolve()
+    if not source_root.exists() or not source_root.is_dir():
+        raise ValueError(f"Migration root is missing or is not a directory: {source_root}")
+    started = time.monotonic()
+    scanned_files = 0
+    scanned_bytes = 0
+    changed = 0
+    unchanged = 0
+    pruned_stale = 0
+    errors = []
+    complete = True
+    seen_relative_paths = set()
+    existing = {
+        (meta.get("source_relative_path") or row["source_id"]): meta
+        for row, meta in migrated_rows(con, source_root)
+    }
+    candidates = sorted((p for p in source_root.rglob("*") if p.is_file()), key=lambda p: p.as_posix().lower())
+    jobs = []
+    for path in candidates:
+        try:
+            stat = path.stat()
+            relative_path = path.relative_to(source_root).as_posix()
+            seen_relative_paths.add(relative_path)
+            scanned_files += 1
+            scanned_bytes += stat.st_size
+            prior = existing.get(relative_path) or {}
+            if (
+                int(prior.get("size") or -1) == stat.st_size
+                and int(prior.get("filesystem_mtime_ns") or -1) == stat.st_mtime_ns
+                and prior.get("sha256")
+            ):
+                unchanged += 1
+            else:
+                jobs.append((str(path), str(source_root)))
+        except Exception as exc:
+            errors.append({"path": str(path), "error": str(exc)[:500]})
+        if limit and scanned_files >= limit:
+            complete = False
+            break
+        if max_seconds and (time.monotonic() - started) >= max_seconds:
+            complete = False
+            break
+    worker_count = max(1, int(workers or 1))
+    if max_seconds:
+        # A bounded partial run must be able to stop promptly; queued process-pool
+        # work would violate that contract, so keep it serial.
+        worker_count = 1
+    if worker_count > 1 and jobs:
+        with ProcessPoolExecutor(max_workers=worker_count) as pool:
+            prepared_results = pool.map(prepare_migrated_file_safe, jobs, chunksize=1)
+            for completed, result in enumerate(prepared_results, start=1):
+                if result.get("ok"):
+                    changed += store_prepared_migrated_file(con, result["prepared"])
+                else:
+                    errors.append({"path": result.get("path"), "error": result.get("error")})
+                if completed % 100 == 0:
+                    con.commit()
+    else:
+        for completed, job in enumerate(jobs, start=1):
+            result = prepare_migrated_file_safe(job)
+            if result.get("ok"):
+                changed += store_prepared_migrated_file(con, result["prepared"])
+            else:
+                errors.append({"path": result.get("path"), "error": result.get("error")})
+            if completed % 100 == 0:
+                con.commit()
+            if max_seconds and (time.monotonic() - started) >= max_seconds:
+                complete = False
+                break
+    con.commit()
+    if complete:
+        for row, meta in migrated_rows(con, source_root):
+            relative_path = meta.get("source_relative_path") or row["source_id"]
+            if relative_path in seen_relative_paths:
+                continue
+            con.execute("DELETE FROM attachments WHERE item_id = ?", (row["id"],))
+            con.execute("DELETE FROM item_fts WHERE item_id = ?", (row["id"],))
+            con.execute("DELETE FROM items WHERE id = ?", (row["id"],))
+            pruned_stale += 1
+        con.commit()
+        # Re-scan totals after indexing so the receipt proves the exact final source view.
+        final_files = [p for p in source_root.rglob("*") if p.is_file()]
+        scanned_files = len(final_files)
+        scanned_bytes = sum(p.stat().st_size for p in final_files)
+    write_migrated_manifest(con, source_root, manifest_path)
+    receipt = migrated_coverage(con, source_root, scanned_files, scanned_bytes, errors, complete)
+    receipt["changed_or_new_items"] = changed
+    receipt["unchanged_items_fast_path"] = unchanged
+    receipt["pruned_stale_index_items"] = pruned_stale
+    receipt["extraction_workers"] = worker_count
+    receipt["database"] = str(Path(con.execute("PRAGMA database_list").fetchone()[2]).resolve())
+    receipt["manifest"] = str(Path(manifest_path).resolve())
+    write_json_atomic(receipt_path, receipt)
+    return receipt
 
 
 def default_existing_paths():
@@ -1495,6 +1985,15 @@ def main():
     p.add_argument("--max-seconds", type=int, default=0, help="Stop after this many seconds.")
     p.add_argument("--wait-lock-seconds", type=int, default=0, help="Wait up to this long for another archive writer to finish.")
 
+    p = sub.add_parser("index-migrated")
+    p.add_argument("--path", required=True, help="Root of the landed migration tree.")
+    p.add_argument("--manifest", required=True, help="Rebuildable JSONL file manifest output.")
+    p.add_argument("--receipt", required=True, help="Coverage receipt JSON output.")
+    p.add_argument("--limit", type=int, default=0, help="Maximum files to scan in this run.")
+    p.add_argument("--max-seconds", type=int, default=0, help="Stop after this many seconds and write a partial receipt.")
+    p.add_argument("--workers", type=int, default=min(6, os.cpu_count() or 1), help="Parallel extraction worker processes.")
+    p.add_argument("--wait-lock-seconds", type=int, default=0, help="Wait up to this long for another archive writer to finish.")
+
     p = sub.add_parser("search")
     p.add_argument("query")
     p.add_argument("--limit", type=int, default=20)
@@ -1529,7 +2028,7 @@ def main():
     args = parser.parse_args()
     lock_fd = None
     lock_path = lock_path_for_db(args.db)
-    mutating = args.cmd in ("backfill-gmail", "index-path", "index-existing", "compact-stale")
+    mutating = args.cmd in ("backfill-gmail", "index-path", "index-existing", "index-migrated", "compact-stale")
     if mutating:
         deadline = time.monotonic() + max(0, int(getattr(args, "wait_lock_seconds", 0) or 0))
         while True:
@@ -1548,6 +2047,12 @@ def main():
         if args.cmd == "index-path":
             count = index_path(con, args.path, source=args.source, copy_external=args.copy_external, limit=args.limit, max_seconds=args.max_seconds)
             print(json.dumps({"indexed": count, "db": args.db}, indent=2))
+        elif args.cmd == "index-migrated":
+            receipt = index_migrated_path(
+                con, args.path, args.manifest, args.receipt,
+                limit=args.limit, max_seconds=args.max_seconds, workers=args.workers,
+            )
+            print(safe_json_dumps(receipt, indent=2))
         elif args.cmd == "index-existing":
             count = index_existing(con, include_external=not args.no_external, limit=args.limit, max_seconds=args.max_seconds)
             print(json.dumps({"indexed": count, "db": args.db}, indent=2))

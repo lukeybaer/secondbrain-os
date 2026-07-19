@@ -160,8 +160,9 @@ def body_for(row, fts):
 def event_for(row, fts):
     ref, ref_source = best_reference_time(row, fts)
     body = body_for(row, fts)
+    event_source = "archive-lifetime-generic-file" if row["source"] == "migrated-file" else "archive-lifetime-item"
     return {
-        "source": "archive-lifetime-item",
+        "source": event_source,
         "source_id": row["id"],
         "source_description": f"archive-lifetime:{row['source']}:{row['source_id']}",
         "name": f"Archive lifetime: {row['source']} - {row['title'] or row['source_id'] or row['id']}"[:180],
@@ -212,6 +213,9 @@ def main():
     query = "select id, source, source_id, kind, title, author, recipients, created_at, raw_path, url, metadata_json, indexed_at from items order by id"
     for row in con.execute(query):
         summary["total"] += 1
+        meta = load_meta(row["metadata_json"])
+        if meta.get("graphiti_eligible") is False:
+            continue
         item_fts = fts.get(str(row["id"]), {})
         event = event_for(row, item_fts)
         dt = parse_time(event["reference_time"])
