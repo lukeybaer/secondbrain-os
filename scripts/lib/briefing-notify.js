@@ -129,7 +129,13 @@ function notificationState(status, phase = 'current') {
   return phase === 'final' ? 'blocked' : 'ongoing';
 }
 
-function buildBriefingNotifyText({ status, phase = 'current', url = '', transition = false } = {}) {
+function buildBriefingNotifyText({
+  status,
+  phase = 'current',
+  url = '',
+  transition = false,
+  watchReportUrl = '',
+} = {}) {
   const state = notificationState(status, phase);
   let line;
   if (state === 'clean') {
@@ -147,7 +153,41 @@ function buildBriefingNotifyText({ status, phase = 'current', url = '', transiti
   } else {
     line = 'Briefing live: current card status unavailable.';
   }
-  return [line, url].filter(Boolean).join('\n');
+  // One extra line ONLY when today's ledger-assembled overnight watch report
+  // exists (the caller verifies existence): the morning drop ExampleCos the
+  // "what we learned overnight" link alongside the dashboard link.
+  const watchLine = watchReportUrl ? `Watch report: ${watchReportUrl}` : '';
+  return [line, url, watchLine].filter(Boolean).join('\n');
+}
+
+// The dated watch-report artifact written by scripts/overnight-watch-report.js.
+function watchReportArtifactPath(dataDir, date) {
+  return path.join(dataDir, 'briefings', `watch-report-${String(date).slice(0, 10)}.html`);
+}
+
+// Tokenized URL for the day's watch report, or '' when the file does not
+// exist for that date: the notify line must never link a 404. Served by
+// ec2-server.js at /briefing/watch-report behind the same auth gate as the
+// dashboard, so the link rides the same ?k= capability token.
+function buildWatchReportUrl({
+  dataDir,
+  date,
+  env = process.env,
+  existsSync = fs.existsSync,
+} = {}) {
+  if (!dataDir || !date) return '';
+  try {
+    if (!existsSync(watchReportArtifactPath(dataDir, date))) return '';
+  } catch {
+    return '';
+  }
+  const dashBase = String(
+    env.BRIEFING_PUBLIC_BASE_URL || 'http://ExampleCo:3001/briefing',
+  ).replace(/\/+$/, '');
+  return buildBriefingDashboardUrl(
+    `${dashBase}/watch-report?date=${String(date).slice(0, 10)}`,
+    env.SB_BRIEFING_TOKEN || '',
+  );
 }
 
 function briefingNotifyKind(stateOrClean) {
@@ -187,7 +227,8 @@ async function notifyBriefingPublishedUnlocked({
     state === 'clean' && prior && prior.state !== 'clean' && prior.status === 'sent',
   );
   loadBriefingNotifyEnv(dataDir);
-  const text = buildBriefingNotifyText({ status, phase, url, transition });
+  const watchReportUrl = buildWatchReportUrl({ dataDir, date });
+  const text = buildBriefingNotifyText({ status, phase, url, transition, watchReportUrl });
   const ts = instant.toISOString();
   let outcome;
   try {
@@ -343,6 +384,8 @@ if (require.main === module) {
 module.exports = {
   notifyBriefingPublished,
   buildBriefingNotifyText,
+  buildWatchReportUrl,
+  watchReportArtifactPath,
   briefingBoardStatus,
   notificationState,
   briefingNotifyKind,

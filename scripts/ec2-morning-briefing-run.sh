@@ -121,6 +121,13 @@ REPORT_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/briefing-morning-report.js" --
 STATUS_CURRENT_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/lib/briefing-notify.js" --date "$DATE" --data-dir "$DATA_DIR" --phase current --refresh-artifact)
 STATUS_FINAL_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/lib/briefing-notify.js" --date "$DATE" --data-dir "$DATA_DIR" --phase final --refresh-artifact)
 
+# Overnight watch report (2026-07-19): a pure deterministic renderer (no LLM,
+# so it can never block on auth or budget) that assembles the night's durable
+# ledgers into the dated watch-report HTML the notify line links. It runs
+# right before the notify step so the 5:30 Telegram drop ExampleCos it, and it
+# is NON-FATAL: a report failure must never block or delay the briefing.
+WATCH_REPORT_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/overnight-watch-report.js" --date "$DATE" --data-dir "$DATA_DIR")
+
 TEST_MODE=0
 if [ "${NODE_ENV:-}" = "test" ] || [ "${VITEST:-}" = "true" ] || [ "${BRIEFING_DRY_RUN:-}" = "1" ]; then
   TEST_MODE=1
@@ -146,9 +153,27 @@ notify_briefing_state() {
   return 0
 }
 
+# Render the overnight watch report from the night's ledgers. Bounded and
+# best-effort: whatever its exit, the briefing continues.
+run_watch_report() {
+  if [ "$TEST_MODE" = "1" ]; then
+    echo "[morning-briefing-run] DRY-RUN: would render overnight watch report with: ${WATCH_REPORT_CMD[*]}"
+    return 0
+  fi
+  if timeout --kill-after=5s 55s "${WATCH_REPORT_CMD[@]}"; then
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) watch-report: rendered $DATA_DIR/briefings/watch-report-$DATE.html"
+  else
+    watch_status=$?
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) watch-report: exit $watch_status (non-fatal); briefing continues." >&2
+  fi
+  return 0
+}
+
 # ExampleCo's 5:30 contract is a current-state pointer, not a premature terminal
 # verdict. This runs before the full build and is marker-deduped with the 5:29
 # in-process fallback. It quotes only a fresh live render-QC artifact.
+# The watch report renders first so the notify line can link it.
+run_watch_report
 notify_briefing_state current
 
 # Docker Compose owns the permanent limit. This bounded recheck runs before
