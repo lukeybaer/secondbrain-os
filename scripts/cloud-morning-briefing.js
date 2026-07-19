@@ -68,6 +68,7 @@ const {
 // blocker we emit per non-green row covers EXACTLY the set the QC counts.
 const { nonGreenSubsystems } = require('./lib/system-health-nongreen.js');
 const { CARDS: BRIEFING_MANIFEST_CARDS } = require('./lib/briefing-card-manifest.js');
+const { mergeMemoryChangeClassification } = require('./lib/memory-delta-classifier.js');
 const {
   readFreshestBacklogReceipt,
   isBacklogReceiptFresh,
@@ -4191,15 +4192,10 @@ function buildMemoryDeltaMarkdownSection(dataDir) {
   const commits = Number(snap.commits || 0);
   const added = Number(snap.added || 0);
   const deleted = Number(snap.deleted || 0);
-  // Crisp face: the verdict up front, no raw path. Prefer a real commit subject
-  // (scrubbed) so the summary says WHAT changed, not just the counts.
-  const subjectFace = scrubRawPathsFromFace(
-    (Array.isArray(snap.subjects) && snap.subjects[0]) || '',
-  );
-  const face =
-    `${commits} memory commit${commits === 1 ? '' : 's'}, +${added}/-${deleted} lines` +
-    (subjectFace ? ` -- ${subjectFace}` : '') +
-    '.';
+  const classified = mergeMemoryChangeClassification(snap);
+  // Crisp face: separate new pointers from edits to existing pointers. Raw
+  // +N/-N line churn does not prove that ExampleCo gave new feedback.
+  const face = `${classified.updatedLines.length} pointer update${classified.updatedLines.length === 1 ? '' : 's'}, ${classified.addedLines.length} added, ${classified.deletedLines.length} removed; +${added}/-${deleted} lines across ${commits} memory commit${commits === 1 ? '' : 's'}.`;
   const detailLines = [];
   const subjects = Array.isArray(snap.subjects) ? snap.subjects : [];
   for (const s of subjects.slice(0, 3)) {

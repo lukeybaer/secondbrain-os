@@ -18,6 +18,10 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const {
+  classifyMemoryPatch,
+  memoryPatchForWindow,
+} = require('./lib/memory-delta-classifier.js');
 
 // REPO honors SECONDBRAIN_ROOT (the repo-wide convention used by
 // health-self-heal.js) so regression tests can point it at a temp git repo.
@@ -354,32 +358,20 @@ function snapshotMemory(hours = 24) {
   // none touched MEMORY.md, still emit a card so the dashboard reflects real
   // repo activity instead of a misleading "0 commits".
   if (added === 0 && deleted === 0 && subjects.length === 0 && repoCommits === 0) return null;
-  // ExampleCo 2026-04-29: pull the actual added lines so the dashboard can
-  // render real diff content instead of the commit subject. Mirrors the
-  // logic in ec2-server.js buildMemoryDeltaCard so snapshot fallback
-  // matches live-git path.
-  const addedLines = [];
-  const deletedLines = [];
+  // Read the NET diff for the window. A revision to an existing Tier 1 pointer
+  // is one update, not a newly learned lesson plus a removed old lesson.
+  let updatedLines = [];
+  let addedLines = [];
+  let deletedLines = [];
   try {
-    const diff = execGit(['log', `--since=${since}`, '-p', '--no-color', '--', 'memory/MEMORY.md']);
+    const diff = memoryPatchForWindow(execGit, since);
     if (diff) {
-      for (const ln of diff.split('\n')) {
-        if (ln.startsWith('+++') || ln.startsWith('---')) continue;
-        const isAdd = ln.startsWith('+');
-        const isDelete = ln.startsWith('-');
-        if (!isAdd && !isDelete) continue;
-        const text = ln.slice(1).trim();
-        if (!text) continue;
-        if (/^---$/.test(text)) continue;
-        if (/^##\s/.test(text)) continue;
-        // Never surface internal IDs (spine-session-, UUIDs, dispatch-N) on the
-        // card FACE -- same gate as the people-files addedSampleFor path and
-        // the QC FACE_DENYLIST in verify-dashboard-cards-live.js.
-        if (isInternalIdOrMetadataLine(text)) continue;
-        if (isAdd && addedLines.length < 5) addedLines.push(text);
-        if (isDelete && deletedLines.length < 5) deletedLines.push(text);
-        if (addedLines.length >= 5 && deletedLines.length >= 5) break;
-      }
+      const classified = classifyMemoryPatch(diff, {
+        shouldIncludeLine: (line) => !isInternalIdOrMetadataLine(line),
+      });
+      updatedLines = classified.updatedLines.slice(0, 5);
+      addedLines = classified.addedLines.slice(0, 5);
+      deletedLines = classified.deletedLines.slice(0, 5);
     }
   } catch {
     /* ignore */
@@ -403,6 +395,7 @@ function snapshotMemory(hours = 24) {
     memoryCommits: subjects.length,
     repoCommits,
     subjects: subjects.slice(0, 3),
+    updatedLines,
     addedLines,
     deletedLines,
     currentLines,
@@ -443,6 +436,7 @@ function emptyMemorySnapshot(hours = 24) {
     memoryCommits: 0,
     repoCommits: 0,
     subjects: [],
+    updatedLines: [],
     addedLines: [],
     deletedLines: [],
     currentLines,
