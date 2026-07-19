@@ -744,22 +744,83 @@ function writeActionArtifact(messages, options) {
   return output;
 }
 
-function runReplyVerifier() {
-  const python = process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3');
-  const script = path.join(REPO, 'scripts', 'verify-action-item-replies.py');
-  const result = spawnSync(python, [script, '--repo', REPO], {
+// The reply verifier walks the live sent-mail folder over IMAP; it is slow by
+// nature, not hung. Measured DESKTOP runtime on the fast path with working
+// credentials: 575.6s ("[verify-replies] matched 1/11 items", exit 0). The old
+// 4-minute bound therefore killed a HEALTHY verifier every single run, and on
+// EC2 the SIGTERM surfaced as `verifier.ok=false`, which blocked action_items.
+// 15 minutes gives real headroom over the measured worst case; override with
+// ACTION_ITEMS_VERIFY_TIMEOUT_MS when a mailbox legitimately needs longer.
+const REPLY_VERIFIER_TIMEOUT_MS =
+  Number(process.env.ACTION_ITEMS_VERIFY_TIMEOUT_MS) > 0
+    ? Number(process.env.ACTION_ITEMS_VERIFY_TIMEOUT_MS)
+    : 15 * 60 * 1000;
+
+// Every non-ok outcome ExampleCos a distinguishable REASON. The old shape returned
+// a bare `ok:false` with empty stdout/stderr for BOTH a timeout kill and a
+// missing script, so on EC2 (where scripts/verify-action-item-replies.py was
+// never in the deploy manifest) a hard deploy gap read as an ordinary skip for
+// an ExampleCo length of time. A verifier that did not run must say WHY.
+// Injectable spawn/script/timeout so tests can drive every failure shape
+// deterministically instead of depending on a real python + live IMAP.
+function runReplyVerifier({
+  spawn = spawnSync,
+  script = path.join(REPO, 'scripts', 'verify-action-item-replies.py'),
+  python = process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3'),
+  timeoutMs = REPLY_VERIFIER_TIMEOUT_MS,
+} = {}) {
+  const scriptRel = path.relative(REPO, script).replace(/\\/g, '/');
+  if (!fs.existsSync(script)) {
+    return {
+      ok: false,
+      status: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      scriptMissing: true,
+      reason: `reply verifier script is not present at ${scriptRel} (deploy manifest gap, not a verifier failure)`,
+    };
+  }
+  const result = spawn(python, [script, '--repo', REPO], {
     cwd: REPO,
     encoding: 'utf8',
-    timeout: 4 * 60 * 1000,
+    timeout: timeoutMs,
     maxBuffer: 8 * 1024 * 1024,
     windowsHide: true,
   });
-  return {
+  const errorCode = result.error && result.error.code ? String(result.error.code) : '';
+  const record = {
     ok: result.status === 0,
     status: result.status,
+    signal: result.signal || null,
     stdout: String(result.stdout || '').trim(),
     stderr: String(result.stderr || '').trim(),
   };
+  if (record.ok) return record;
+  // spawnSync signals a timeout kill as error.code ETIMEDOUT plus the kill
+  // signal; keep the signal-only shape as a fallback for the same category.
+  if (errorCode === 'ETIMEDOUT' || (result.status === null && result.signal && !errorCode)) {
+    record.timedOut = true;
+    record.timeoutMs = timeoutMs;
+    record.reason =
+      `reply verifier exceeded its ${Math.round(timeoutMs / 1000)}s bound and was killed` +
+      ` (${result.signal || 'no signal'}); raise ACTION_ITEMS_VERIFY_TIMEOUT_MS if the mailbox needs longer`;
+    return record;
+  }
+  if (errorCode === 'ENOENT') {
+    record.spawnFailed = true;
+    record.reason = `could not launch the reply verifier: "${python}" not found on PATH (set PYTHON_BIN)`;
+    return record;
+  }
+  if (errorCode) {
+    record.spawnFailed = true;
+    record.reason = `reply verifier spawn failed (${errorCode}): ${String(
+      result.error.message || result.error,
+    ).slice(0, 300)}`;
+    return record;
+  }
+  record.reason = `reply verifier exited ${result.status}`;
+  return record;
 }
 
 function dropVerifiedReplies() {
@@ -920,4 +981,6 @@ module.exports = {
   recordReplyVerifier,
   dropVerifiedReplies,
   isPinnedActionItem,
+  runReplyVerifier,
+  REPLY_VERIFIER_TIMEOUT_MS,
 };

@@ -111,6 +111,12 @@ LIVE_DEPS=(
   "scripts/sync-voiceprints-to-people-files.js"
   "scripts/content-heal.js"
   "scripts/regenerate-action-items.js"
+  # regenerate-action-items.js SPAWNS this verifier (python3 scripts/verify-action-item-replies.py).
+  # It was absent from /opt for an ExampleCo period: spawnSync returned status:null with empty
+  # streams and the failure read as an ordinary "verifier skipped", blocking action_items.
+  # A spawned sibling is a runtime dependency exactly like a require()d one. Pinned by
+  # scripts/__tests__/deploy-manifest-covers-spawned-scripts.test.js.
+  "scripts/verify-action-item-replies.py"
   "scripts/aws-cost-section.js"
   "scripts/mortgage-rate-indexes.js"
   "scripts/morning-shorts-proposals.js"
@@ -203,6 +209,34 @@ LIVE_DEPS=(
   # silently fall back to stale /opt copies.
   "scripts/voice-confirmation-queue-build.js"
   "scripts/voice-sample-sequence-review-html.js"
+  # ── SPAWNED siblings of the entrypoints above (2026-07-19) ──────────────────
+  # Found by scripts/__tests__/deploy-manifest-covers-spawned-scripts.test.js when
+  # the verify-action-item-replies.py gap was fixed. A spawned script is a runtime
+  # dependency exactly like a require()d module, but the require-scan closure
+  # (deploy-live-deps-covers-self-heal.test.js) is blind to a spawn edge -- and
+  # blind to .py entirely. Each of these is invoked by a DEPLOYED entrypoint:
+  #   voice-embedding-ecapa.py     <- voice-embedding-ecapa.js (the ECAPA embedder
+  #                                   itself; without it acoustic matching cannot run)
+  #   fetch-recent-gmail.py        <- regenerate-action-items.js
+  #   life-archive-fast-search.py  <- amy-memory-query.js (the /amy/memory/query route)
+  #   life-archive.py, graphiti-event-drain.js, graphiti-coverage-health.js,
+  #   auto-regen-rejected-videos.js, suggest-token-reduction.js,
+  #   run-cloud-scheduled-tasks.js <- health-self-heal.js heal actions
+  "scripts/voice-embedding-ecapa.py"
+  "scripts/fetch-recent-gmail.py"
+  "scripts/life-archive-fast-search.py"
+  "scripts/life-archive.py"
+  "scripts/graphiti-event-drain.js"
+  "scripts/graphiti-coverage-health.js"
+  "scripts/auto-regen-rejected-videos.js"
+  "scripts/suggest-token-reduction.js"
+  "scripts/run-cloud-scheduled-tasks.js"
+  # Transitive spawn closure of auto-regen-rejected-videos.js (surfaced by the same
+  # test once its parent was added): the EC2 rebuild engine plus the two quality
+  # gates it runs per regenerated video.
+  "scripts/ec2-build-from-queue.py"
+  "scripts/check-thumbnail-quality.py"
+  "scripts/check-video-content-not-blank.py"
 )
 
 # The cloud card controller must execute the same deployed source that this
