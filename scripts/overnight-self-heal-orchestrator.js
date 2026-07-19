@@ -45,6 +45,22 @@ const {
 // action, run BEFORE any LLM worker) + the 3-day recurrence masking guard.
 const mechanicalRunbook = require('./self-heal/mechanical-runbook.js');
 const mechanicalRecurrence = require('./self-heal/mechanical-recurrence.js');
+// EVIDENCE-DRIVEN TRIAGE SEAM (2026-07-19): reuse the agentic healer's human-gate
+// classifier and durable escalation ledger (landed 2026-07-18 in
+// scripts/agentic-healer-driver.js) so THIS orchestrator's repair loop, not only
+// the 5:30 driver CLI, routes human-gated defects to a human BEFORE spending
+// budget. 2026-07-19 gap: the 2:45/3:00 CT runs (ec2-self-heal-run.sh -> this
+// file) escalated defects the old way and never touched the triage seam because
+// it lived only on the driver's own entry path.
+const {
+  classifyHumanGate: driverClassifyHumanGate,
+  appendEscalationRow: appendDriverEscalationRow,
+} = require('./agentic-healer-driver.js');
+
+// The ledger tactic name for the triage gate itself. It is deliberately distinct
+// from every real repair tactic key, so recording a triage escalation can never
+// trip the no-repeat guard for an actual repair move.
+const HUMAN_GATE_TRIAGE_TACTIC = 'human-gate-triage';
 
 const REPO = path.resolve(__dirname, '..');
 
@@ -1464,6 +1480,29 @@ function classifyOwnership(blocker) {
     };
   }
   return { canAutoAttempt: true };
+}
+
+// The evidence text for one repair blocker: its own evidence line plus every raw
+// live-QC defect row it ExampleCos. The triage gate classifies over the blocker's
+// OWN text only (shape/keyword capability, no defect ids, no per-defect
+// runbooks), mirroring defectEvidenceText in scripts/agentic-healer-driver.js.
+function blockerEvidenceText(blocker) {
+  const evidence = String((blocker && blocker.evidence) || '');
+  const raw = Array.isArray(blocker && blocker.rawDefects) ? blocker.rawDefects.map(String) : [];
+  return [evidence, ...raw].filter((t) => t.trim()).join('\n');
+}
+
+// Best card id for an escalation record: the blocker's own id when present,
+// else the first card named by its raw live-QC defect rows.
+function blockerCardIdForEscalation(blocker) {
+  const explicit = String((blocker && (blocker.blocker_id || blocker.blockerId)) || '').trim();
+  if (explicit) return explicit;
+  const raw = Array.isArray(blocker && blocker.rawDefects) ? blocker.rawDefects : [];
+  for (const row of raw) {
+    const id = renderQcCardId(row);
+    if (id) return id;
+  }
+  return '';
 }
 
 // 2026-05-24 fix: when the scheduled task runs at 22:30 CT the UTC date is
@@ -4220,6 +4259,11 @@ async function runOrchestrator(opts = {}) {
       cleared: 0,
       escalated: blockers.length,
       escalatedUnresolved: true,
+      // Exhaustion stops the pass before the triage gate can run, so nothing
+      // was routed to a human this pass: every escalation is failed_to_fix.
+      escalatedToHuman: 0,
+      failedToFix: blockers.length,
+      outcomeSummary: { cleared: 0, escalated_to_human: 0, failed_to_fix: blockers.length },
       postRepairRawDefects: rawBlockerCount,
       totalBlockers: rawBlockerCount,
       repairGroups: blockers.length,
@@ -4373,6 +4417,10 @@ async function runOrchestrator(opts = {}) {
   let branchSummary = null;
   let cleared = 0;
   let escalated = 0;
+  // THREE-OUTCOME REPORTING (2026-07-19 seam fix): how many of the escalated
+  // blockers were routed to a human (ownership or evidence triage) rather than
+  // tried-and-failed. failed_to_fix is derived as escalated - escalatedToHuman.
+  let escalatedToHuman = 0;
   const refreshOnlyResults = [];
 
   // Phase 1 (sequential, fast, deterministic): classify ownership, run the
@@ -4385,6 +4433,9 @@ async function runOrchestrator(opts = {}) {
     if (!ownership.canAutoAttempt) {
       logRun({ stage: 'skip', blocker: blocker.title, reason: ownership.reason });
       escalated++;
+      // An ownership skip (owner=ExampleCo, or a need naming an external
+      // credential/decision/approval) is definitionally human-gated.
+      escalatedToHuman++;
       continue;
     }
     const isSelfHealHealthBlocker = blocker && blocker.source === 'self-heal-health';
@@ -4401,6 +4452,96 @@ async function runOrchestrator(opts = {}) {
         reason: 'known-false-clear-preflight',
         cards: blocker.knownFalseClearCards || [],
       });
+    }
+    // EVIDENCE-DRIVEN TRIAGE (2026-07-19 seam fix): BEFORE any preflight or
+    // session budget is spent on this blocker, classify its OWN evidence text.
+    // Evidence naming a missing credential, a different host, or a pending
+    // human decision means nothing this orchestrator can run tonight will
+    // clear it: escalate to a human with the concrete action (durable record
+    // in data/agent/self-heal-escalations.jsonl, same artifact the 5:30 driver
+    // writes) and give the budget to tractable work. Self-heal mechanism
+    // control rows are exempt (they exist to repair the healer itself).
+    // Observe mode classifies and reports the plan but never writes.
+    if (!isSelfHealMechanismBlocker) {
+      const humanGate = (opts.classifyHumanGate || driverClassifyHumanGate)(
+        blockerEvidenceText(blocker),
+      );
+      if (humanGate) {
+        const triageDefect = repairLedger.defectKey(
+          blocker.defectKey || blocker.blocker_id || blocker.blockerId || blocker.title,
+        );
+        const triageInputHash = repairLedger.hashTacticInput({
+          evidence: blocker.evidence || '',
+          rawDefects: Array.isArray(blocker.rawDefects) ? blocker.rawDefects : [],
+        });
+        logRun({
+          stage: 'human-gate-triage',
+          pass: passNumber,
+          blocker: blocker.title,
+          defect: triageDefect,
+          kind: humanGate.kind,
+          action: humanGate.action,
+          evidence: humanGate.excerpt,
+          observe: !!mode.observe,
+          status: 'escalated',
+        });
+        if (!mode.observe && recordRepairLedger) {
+          // The no-repeat rail also gates the record writes: an unchanged
+          // human-gated defect escalates once per (defect, input, day) and
+          // never accumulates duplicate rows across passes.
+          const alreadyRecorded = repairLedger.tacticAlreadyFailed(
+            date,
+            triageDefect,
+            HUMAN_GATE_TRIAGE_TACTIC,
+            triageInputHash,
+            ledgerOpts,
+          );
+          if (!alreadyRecorded) {
+            try {
+              appendDriverEscalationRow(
+                {
+                  ts: new Date().toISOString(),
+                  date,
+                  source: 'overnight-self-heal-orchestrator',
+                  pass: passNumber,
+                  defect: triageDefect,
+                  cardId: blockerCardIdForEscalation(blocker),
+                  kind: humanGate.kind,
+                  action: humanGate.action,
+                  evidence: humanGate.excerpt,
+                },
+                ledgerOpts,
+              );
+              // Deliver the concrete action where the morning surfaces read:
+              // the per-defect repair ledger feeds the SELF-HEAL HEALTH card
+              // drilldown (openDefects -> lastReflection), so the exact
+              // clearing action reaches ExampleCo without inventing a new card.
+              repairLedger.recordAttempt(
+                date,
+                {
+                  defect: triageDefect,
+                  tactic: HUMAN_GATE_TRIAGE_TACTIC,
+                  tacticInputHash: triageInputHash,
+                  qcResult: 'escalated',
+                  reflection: humanGate.action,
+                  ownerCardId: blockerCardIdForEscalation(blocker),
+                },
+                ledgerOpts,
+              );
+            } catch (e) {
+              logRun({
+                stage: 'human-gate-triage-write-failed',
+                pass: passNumber,
+                defect: triageDefect,
+                error: String((e && e.message) || e).slice(0, 200),
+              });
+            }
+          }
+        }
+        escalated++;
+        escalatedToHuman++;
+        continue;
+      }
     }
     // Video blocker preflight is read-only: re-probe the manifest to detect stale
     // blockers whose underlying issue was already resolved by a prior session or
@@ -4750,6 +4891,7 @@ async function runOrchestrator(opts = {}) {
       mode: modeLabel(mode),
       clearedByPreflight: cleared,
       escalated,
+      escalatedToHuman,
       sessionsPlanned: survivors.length,
       sessions: survivors.map((b) => b.title),
       concurrency: mode.parallel ? mode.concurrency : 1,
@@ -4759,6 +4901,7 @@ async function runOrchestrator(opts = {}) {
       observe: true,
       cleared,
       escalated,
+      escalatedToHuman,
       sessionsPlanned: survivors.length,
       mode: modeLabel(mode),
       totalBlockers: rawBlockerCount,
@@ -4847,6 +4990,13 @@ async function runOrchestrator(opts = {}) {
         escalated: escalated + survivors.length,
         escalatedUnresolved: true,
         authFailed: true,
+        escalatedToHuman,
+        failedToFix: Math.max(0, escalated + survivors.length - escalatedToHuman),
+        outcomeSummary: {
+          cleared,
+          escalated_to_human: escalatedToHuman,
+          failed_to_fix: Math.max(0, escalated + survivors.length - escalatedToHuman),
+        },
         plannedSessions: survivors.length,
         repairGroups: blockers.length,
       });
@@ -4858,6 +5008,8 @@ async function runOrchestrator(opts = {}) {
         cleared,
         clearedCount: cleared,
         escalatedCount: escalated + survivors.length,
+        escalatedToHuman,
+        failedToFix: Math.max(0, escalated + survivors.length - escalatedToHuman),
         plannedSessions: survivors.length,
         authBlocker: authPreflight.blocker,
         executorHealthRow: executorHealthRow(authPreflight, opts.executorHealthSignals || {}),
@@ -5334,6 +5486,16 @@ async function runOrchestrator(opts = {}) {
     cleared,
     escalated,
     escalatedUnresolved: anyEscalated,
+    // THREE-OUTCOME REPORTING (2026-07-19 seam fix): cleared vs
+    // escalated_to_human vs failed_to_fix, so a night whose only escalations
+    // are human-gated stops reading as a nightly repair failure.
+    escalatedToHuman,
+    failedToFix: Math.max(0, escalated - escalatedToHuman),
+    outcomeSummary: {
+      cleared,
+      escalated_to_human: escalatedToHuman,
+      failed_to_fix: Math.max(0, escalated - escalatedToHuman),
+    },
     postRepairRawDefects,
     totalBlockers: rawBlockerCount,
     repairGroups: blockers.length,
@@ -5523,6 +5685,13 @@ async function runOrchestrator(opts = {}) {
     maxPasses: maxPassesForLog(maxPasses),
     clearedCount: cleared,
     escalatedCount: escalated,
+    escalatedToHuman,
+    failedToFix: Math.max(0, escalated - escalatedToHuman),
+    outcomeSummary: {
+      cleared,
+      escalated_to_human: escalatedToHuman,
+      failed_to_fix: Math.max(0, escalated - escalatedToHuman),
+    },
     postRepairRawDefects,
     postRepairDefects: (postRepairLiveRenderQc.defects || []).slice(0, 25),
     cleared,
@@ -5597,6 +5766,10 @@ module.exports = {
   mergeBlockers,
   modeLabel,
   announceMode,
+  // EVIDENCE-DRIVEN TRIAGE seam (2026-07-19): the orchestrator-path human gate.
+  HUMAN_GATE_TRIAGE_TACTIC,
+  blockerEvidenceText,
+  blockerCardIdForEscalation,
   // --mechanical-only (item W2b): the bounded pre-briefing pass + its helpers.
   runMechanicalOnlyPass,
   withWallClockTimeout,
