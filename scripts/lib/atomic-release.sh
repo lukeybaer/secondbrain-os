@@ -19,7 +19,8 @@
 # FULLY-VERIFIED, single-sha release tree:
 #
 #   1. git-archive a FULL checkout of exactly ONE git sha -> /opt/secondbrain-releases/<sha>
-#   1b. wire the STABLE shared node_modules + data into that release (see below)
+#   1b. wire the STABLE shared node_modules + data AND the DURABLE logs dir into
+#       that release (see below)
 #   2. VERIFY the staged tree loads, all BEFORE anything live is touched:
 #        a. node -c on the server twins + entrypoints          (syntax)
 #        b. require-scan-check.js                                (missing FILES)
@@ -63,6 +64,24 @@
 # resolve to the shared live dir. SECONDBRAIN_DATA_DIR (when set) defaults to
 # /opt/secondbrain/data, which resolves the same way. The data path is unchanged;
 # only what it points AT changes, and it keeps pointing at the one live dir.
+#
+# ============================================================================
+# DURABLE LOGS (deploy-blindness fix, 2026-07-19)
+# ============================================================================
+# logs/ used to be a REAL directory inside each release tree, so every symlink
+# swap ORPHANED the live log files mid-write: the 5:30 briefing cron kept
+# appending to the OLD release's logs/morning-briefing-cron.log (its open fd
+# kept the resolved path) while anything tailing /opt/secondbrain/logs went
+# blind, and each release accumulated its own shard of the log history. data/
+# never had this problem because it lives OUTSIDE the release; logs now get the
+# SAME treatment:
+#     <release>/logs -> $DURABLE_LOGS   (default /opt/secondbrain-logs -- ONE
+#                                        durable dir, SAME physical dir across
+#                                        every release)
+# INVARIANT (by construction): a log line written through $OPT_LINK/logs BEFORE
+# the swap and a line written AFTER the swap land in the SAME durable file,
+# because every release's logs entry resolves to the one durable dir. Migration
+# is MOVE-only and no-clobber (mv -n): log content is never deleted.
 #
 # ============================================================================
 # ONE-TIME /opt CUTOVER (bootstrap) -- run ONCE, supervised, per the guardrail.
@@ -115,6 +134,12 @@
 #   --shared-data      override the shared data dir; this is the ONE live runtime
 #                      state dir shared by every release
 #                      (default <shared-root>/data, SB_SHARED_DATA).
+#   --durable-logs     the ONE durable logs dir every release's logs/ entry
+#                      symlinks to (SB_DURABLE_LOGS). Default
+#                      /opt/secondbrain-logs when the shared root is the
+#                      production default; <shared-root>/logs otherwise, so
+#                      --local test layouts stay self-contained and never touch
+#                      a root-owned /opt path.
 #   --bootstrap        ONE-TIME cutover: MOVE the live node_modules + data out of a
 #                      plain /opt/secondbrain into <shared-root>, back the original
 #                      up as /opt/secondbrain.pre-atomic.bak, then do a normal
@@ -149,6 +174,8 @@ OPT_LINK="${SB_OPT_LINK:-/opt/secondbrain}"
 SHARED_ROOT="${SB_SHARED_ROOT:-/opt/secondbrain-shared}"
 SHARED_NODE_MODULES="${SB_SHARED_NODE_MODULES:-}"
 SHARED_DATA="${SB_SHARED_DATA:-}"
+# DURABLE logs dir OUTSIDE releases: log files survive every symlink swap.
+DURABLE_LOGS="${SB_DURABLE_LOGS:-}"
 LOCAL=0
 BOOTSTRAP=0
 STAGE_ONLY=0
@@ -171,6 +198,7 @@ while [ $# -gt 0 ]; do
     --shared-root) SHARED_ROOT="$2"; shift 2 ;;
     --shared-node-modules) SHARED_NODE_MODULES="$2"; shift 2 ;;
     --shared-data) SHARED_DATA="$2"; shift 2 ;;
+    --durable-logs) DURABLE_LOGS="$2"; shift 2 ;;
     --health-port) HEALTH_PORT="$2"; shift 2 ;;
     --bootstrap) BOOTSTRAP=1; shift ;;
     --stage-only) STAGE_ONLY=1; shift ;;
@@ -186,6 +214,16 @@ RELEASE_DIR="$RELEASES_ROOT/$SHA"
 # Derive the shared sub-paths from --shared-root unless overridden explicitly.
 [ -n "$SHARED_NODE_MODULES" ] || SHARED_NODE_MODULES="$SHARED_ROOT/node_modules"
 [ -n "$SHARED_DATA" ] || SHARED_DATA="$SHARED_ROOT/data"
+# Durable-logs default: production uses /opt/secondbrain-logs (ec2-user owned,
+# sibling of the shared root). A NON-default shared root means a test / scratch
+# layout, so keep logs beside it instead of touching a root-owned /opt path.
+if [ -z "$DURABLE_LOGS" ]; then
+  if [ "$SHARED_ROOT" = "/opt/secondbrain-shared" ]; then
+    DURABLE_LOGS="/opt/secondbrain-logs"
+  else
+    DURABLE_LOGS="$SHARED_ROOT/logs"
+  fi
+fi
 
 # The default entrypoint set: the two server twins plus the top-level entrypoints
 # PM2 / the cloud controller load. All are `require.main === module` guarded (or
@@ -234,6 +272,53 @@ link_shared_into_release() {
     rm -rf '$RELEASE_DIR/data'
     ln -s '$SHARED_DATA' '$RELEASE_DIR/data'
   " || die "failed to wire shared node_modules/data symlinks into $RELEASE_DIR"
+}
+
+# ---- wire the DURABLE logs dir into a staged release (logs survive the swap) ----
+# WHY (2026-07-19 deploy-blindness defect): logs/ used to be a REAL dir inside
+# each release tree, so the atomic swap orphaned live log files mid-write -- the
+# 5:30 briefing cron kept appending into the OLD release (its open fd kept the
+# resolved path) while any monitor tailing $OPT_LINK/logs went blind. The
+# release's logs entry is now a SYMLINK to the ONE durable dir, exactly like data/.
+# INVARIANT BY CONSTRUCTION: a log written at $OPT_LINK/logs/x.log PRE-swap and a
+# line appended POST-swap land in the SAME durable file, because every release
+# resolves logs/ to $DURABLE_LOGS.
+#
+# MIGRATE-BEFORE-REPLACE, never delete: the first run after this ships finds the
+# CURRENT live release still owning a REAL logs/ dir with live files. Those are
+# MOVED into $DURABLE_LOGS before any dir is replaced by a symlink -- mv -n is
+# no-clobber (a name collision leaves the source file in place), and a same-
+# filesystem mv is rename(2), which preserves inodes so a writer holding an open
+# fd keeps appending to the same file in its new durable home. Nothing here ever
+# rm -rf's a real logs dir: if a staged logs/ cannot be fully drained, the
+# release FAILS rather than delete log content.
+link_durable_logs_into_release() {
+  sh_run "
+    set -e
+    if ! mkdir -p '$DURABLE_LOGS' 2>/dev/null; then
+      sudo mkdir -p '$DURABLE_LOGS' && sudo chown ec2-user:ec2-user '$DURABLE_LOGS'
+    fi
+    # MIGRATE (first run): drain the CURRENT live release's real logs/ into the
+    # durable dir, then leave the durable symlink behind so pre-swap writers
+    # opening NEW files land durable too. rmdir refuses a non-empty dir, so a
+    # mid-window write or a name collision is preserved, never force-deleted.
+    live_release=\"\$(readlink -f '$OPT_LINK' 2>/dev/null || true)\"
+    if [ -n \"\$live_release\" ] && [ -d \"\$live_release/logs\" ] && [ ! -L \"\$live_release/logs\" ]; then
+      find \"\$live_release/logs\" -mindepth 1 -maxdepth 1 -exec mv -n {} '$DURABLE_LOGS/' \;
+      if rmdir \"\$live_release/logs\" 2>/dev/null; then
+        ln -s '$DURABLE_LOGS' \"\$live_release/logs\"
+      fi
+    fi
+    # REPLACE: the staged release's logs entry becomes the durable symlink.
+    # git-archive stages no logs/ today (untracked); guard anyway by draining
+    # any real dir first -- and FAIL rather than delete undrained log content.
+    if [ -d '$RELEASE_DIR/logs' ] && [ ! -L '$RELEASE_DIR/logs' ]; then
+      find '$RELEASE_DIR/logs' -mindepth 1 -maxdepth 1 -exec mv -n {} '$DURABLE_LOGS/' \;
+      rmdir '$RELEASE_DIR/logs'
+    fi
+    if [ -L '$RELEASE_DIR/logs' ]; then rm -f '$RELEASE_DIR/logs'; fi
+    ln -s '$DURABLE_LOGS' '$RELEASE_DIR/logs'
+  " || die "failed to wire durable logs into $RELEASE_DIR (log content is never deleted -- drain any leftover real logs/ into $DURABLE_LOGS manually and re-run)"
 }
 
 # ---- ONE-TIME cutover: move the live node_modules + data OUT to $SHARED_ROOT ----
@@ -310,6 +395,8 @@ log "staged: $RELEASE_DIR"
 # $OPT_LINK-chained link, and adds the data symlink that decouples runtime state.
 link_shared_into_release
 log "linked shared: $RELEASE_DIR/node_modules -> $SHARED_NODE_MODULES, $RELEASE_DIR/data -> $SHARED_DATA"
+link_durable_logs_into_release
+log "linked durable logs: $RELEASE_DIR/logs -> $DURABLE_LOGS (log files survive the swap by construction)"
 
 # stage-only: prepared a release dir with shared symlinks wired, but DO NOT verify,
 # swap, or restart. Used to pre-stage a release and by the tests.

@@ -266,9 +266,24 @@ trap cleanup_deploy_locks EXIT
 # exists. The LIVE_DEPS + CONTROLLER_RUNTIME_FILES arrays above are retained as
 # the audited entrypoint/closure manifest (checked to exist locally below);
 # they no longer drive the copy.
+# Durable logs (deploy-blindness fix, 2026-07-19): the release-prep step inside
+# atomic-release.sh (link_durable_logs_into_release) wires the new release's
+# logs/ entry as a SYMLINK to the durable /opt/secondbrain-logs and MIGRATES any
+# real logs/ files out of the current release first (mv -n, never deleted). So a
+# log written at /opt/secondbrain/logs/x.log PRE-swap stays readable at the same
+# path POST-swap BY CONSTRUCTION: both releases resolve logs/ to the one durable
+# dir, and cron lines appending through /opt/secondbrain/logs keep working.
+#
+# Releases deployed BEFORE this fix each hold an orphaned log shard at
+# /opt/secondbrain-releases/<sha>/logs. Do NOT delete them. Optional one-time
+# consolidation (COPY, never delete), oldest release first:
+#   for d in $(ls -dtr /opt/secondbrain-releases/*/logs 2>/dev/null); do \
+#     [ -L "$d" ] && continue; for f in "$d"/*; do [ -f "$f" ] && \
+#     cat "$f" >> "/opt/secondbrain-logs/orphan-shards-$(basename "$f")"; done; done
 SHA="$(git -C "$ROOT" rev-parse HEAD)"
 echo "[deploy] delegating live write to atomic-release.sh (sha $SHA)"
 echo "[deploy]   ships /opt/secondbrain/server.js + /opt/secondbrain/ec2-server.js inside the release tree"
+echo "[deploy]   release logs/ is a symlink to the durable /opt/secondbrain-logs -- live log files survive the swap"
 if ! bash "$ROOT/scripts/lib/atomic-release.sh" \
   --sha "$SHA" --source-root "$ROOT" --host "$HOST" --key "$KEY"; then
   echo "[deploy] ATOMIC RELEASE FAILED: the primitive either failed verification, or swapped and then rolled back on a health failure. /opt is unchanged from the last good release. See the [atomic-release] lines above." >&2
