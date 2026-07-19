@@ -363,6 +363,15 @@ link_durable_logs_into_release() {
         ln -s '$DURABLE_LOGS' \"\$live_release/logs\"
       fi
     fi
+    # During the one-time bootstrap the plain live tree moves to
+    # <opt-link>.pre-atomic.bak before this wiring pass. Recover its logs from
+    # that retained tree instead of creating an empty durable directory.
+    if [ -d '$OPT_LINK.pre-atomic.bak/logs' ] && [ ! -L '$OPT_LINK.pre-atomic.bak/logs' ]; then
+      find '$OPT_LINK.pre-atomic.bak/logs' -mindepth 1 -maxdepth 1 -exec mv -n {} '$DURABLE_LOGS/' \;
+      if rmdir '$OPT_LINK.pre-atomic.bak/logs' 2>/dev/null; then
+        ln -s '$DURABLE_LOGS' '$OPT_LINK.pre-atomic.bak/logs'
+      fi
+    fi
     # REPLACE: the staged release's logs entry becomes the durable symlink.
     # git-archive stages no logs/ today (untracked); guard anyway by draining
     # any real dir first -- and FAIL rather than delete undrained log content.
@@ -434,6 +443,12 @@ link_durable_into_release() {
           ln -s '$durable' \"\$live_release/$name\"
         fi
       fi
+      if [ -d '$OPT_LINK.pre-atomic.bak/$name' ] && [ ! -L '$OPT_LINK.pre-atomic.bak/$name' ]; then
+        find '$OPT_LINK.pre-atomic.bak/$name' -mindepth 1 -maxdepth 1 -exec mv -n {} '$durable/' \;
+        if rmdir '$OPT_LINK.pre-atomic.bak/$name' 2>/dev/null; then
+          ln -s '$durable' '$OPT_LINK.pre-atomic.bak/$name'
+        fi
+      fi
       if [ -d '$RELEASE_DIR/$name' ] && [ ! -L '$RELEASE_DIR/$name' ]; then
         find '$RELEASE_DIR/$name' -mindepth 1 -maxdepth 1 -exec mv -n {} '$durable/' \;
         $drop_seeded
@@ -461,6 +476,12 @@ link_durable_into_release() {
         mv -n \"\$live_release/$name\" '$durable'
         if [ ! -e \"\$live_release/$name\" ]; then
           ln -s '$durable' \"\$live_release/$name\"
+        fi
+      fi
+      if [ -f '$OPT_LINK.pre-atomic.bak/$name' ] && [ ! -L '$OPT_LINK.pre-atomic.bak/$name' ]; then
+        mv -n '$OPT_LINK.pre-atomic.bak/$name' '$durable'
+        if [ ! -e '$OPT_LINK.pre-atomic.bak/$name' ]; then
+          ln -s '$durable' '$OPT_LINK.pre-atomic.bak/$name'
         fi
       fi
       if [ -f '$RELEASE_DIR/$name' ] && [ ! -L '$RELEASE_DIR/$name' ]; then

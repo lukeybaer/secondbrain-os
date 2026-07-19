@@ -42,6 +42,7 @@ const KEY_FILES = [
   'scripts/graphiti-live-health.js',
   'scripts/lib/graphiti-brain-advisor.js',
   'scripts/lib/graphiti-advisor-health.js',
+  'scripts/lib/deploy-graphiti-indexed.sh',
   'scripts/graphiti-brain-advisor.js',
   'scripts/claude-hooks/graphiti-advisor-start.mjs',
   'scripts/claude-hooks/graphiti-advisor-context.mjs',
@@ -175,6 +176,26 @@ const MUST_CONTAIN = [
     'docker-compose.graphiti.yml',
     'main_secondbrain.py',
     'the live MCP container starts the indexed search wrapper',
+  ],
+  [
+    'scripts/lib/deploy-graphiti-indexed.sh',
+    'docker compose version',
+    'the remote deploy accepts a host with the Docker Compose plugin',
+  ],
+  [
+    'scripts/lib/deploy-graphiti-indexed.sh',
+    'docker-compose',
+    'the remote deploy accepts a host with standalone docker-compose',
+  ],
+  [
+    'scripts/lib/deploy-graphiti-indexed.sh',
+    "node <<'NODE'",
+    'the owner-graph prewarm survives the SSH boundary without nested node -e quoting',
+  ],
+  [
+    'scripts/lib/deploy-graphiti-indexed.sh',
+    'restore_prior_image',
+    'a failed indexed container acceptance restores the exact prior image',
   ],
   [
     'ec2-server.js',
