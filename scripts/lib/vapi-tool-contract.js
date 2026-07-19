@@ -96,7 +96,10 @@ function buildVapiFunctionTools() {
         },
       },
       ['task', 'owner_explicit_start'],
-      { messages: toolMessages('', '', { silentStart: true, silentComplete: true }) },
+      // Dead-air regression (2026-07-18): silentComplete swallowed the tool
+      // result entirely, so acks and refusals were never spoken and the call
+      // hung in silence. The result must be voiced.
+      { messages: toolMessages('', '', { silentStart: true }) },
     ),
     functionTool(
       'query_knowledge',
@@ -170,7 +173,8 @@ function buildVapiFunctionTools() {
         },
       },
       ['prompt', 'owner_explicit_start'],
-      { messages: toolMessages('', '', { silentStart: true, silentComplete: true }) },
+      // Same dead-air regression as run_claude_code: the result must be voiced.
+      { messages: toolMessages('', '', { silentStart: true }) },
     ),
     functionTool(
       'agent_session_status',

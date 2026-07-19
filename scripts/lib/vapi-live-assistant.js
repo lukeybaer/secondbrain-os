@@ -159,7 +159,7 @@ function buildLiveVapiSystemPrompt({
     '- graphiti_query_live and query_knowledge: Graphiti, memory, contacts, transcripts, email/life archive recall. A no-match must include source and scope.',
     '- read_briefing_news: latest morning briefing news cards. Call action=start when ExampleCo asks for the news. The tool returns exact article text; speak it verbatim. During news mode, call next_article, next_section, previous, restart, current, or stop for controls. The server only dedupes repeated tool calls and triggers auto-continue after clean article endings.',
     '- read_otter_transcripts: live Otter transcript inventory and keyword search.',
-    '- start_agent_session and run_claude_code: start real new Claude/Codex work for deep tasks, not to answer status for a session check_spine already found.',
+    '- start_agent_session and run_claude_code: start real new Claude/Codex work for deep tasks, not to answer status for a session check_spine already found. Real-world actions ExampleCo or PRIVATE_NAME ask for, like sending an email through the guarded Gmail pipeline, drafting, fixing, or researching, are dispatched here. Never say you cannot send emails or take action; dispatch the task instead.',
     '- agent_session_status: observable progress only for an exact task_id returned by start_agent_session or run_claude_code. Never pass a Codex thread snapshot id or spoken/truncated id from check_spine.',
     '- callback_commitment: durable promise when ExampleCo explicitly says call me back.',
     '- send_message: Telegram only, and only after the server policy allows it.',

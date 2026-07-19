@@ -10,14 +10,19 @@
 //  - Non-privileged tools always execute (the gate is a no-op).
 //  - A voiceprint-VERIFIED speaker (an enrolled household member matched by audio, cached for
 //    the call) executes privileged tools immediately: no friction.
-//  - Everyone else, including owner-by-phone-number and keyword-upgraded
-//    callers, needs approval outside the call. Telegram is not a proactive
-//    approval channel; false-rejects therefore deny the privileged action
-//    rather than silently executing or buzzing ExampleCo.
+//  - A verified OWNER PHONE (ExampleCo/PRIVATE_NAME caller id) also executes immediately
+//    (2026-07-18): voiceprint verification only exists at end-of-call (Vapi
+//    exposes no mid-call audio), so the voiceprint-only gate structurally
+//    denied every privileged tool for every caller on every live call,
+//    owners included. Owner-phone unlock restores capability; downstream
+//    guards (per-tool owner gates, outbound-send-guard identity rules,
+//    security-event audit, end-of-call voiceprint audit) still hold.
+//  - Everyone else, including keyword-upgraded callers, needs approval
+//    outside the call. Telegram is not a proactive approval channel;
+//    false-rejects therefore deny the privileged action rather than silently
+//    executing or buzzing ExampleCo.
 //  - Speaker IDENTIFICATION (context signal, e.g. "sounds like PRIVATE_NAME") is
 //    deliberately IGNORED here: identification is never the sole authorizer.
-//    Only the verification cache (written exclusively on an above-threshold
-//    voiceprint match) unlocks execution.
 //
 // Also: the ExampleCo-caller access-keyword upgrade gets a mechanical attempt
 // limit (3 per call AND per phone per 10 minutes) built on the proven
@@ -30,7 +35,8 @@ const KEYWORD_MAX_ATTEMPTS = 3;
 const KEYWORD_WINDOW_MS = 10 * 60 * 1000;
 
 // Pure: decide what happens to a privileged tool call right now.
-// { privileged, preApproved, voiceprintVerifiedName, speakerIdentifiedName }
+// { privileged, preApproved, voiceprintVerifiedName, ownerPhoneVerified,
+//   speakerIdentifiedName }
 // -> { action: 'execute' | 'needs-approval', reason }
 // speakerIdentifiedName is accepted and IGNORED on purpose (sole-authorizer
 // guard): passing an identification must never flip the gate.
@@ -38,6 +44,7 @@ function decidePrivilegedVoiceExecution({
   privileged = false,
   preApproved = false,
   voiceprintVerifiedName = null,
+  ownerPhoneVerified = false,
   speakerIdentifiedName = null, // eslint-disable-line no-unused-vars
 } = {}) {
   if (!privileged) return { action: 'execute', reason: 'not-privileged' };
@@ -45,7 +52,25 @@ function decidePrivilegedVoiceExecution({
   if (voiceprintVerifiedName) {
     return { action: 'execute', reason: 'voiceprint-verified:' + voiceprintVerifiedName };
   }
+  if (ownerPhoneVerified) {
+    return { action: 'execute', reason: 'owner-phone-verified' };
+  }
   return { action: 'needs-approval', reason: 'no-voiceprint-verification' };
+}
+
+// Owner-phone unlock eligibility (2026-07-18, Codex-reviewed): phone trust
+// may only unlock privileged execution when the webhook itself proved
+// authenticity (x-vapi-secret matched: signatureReason 'secret-match'), the
+// caller is owner TIER, and the number is not a synthetic self-test
+// principal. Fail-open signature modes ('no-secret-configured-warn') never
+// unlock: a forged public POST carrying an owner number must not execute
+// privileged tools.
+function isOwnerPhoneUnlockEligible({
+  callerTier = '',
+  signatureReason = '',
+  selfTestPhone = false,
+} = {}) {
+  return callerTier === 'owner' && signatureReason === 'secret-match' && !selfTestPhone;
 }
 
 // Keyword attempt limiter. stateMap is a Map<key, number[]> shared across
@@ -86,6 +111,7 @@ function formatPrivilegedApprovalMessage({ callerPhone, toolName, summary, appro
 
 module.exports = {
   decidePrivilegedVoiceExecution,
+  isOwnerPhoneUnlockEligible,
   checkKeywordAttempt,
   formatPrivilegedApprovalMessage,
   APPROVAL_TTL_MS,
