@@ -128,6 +128,12 @@ const {
   checkHealthBlockersReverseConsistency,
 } = require('./validate-briefing-quality.js');
 const { numericFaceNeedsDateStamp } = require('./lib/briefing-date-stamp.js');
+// Section-preservation invariant at the shared write boundary (2026-07-18
+// ACTION ITEMS drop incident): every published-briefing markdown write proves
+// it preserves the manifest-required sections the file already ExampleCos, or it
+// aborts loudly and leaves the original byte-identical. Shared with
+// refresh-briefing-generated-sections.js so the two writers cannot drift.
+const { guardedWriteBriefingMarkdown } = require('./lib/briefing-write-guard.js');
 // Per-card INDEPENDENT producer hook. For the two cards whose snapshots are
 // generated on the desktop shared checkout and shipped to EC2 (uncommitted_parked
 // / git-hygiene, system_health / devops-health), refresh THAT card's producer
@@ -201,7 +207,8 @@ function parseArgs(argv) {
     else positionals.push(arg);
   }
   if (opts.all && positionals.length) usageError('--all does not accept a <cardId> positional');
-  if (!opts.all && positionals.length !== 1) usageError('exactly one <cardId> positional argument is required');
+  if (!opts.all && positionals.length !== 1)
+    usageError('exactly one <cardId> positional argument is required');
   opts.cardId = positionals[0] || null;
   return opts;
 }
@@ -313,9 +320,7 @@ function firstVisibleBodyLine(contentLines) {
 }
 
 function withNumericCardAsOfStamp(contentLines, asOfDate) {
-  const normalizedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(asOfDate || ''))
-    ? String(asOfDate)
-    : '';
+  const normalizedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(asOfDate || '')) ? String(asOfDate) : '';
   if (!normalizedDate) return contentLines;
   const body = (contentLines || [])
     .slice(1)
@@ -686,7 +691,10 @@ function refreshPublishedBlockersReconciliationLine({ markdownPath, artifact }) 
   const current = fs.readFileSync(markdownPath, 'utf8');
   const next = refreshBlockersReconciliationLine(current, artifact);
   if (next === current) return false;
-  writeTextAtomic(markdownPath, next);
+  guardedWriteBriefingMarkdown(markdownPath, next, {
+    where: 'refresh-card blockers reconciliation line',
+    writer: writeTextAtomic,
+  });
   return true;
 }
 
@@ -732,9 +740,7 @@ function scopedCardIdsForRefresh(cardId) {
 function scopedMarkdownForCardIds(markdown, cardIds) {
   const doc = splitDocument(markdown);
   if (doc.sections.length === 0) {
-    throw new Error(
-      'ABORT: the briefing markdown has no recognizable sections for scoped QC.',
-    );
+    throw new Error('ABORT: the briefing markdown has no recognizable sections for scoped QC.');
   }
   const sections = [];
   const seenSectionIdx = new Set();
@@ -953,7 +959,10 @@ async function refreshCard({
     }
     console.log(`[refresh-card] scoped card QC gate PASS (${scopedCardIds.join(', ')})`);
 
-    writeTextAtomic(markdownPath, spliced.markdown);
+    guardedWriteBriefingMarkdown(markdownPath, spliced.markdown, {
+      where: `refresh-card splice card='${cardId}'`,
+      writer: writeTextAtomic,
+    });
     console.log(`[refresh-card] wrote ${markdownPath}`);
 
     if (publish) {
@@ -981,7 +990,8 @@ async function refreshCard({
         },
         canonicalValidation: {
           ok: true,
-          skipped: 'refresh-card uses scoped card QC; full canonical validation is owned by full publish/live QC.',
+          skipped:
+            'refresh-card uses scoped card QC; full canonical validation is owned by full publish/live QC.',
           status: 0,
           failureCount: 0,
           failures: [],
@@ -1073,7 +1083,9 @@ async function runVerify({ cardId, date, dataDir }) {
         refreshPublishedBlockersReconciliationLine({ markdownPath, artifact }),
       );
       if (changed) {
-        console.log('[refresh-card] --verify: refreshed Blockers live badge line from canonical artifact');
+        console.log(
+          '[refresh-card] --verify: refreshed Blockers live badge line from canonical artifact',
+        );
       }
     } catch (e) {
       console.error(

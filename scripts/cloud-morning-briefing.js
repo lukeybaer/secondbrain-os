@@ -52,12 +52,10 @@ const { probeDevOpsHealth } = require('./lib/devops-health.js');
 // scripts/verify-deploy-parity.js, a separate probe process (not required
 // directly), so this only needs the shared drift-summary formatter.
 const { formatDeployParityRow } = require('./lib/deploy-parity-row.js');
+const { fullRebuildLease } = require('./lib/briefing-write-guard.js');
 const { computeSpeakerFreshness } = require('./lib/speaker-freshness.js');
 const { resolveDataArtifact } = require('./lib/data-root.js');
-const {
-  providerReceiptPath,
-  readProviderUsage,
-} = require('./lib/token-usage-receipts.js');
+const { providerReceiptPath, readProviderUsage } = require('./lib/token-usage-receipts.js');
 const {
   INFORMATIONAL_TESTS_ROW,
   formatTestsHealthRow,
@@ -1621,10 +1619,7 @@ function renderBlockersSection(blockers, opts = {}) {
   const reconciliationState = dataDir ? blockersReconciliationState(dataDir) : null;
   const reconciliation = reconciliationState ? reconciliationState.line : '';
   if (!blockers.length) {
-    const body = [
-      blockersCleanVerdictLine(reconciliationState),
-      reconciliation,
-    ]
+    const body = [blockersCleanVerdictLine(reconciliationState), reconciliation]
       .filter(Boolean)
       .join('\n');
     return legacySection('BLOCKERS - briefing quality gates', body);
@@ -3168,14 +3163,17 @@ async function summarizeCloudNews({
             }
           } else {
             for (const it of candidates) attemptedUrls.add(it.url);
-            await summarizeNewsItems(candidates.map((it) => newsItemWithSummaryCategory(it, cardKey)), {
-              askAI: askAIImpl,
-              fetchText,
-              resolveUrl,
-              cache,
-              limit: candidates.length,
-              sleep,
-            });
+            await summarizeNewsItems(
+              candidates.map((it) => newsItemWithSummaryCategory(it, cardKey)),
+              {
+                askAI: askAIImpl,
+                fetchText,
+                resolveUrl,
+                cache,
+                limit: candidates.length,
+                sleep,
+              },
+            );
           }
         }
         const stubCount = projectedRenderedNewsStubCount(items, healed.target, cache);
@@ -4996,6 +4994,11 @@ function cloudSelfHealScriptRunsForRefreshTargets(targets, opts = {}) {
       scriptName: 'refresh-briefing-generated-sections.js',
       args: needsFullGeneratedRefresh ? [] : ['--voice-only'],
       timeout: 240000,
+      // Builder-spawned scoped refreshes are leased by construction: this
+      // spawn happens inside the sanctioned self-heal pass, so it ExampleCos the
+      // scheduler lease the refresh script's whole-document gate requires
+      // (scripts/lib/briefing-write-guard.js fullRebuildLease).
+      env: { BRIEFING_SCHEDULED_RUN: '1' },
     });
   }
   return runs;
@@ -6521,8 +6524,7 @@ function maybeRegenSpeakerPareto(dataDir) {
     const existing = readJson(out, null);
     const stamp = existing && (existing.generated_at || existing.generatedAt);
     const freshness = existing ? computeSpeakerFreshness({ pareto: existing }) : null;
-    if (existing && stamp && hoursSinceIso(stamp) <= 26 && !(freshness && freshness.defect))
-      return;
+    if (existing && stamp && hoursSinceIso(stamp) <= 26 && !(freshness && freshness.defect)) return;
     // The generator keys off upstream intelligence artifacts; if the primary one
     // is absent there is nothing to rebuild from, so skip and let the renderer
     // honest-block rather than spawn a doomed process.
@@ -6599,8 +6601,7 @@ function computeTestsHealthForHealth(dataDir) {
   health.sourceTimeMs = proof.testsArtifact && proof.testsArtifact.timeMs;
   health.landReceipt = proof.landReceipt;
   health.landReceiptSupersededTests = proof.landReceiptSupersededTests;
-  health.supersededTestsPath =
-    proof.supersededTestsArtifact && proof.supersededTestsArtifact.path;
+  health.supersededTestsPath = proof.supersededTestsArtifact && proof.supersededTestsArtifact.path;
   return health;
 }
 
@@ -6945,11 +6946,21 @@ function amyDispatchProof(row = {}) {
 
 function isAmyReceivedDispatchRow(row) {
   const proof = amyDispatchProof(row);
-  if (/gmail_amy_email|#amy|hasamy:true|explicitrequest:true/.test(proof) && /gmail|email|amy_email|#amy/.test(proof))
+  if (
+    /gmail_amy_email|#amy|hasamy:true|explicitrequest:true/.test(proof) &&
+    /gmail|email|amy_email|#amy/.test(proof)
+  )
     return true;
-  if (/vapi_command|vapi_inline_command|command_id|commandname|raw_command:true|phone_command/.test(proof))
+  if (
+    /vapi_command|vapi_inline_command|command_id|commandname|raw_command:true|phone_command/.test(
+      proof,
+    )
+  )
     return true;
-  if (/otter_child_dispatch|#amy|hasamy:true|explicitrequest:true/.test(proof) && /otter/.test(proof))
+  if (
+    /otter_child_dispatch|#amy|hasamy:true|explicitrequest:true/.test(proof) &&
+    /otter/.test(proof)
+  )
     return true;
   return false;
 }
@@ -6963,12 +6974,7 @@ const AMY_SUBPROCESS_PROMPT_RE =
 
 // Spine task surfaces that are unconditionally user-originated (a real ExampleCo
 // channel), so even a terse title is kept.
-const USER_SPINE_SURFACES = new Set([
-  'otter-transcript',
-  'otter',
-  'vapi-call',
-  'vapi',
-]);
+const USER_SPINE_SURFACES = new Set(['otter-transcript', 'otter', 'vapi-call', 'vapi']);
 
 // Interactive PC session registrations. The spine-session-task hook writes ONE
 // Task per interactive Claude Code / Codex session as spine-session-{sessionId}
@@ -7026,7 +7032,12 @@ function isAmyReceivedSpineTask(task) {
   const meta = task.meta || {};
   const explicit = meta.explicitRequest === true || meta.hasAmy === true;
   const title = String(task.title || task.id || '');
-  const sourceJoined = [origin, srcType, task.source && task.source.ref, task.source && task.source.id]
+  const sourceJoined = [
+    origin,
+    srcType,
+    task.source && task.source.ref,
+    task.source && task.source.id,
+  ]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
@@ -7058,16 +7069,16 @@ function amyProjectRowHasCompletedResult(row = {}) {
   const meta = row.meta && typeof row.meta === 'object' ? row.meta : {};
   return Boolean(
     row.resultSummary ||
-      row.output ||
-      row.resultRef ||
-      row.deliverableUrl ||
-      row.deliverable_url ||
-      result.summary ||
-      result.output ||
-      result.deliverableUrl ||
-      result.url ||
-      meta.deliverableUrl ||
-      meta.resultUrl,
+    row.output ||
+    row.resultRef ||
+    row.deliverableUrl ||
+    row.deliverable_url ||
+    result.summary ||
+    result.output ||
+    result.deliverableUrl ||
+    result.url ||
+    meta.deliverableUrl ||
+    meta.resultUrl,
   );
 }
 
@@ -7216,7 +7227,14 @@ function formatAmyProjectsSection(service, opts = {}) {
   if (service.pendingCount > 0) {
     const items = Array.isArray(service.pendingItems) ? service.pendingItems : [];
     const amyItems = items.filter((row) => {
-      const joined = [row.source, row.origin, row.kind, row.type, row.replyTo, row.source && row.source.type]
+      const joined = [
+        row.source,
+        row.origin,
+        row.kind,
+        row.type,
+        row.replyTo,
+        row.source && row.source.type,
+      ]
         .filter(Boolean)
         .join(' ');
       return isAmyReceivedDispatchRow({ ...row, sourceProof: joined });
@@ -8155,7 +8173,11 @@ function formatTokenUsageSection(
         `Claude Max (Max 20x): ${plan.weekly_all_models_percent}% of weekly subscription burned (resets ${resetIso}).`,
       );
     }
-  } else if (claudeState.state === 'stale' && plan && typeof plan.weekly_all_models_percent === 'number') {
+  } else if (
+    claudeState.state === 'stale' &&
+    plan &&
+    typeof plan.weekly_all_models_percent === 'number'
+  ) {
     const planGeneratedMs = Date.parse(claudeState.observedAt || plan.generated_at || '');
     const ageHrs = Number.isFinite(planGeneratedMs)
       ? Math.max(0, Math.round((clockMs - planGeneratedMs) / 3600000))
@@ -8177,7 +8199,11 @@ function formatTokenUsageSection(
     lines.push(
       `Codex (${codex.plan || 'plan'}): ${codex.weekly_used_percent}% of weekly subscription burned (resets ${(codex.weekly_resets_at || '').slice(0, 10)}). ${(Number(codex.weekly_input_tokens || 0) / 1e6).toFixed(1)}M billed input + ${(Number(codex.weekly_output_tokens || 0) / 1e6).toFixed(2)}M output across ${codex.sessions || 0} sessions this week.`,
     );
-  } else if (codexState.state === 'stale' && codex && typeof codex.weekly_used_percent === 'number') {
+  } else if (
+    codexState.state === 'stale' &&
+    codex &&
+    typeof codex.weekly_used_percent === 'number'
+  ) {
     const generatedMs = Date.parse(codexState.observedAt || codex.generated_at || '');
     const ageHrs = Number.isFinite(generatedMs)
       ? Math.max(0, Math.round((clockMs - generatedMs) / 3600000))
@@ -8195,7 +8221,12 @@ function formatTokenUsageSection(
     );
   }
 
-  if (bedrockState.state === 'fresh' && bedrock && typeof bedrock.limit === 'number' && bedrock.limit > 0) {
+  if (
+    bedrockState.state === 'fresh' &&
+    bedrock &&
+    typeof bedrock.limit === 'number' &&
+    bedrock.limit > 0
+  ) {
     const used = Number(bedrock.actual || 0);
     const cap = Number(bedrock.limit || 0);
     const pct =
@@ -9394,8 +9425,45 @@ function parseArgs(argv) {
   return opts;
 }
 
+// FULL-PUBLISH LEASE (2026-07-18 incident: an agent ran `cloud-morning-briefing.js
+// --date --publish` mid-day to repair 2 cards; the full rebuild hung and left a
+// partial publish). A CLI whole-document publish requires one of:
+//   - BRIEFING_SCHEDULED_RUN=1: the scheduler lease, ExampleCoed by
+//     ec2-morning-briefing-run.sh (which also owns the date-level
+//     generation-attempt lease under data/agent/briefing-generation-attempts/).
+//   - BRIEFING_FULL_REBUILD_OK=1: explicit owner override for a supervised
+//     manual rebuild.
+//   - --self-heal-refresh mode (flag or AMY_BRIEFING_SELF_HEAL_REFRESH /
+//     SELF_HEAL_REFRESH_CARDS env): the sanctioned scoped republish channel the
+//     overnight self-heal orchestrator and voice-midday-refresh.sh drive; it
+//     publishes the current state with defects labeled rather than rebuilding
+//     blind, so it keeps working unchanged.
+// Everything else is refused with a pointer at the per-card door. CLI-only by
+// design: programmatic runCloudBriefing callers (ec2-spine-worker.js, tests)
+// are the caller's responsibility, and the per-card path (card-controller /
+// refresh-card) never passes through this gate at all.
+function cliPublishLease(opts = {}, env = process.env) {
+  if (!opts.publish) return { ok: true, source: 'no-publish' };
+  if (opts.selfHealRefresh || isSelfHealRefreshMode(env)) {
+    return { ok: true, source: 'self-heal-refresh' };
+  }
+  return fullRebuildLease(env);
+}
+
 async function main() {
   const opts = parseArgs(process.argv);
+  const lease = cliPublishLease(opts, process.env);
+  if (!lease.ok) {
+    console.error(
+      '[cloud-briefing] REFUSED: a whole-document `--publish` rebuild outside the scheduled ' +
+        'morning run needs an explicit lease. For a card repair use the per-card path instead: ' +
+        'node scripts/card-controller.js --mode midday --cards <ids> ' +
+        '(or node scripts/refresh-card.js <cardId> --publish). ' +
+        'To run the full rebuild anyway, set BRIEFING_SCHEDULED_RUN=1 (scheduler lease) or ' +
+        'BRIEFING_FULL_REBUILD_OK=1 (owner override).',
+    );
+    process.exit(2);
+  }
   const result = await runCloudBriefing(opts);
   // PER-CARD COMPLETION LINE (ExampleCo wave 3a, 2026-07-12): the completion log
   // enumerates per-card outcomes from the canonical artifact instead of a
@@ -9425,6 +9493,7 @@ if (require.main === module) {
 
 module.exports = {
   buildCloudMorningBriefing,
+  cliPublishLease,
   checkFullBriefingContract,
   runCanonicalBriefingValidator,
   mergeCanonicalQc,

@@ -800,7 +800,13 @@ function realRegenerate({ date, mode }) {
       mode || 'overnight',
       '--no-publish',
     ],
-    { timeoutMs: 20 * 60 * 1000, env: { SKIP_EC2_PUBLISH: '1' } },
+    {
+      timeoutMs: 20 * 60 * 1000,
+      // BRIEFING_SCHEDULED_RUN=1: the refresh script's whole-document write is
+      // lease-gated (scripts/lib/briefing-write-guard.js); this orchestrator is
+      // a sanctioned scheduled spawner, so it passes the scheduler lease through.
+      env: { SKIP_EC2_PUBLISH: '1', BRIEFING_SCHEDULED_RUN: '1' },
+    },
   );
   return { ok: r.ok, status: r.status };
 }
@@ -903,6 +909,10 @@ const realFinalizeDeps = {
 function realPublish({ date, mode }) {
   const env = { ...process.env };
   delete env.SKIP_EC2_PUBLISH;
+  // Scheduler lease pass-through: the refresh script's whole-document write is
+  // lease-gated (scripts/lib/briefing-write-guard.js), and this overnight
+  // publish is a sanctioned scheduled path.
+  env.BRIEFING_SCHEDULED_RUN = '1';
   const r = runStep(
     'publish-briefing',
     process.execPath,

@@ -13,9 +13,11 @@ function isSoftResolverFailure(label, status, stdout, stderr) {
   try {
     const report = JSON.parse(stdout);
     const errors = Array.isArray(report?.errors) ? report.errors : [];
-    return report?.schema === 'life_archive_otter_speaker_resolver.v2'
-      && errors.length > 0
-      && errors.every((error) => error?.error === 'embedding_unusable');
+    return (
+      report?.schema === 'life_archive_otter_speaker_resolver.v2' &&
+      errors.length > 0 &&
+      errors.every((error) => error?.error === 'embedding_unusable')
+    );
   } catch {
     return false;
   }
@@ -39,6 +41,11 @@ function run(label, args) {
       ...process.env,
       SKIP_EC2_PUBLISH: '1',
       SPEAKER_IDENTITY_CHANGE_SYNC: '0',
+      // The refresh step runs refresh-briefing-generated-sections.js, whose
+      // whole-document write is lease-gated (scripts/lib/briefing-write-guard.js).
+      // This backprop pipeline is a sanctioned automated spawner, so it passes
+      // the scheduler lease through; every other step ignores the variable.
+      ...(label === 'refresh' ? { BRIEFING_SCHEDULED_RUN: '1' } : {}),
     },
     timeout: timeoutByLabel[label] || 120000,
   });
@@ -57,19 +64,59 @@ function run(label, args) {
 function main() {
   const steps = [
     ['apply', ['scripts/apply-voice-confirmation-actions.js', '--write']],
-    ['apply_cluster_resolutions', ['scripts/apply-voice-cluster-resolutions.js', '--write', '--json']],
-    ['wavlm_resolver', ['scripts/otter-wavlm-speaker-resolver.js', '--write', '--limit', process.env.VOICE_BACKPROP_WAVLM_LIMIT || '80']],
-    ['speaker_identity_completeness', ['scripts/otter-speaker-identity-completeness.js', '--write']],
+    [
+      'apply_cluster_resolutions',
+      ['scripts/apply-voice-cluster-resolutions.js', '--write', '--json'],
+    ],
+    [
+      'wavlm_resolver',
+      [
+        'scripts/otter-wavlm-speaker-resolver.js',
+        '--write',
+        '--limit',
+        process.env.VOICE_BACKPROP_WAVLM_LIMIT || '80',
+      ],
+    ],
+    [
+      'speaker_identity_completeness',
+      ['scripts/otter-speaker-identity-completeness.js', '--write'],
+    ],
     ['voice_confirmed_match_sanity', ['scripts/voice-confirmed-match-sanity-check.js', '--write']],
-    ['promote_confirmed_acoustic', ['scripts/voice-promote-confirmed-acoustic-matches.js', '--write']],
-    ['apply_promoted_cluster_resolutions', ['scripts/apply-voice-cluster-resolutions.js', '--write', '--json']],
-    ['speaker_identity_completeness_after_promotion', ['scripts/otter-speaker-identity-completeness.js', '--write']],
+    [
+      'promote_confirmed_acoustic',
+      ['scripts/voice-promote-confirmed-acoustic-matches.js', '--write'],
+    ],
+    [
+      'apply_promoted_cluster_resolutions',
+      ['scripts/apply-voice-cluster-resolutions.js', '--write', '--json'],
+    ],
+    [
+      'speaker_identity_completeness_after_promotion',
+      ['scripts/otter-speaker-identity-completeness.js', '--write'],
+    ],
     ['life_relevance', ['scripts/otter-life-relevance-enricher.js', '--write']],
     ['speaker_intelligence_report', ['scripts/otter-speaker-intelligence-report.js', '--write']],
-    ['speaker_people_sync', ['scripts/sync-otter-speaker-intelligence-to-people-files.js', '--write']],
-    ['sync_people', ['scripts/sync-voiceprints-to-people-files.js', '--write', '--all-contacts', '--json']],
+    [
+      'speaker_people_sync',
+      ['scripts/sync-otter-speaker-intelligence-to-people-files.js', '--write'],
+    ],
+    [
+      'sync_people',
+      ['scripts/sync-voiceprints-to-people-files.js', '--write', '--all-contacts', '--json'],
+    ],
     ['queue', ['scripts/voice-confirmation-queue-build.js', '--write']],
-    ['audio', ['scripts/otter-audio-download.js', 'queue', '--queue', 'data/life-archive/people/briefing-voice-queue-latest.json', '--limit', process.env.VOICE_CONFIRMATION_AUDIO_LIMIT || '60', '--json']],
+    [
+      'audio',
+      [
+        'scripts/otter-audio-download.js',
+        'queue',
+        '--queue',
+        'data/life-archive/people/briefing-voice-queue-latest.json',
+        '--limit',
+        process.env.VOICE_CONFIRMATION_AUDIO_LIMIT || '60',
+        '--json',
+      ],
+    ],
     ['refresh', ['scripts/refresh-briefing-generated-sections.js', '--no-publish', '--skip-gate']],
   ];
   const results = [];

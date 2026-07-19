@@ -348,7 +348,7 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # different fan-out model and would become a competing writer again.
   if [ "$TEST_MODE" = "1" ]; then
     print_date_generation_lease_dry_run
-    echo "[morning-briefing-run] DRY-RUN (card-controller authority): would run: (cd $CONTROLLER_ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR ${CONTROLLER_CMD[*]})"
+    echo "[morning-briefing-run] DRY-RUN (card-controller authority): would run: (cd $CONTROLLER_ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR BRIEFING_SCHEDULED_RUN=1 ${CONTROLLER_CMD[*]})"
     if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
       echo "[morning-briefing-run] agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
       run_lessons_fallback_capture
@@ -367,7 +367,12 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   cd "$CONTROLLER_ROOT" || { echo "[morning-briefing-run] cannot cd to deployed controller runtime $CONTROLLER_ROOT" >&2; exit 1; }
   mkdir -p "$LOG_DIR"
   unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
-  flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" "${CONTROLLER_CMD[@]}"
+  # BRIEFING_SCHEDULED_RUN=1: the scheduler lease. This runner owns the
+  # date-level generation-attempt lease (acquired above), so it is the ONE
+  # place a whole-document publish is ExampleCoed its lease; the builder's CLI
+  # gate (cloud-morning-briefing.js cliPublishLease) refuses ad hoc full
+  # rebuilds that lack it.
+  flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" BRIEFING_SCHEDULED_RUN=1 "${CONTROLLER_CMD[@]}"
   status=$?
   if [ "$status" = "0" ]; then
     echo "[morning-briefing-run] $(date -u +%FT%TZ) card-controller final pass completed."
@@ -444,7 +449,7 @@ fi
 # TEST GATE: never spawn the real briefing under test / dry-run.
 if [ "$TEST_MODE" = "1" ]; then
   print_date_generation_lease_dry_run
-  echo "[morning-briefing-run] DRY-RUN (test mode): would run: (cd $ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${CMD[*]})"
+  echo "[morning-briefing-run] DRY-RUN (test mode): would run: (cd $ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME BRIEFING_SCHEDULED_RUN=1 ${CMD[*]})"
   if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
     echo "[morning-briefing-run] agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
     run_lessons_fallback_capture
@@ -467,7 +472,10 @@ mkdir -p "$LOG_DIR"
 
 # flock -n: if a briefing run is already going, this run is a clean no-op. Acquired
 # strictly AFTER the mechanical pass above has released its own separate lock.
-flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" "${CMD[@]}"
+# BRIEFING_SCHEDULED_RUN=1: the scheduler lease (see the controller-authority
+# spawn above); this runner owns the date-level generation-attempt lease, so it
+# is the one place the whole-document publish is ExampleCoed its lease.
+flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" BRIEFING_SCHEDULED_RUN=1 "${CMD[@]}"
 status=$?
 
 # PER-CARD COMPLETION (ExampleCo wave 3a, 2026-07-12): the completion line
