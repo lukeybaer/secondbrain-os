@@ -124,6 +124,7 @@ function buildLiveVapiSystemPrompt({
   memory = '',
   contactsSummary = '',
   recentOwnerContext = '',
+  graphitiAdvisor = '',
   now = new Date(),
 } = {}) {
   const dynamicCaller = isDynamicCallerPhone(callerPhone);
@@ -232,7 +233,17 @@ function buildLiveVapiSystemPrompt({
           .join('\n\n')
       : '';
 
-  return [callerSection, sourceMap, memoryBlock, voiceRules].filter(Boolean).join('\n\n');
+  const advisorBlock = String(graphitiAdvisor || '').trim()
+    ? [
+        '## Graphiti Brain Advisor',
+        String(graphitiAdvisor).trim(),
+        'Use relevant recall to shape the call. Do not speak internal fact IDs, raw receipts, or private details to a non-owner caller.',
+      ].join('\n')
+    : '';
+
+  return [callerSection, sourceMap, memoryBlock, advisorBlock, voiceRules]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 function sanitizeLiveAssistantConfig(
@@ -243,6 +254,7 @@ function sanitizeLiveAssistantConfig(
     memory = '',
     contactsSummary = '',
     recentOwnerContext = '',
+    graphitiAdvisor = '',
     functionTools = [],
     now,
   } = {},
@@ -263,6 +275,7 @@ function sanitizeLiveAssistantConfig(
             memory,
             contactsSummary,
             recentOwnerContext,
+            graphitiAdvisor,
             now,
           }),
         },

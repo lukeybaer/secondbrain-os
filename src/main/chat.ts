@@ -8,6 +8,15 @@ import { listPersonas } from "./personas";
 import * as fs from "fs";
 import * as path from "path";
 
+const {
+  attachGraphitiImpact,
+  beginGraphitiConsult,
+  buildAdvisorPromptBlock,
+  createDispositionReceipt,
+  formatGraphitiImpact,
+  recordDispositionReceipt,
+} = require('../../scripts/lib/graphiti-brain-advisor');
+
 function getOpenAI(): OpenAI {
   return new OpenAI({ apiKey: getConfig().openaiApiKey });
 }
@@ -569,6 +578,7 @@ async function mapReduce(
   history: ChatMessage[],
   openai: OpenAI,
   callsContext: string,
+  advisorBlock: string,
   onDelta: ((delta: string) => void) | undefined,
 ): Promise<string> {
   const useTranscripts = plan.needsTranscripts && !aggregate;
@@ -618,6 +628,8 @@ Be thorough. This is batch ${i + 1} of ${batches.length} — your findings will 
     {
       role: "system",
       content: `${systemWithDataDir}
+
+${advisorBlock}
 
 You have analyzed ALL ${convs.length} conversations across ${batches.length} batches.
 Do NOT mention batches in your answer — give a direct, complete answer based on the findings below.${aggregate ? `\nIMPORTANT: These ${convs.length} conversations are the complete result set. Count every one listed — do not refilter based on your own judgment.` : ""}
@@ -670,7 +682,58 @@ export async function chat(
   question: string,
   history: ChatMessage[],
   onDelta?: (delta: string) => void,
+  conversationId = 'electron-chat',
 ): Promise<ChatResult> {
+  // Start the sanctioned Graphiti query before ordinary chat preparation. The
+  // search promise runs while intent detection and local retrieval proceed.
+  const graphitiAdvisor = beginGraphitiConsult({
+    prompt: question,
+    surface: 'electron-chat',
+    conversationId,
+    project: 'SecondBrain desktop',
+    history,
+    visibility: 'owner_private',
+  });
+  let advisorEnvelope: any = null;
+  const advisor = async (waitMs = 30_000): Promise<any> => {
+    if (!advisorEnvelope) advisorEnvelope = await graphitiAdvisor.finalize({ waitMs });
+    return advisorEnvelope;
+  };
+  const finishAnswer = async (answer: string, action?: ChatAction): Promise<ChatResult> => {
+    const envelope = await advisor();
+    const actionId = `electron-answer-${Date.now()}`;
+    const firstReceipt = createDispositionReceipt({
+      envelope,
+      output: answer,
+      answerActionId: actionId,
+      visibility: 'owner_private',
+    });
+    let final = answer.trim();
+    if (!/^\s*(?:#{1,6}\s*)?TL\s*[;:]?\s*DR\b/im.test(final)) {
+      const summary = final.split(/\n\s*\n/)[0].replace(/\s+/g, ' ').slice(0, 220);
+      final += `\n\nTLDR: ${summary}`;
+    }
+    final = attachGraphitiImpact(final, formatGraphitiImpact(envelope, firstReceipt));
+    if (!/^\s*(?:#{1,6}\s*)?Codex impact\s*:/im.test(final)) {
+      const graphitiAt = final.search(/^\s*(?:#{1,6}\s*)?Graphiti impact\s*:/im);
+      const line = 'Codex impact: none. This answer ran through the SecondBrain desktop runtime.';
+      final = graphitiAt >= 0
+        ? `${final.slice(0, graphitiAt).trimEnd()}\n\n${line}\n\n${final.slice(graphitiAt)}`
+        : `${final}\n\n${line}`;
+    }
+    const receipt = createDispositionReceipt({
+      envelope,
+      output: final,
+      answerActionId: actionId,
+      visibility: 'owner_private',
+    });
+    try {
+      recordDispositionReceipt(receipt);
+    } catch {
+      /* health exposes missing receipt */
+    }
+    return { response: final, ...(action ? { action } : {}) };
+  };
   const openai = getOpenAI();
   const config = getConfig();
 
@@ -682,8 +745,9 @@ export async function chat(
   if (projectIntent.isProject) {
     const { name, description } = projectIntent.action;
     const msg = `Ready to create project **${name}**${description ? `: ${description}` : ""}. Confirm to add it to your Projects tab.`;
-    onDelta?.(msg);
-    return { response: msg, action: projectIntent.action };
+    const result = await finishAnswer(msg, projectIntent.action);
+    onDelta?.(result.response);
+    return result;
   }
 
   // Phase 0b: Check for call intent — skip entirely for obvious search/summary queries
@@ -692,15 +756,17 @@ export async function chat(
     : await detectCallIntent(question, history, openai);
   if (callIntent.isCall) {
     if ("clarifyingQuestion" in callIntent) {
-      onDelta?.(callIntent.clarifyingQuestion);
-      return { response: callIntent.clarifyingQuestion };
+      const result = await finishAnswer(callIntent.clarifyingQuestion);
+      onDelta?.(result.response);
+      return result;
     }
     if ("action" in callIntent) {
       const { phoneNumber, instructions, leaveVoicemail } = callIntent.action;
       const vmNote = leaveVoicemail ? " (will leave voicemail if no answer)" : "";
       const msg = `Ready to call **${phoneNumber}**${vmNote}.\n\nI'll say: ${instructions}`;
-      onDelta?.(msg);
-      return { response: msg, action: callIntent.action };
+      const result = await finishAnswer(msg, callIntent.action);
+      onDelta?.(result.response);
+      return result;
     }
   }
 
@@ -765,11 +831,13 @@ export async function chat(
   chatDebugLog(`Loaded ${convs.length} conversations (${relevantMetas.length - convs.length} failed to load)`);
 
   if (convs.length === 0) {
+    const advisorBlock = buildAdvisorPromptBlock(await advisor());
     // No conversations — just answer directly (but still include call records if any)
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       {
         role: "system",
         content: SYSTEM_PROMPT.replace("{{DATA_DIR}}", config.dataDir) +
+          `\n\n${advisorBlock}` +
           "\n\nNo meeting conversations are imported yet. Tell the user to import some from the Import page." +
           (callsContext ? `\n\n# Call records\n${callsContext}` : ""),
       },
@@ -779,7 +847,9 @@ export async function chat(
     let resp = "";
     const stream = await openai.chat.completions.create({ model: config.openaiModel, messages, temperature: 0.3, stream: true });
     for await (const chunk of stream) { const d = chunk.choices[0]?.delta?.content || ""; resp += d; onDelta?.(d); }
-    return { response: resp };
+    const result = await finishAnswer(resp);
+    if (result.response.startsWith(resp)) onDelta?.(result.response.slice(resp.length));
+    return result;
   }
 
   // For aggregate queries, always use metadata-only — we need all matches to fit
@@ -791,6 +861,7 @@ export async function chat(
   const overhead = 3000; // system + history + question
 
   if (totalTokens + overhead <= CALL_TOKEN_BUDGET) {
+    const advisorBlock = buildAdvisorPromptBlock(await advisor());
     // Everything fits — single call, full fidelity
     const context = useTranscripts
       ? convs.map(c => fullBlock(c.meta, c.transcript)).join("\n\n")
@@ -804,7 +875,7 @@ export async function chat(
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       {
         role: "system",
-        content: `${systemWithDataDir}${aggregateInstruction}\n\n# Matched conversations (${convs.length} of ${getAllConversationMeta().length} total)\nSearch context: ${plan.explanation}\n\n${context}${callsContext ? `\n\n# Call records\n${callsContext}` : ""}`,
+        content: `${systemWithDataDir}\n\n${advisorBlock}${aggregateInstruction}\n\n# Matched conversations (${convs.length} of ${getAllConversationMeta().length} total)\nSearch context: ${plan.explanation}\n\n${context}${callsContext ? `\n\n# Call records\n${callsContext}` : ""}`,
       },
       ...history.map(m => ({ role: m.role, content: m.content } as OpenAI.Chat.ChatCompletionMessageParam)),
       { role: "user", content: question },
@@ -824,10 +895,26 @@ export async function chat(
       onDelta?.(delta);
     }
 
-    return { response: fullResponse };
+    const result = await finishAnswer(fullResponse);
+    if (result.response.startsWith(fullResponse)) onDelta?.(result.response.slice(fullResponse.length));
+    return result;
   }
 
   // Phase 5b: Too large for one call — map-reduce across batches
   // Every conversation is fully processed, nothing dropped
-  return { response: await mapReduce(convs, question, plan, aggregate, history, openai, callsContext, onDelta) };
+  const advisorBlock = buildAdvisorPromptBlock(await advisor());
+  const raw = await mapReduce(
+    convs,
+    question,
+    plan,
+    aggregate,
+    history,
+    openai,
+    callsContext,
+    advisorBlock,
+    onDelta,
+  );
+  const result = await finishAnswer(raw);
+  if (result.response.startsWith(raw)) onDelta?.(result.response.slice(raw.length));
+  return result;
 }

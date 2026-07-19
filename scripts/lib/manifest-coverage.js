@@ -102,6 +102,9 @@ const COVERAGE = {
     gmailBackfill: null,
     actionItems: null,
     news: 'news-us',
+    devOps: null,
+    graphitiCoverage: null,
+    neo4jCpuCap: null,
   },
   channels: {
     telegram: 'escalation-channel',
@@ -112,6 +115,7 @@ const COVERAGE = {
     linkedin: null,
     pm2: null,
     'claude-max-token': null,
+    'graphiti-advisor': null,
   },
 };
 

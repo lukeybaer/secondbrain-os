@@ -62,8 +62,8 @@ const api = {
   },
 
   chat: {
-    send: (question: string, history: any[]): Promise<any> =>
-      ipcRenderer.invoke('chat:send', question, history),
+    send: (question: string, history: any[], conversationId?: string): Promise<any> =>
+      ipcRenderer.invoke('chat:send', question, history, conversationId),
     onDelta: (cb: (delta: string) => void) => {
       ipcRenderer.on('chat:delta', (_e, delta) => cb(delta));
     },

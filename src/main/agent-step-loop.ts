@@ -49,6 +49,8 @@ import {
   type StepDecision as MagenticDecision,
 } from './magentic-ledger';
 
+const defaultGraphitiAdvisorRuntime = require('../../scripts/lib/graphiti-brain-advisor');
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ChatMessage {
@@ -323,6 +325,11 @@ export interface AgentLoopOptions {
    * itself does not replan; it only reports the recommendation.
    */
   magenticRecovery?: { state: MagenticState; limits?: MagenticLimits };
+  /**
+   * Prompt-time memory advisor. Production defaults to the shared Graphiti
+   * runtime; tests may pass false or a fake with the same methods.
+   */
+  graphitiAdvisor?: false | typeof defaultGraphitiAdvisorRuntime;
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
@@ -330,6 +337,28 @@ export interface AgentLoopOptions {
 const DEFAULT_MAX_STEPS = 7;
 
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
+  // Unit tests are deliberately network-free unless they inject a fake advisor.
+  // Production still defaults to the shared runtime.
+  const graphitiAdvisor =
+    opts.graphitiAdvisor === false ||
+    (opts.graphitiAdvisor === undefined && process.env.VITEST === 'true')
+      ? null
+      : (opts.graphitiAdvisor ?? defaultGraphitiAdvisorRuntime);
+  const firstUserPrompt =
+    (opts.initialMessages || [])
+      .filter((message) => message.role === 'user')
+      .map((message) => message.content)
+      .at(-1) || 'Run Amy agent loop';
+  // Begin before validation and registry preparation so recall overlaps the
+  // ordinary setup work below.
+  const graphitiHandle = graphitiAdvisor?.beginGraphitiConsult({
+    prompt: firstUserPrompt,
+    surface: 'agent-loop',
+    conversationId: opts.run_id || '',
+    project: 'SecondBrain agent loop',
+    visibility: 'owner_private',
+  });
+  let graphitiEnvelope: any = null;
   const {
     initialMessages,
     tools,
@@ -366,6 +395,49 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   const steps: StepRecord[] = resumeFrom ? [...resumeFrom.steps] : [];
   const startStep = resumeFrom ? resumeFrom.step_index + 1 : 1;
 
+  if (graphitiHandle) {
+    graphitiEnvelope = await graphitiHandle.finalize({ waitMs: 30_000 });
+    messages.unshift({
+      role: 'system',
+      content: graphitiAdvisor.buildAdvisorPromptBlock(graphitiEnvelope),
+    });
+  }
+
+  const finalizeGraphitiAnswer = async (message: ChatMessage): Promise<ChatMessage> => {
+    if (!graphitiAdvisor || !graphitiEnvelope || message.role !== 'assistant') return message;
+    const answerActionId = `${run_id}-answer`;
+    const initialReceipt = graphitiAdvisor.createDispositionReceipt({
+      envelope: graphitiEnvelope,
+      output: message.content,
+      answerActionId,
+      visibility: 'owner_private',
+    });
+    let content = graphitiAdvisor.attachGraphitiImpact(
+      message.content,
+      graphitiAdvisor.formatGraphitiImpact(graphitiEnvelope, initialReceipt),
+    );
+    if (!/^\s*(?:#{1,6}\s*)?Codex impact\s*:/im.test(content)) {
+      const graphitiAt = content.search(/^\s*(?:#{1,6}\s*)?Graphiti impact\s*:/im);
+      const codex = 'Codex impact: none. This action ran through Amy agent loop.';
+      content =
+        graphitiAt >= 0
+          ? `${content.slice(0, graphitiAt).trimEnd()}\n\n${codex}\n\n${content.slice(graphitiAt)}`
+          : `${content}\n\n${codex}`;
+    }
+    const receipt = graphitiAdvisor.createDispositionReceipt({
+      envelope: graphitiEnvelope,
+      output: content,
+      answerActionId,
+      visibility: 'owner_private',
+    });
+    try {
+      graphitiAdvisor.recordDispositionReceipt(receipt);
+    } catch {
+      /* surfaced in health */
+    }
+    return { ...message, content };
+  };
+
   for (let stepNum = startStep; stepNum <= maxSteps; stepNum++) {
     const stepStart = Date.now();
 
@@ -392,7 +464,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         saved_at: new Date().toISOString(),
       });
       return {
-        finalMessage: messages[messages.length - 1],
+        finalMessage: await finalizeGraphitiAnswer(messages[messages.length - 1]),
         steps,
         haltReason: 'turn_failed',
         haltDetail,
@@ -433,7 +505,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           saved_at: new Date().toISOString(),
         });
         return {
-          finalMessage: assistantMsg,
+          finalMessage: await finalizeGraphitiAnswer(assistantMsg),
           steps,
           haltReason: 'no_tool_calls',
           run_id,
@@ -474,6 +546,20 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       let toolResult: ToolResult;
       let shortCircuit = false;
       let execId: string | null = null;
+
+      if (graphitiAdvisor && isWriteClass) {
+        await graphitiAdvisor.consultBeforeAmyAction({
+          action: `${call.name} ${safeStringify(args)}`,
+          actionType: sideEffects,
+          surface: 'agent-loop',
+          conversationId: run_id,
+          project: 'SecondBrain agent loop',
+          answerActionId: `${run_id}-${stepNum}-${call.id}`,
+          visibility: 'owner_private',
+          ignoredReason:
+            'Ignored at the execution boundary because the agent selected these tool arguments after receiving the turn-level advisor context; recall did not change the already-planned call.',
+        });
+      }
 
       // Idempotency claim path (write/destructive only).
       if (idempotency && isWriteClass) {
@@ -616,7 +702,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         saved_at: new Date().toISOString(),
       });
       return {
-        finalMessage: assistantMsg,
+        finalMessage: await finalizeGraphitiAnswer(assistantMsg),
         steps,
         haltReason: 'tool_not_found',
         haltDetail: ExampleCoTool,
@@ -681,7 +767,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         ).decision;
       }
       return {
-        finalMessage: assistantMsg,
+        finalMessage: await finalizeGraphitiAnswer(assistantMsg),
         steps,
         haltReason: 'doom_loop',
         haltDetail: `${verdict.pattern}: ${verdict.detail}`,
@@ -700,7 +786,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         saved_at: new Date().toISOString(),
       });
       return {
-        finalMessage: assistantMsg,
+        finalMessage: await finalizeGraphitiAnswer(assistantMsg),
         steps,
         haltReason: 'no_heartbeat',
         run_id,
@@ -729,7 +815,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     saved_at: new Date().toISOString(),
   });
   return {
-    finalMessage: messages[messages.length - 1],
+    finalMessage: await finalizeGraphitiAnswer(messages[messages.length - 1]),
     steps,
     haltReason: 'max_steps',
     haltDetail: detail,

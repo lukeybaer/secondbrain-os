@@ -132,7 +132,7 @@ export default function Chat({ onConversationSaved }: { onConversationSaved?: ()
     window.api.chat.onDelta(delta => setStreamText(prev => prev + delta));
 
     try {
-      const result = await window.api.chat.send(question, messages);
+      const result = await window.api.chat.send(question, messages, session.id);
       if (result.success && result.response) {
         const newMsg: Message = { role: "assistant", content: result.response };
 

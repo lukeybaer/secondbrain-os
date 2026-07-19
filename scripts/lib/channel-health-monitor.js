@@ -19,6 +19,7 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const { execSync } = require('child_process');
+const { writeGraphitiAdvisorHealth } = require('./graphiti-advisor-health');
 
 const DEFAULT_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_MIN_ALERT_INTERVAL_MS = 60 * 60 * 1000;
@@ -786,6 +787,22 @@ function pm2ProcessStatus({
   }
 }
 
+function probeGraphitiAdvisor({ dataDir, healthWriter = writeGraphitiAdvisorHealth } = {}) {
+  try {
+    const health = healthWriter({ dataDir });
+    return {
+      status: health.status === 'green' ? 'green' : 'red',
+      detail: health.detail || `Graphiti advisor health is ${health.status}`,
+      meta: health.metrics || null,
+    };
+  } catch (error) {
+    return {
+      status: 'red',
+      detail: `Graphiti advisor health could not be written: ${error.message}`,
+    };
+  }
+}
+
 // Orchestrator.
 
 function createMonitor({
@@ -806,6 +823,7 @@ function createMonitor({
   exec,
   fetcher = httpGetJson,
   fsImpl = fs,
+  dataDir = process.env.SECONDBRAIN_DATA_DIR || '/opt/secondbrain/data',
 } = {}) {
   if (typeof sendMessage !== 'function') {
     throw new Error('channel-health-monitor: sendMessage function is required');
@@ -883,6 +901,17 @@ function createMonitor({
       friendly: 'Claude Max token push',
       laptopHosted: true,
       probe: () => probeClaudeMaxToken({ fsImpl, now }),
+    },
+    {
+      name: 'graphiti-advisor',
+      friendly: 'Graphiti Brain Advisor',
+      probe: () => probeGraphitiAdvisor({ dataDir }),
+      heal: () => ({
+        attempted: false,
+        action: 'report-only',
+        detail:
+          'Advisor failures require Graphiti/runtime diagnosis; the monitor will not reset a healthy backend.',
+      }),
     },
   ];
   const defs = probeDefs || defaultDefs;
@@ -1358,6 +1387,7 @@ module.exports = {
   probeClaudeMaxToken,
   probeLinkedin,
   probePm2,
+  probeGraphitiAdvisor,
   createPm2Probe,
   healTelegram,
   healProxy,

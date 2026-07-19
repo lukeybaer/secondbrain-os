@@ -20,6 +20,8 @@ const REPO = path.join(__dirname, '..');
 const MEMORY_MD = path.join(REPO, 'memory', 'MEMORY.md');
 const FEEDBACK = path.join(REPO, 'memory', 'feedback_communication_format_tldr_detail.md');
 const CLAUDE_SETTINGS = path.join(REPO, 'claude-config', 'settings.json');
+const CLAUDE_GLOBAL = path.join(REPO, 'claude-config', 'CLAUDE.global.md');
+const CODEX_INSTRUCTIONS = path.join(REPO, '.codex', 'instructions.md');
 
 describe('Communication format: TLDR + Detail (ExampleCo 2026-04-29)', () => {
   it('the feedback file exists and is canonical', () => {
@@ -80,5 +82,18 @@ describe('Communication format: TLDR + Detail (ExampleCo 2026-04-29)', () => {
     // and the self-check requirement separately instead of one adjacent phrase.
     expect(memory).toMatch(/Codex desktop\/API/i);
     expect(memory).toMatch(/self-check before final/i);
+  });
+
+  it('requires a Graphiti impact line in every answer across Amy runtimes', () => {
+    const feedback = fs.readFileSync(FEEDBACK, 'utf8');
+    const memory = fs.readFileSync(MEMORY_MD, 'utf8');
+    const claude = fs.readFileSync(CLAUDE_GLOBAL, 'utf8');
+    const codex = fs.readFileSync(CODEX_INSTRUCTIONS, 'utf8');
+    for (const body of [feedback, memory, claude, codex]) {
+      expect(body).toMatch(/Graphiti impact/i);
+      expect(body).toMatch(/every (official )?(answer|response)/i);
+    }
+    expect(feedback).toMatch(/nothing was injected|no Graphiti context/i);
+    expect(feedback).toMatch(/timed out|timeout/i);
   });
 });

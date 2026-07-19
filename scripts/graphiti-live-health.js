@@ -5,18 +5,24 @@ const path = require('path');
 const { execSync } = require('child_process');
 const { health: httpHealth } = require('./lib/graphiti-mcp');
 
-const ROOT = process.env.SECONDBRAIN_ROOT || (fs.existsSync('/opt/secondbrain') ? '/opt/secondbrain' : path.resolve(__dirname, '..'));
+const ROOT =
+  process.env.SECONDBRAIN_ROOT ||
+  (fs.existsSync('/opt/secondbrain') ? '/opt/secondbrain' : path.resolve(__dirname, '..'));
 const NEO4J_PASSWORD = process.env.NEO4J_PASSWORD || 'secondbrain_neo4j_pass';
-const NEO4J_HTTP_URL =
-  process.env.NEO4J_HTTP_URL || 'http://127.0.0.1:7474/db/neo4j/tx/commit';
+const NEO4J_HTTP_URL = process.env.NEO4J_HTTP_URL || 'http://127.0.0.1:7474/db/neo4j/tx/commit';
 
 function run(cmd, timeout = 15000) {
-  return String(execSync(cmd, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'] })).trim();
+  return String(
+    execSync(cmd, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'] }),
+  ).trim();
 }
 
 function cypher(query) {
   const q = query.replace(/'/g, "'\\''");
-  return run(`docker exec secondbrain-neo4j cypher-shell -u neo4j -p ${NEO4J_PASSWORD} --format plain '${q}'`, 20000);
+  return run(
+    `docker exec secondbrain-neo4j cypher-shell -u neo4j -p ${NEO4J_PASSWORD} --format plain '${q}'`,
+    20000,
+  );
 }
 
 function firstInt(text) {
@@ -35,9 +41,17 @@ function cypherShellStats() {
   const nodes = firstInt(cypher('MATCH (n) RETURN count(n) AS nodes;'));
   const episodes = firstInt(cypher('MATCH (n:Episodic) RETURN count(n) AS episodes;'));
   const entities = firstInt(cypher('MATCH (n:Entity) RETURN count(n) AS entities;'));
-  const latestRaw = cypher('MATCH (n:Episodic) WHERE n.created_at IS NOT NULL RETURN toString(max(n.created_at)) AS latest;');
-  const iso = (latestRaw.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/) || [null])[0];
-  return { nodes, episodes, entities, iso };
+  const latestRaw = cypher(
+    'MATCH (n:Episodic) WHERE n.created_at IS NOT NULL RETURN toString(max(n.created_at)) AS latest;',
+  );
+  const iso = (latestRaw.match(
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/,
+  ) || [null])[0];
+  const indexRaw = cypher(
+    "SHOW INDEXES YIELD name, state WHERE name = 'edge_fact_embedding_vector' RETURN state;",
+  );
+  const vectorIndexState = (indexRaw.match(/\b(?:ONLINE|POPULATING|FAILED)\b/) || [null])[0];
+  return { nodes, episodes, entities, iso, vectorIndexState };
 }
 
 function parseNeo4jScalarResponse(json) {
@@ -117,15 +131,18 @@ function neo4jHttpQuery(statement, opts = {}) {
 
 async function neo4jHttpStats(opts = {}) {
   const query = (statement) => neo4jHttpQuery(statement, opts);
-  const [nodes, episodes, entities, latest] = await Promise.all([
+  const [nodes, episodes, entities, latest, vectorIndexState] = await Promise.all([
     query('MATCH (n) RETURN count(n) AS nodes').then(parseNeo4jScalarResponse),
     query('MATCH (n:Episodic) RETURN count(n) AS episodes').then(parseNeo4jScalarResponse),
     query('MATCH (n:Entity) RETURN count(n) AS entities').then(parseNeo4jScalarResponse),
     query(
       'MATCH (n:Episodic) WHERE n.created_at IS NOT NULL RETURN toString(max(n.created_at)) AS latest',
     ).then(parseNeo4jLatestResponse),
+    query(
+      "SHOW INDEXES YIELD name, state WHERE name = 'edge_fact_embedding_vector' RETURN state",
+    ).then(parseNeo4jLatestResponse),
   ]);
-  return { nodes, episodes, entities, iso: latest };
+  return { nodes, episodes, entities, iso: latest, vectorIndexState };
 }
 
 async function collectGraphitiStats(opts = {}) {
@@ -154,29 +171,41 @@ async function main() {
   let stats = null;
   const statsResult = await collectGraphitiStats();
   stats = statsResult.stats;
-  const lifetime = readJson(path.join(ROOT, 'data', 'agent', 'graphiti-lifetime-coverage-health-latest.json'));
+  const lifetime = readJson(
+    path.join(ROOT, 'data', 'agent', 'graphiti-lifetime-coverage-health-latest.json'),
+  );
   const nodes = stats ? stats.nodes : null;
   const episodes = stats ? stats.episodes : null;
   const entities = stats ? stats.entities : null;
-  const iso = stats ? stats.iso : (lifetime && lifetime.chronological_replay ? lifetime.chronological_replay.last_reference_time : null);
+  const vectorIndexState = stats ? stats.vectorIndexState : null;
+  const iso = stats
+    ? stats.iso
+    : lifetime && lifetime.chronological_replay
+      ? lifetime.chronological_replay.last_reference_time
+      : null;
   const latestMs = iso ? Date.parse(iso) : NaN;
   const ageHours = Number.isFinite(latestMs) ? Math.round((Date.now() - latestMs) / 3600000) : null;
   const hasDataProof = (nodes > 0 && episodes > 0) || (lifetime && lifetime.status === 'green');
-  const status = health.status === 'healthy' && hasDataProof && (ageHours == null || ageHours <= 36)
-    ? 'healthy'
-    : 'red';
+  const status =
+    health.status === 'healthy' &&
+    hasDataProof &&
+    vectorIndexState === 'ONLINE' &&
+    (ageHours == null || ageHours <= 36)
+      ? 'healthy'
+      : 'red';
   const entry = {
     ts: new Date().toISOString(),
     date: new Date().toISOString().slice(0, 10),
     node_count: nodes,
     episode_count: episodes,
     entity_count: entities,
+    edge_vector_index_state: vectorIndexState,
     last_episode_at: Number.isFinite(latestMs) ? new Date(latestMs).toISOString() : null,
     last_episode_age_hours: ageHours,
     status,
     source: 'graphiti-live-health',
     notes: stats
-      ? `HTTP: ${health.service || 'graphiti-mcp'} ${health.status || '?'}. Neo4j: live via ${statsResult.source}.`
+      ? `HTTP: ${health.service || 'graphiti-mcp'} ${health.status || '?'}. Neo4j: live via ${statsResult.source}. Edge vector index: ${vectorIndexState || 'missing'}.`
       : `HTTP: ${health.service || 'graphiti-mcp'} ${health.status || '?'}. Neo4j stats unavailable; using lifetime receipt proof. ${statsResult.error || ''}`.trim(),
   };
   const out = path.join(ROOT, 'data', 'agent', 'graphiti-health.jsonl');

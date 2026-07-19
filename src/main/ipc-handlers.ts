@@ -73,6 +73,8 @@ import {
   saveAmyVersion,
 } from './amy-versions';
 import { injectContext, injectSpeech, getActiveCallControls } from './live-call-control';
+
+const { consultBeforeAmyAction } = require('../../scripts/lib/graphiti-brain-advisor');
 import {
   startRecording as studioStartRecording,
   stopRecording as studioStopRecording,
@@ -376,16 +378,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('conversations:get', (_e, id: string) => loadConversation(id));
 
   // Chat
-  tracedHandle('chat:send', async (_e, question: string, history: ChatMessage[]) => {
-    try {
-      const result = await chat(question, history, (delta) => {
-        send('chat:delta', delta);
-      });
-      return { success: true, response: result.response, action: result.action };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  });
+  tracedHandle(
+    'chat:send',
+    async (_e, question: string, history: ChatMessage[], conversationId?: string) => {
+      try {
+        const result = await chat(
+          question,
+          history,
+          (delta) => {
+            send('chat:delta', delta);
+          },
+          conversationId || 'electron-chat',
+        );
+        return { success: true, response: result.response, action: result.action };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+  );
 
   // Chat sessions
   ipcMain.handle('chats:loadLatest', () => {
@@ -434,7 +444,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('whatsapp:messages', (_e, chatId: string, limit?: number) =>
     waGetHistory(chatId, limit),
   );
-  ipcMain.handle('whatsapp:send', async (_e, to: string, text: string) => waSend(to, text));
+  ipcMain.handle('whatsapp:send', async (_e, to: string, text: string) => {
+    await consultBeforeAmyAction({
+      action: `Send WhatsApp message to ${to}: ${text}`,
+      actionType: 'external-message',
+      surface: 'action',
+      recipient: to,
+      visibility: 'third_party',
+      ignoredReason:
+        'Ignored because ExampleCo had already selected the exact WhatsApp recipient and message; recall did not change this send.',
+    });
+    return waSend(to, text);
+  });
   ipcMain.handle('whatsapp:search', (_e, query: string) => waSearch(query));
   ipcMain.handle('whatsapp:disconnect', () => waDisconnect());
   ipcMain.handle('whatsapp:ingestAll', async () => {
@@ -460,9 +481,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('sms:search', (_e, query: string, limit?: number) =>
     searchSmsMessages(query, limit),
   );
-  ipcMain.handle('sms:send', async (_e, to: string, body: string, mediaUrl?: string) =>
-    sendSms(to, body, mediaUrl),
-  );
+  ipcMain.handle('sms:send', async (_e, to: string, body: string, mediaUrl?: string) => {
+    await consultBeforeAmyAction({
+      action: `Send SMS to ${to}: ${body}`,
+      actionType: 'external-message',
+      surface: 'action',
+      recipient: to,
+      visibility: 'third_party',
+      ignoredReason:
+        'Ignored because ExampleCo had already selected the exact SMS recipient and message; recall did not change this send.',
+    });
+    return sendSms(to, body, mediaUrl);
+  });
   ipcMain.handle('sms:ingest', async (_e, fields: Record<string, string>) =>
     ingestSmsWebhook(fields),
   );
@@ -488,8 +518,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         maxDurationSeconds?: number;
         amyVersion?: number;
       },
-    ) =>
-      initiateCall(phoneNumber, instructions, personalContext, personaId, leaveVoicemail, options),
+    ) => {
+      const graphiti = await consultBeforeAmyAction({
+        action: `Call ${phoneNumber}. Goal and instructions: ${instructions}`,
+        actionType: 'external-call',
+        surface: 'action',
+        recipient: phoneNumber,
+        visibility: 'third_party',
+        influenceAdjustment:
+          'it added retrieved person and project context to the outbound call preparation prompt.',
+      });
+      const advisedContext = [personalContext, graphiti.prompt_block].filter(Boolean).join('\n\n');
+      return initiateCall(
+        phoneNumber,
+        instructions,
+        advisedContext,
+        personaId,
+        leaveVoicemail,
+        options,
+      );
+    },
   );
   tracedHandle('calls:refresh', async (_e, callId: string) => refreshCallStatus(callId));
   ipcMain.handle('calls:get', (_e, callId: string) => loadCallRecord(callId));
@@ -1325,6 +1373,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       if (!post) return { success: false, error: 'Post not found' };
       if (post.platform !== 'x')
         return { success: false, error: `Publishing to ${post.platform} not yet supported` };
+
+      await consultBeforeAmyAction({
+        action: `Publish approved X post: ${post.content}`,
+        actionType: 'external-publish',
+        surface: 'action',
+        recipient: 'public',
+        visibility: 'public',
+        ignoredReason:
+          'Ignored because ExampleCo had already approved the exact public post; recall did not change this publication.',
+      });
 
       const result = await publishTweet(post.content);
       if (!result.success) return result;

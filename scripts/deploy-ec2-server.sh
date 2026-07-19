@@ -64,6 +64,21 @@ LIVE_DEPS=(
   "scripts/lib/briefing-markdown-sections.js"
   "scripts/lib/briefing-news-reader.js"
   "scripts/cloud-morning-briefing.js"
+  # Graphiti Brain Advisor: ec2-server.js requires the shared runtime; the
+  # scheduled-skill runner invokes the detached CLI; the runtime reads the
+  # git-tracked skill learnings at query time. Keep all three in the audited
+  # release closure even though the atomic release ships the full checkout.
+  "scripts/graphiti-brain-advisor.js"
+  "scripts/lib/graphiti-brain-advisor.js"
+  "scripts/lib/graphiti-advisor-health.js"
+  "skills/memory/graphiti-consult-for-prompts/SKILL.md"
+  "skills/memory/graphiti-consult-for-prompts/LEARNINGS.md"
+  # The stock Graphiti 0.28.2 Neo4j path scans every embedded relationship.
+  # The repo-owned image preserves the MCP contract but uses Neo4j's
+  # relationship-vector index, and the compose file is its deployment seam.
+  "docker-compose.graphiti.yml"
+  "infra/graphiti/Dockerfile"
+  "infra/graphiti/main_secondbrain.py"
   # The shared card-controller entrypoint backs both in-briefing ExampleCo-action
   # buttons and the cloud overnight runner. Its source adapters need the same
   # narrow Otter producers on /opt; libs ship in full below.
@@ -370,6 +385,27 @@ echo "[deploy]   release logs/ is a symlink to the durable /opt/secondbrain-logs
 if ! bash "$ROOT/scripts/lib/atomic-release.sh" \
   --sha "$SHA" --source-root "$ROOT" --host "$HOST" --key "$KEY"; then
   echo "[deploy] ATOMIC RELEASE FAILED: the primitive either failed verification, or swapped and then rolled back on a health failure. /opt is unchanged from the last good release. See the [atomic-release] lines above." >&2
+  exit 1
+fi
+
+# The owner graph now contains more than 100,000 embedded facts. Upstream
+# Graphiti 0.28.2 performs a full relationship-vector scan for each hybrid
+# search, and timed-out callers leave those scans running in Neo4j. Build and
+# replace the Graphiti MCP container with the repo-owned indexed wrapper. Keep
+# the exact prior image id so a failed replacement can restore the known-good
+# upstream service instead of leaving memory offline.
+echo "[deploy] building indexed Graphiti MCP runtime"
+OLD_GRAPHITI_IMAGE="$(ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  "docker inspect secondbrain-graphiti --format='{{.Image}}' 2>/dev/null || true")"
+if ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  'cd /opt/secondbrain && docker compose -f docker-compose.graphiti.yml build graphiti && docker compose -f docker-compose.graphiti.yml up -d --no-deps graphiti && ready=0; for i in $(seq 1 30); do if curl -fsS --max-time 3 http://127.0.0.1:8000/health >/dev/null; then ready=1; break; fi; sleep 2; done; [ "$ready" -eq 1 ] && node -e "require("'"'./scripts/lib/graphiti-mcp'"'").searchFacts("'"'ExampleCo current preferences and SecondBrain project decisions'"'", { groupId: "'"'owner-ea'"'", limit: 1, timeoutMs: 60000 }).then(f => { if (!f.length) throw new Error("'"'indexed Graphiti prewarm returned no facts'"'"); console.log("'"'indexed Graphiti prewarm: '"'" + f.length + "'"' fact(s)'"'"); }).catch(e => { console.error(e.message); process.exit(1); })"'; then
+  echo "[deploy] indexed Graphiti MCP runtime: PASS"
+else
+  echo "[deploy] INDEXED GRAPHITI FAIL: restoring prior Graphiti image $OLD_GRAPHITI_IMAGE" >&2
+  if [ -n "$OLD_GRAPHITI_IMAGE" ]; then
+    ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+      "set -a; . /opt/secondbrain/.env; set +a; docker rm -f secondbrain-graphiti >/dev/null 2>&1 || true; docker run -d --name secondbrain-graphiti --restart unless-stopped --network secondbrain_default -p 8000:8000 -e NEO4J_URI=bolt://neo4j:7687 -e NEO4J_USER=neo4j -e NEO4J_PASSWORD=secondbrain_neo4j_pass -e OPENAI_API_KEY -e GRAPHITI_GROUP_ID=secondbrain -e SEMAPHORE_LIMIT=10 '$OLD_GRAPHITI_IMAGE' uv run --no-sync main.py --config config/config-docker-neo4j.yaml >/dev/null"
+  fi
   exit 1
 fi
 

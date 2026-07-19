@@ -41,6 +41,9 @@ const KEY_FILES = [
   'scripts/lib/manifest-coverage.js',
   'scripts/lib/skill-lesson-coverage.js',
   'scripts/lib/core-doc-diff.js',
+  'skills/memory/graphiti-consult-for-prompts/SKILL.md',
+  'skills/memory/graphiti-consult-for-prompts/LEARNINGS.md',
+  'scripts/lib/graphiti-brain-advisor.js',
   'scheduled-tasks',
   'scripts/__tests__/lessons-aggregator.test.js',
   'scripts/__tests__/manifest-coverage-drift.test.js',
@@ -88,6 +91,16 @@ const MUST_CONTAIN = [
     'scripts/lessons-aggregator.js',
     'buildBriefingDigest',
     'cross-skill rollup the doc says is built-and-idle; must still exist to be wired later',
+  ],
+  [
+    'scripts/lib/graphiti-brain-advisor.js',
+    'readRecentLearnings({ limit: 10 })',
+    'the prompt-time advisor mechanically loads a bounded final-ten learning window',
+  ],
+  [
+    'skills/memory/graphiti-consult-for-prompts/SKILL.md',
+    'Query adjustment:',
+    'the prompt-time skill defines the explicit adjustment contract consumed by runtime',
   ],
 ];
 

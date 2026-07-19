@@ -36,7 +36,8 @@ interface Window {
     chat: {
       send: (
         question: string,
-        history: Array<{ role: "user" | "assistant"; content: string }>
+        history: Array<{ role: "user" | "assistant"; content: string }>,
+        conversationId?: string
       ) => Promise<{ success: boolean; response?: string; error?: string }>;
       onDelta: (cb: (delta: string) => void) => void;
       offDelta: () => void;

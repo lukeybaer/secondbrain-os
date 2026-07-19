@@ -32,6 +32,12 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { isCliFailureOutput, buildClaudeCliEnv } = require('./lib/cli-output-guard');
+const {
+  beginGraphitiConsult,
+  buildAdvisorPromptBlock,
+  createDispositionReceipt,
+  recordDispositionReceipt,
+} = require('./lib/graphiti-brain-advisor');
 
 const REPO = path.resolve(__dirname, '..');
 const isLinuxEc2 =
@@ -491,7 +497,7 @@ function fetchSessionArchiveContext(commentText) {
   }
 }
 
-function spawnClaudeAct(entry) {
+function spawnClaudeAct(entry, advisorBlock = '') {
   const { spawnSync } = require('child_process');
   const archiveContext = fetchSessionArchiveContext(entry.comment);
   let actRepo;
@@ -518,6 +524,7 @@ function spawnClaudeAct(entry) {
     entry.comment,
     '',
     archiveContext ? archiveContext + '\n' : '',
+    advisorBlock ? advisorBlock + '\n' : '',
     'Per secondbrain/memory/feedback_dispatch_means_act_now.md (canonical):',
     '- Default outcome is implement_now, not backlog_add or needs_human_reply.',
     '- If the dispatch is unambiguous, do the code change THIS turn.',
@@ -583,15 +590,19 @@ function spawnClaudeAct(entry) {
   }
   try {
     const { exec, baseArgs } = resolveClaudeCli();
-    const out = spawnSync(exec, [...baseArgs, '--model', CLI_MODEL, '--dangerously-skip-permissions', '-p', prompt], {
-      cwd: actRepo,
-      encoding: 'utf8',
-      timeout: ACT_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // buildClaudeCliEnv injects the Max-plan OAuth token, strips stray
-      // API keys, and clears CLAUDECODE.
-      env: buildClaudeCliEnv(process.env),
-    });
+    const out = spawnSync(
+      exec,
+      [...baseArgs, '--model', CLI_MODEL, '--dangerously-skip-permissions', '-p', prompt],
+      {
+        cwd: actRepo,
+        encoding: 'utf8',
+        timeout: ACT_TIMEOUT_MS,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // buildClaudeCliEnv injects the Max-plan OAuth token, strips stray
+        // API keys, and clears CLAUDECODE.
+        env: buildClaudeCliEnv(process.env),
+      },
+    );
     if (out.error) return codexRescue();
     if (out.status !== 0) return codexRescue();
     // The CLI prints auth/quota failures to stdout and exits 0, so a zero
@@ -625,8 +636,32 @@ async function processOne(entry, processed) {
     processed.add(id);
     return { id, action };
   }
+  const graphitiHandle = beginGraphitiConsult({
+    prompt: entry.comment,
+    action: `Process dispatch from ${entry.source || 'ExampleCo'} in ${entry.section || 'ExampleCo section'}`,
+    surface: 'dispatch',
+    conversationId: `dispatch-${id}`,
+    project: entry.section || 'SecondBrain dispatch',
+    visibility: 'owner_private',
+  });
   // Skip Amy's own responses that leaked into the queue from Vapi transcripts.
   const classification = await classifyWithClaude(entry);
+  const graphitiEnvelope = await graphitiHandle.finalize({ waitMs: 30_000 });
+  const graphitiBlock = buildAdvisorPromptBlock(graphitiEnvelope);
+  const recordAdvisor = (output, suffix) => {
+    try {
+      recordDispositionReceipt(
+        createDispositionReceipt({
+          envelope: graphitiEnvelope,
+          output: String(output || ''),
+          answerActionId: `dispatch-${id}-${suffix}`,
+          visibility: 'owner_private',
+        }),
+      );
+    } catch {
+      // System Health exposes missing receipts.
+    }
+  };
   if (classification.category === 'skip') {
     appendLog({
       ...entry,
@@ -635,6 +670,7 @@ async function processOne(entry, processed) {
       classification,
     });
     processed.add(id);
+    recordAdvisor('', 'filtered');
     return { id, action: { type: 'filtered_amy_response' } };
   }
   // ACT-NOW path -- spawn Claude CLI to do the work (codex rescue inside).
@@ -643,9 +679,10 @@ async function processOne(entry, processed) {
       const action = { type: 'needs_human_reply', classification };
       appendLog({ ...entry, processed_at: new Date().toISOString(), classification, action });
       processed.add(id);
+      recordAdvisor(JSON.stringify({ classification, action }), 'needs-reply');
       return { id, action, classification };
     }
-    const r = spawnClaudeAct(entry);
+    const r = spawnClaudeAct(entry, graphitiBlock);
     if (!r.ok && r.retryable) {
       // PROVIDER OUTAGE (both ladder rungs down): defer, do NOT consume the
       // id. The watch loop retries next cycle once a provider recovers.
@@ -654,6 +691,7 @@ async function processOne(entry, processed) {
       const action = { type: 'implement_deferred_provider_outage', error: r.error };
       writeActLog({ ...entry, acted_at: new Date().toISOString(), result: r });
       appendLog({ ...entry, processed_at: new Date().toISOString(), action, deferred: true });
+      recordAdvisor(r.error || '', 'deferred');
       return { id, action, deferred: true };
     }
     const action = r.ok
@@ -662,6 +700,7 @@ async function processOne(entry, processed) {
     writeActLog({ ...entry, acted_at: new Date().toISOString(), result: r });
     appendLog({ ...entry, processed_at: new Date().toISOString(), action });
     processed.add(id);
+    recordAdvisor(r.summary || r.error || '', 'acted');
     return { id, action };
   }
   // Legacy classify-and-park path (kept for fallback / env-var off).
@@ -674,6 +713,7 @@ async function processOne(entry, processed) {
       error: classification.error,
     });
     processed.add(id);
+    recordAdvisor(classification.error, 'classify-failed');
     return { id, error: classification.error };
   }
   let action = null;
@@ -691,6 +731,7 @@ async function processOne(entry, processed) {
   }
   appendLog({ ...entry, processed_at: new Date().toISOString(), classification, action });
   processed.add(id);
+  recordAdvisor(JSON.stringify({ classification, action }), 'classified');
   return { id, action, classification };
 }
 
@@ -803,7 +844,7 @@ function prepareCleanBranch(branch, repo = ACT_REPO) {
 
 // Run Claude to make the change but NOT commit/push. The wrapper owns git so we
 // capture exactly the intended diff (no `git add -A` over a dirty tree).
-function runClaudeForChange(entry, opts = {}, repo = ACT_REPO) {
+function runClaudeForChange(entry, opts = {}, repo = ACT_REPO, advisorBlock = '') {
   const archiveContext = fetchSessionArchiveContext(entry.comment);
   const prompt = [
     'You are Amy, ExampleCo ExampleCos autonomous executive assistant. A dispatched request landed and you are running headless to implement it.',
@@ -813,6 +854,7 @@ function runClaudeForChange(entry, opts = {}, repo = ACT_REPO) {
     entry.comment,
     '',
     archiveContext ? archiveContext + '\n' : '',
+    advisorBlock ? advisorBlock + '\n' : '',
     'Implement it fully in THIS repository (the current working directory). If it is a code change, write or update a regression test too.',
     'CRITICAL git rules: do NOT run git commit, git push, git checkout, or git reset. Just edit/create files in the working tree. A wrapper handles all git.',
     'Constraints: stay inside this repo, do not touch .env or anything under claude-config/, do not delete files unless explicitly asked.',
@@ -953,7 +995,8 @@ function processesFor(file) {
   if (file === 'ec2-server.js') return ['secondbrain-backend'];
   if (file === 'scripts/process-dispatches.js') return ['dispatch-processor'];
   if (file === 'scripts/callback-watchdog.js') return ['callback-watchdog'];
-  if (file === 'scripts/lib/voice-cloud-runtime.js') return ['secondbrain-backend', 'callback-watchdog'];
+  if (file === 'scripts/lib/voice-cloud-runtime.js')
+    return ['secondbrain-backend', 'callback-watchdog'];
   return ['secondbrain-backend', 'dispatch-processor'];
 }
 
@@ -980,7 +1023,8 @@ function planDeploy(files, existsFn = fs.existsSync) {
       .filter((t) => isUnderRoot(t) && (existsFn(t) || NEW_LIVE_FILES.has(f)))
       .map((t) => ({ live: t, newFile: !existsFn(t) }));
     if (targets.length === 0) continue;
-    for (const target of targets) copies.push({ src: f, live: target.live, newFile: target.newFile });
+    for (const target of targets)
+      copies.push({ src: f, live: target.live, newFile: target.newFile });
     for (const p of processesFor(f)) procs.add(p);
   }
   return { copies, procs: [...procs] };
@@ -1031,12 +1075,18 @@ function restartProcesses(procs) {
       r = spawnSync('pm2', ['restart', p, '--update-env'], { encoding: 'utf8', timeout: 30000 });
     }
     if (r.status !== 0) {
-      return { ok: false, error: `pm2 restart/start failed for ${p}: ${(r.stderr || r.stdout || '').slice(0, 200)}` };
+      return {
+        ok: false,
+        error: `pm2 restart/start failed for ${p}: ${(r.stderr || r.stdout || '').slice(0, 200)}`,
+      };
     }
   }
   const save = spawnSync('pm2', ['save'], { encoding: 'utf8', timeout: 30000 });
   if (save.status !== 0) {
-    return { ok: false, error: `pm2 save failed: ${(save.stderr || save.stdout || '').slice(0, 200)}` };
+    return {
+      ok: false,
+      error: `pm2 save failed: ${(save.stderr || save.stdout || '').slice(0, 200)}`,
+    };
   }
   return { ok: true };
 }
@@ -1236,13 +1286,14 @@ const { classifyTaskKind } = require('./lib/dispatch-delivery');
 // is delivered on the command's channel (spoken on a callback, or Telegram).
 // 2026-06-03: research asks ("search memory for a contact history") were failing
 // because they ran through the code/autoland path which cannot research.
-function runResearch(entry, opts = {}) {
+function runResearch(entry, opts = {}, advisorBlock = '') {
   const prompt = [
     'You are Amy, ExampleCo ExampleCos executive assistant, answering a question he asked by phone. You will read your answer back to him, so write it to be spoken.',
     '',
     'His question:',
     entry.comment,
     '',
+    advisorBlock ? advisorBlock + '\n' : '',
     'Research it using THIS repository: memory/ (especially memory/contacts/*.md), data/ archives, and any context you can read. Do NOT edit, create, commit, or push any files. This is read-only.',
     'Answer in plain spoken English, 4 to 8 sentences, no markdown, no bullet characters, no URLs, no file paths. If the record is thin, say what you do know and what is missing. Print ONLY the spoken answer, nothing else.',
   ].join('\n');
@@ -1286,6 +1337,34 @@ async function executeForwardedCommand(cmd) {
     itemRef: cmd.id,
     comment: cmd.prompt || '',
   };
+  const graphitiHandle = beginGraphitiConsult({
+    prompt: entry.comment,
+    action: 'Execute a forwarded voice or Telegram command',
+    surface: 'dispatch',
+    conversationId: `forwarded-${cmd.id}`,
+    project: 'SecondBrain forwarded command',
+    visibility: 'owner_private',
+  });
+  let graphitiEnvelope = null;
+  const advisorBlock = async () => {
+    if (!graphitiEnvelope) graphitiEnvelope = await graphitiHandle.finalize({ waitMs: 30_000 });
+    return buildAdvisorPromptBlock(graphitiEnvelope);
+  };
+  const recordForwardedAdvisor = (output, suffix) => {
+    if (!graphitiEnvelope) return;
+    try {
+      recordDispositionReceipt(
+        createDispositionReceipt({
+          envelope: graphitiEnvelope,
+          output: String(output || ''),
+          answerActionId: `forwarded-${cmd.id}-${suffix}`,
+          visibility: 'owner_private',
+        }),
+      );
+    } catch {
+      // System Health exposes missing receipts.
+    }
+  };
 
   // Research asks are answered read-only and delivered on the command's channel,
   // NOT pushed through the code/autoland path (which cannot research and fails).
@@ -1294,7 +1373,7 @@ async function executeForwardedCommand(cmd) {
       status: 'running',
       note: 'researching',
     });
-    const rr = runResearch(entry, { deadlineMs: cmd.deadlineMs });
+    const rr = runResearch(entry, { deadlineMs: cmd.deadlineMs }, await advisorBlock());
     const rResult = rr.ok
       ? { ok: true, research: true, oneLiner: rr.answer.slice(0, 1200) }
       : { ok: false, error: rr.error || 'research failed' };
@@ -1314,6 +1393,7 @@ async function executeForwardedCommand(cmd) {
       ),
       { oneLiner: rResult.ok ? rResult.oneLiner : '' },
     );
+    recordForwardedAdvisor(rr.answer || rr.error || '', 'research');
     return rResult;
   }
 
@@ -1338,7 +1418,12 @@ async function executeForwardedCommand(cmd) {
       status: 'running',
       note: (entry.comment || 'working').slice(0, 80),
     });
-    const r = runClaudeForChange(entry, { deadlineMs: cmd.deadlineMs }, workRepo);
+    const r = runClaudeForChange(
+      entry,
+      { deadlineMs: cmd.deadlineMs },
+      workRepo,
+      await advisorBlock(),
+    );
     if (!r.ok) {
       result = { ok: false, error: r.error, stderr: r.stderr };
     } else {
@@ -1384,6 +1469,7 @@ async function executeForwardedCommand(cmd) {
       }
     }
   }
+  await advisorBlock();
   writeActLog({ ...entry, command_id: cmd.id, acted_at: new Date().toISOString(), result });
   const resultText = !result.ok
     ? `execution failed: ${result.error || 'ExampleCo'}`
@@ -1410,6 +1496,7 @@ async function executeForwardedCommand(cmd) {
     prUrl: result.compareUrl || '',
     branch: result.branch || '',
   });
+  recordForwardedAdvisor(result.summary || result.error || resultText, 'execution');
   return result;
 }
 

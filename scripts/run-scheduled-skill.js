@@ -70,13 +70,15 @@ const directConfigFile = path.join(SECONDBRAIN_ROOT, 'scheduled-tasks', skillNam
 const HAS_DIRECT_CONFIG = fs.existsSync(directConfigFile);
 const OUTCOMES_LEDGER = path.join(DATA_DIR, 'agent', 'scheduled-skill-outcomes.jsonl');
 
-function recordRescueCanary({ rung = 'none', observedOutput = '', worktreeRoot = '', failureReason = '' } = {}) {
-  const releaseRoot =
-    process.env.RUN_SCHEDULED_SKILL_CANARY_RELEASE_ROOT || SECONDBRAIN_ROOT;
-  const sourceRoot =
-    process.env.RUN_SCHEDULED_SKILL_CANARY_SOURCE_ROOT || CODEX_REPO_ROOT;
-  const expectedDataDir =
-    process.env.RUN_SCHEDULED_SKILL_CANARY_EXPECTED_DATA_DIR || DATA_DIR;
+function recordRescueCanary({
+  rung = 'none',
+  observedOutput = '',
+  worktreeRoot = '',
+  failureReason = '',
+} = {}) {
+  const releaseRoot = process.env.RUN_SCHEDULED_SKILL_CANARY_RELEASE_ROOT || SECONDBRAIN_ROOT;
+  const sourceRoot = process.env.RUN_SCHEDULED_SKILL_CANARY_SOURCE_ROOT || CODEX_REPO_ROOT;
+  const expectedDataDir = process.env.RUN_SCHEDULED_SKILL_CANARY_EXPECTED_DATA_DIR || DATA_DIR;
   let worktreeProof = { proven: false, state: 'unproven', reason: 'no worktree was produced' };
   if (worktreeRoot) {
     try {
@@ -289,6 +291,77 @@ if (process.env.RUN_SCHEDULED_SKILL_ISOLATED !== '1' && NEEDS_ISOLATED_RERUN) {
   }
 }
 
+const GRAPHITI_ADVISOR_CLI = path.join(SECONDBRAIN_ROOT, 'scripts', 'graphiti-brain-advisor.js');
+let graphitiAdvisorId = '';
+function startGraphitiAdvisor() {
+  const request = {
+    prompt: `Run the scheduled Amy skill ${skillName}`,
+    action: `Execute scheduled-tasks/${skillName}/SKILL.md and persist its authorized outputs`,
+    surface: 'scheduled-skill',
+    conversationId: `scheduled-${skillName}-${process.env.AMY_SCHEDULE_DATE || new Date().toISOString().slice(0, 10)}`,
+    project: skillName,
+    visibility: 'owner_private',
+  };
+  const result = spawnSync(process.execPath, [GRAPHITI_ADVISOR_CLI, 'start'], {
+    cwd: SECONDBRAIN_ROOT,
+    env: { ...process.env, SECONDBRAIN_DATA_DIR: DATA_DIR },
+    input: JSON.stringify(request),
+    encoding: 'utf8',
+    timeout: 5000,
+  });
+  try {
+    graphitiAdvisorId = JSON.parse(result.stdout || '{}').advisor_id || '';
+  } catch {
+    graphitiAdvisorId = '';
+  }
+}
+
+function graphitiAdvisorContext() {
+  if (!graphitiAdvisorId) {
+    return 'Graphiti Brain Advisor was unavailable at start. Expose this first failure in Graphiti impact and do not invent recall.';
+  }
+  const result = spawnSync(
+    process.execPath,
+    [GRAPHITI_ADVISOR_CLI, 'context', '--advisor-id', graphitiAdvisorId, '--wait-ms', '30000'],
+    {
+      cwd: SECONDBRAIN_ROOT,
+      env: { ...process.env, SECONDBRAIN_DATA_DIR: DATA_DIR },
+      encoding: 'utf8',
+      timeout: 35000,
+    },
+  );
+  try {
+    return (
+      JSON.parse(result.stdout || '{}').prompt_block ||
+      'Graphiti Brain Advisor context was unavailable.'
+    );
+  } catch {
+    return 'Graphiti Brain Advisor context was unavailable. Expose the failure in Graphiti impact.';
+  }
+}
+
+function recordGraphitiAdvisorOutput(output, answerActionId) {
+  if (!graphitiAdvisorId) return;
+  spawnSync(
+    process.execPath,
+    [
+      GRAPHITI_ADVISOR_CLI,
+      'receipt',
+      '--advisor-id',
+      graphitiAdvisorId,
+      '--answer-action-id',
+      answerActionId,
+    ],
+    {
+      cwd: SECONDBRAIN_ROOT,
+      env: { ...process.env, SECONDBRAIN_DATA_DIR: DATA_DIR },
+      input: String(output || ''),
+      encoding: 'utf8',
+      timeout: 5000,
+    },
+  );
+}
+
 const hooks = require('./skill-runner-hooks');
 const rawContent = fs.readFileSync(skillFile, 'utf8');
 
@@ -297,7 +370,7 @@ const basePrompt = rawContent.replace(/^---[\s\S]*?---\s*\n/, '').trim();
 
 // Phase 5 harness-evolution wiring: inject prior LESSONS.md entries into the
 // prompt so the skill biases toward what worked and away from what failed.
-const prompt = hooks.buildPromptWithLessons(skillName, basePrompt);
+const baseSkillPrompt = hooks.buildPromptWithLessons(skillName, basePrompt);
 const lessonInputDescriptor = `scheduled run ${new Date().toISOString()}`;
 
 if (skillName === 'amy-research-skill' && process.env.AMY_ENABLE_AUTONOMOUS_RESEARCH !== '1') {
@@ -315,6 +388,11 @@ if (skillName === 'amy-research-skill' && process.env.AMY_ENABLE_AUTONOMOUS_RESE
   console.log(msg);
   process.exit(0);
 }
+
+// This runs after worktree isolation and policy gates are proven, but before
+// provider and direct-run preparation, so Graphiti overlaps ordinary work.
+startGraphitiAdvisor();
+const prompt = [baseSkillPrompt, '', graphitiAdvisorContext()].join('\n');
 
 // Unset CLAUDECODE so the nested-session guard doesn't fire
 const env = { ...process.env };
@@ -354,6 +432,7 @@ function runDirectConfigIfPresent() {
   const args = (config.args || []).map(expandDirectArg);
   const result = spawnSync(process.execPath, [script, ...args], RUN_OPTS);
   const output = [result.stdout, result.stderr].filter(Boolean).join('\n');
+  recordGraphitiAdvisorOutput(output, `scheduled-direct-${skillName}-${Date.now()}`);
   fs.appendFileSync(logFile, `[direct] ${script} ${args.join(' ')}\n${output}\n`);
   process.stdout.write(output.slice(0, 4000) + '\n');
   const ok = result.status === 0;
@@ -512,6 +591,7 @@ if (CANARY_MODE) {
 }
 
 if (lastResult.verdict === 'ok') {
+  recordGraphitiAdvisorOutput(lastResult.output, `scheduled-${skillName}-${Date.now()}`);
   appendOutcome({ rung, ok: true, exitCode: 0 });
   try {
     hooks.recordSkillOutcome(skillName, {
@@ -526,6 +606,7 @@ if (lastResult.verdict === 'ok') {
   fs.appendFileSync(logFile, done);
   console.log(done);
 } else {
+  recordGraphitiAdvisorOutput(lastResult.output, `scheduled-${skillName}-${Date.now()}`);
   // Every rung failed: honest FAILED, nonzero exit, durable outcome row. The
   // 2:45am diagnostic (probeScheduledSkillOutcomes) surfaces this in the
   // briefing; no SUCCESS lie, no silent death.

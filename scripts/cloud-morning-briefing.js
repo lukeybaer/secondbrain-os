@@ -5843,6 +5843,30 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
     push(ExampleCo, 'Graphiti: probe could not run on this host.');
   }
 
+  // Graphiti Brain Advisor: prompt-time consultation, influence, timeout, and
+  // per-fact disposition proof. This is deliberately separate from container
+  // reachability so a live graph cannot mask a broken answer/action injection
+  // path. The five-minute channel monitor refreshes this artifact.
+  try {
+    const advisor = readJson(
+      path.join(dataDir, 'agent', 'graphiti-advisor-health-latest.json'),
+      null,
+    );
+    if (!advisor) {
+      push(ExampleCo, 'Graphiti Advisor: no health artifact on this host.');
+    } else {
+      const metrics = advisor.metrics || {};
+      const consults = Number(metrics.consults || 0);
+      const influenced = Math.round(Number(metrics.influence_rate || 0) * 100);
+      const disposition = Math.round(Number(metrics.disposition_completeness || 0) * 100);
+      const timeouts = Math.round(Number(metrics.timeout_rate || 0) * 100);
+      const detail = `Graphiti Advisor: ${consults} consultations, ${influenced}% influenced, ${disposition}% fact dispositions complete, ${timeouts}% timeout/unavailable; proof ${relativeAgo(advisor.generated_at)}.`;
+      push(advisor.status === 'green' ? OK : BAD, detail);
+    }
+  } catch {
+    push(ExampleCo, 'Graphiti Advisor: health artifact could not be read on this host.');
+  }
+
   // Recall Broker (ExampleCo 2026-07-06): prompt-time retrieval cost governor +
   // fail-closed auth canary on the memory read path. The value states the
   // day's served-query evidence; RED means throttled at the hard cap or the
