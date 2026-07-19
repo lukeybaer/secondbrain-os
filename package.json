@@ -44,7 +44,8 @@
     "verify:video-quality-saturation": "python src/main/empire/video-quality-tools/audit-tool-sprawl.py --fail-on-saturation",
     "report:llm-ladder": "node scripts/lib/llm-ladder-observability.js",
     "report:escalation-recurrence": "node scripts/lib/escalation-recurrence.js",
-    "verify:memory-hygiene": "node scripts/lib/memory-hygiene-audit.js"
+    "verify:memory-hygiene": "node scripts/lib/memory-hygiene-audit.js",
+    "build:dev-plans-records": "node scripts/build-dev-plans-records.js"
   },
   "build": {
     "appId": "com.secondbrain.app",
