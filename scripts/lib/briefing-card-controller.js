@@ -21,6 +21,7 @@ const { buildBriefingDashboardUrl } = require('./briefing-auth.js');
 const { notifyWithFallback } = require('./notify-with-fallback.js');
 const { loadBriefingNotifyEnv, notifyBriefingPublished } = require('./briefing-notify.js');
 const { getSourceContract, controllerSourceEnv } = require('./briefing-source-contracts.js');
+const { isPerCardBoardSource } = require('./briefing-card-artifacts.js');
 const { DERIVED_CARD_IDS, MANIFEST_CARD_RENDER, markdownPathFor } = require('../refresh-card.js');
 const {
   defectKey,
@@ -270,9 +271,16 @@ function hasVerifiedScopedLiveResult({
     afterArtifact.ran === true &&
     stdout.includes('[refresh-card] --verify: wrote canonical dashboard artifact') &&
     new RegExp(`\\[refresh-card\\] --verify: card='${escapedCardId}' status=`).test(stdout);
+  // Board-level freshness is NOT enough here. A scoped union publish always
+  // stamps a new board `ts` while copying sibling cards forward, so the board
+  // clock advances even when the refreshed target itself is stale. The
+  // artifact-union branch therefore demands the TARGET card's own asOf moved.
+  const targetCardAdvanced =
+    Number.isFinite(afterCardTs) && (!Number.isFinite(beforeCardTs) || afterCardTs > beforeCardTs);
   const printedArtifactUnionProof =
     Number(command && command.exitCode) === 0 &&
-    String(afterArtifact.source || '') === 'per-card-artifacts' &&
+    targetCardAdvanced &&
+    isPerCardBoardSource(afterArtifact.source) &&
     new RegExp(`\\[refresh-card\\] produced artifact card='${escapedCardId}' status=`).test(
       stdout,
     ) &&

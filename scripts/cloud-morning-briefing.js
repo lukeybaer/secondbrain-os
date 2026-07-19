@@ -1296,6 +1296,56 @@ function legacySection(title, body) {
   return `${String(title || '').trim()}:\n\n${String(body || '').trim()}`;
 }
 
+// MEMORY HYGIENE body from the weekly consolidation receipt
+// (<dataDir>/agent/memory-consolidation-state.json, written by the Saturday
+// 4:00 AM CT pass). Returns null when there is genuinely no usable receipt, so
+// the manifest assembler renders the honest blocker instead of inventing a
+// number. The card shipped 2026-07-19 (7422552f) with a live HTML injector but
+// no markdown producer and no MANIFEST_CARD_RENDER entry, which left it a
+// phantom: declared always-on, absent from the graded board, and impossible for
+// refresh-card to heal.
+function formatMemoryHygieneSection(dataDir, now = Date.now()) {
+  let receipt;
+  try {
+    receipt = JSON.parse(
+      fs.readFileSync(path.join(dataDir, 'agent', 'memory-consolidation-state.json'), 'utf8'),
+    );
+  } catch {
+    return null;
+  }
+  const lastRunMs = Date.parse(receipt && receipt.last_run_iso);
+  if (!Number.isFinite(lastRunMs)) return null;
+
+  const counts = (receipt && receipt.counts) || {};
+  const questions = Array.isArray(receipt && receipt.questions) ? receipt.questions : [];
+  const ageHours = (Number(now) - lastRunMs) / 3600000;
+  // The pass is weekly, so an 8-day window is on-schedule; past that it is overdue.
+  const overdue = ageHours > 8 * 24;
+  const ranLast48h = ageHours <= 48;
+
+  const spark = overdue
+    ? `Weekly memory consolidation is OVERDUE: last pass ${formatCtDateTime(lastRunMs)}.`
+    : questions.length
+      ? `Memory consolidation is on schedule, with ${questions.length} question${questions.length === 1 ? '' : 's'} waiting on you.`
+      : 'Memory consolidation is on schedule with nothing waiting on you.';
+
+  const lines = [
+    spark,
+    '',
+    `Last pass: ${formatCtDateTime(lastRunMs)} (ran in last 48h: ${ranLast48h ? 'yes' : 'no'})`,
+    `Scanned ${Number(counts.scanned) || 0} memories, ${Number(counts.clusters) || 0} clusters, ${Number(counts.adjudicated) || 0} adjudicated, ${Number(counts.applied) || 0} applied.`,
+  ];
+  if (receipt.report_relpath) lines.push(`Full report: ${receipt.report_relpath}`);
+  if (questions.length) {
+    lines.push('', 'Open questions for you:');
+    for (const q of questions.slice(0, 5)) {
+      const text = String((q && q.question) || '').trim();
+      if (text) lines.push(`- ${text}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 // Read the daily COMMUNICATION COACHING artifact
 // (<dataDir>/agent/comm-coaching/<date>.json, written by comm-coaching-card.js)
 // and render its REAL body: two strengths + two growth moves, each with the real
@@ -1423,6 +1473,11 @@ const MANIFEST_CARD_RENDER = {
   shorts_proposals: { title: "TODAY'S 10 SHORTS PROPOSALS" },
   kingdom_equipping: { title: 'KINGDOM EQUIPPING IDEAS' },
   communication_coaching: { title: 'COMMUNICATION COACHING' },
+  memory_hygiene: {
+    title: 'MEMORY HYGIENE',
+    blockerDetail:
+      'The weekly memory-consolidation receipt (data/agent/memory-consolidation-state.json) was not readable on the cloud build, so last-run, freshness, and open-question counts cannot be shown honestly. Needs: the Saturday 4:00 AM CT consolidation pass receipt on the build host.',
+  },
   big_decisions: { title: 'BIG DECISIONS' },
   aws_costs: {
     title: 'AWS COSTS',
@@ -8817,6 +8872,15 @@ function buildCloudMorningBriefing({
     // video-queue come from buildRequiredCloudCards, keyed by manifest id.
     ...requiredCards.byManifestId,
   };
+
+  // MEMORY HYGIENE renders the weekly consolidation receipt when it is readable.
+  // A null body falls through to the manifest loop's honest blocker, so the card
+  // is never silently absent and never invents a freshness claim.
+  const memoryHygieneBody = formatMemoryHygieneSection(dataDir);
+  if (memoryHygieneBody) {
+    realById.memory_hygiene = legacySection('MEMORY HYGIENE', memoryHygieneBody);
+  }
+
   const videoQueueState = requiredCards.states.find((state) => state && state.id === 'video-queue');
   if (
     videoQueueState &&
@@ -9525,6 +9589,7 @@ if (require.main === module) {
 
 module.exports = {
   buildCloudMorningBriefing,
+  formatMemoryHygieneSection,
   cliPublishLease,
   checkFullBriefingContract,
   runCanonicalBriefingValidator,

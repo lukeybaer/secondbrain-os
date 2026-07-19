@@ -476,12 +476,28 @@ function liveBoardArtifactFromCardArtifacts(artifacts, { date, now = new Date() 
       asOf: artifact.generatedAt || ts,
     };
   });
-  return liveBoardArtifactFromCards(cards, { date, now, source: 'per-card-artifacts' });
+  return liveBoardArtifactFromCards(cards, { date, now, source: PER_CARD_BOARD_SOURCE });
+}
+
+// Board-artifact provenance tags. The controller's post-refresh verifier has to
+// recognise every tag this module can emit, so the vocabulary lives HERE (next
+// to the only code that writes it) and consumers ask via isPerCardBoardSource().
+// Drift scar: b34256fd added the '-scoped' tag for scoped publishes but left
+// briefing-card-controller.js comparing to the bare literal, so every scoped
+// single-card refresh failed verification and was rolled back even when the
+// card built clean -- silently disabling per-card healing.
+const PER_CARD_BOARD_SOURCE = 'per-card-artifacts';
+const PER_CARD_BOARD_SOURCE_SCOPED = 'per-card-artifacts-scoped';
+const PER_CARD_BOARD_SOURCES = Object.freeze([PER_CARD_BOARD_SOURCE, PER_CARD_BOARD_SOURCE_SCOPED]);
+
+/** True when a live board artifact was assembled from per-card artifacts. */
+function isPerCardBoardSource(source) {
+  return PER_CARD_BOARD_SOURCES.includes(String(source || ''));
 }
 
 function liveBoardArtifactFromCards(
   cards,
-  { date, now = new Date(), source = 'per-card-artifacts' } = {},
+  { date, now = new Date(), source = PER_CARD_BOARD_SOURCE } = {},
 ) {
   const ts = now.toISOString();
   return {
@@ -525,7 +541,7 @@ function writeLiveBoardArtifactFromCardArtifacts({
     artifact = liveBoardArtifactFromCards(cards, {
       date,
       now,
-      source: 'per-card-artifacts-scoped',
+      source: PER_CARD_BOARD_SOURCE_SCOPED,
     });
   }
   const absPath = writeDataArtifact(BOARD_ARTIFACT_REL, artifact, { dataDir });
@@ -1423,6 +1439,10 @@ function briefingArtifactWatchdog({ dataDir = defaultDataDir(), date, now = new 
 
 module.exports = {
   SCHEMA_VERSION,
+  PER_CARD_BOARD_SOURCE,
+  PER_CARD_BOARD_SOURCE_SCOPED,
+  PER_CARD_BOARD_SOURCES,
+  isPerCardBoardSource,
   CARD_ARTIFACT_REL_DIR,
   BOARD_ARTIFACT_REL,
   LLM_CARD_IDS,

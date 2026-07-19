@@ -1141,11 +1141,21 @@ async function refreshOneCardArtifact({ cardId, date, dataDir, publish, verify }
       )} board=${board.absPath}`,
     );
   }
-  if (verify && artifact.status !== 'clean') {
-    console.error(
-      `[refresh-card] --verify: card='${cardId}' status=${artifact.status}; artifact is honest but not clean.`,
-    );
-    process.exitCode = 1;
+  if (verify) {
+    if (artifact.status !== 'clean') {
+      // Honest and not clean: there is nothing to prove against the live page,
+      // and the non-clean artifact is the answer. Report and stop.
+      console.error(
+        `[refresh-card] --verify: card='${cardId}' status=${artifact.status}; artifact is honest but not clean.`,
+      );
+      process.exitCode = 1;
+    } else {
+      // A self-reported clean artifact is NOT proof. --verify must mean the
+      // rendered page was fetched and graded (briefing Invariants 2/4/8): the
+      // live artifact is the only defect count. Without this, the controller
+      // accepted producer stdout alone as "verifiedLive".
+      await runVerify({ cardId, date, dataDir });
+    }
   }
   return artifact;
 }
