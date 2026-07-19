@@ -209,6 +209,9 @@ function inferMarkdownSectionStatus(body, cardId = '') {
   if (/^Severity:\s*(red|blocked)\b/i.test(firstFew)) return 'blocked';
   if (/^(Source unavailable|Source expired|Unavailable)\b:?/i.test(first)) return 'blocked';
   if (/^\u2717\s/.test(first)) return 'blocked';
+  if (/did not produce content on the cloud build|Broken for a known reason self-heal could not fix/i.test(firstFew)) {
+    return 'blocked';
+  }
   if (/held back rather than shown as today|more than 24 hours old/i.test(first)) return 'blocked';
   return 'clean';
 }
@@ -275,18 +278,25 @@ function artifactContentFailures(artifact) {
   const status = normalizeStatus(artifact && artifact.status);
   if (status !== 'clean') return [];
   const markdown = artifactMarkdown(artifact);
+  const failures = [];
+  if (/did not produce content on the cloud build|Broken for a known reason self-heal could not fix/i.test(markdown)) {
+    failures.push('card ExampleCos broken cloud-build fallback copy');
+  }
   const parsed = splitMarkdownCards(markdown)[0] || {
     title: artifact.title || cardTitle(artifact.id),
     body: markdown,
   };
-  return qcCard(
+  return uniqueList([
+    ...failures,
+    ...qcCard(
     {
       id: artifact.id,
       title: parsed.title || artifact.title || cardTitle(artifact.id),
       body: parsed.body || '',
     },
     { surface: 'card-artifact' },
-  ).failures;
+    ).failures,
+  ]);
 }
 
 function normalizeArtifactQuality(artifact) {
@@ -517,9 +527,10 @@ function isMissingSourcePlaceholderArtifact(artifact) {
   const source = artifact.source || {};
   const reason = `${artifact.blockedReason || ''}\n${artifact.markdown || ''}`;
   return (
-    normalizeStatus(artifact.status) === 'blocked' &&
-    (source.missing === true || source.mode === 'data') &&
-    /deterministic source artifact missing/i.test(reason)
+    normalizeStatus(artifact.status) !== 'clean' &&
+    ((source.missing === true || source.mode === 'data') &&
+      /deterministic source artifact missing/i.test(reason) ||
+      /did not produce content on the cloud build|Broken for a known reason self-heal could not fix/i.test(reason))
   );
 }
 
