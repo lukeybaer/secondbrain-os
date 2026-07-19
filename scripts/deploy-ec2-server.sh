@@ -11,13 +11,23 @@
 # (2) people hot-patched EC2 directly instead of deploying the repo. This script
 # is the cure for (2): never hand-patch EC2 again, always deploy from the repo.
 #
-# Usage: bash scripts/deploy-ec2-server.sh
+# Usage: bash scripts/deploy-ec2-server.sh [--swap-anyway]
 set -euo pipefail
 
 KEY="${SB_KEY:-$HOME/.ssh/sb-key.pem}"
 [ -f "$KEY" ] || KEY="$HOME/.ssh/secondbrain-backend-key.pem"
 HOST="ec2-user@ExampleCo"
 ROOT="$(git rev-parse --show-toplevel)"
+
+# Deploy-window guard override (2026-07-19): the guard below REFUSES the atomic
+# swap when a scheduled runner is about to fire or is mid-flight. --swap-anyway
+# (or SB_DEPLOY_SWAP_ANYWAY=1) is the explicit, attended override.
+SWAP_ANYWAY="${SB_DEPLOY_SWAP_ANYWAY:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    --swap-anyway) SWAP_ANYWAY=1 ;;
+  esac
+done
 
 # A linked worktree can become clean and fully merged while this long-running
 # deploy still needs it for post-swap closure checks and receipt generation.
@@ -245,6 +255,45 @@ cleanup_deploy_locks() {
   cleanup_worktree_lock
 }
 trap cleanup_deploy_locks EXIT
+
+# ============================================================================
+# DEPLOY-WINDOW GUARD (2026-07-19): runs BEFORE the atomic swap below.
+# ============================================================================
+# Race class this kills: an atomic symlink swap landing seconds after a
+# scheduled cron runner starts (the 2026-07-19 incident: the swap hit 84s into
+# the 5:30:00 morning-briefing run, orphaning the runner's view mid-flight).
+# Before invoking the atomic-release primitive, snapshot the EC2 crontab, the
+# process table, and the host clock, and let scripts/lib/deploy-window-guard.js
+# decide: a runner-family cron (ec2-*-run.sh) firing within +/- 2 minutes of
+# NOW, or a runner-family process currently mid-flight, REFUSES the deploy with
+# a named reason and the minutes to wait. Override: --swap-anyway or
+# SB_DEPLOY_SWAP_ANYWAY=1 (attended, explicit). Fail CLOSED: if the snapshots
+# cannot be taken, the window cannot be proven clear, so the deploy refuses.
+if [ "$SWAP_ANYWAY" = "1" ]; then
+  echo "[deploy] deploy-window guard OVERRIDDEN (--swap-anyway / SB_DEPLOY_SWAP_ANYWAY=1): swapping regardless of scheduled-runner proximity."
+else
+  echo "[deploy] deploy-window guard: checking EC2 cron proximity + mid-flight scheduled runners"
+  GUARD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/sb-deploy-guard-XXXXXX")"
+  cleanup_guard_tmp() { rm -rf "$GUARD_TMP" 2>/dev/null || true; }
+  if ! ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "crontab -l 2>/dev/null || true" > "$GUARD_TMP/crontab.txt" \
+    || ! ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "ps -eo args 2>/dev/null || true" > "$GUARD_TMP/ps.txt" \
+    || ! ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" "date +%s; date +%z" > "$GUARD_TMP/clock.txt"; then
+    cleanup_guard_tmp
+    echo "[deploy] REFUSED: could not snapshot the EC2 crontab/process table/clock for the deploy-window guard (fail closed). Re-run when SSH is healthy, or override with --swap-anyway / SB_DEPLOY_SWAP_ANYWAY=1." >&2
+    exit 1
+  fi
+  HOST_NOW="$(sed -n 1p "$GUARD_TMP/clock.txt")"
+  HOST_UTC_OFFSET="$(sed -n 2p "$GUARD_TMP/clock.txt")"
+  if ! node "$ROOT/scripts/lib/deploy-window-guard.js" \
+    --cron-file "$GUARD_TMP/crontab.txt" --ps-file "$GUARD_TMP/ps.txt" \
+    --now "$HOST_NOW" --host-utc-offset "${HOST_UTC_OFFSET:-+0000}"; then
+    cleanup_guard_tmp
+    echo "[deploy] REFUSED: inside a scheduled-runner window or a runner is mid-flight (named reasons above). Wait it out, or override with --swap-anyway / SB_DEPLOY_SWAP_ANYWAY=1." >&2
+    exit 1
+  fi
+  cleanup_guard_tmp
+  echo "[deploy] deploy-window guard: clear to swap"
+fi
 
 # ============================================================================
 # LIVE WRITE: delegated to the atomic-release primitive (the SOLE /opt writer).
