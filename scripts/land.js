@@ -199,6 +199,44 @@ function runScopedTests(scope) {
   // and a lander invoked from a subdirectory must not silently filter out the
   // core guards as "nonexistent".
   const existing = scope.filter((f) => fs.existsSync(path.join(root, f)));
+
+  // A missing CORE GUARD is a hard red, never a skip. The 2026-07-19 gravity
+  // audit found scripts/__tests__/core.test.js listed in CORE_GUARDS but
+  // absent on disk, so one of the always-on land guards silently no-oped on
+  // every land (inconsistency #4). Missing SIBLING tests stay skippable
+  // (source without a test yet is legitimate); missing guards are not.
+  //
+  // GUARD_FLOOR is the independent bootstrap check (Codex review
+  // 75636d17f4b1): editing land-gate.js to DELIST a guard would otherwise
+  // disable it without any red, because core.test.js only defends guards
+  // still on the list. Removing a floor guard requires editing BOTH files
+  // deliberately, which is an amendment, not an accident.
+  const GUARD_FLOOR = [
+    'scripts/__tests__/no-dead-probes.test.js',
+    'scripts/__tests__/core.test.js',
+    'scripts/__tests__/memory-md-size.test.js',
+  ];
+  const delisted = GUARD_FLOOR.filter((f) => !landGate.CORE_GUARDS.includes(f));
+  if (delisted.length > 0) {
+    log('ERROR: guard floor violated; these always-on guards are no longer in CORE_GUARDS:');
+    for (const f of delisted) log('  -', f);
+    log(
+      'delisting a floor guard is an amendment: change GUARD_FLOOR in land.js and CORE_GUARDS together, deliberately.',
+    );
+    return { green: false, ranCount: 0 };
+  }
+  const missingGuards = landGate.CORE_GUARDS.filter(
+    (f) => scope.includes(f) && !fs.existsSync(path.join(root, f)),
+  );
+  if (missingGuards.length > 0) {
+    log('ERROR: always-on core guard test file(s) missing on disk:');
+    for (const f of missingGuards) log('  -', f);
+    log(
+      'a missing guard means every land runs unguarded; restore the file or amend CORE_GUARDS deliberately.',
+    );
+    return { green: false, ranCount: 0 };
+  }
+
   if (existing.length === 0) {
     log('none of the scoped test files exist on disk; nothing to run, treating as green.');
     return { green: true, ranCount: 0 };
