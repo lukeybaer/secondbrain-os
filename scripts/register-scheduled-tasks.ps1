@@ -190,6 +190,7 @@ Watch-Task 'SecondBrain-GmailAmyScanWatch' 'scripts\gmail-amy-scan.js' '--watch'
 # else, finishes long before the 05:30 briefing reads its output.
 Skill-Task 'SecondBrain-WarmthAudit'       'weekly-warmth-audit'        '00:00' -Day 'MON'
 Skill-Task 'SecondBrain-BackupHealthCheck' 'weekly-backup-health-check' '04:17' -Day 'FRI'
+Skill-Task 'SecondBrain-MemoryConsolidation' 'memory-consolidation' '04:00' -Day 'SAT'
 
 # ── Night wake for the overnight healer ──────────────────────────────────────
 # The hourly Claude token pusher above only runs while the laptop is awake, and

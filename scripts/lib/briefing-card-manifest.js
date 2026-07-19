@@ -184,6 +184,13 @@ const CARD_DEFINITIONS = [
       'Always: communication coaching tile. It must be grounded in ExampleCo quotes and vetted sources, or render as a defect.',
   },
   {
+    id: 'memory_hygiene',
+    match: /^MEMORY HYGIENE\b/i,
+    always: true,
+    condition:
+      'Always: weekly memory consolidation receipt tile (last run, 48h boolean, report link, open questions). Red when the receipt is missing or the weekly pass is overdue; never silently absent.',
+  },
+  {
     id: 'big_decisions',
     match: /^BIG DECISIONS\b/i,
     always: true,
@@ -397,6 +404,7 @@ const CARD_PRIORITY_IDS = [
   'meetings',
   'kingdom_equipping',
   'communication_coaching',
+  'memory_hygiene',
   'big_decisions',
   'otter_speaker_pareto',
   'people_files_changes',

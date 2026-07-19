@@ -1,6 +1,21 @@
 #!/usr/bin/env node
 // memory-decay-sweep.js
 //
+// PARKED 2026-07-19, DO NOT SCHEDULE (memory-hygiene tooling audit verdict,
+// dev-plans/memory-hygiene-tooling-audit-2026-07-18.html). The 31-agent
+// audit + Codex peer review confirmed: (1) the contradiction detector keys
+// on slug equality and has zero possible detections on this corpus,
+// (2) mtime measures git activity, not memory use, and was reset corpus-wide
+// by the 2026-07-17 migration, so the sweep emits nothing and would read as
+// a false clean signal, (3) with honest clocks its first warn cohort would
+// be the locked canonical docs (signal inverted for a read-often/edit-never
+// rules corpus), (4) its ledger has no consumer. The live replacement is
+// the weekly memory consolidation pass (scripts/memory-consolidation-scan.js
+// + LLM adjudication + scripts/memory-consolidation-report.js). If decay is
+// ever wanted for the git corpus, build it on a durable access inventory
+// (firstSeen, lastAccess, lifetime count joined to retrieval events), not on
+// filesystem mtime. Module kept for its tests and as a reference.
+//
 // Memory lifecycle engine. Applies an Ebbinghaus forgetting curve to memory
 // files, recommends archival when retention drops below threshold, and
 // flags contradiction candidates (multiple memories declaring authority on
@@ -52,7 +67,7 @@ const REPO = process.env.SECONDBRAIN_ROOT || path.join(__dirname, '..');
 
 const DEFAULTS = {
   retentionArchiveThreshold: 0.05, // R < 5% suggests archival
-  retentionWarnThreshold: 0.2,     // R < 20% but >= 5% is a "soon" warning
+  retentionWarnThreshold: 0.2, // R < 20% but >= 5% is a "soon" warning
   // Default stability constants, in days, by memory type.
   stabilityByType: {
     user: 730,
@@ -111,7 +126,9 @@ function computeMemoryAge(filePath, fallbackNow) {
 }
 
 function classifyType(meta) {
-  const raw = String(meta.type || meta.metadata_type || '').toLowerCase().trim();
+  const raw = String(meta.type || meta.metadata_type || '')
+    .toLowerCase()
+    .trim();
   if (raw) return raw;
   return 'default';
 }
@@ -119,7 +136,9 @@ function classifyType(meta) {
 function stabilityFor(type, opts) {
   const map = opts.stabilityByType || DEFAULTS.stabilityByType;
   if (map[type] != null) return map[type];
-  return opts.defaultStabilityDays != null ? opts.defaultStabilityDays : DEFAULTS.defaultStabilityDays;
+  return opts.defaultStabilityDays != null
+    ? opts.defaultStabilityDays
+    : DEFAULTS.defaultStabilityDays;
 }
 
 // Single-file evaluation
@@ -163,7 +182,9 @@ function detectContradictions(evaluations) {
   for (const e of evaluations) {
     if (!e || e.skipped) continue;
     const meta = e.meta || {};
-    const topic = (meta.topic || meta.name || path.basename(e.filePath, '.md')).toLowerCase().trim();
+    const topic = (meta.topic || meta.name || path.basename(e.filePath, '.md'))
+      .toLowerCase()
+      .trim();
     if (!topic) continue;
     if (!byTopic.has(topic)) byTopic.set(topic, []);
     byTopic.get(topic).push(e);
@@ -205,12 +226,17 @@ function sweep(opts = {}) {
     try {
       evaluations.push(evaluateMemoryFile(f, cfg));
     } catch (err) {
-      evaluations.push({ filePath: f, skipped: true, reason: 'error', error: String(err.message || err) });
+      evaluations.push({
+        filePath: f,
+        skipped: true,
+        reason: 'error',
+        error: String(err.message || err),
+      });
     }
   }
 
   const recommendations = evaluations.filter(
-    (e) => !e.skipped && (e.recommendation === 'archive' || e.recommendation === 'warn')
+    (e) => !e.skipped && (e.recommendation === 'archive' || e.recommendation === 'warn'),
   );
   const contradictions = detectContradictions(evaluations);
 
@@ -276,7 +302,7 @@ if (require.main === module) {
         contradictions: result.contradictions.length,
       },
       null,
-      2
-    ) + '\n'
+      2,
+    ) + '\n',
   );
 }

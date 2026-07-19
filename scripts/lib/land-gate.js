@@ -38,6 +38,7 @@ const CORE_GUARDS = [
 ];
 const DEVOPS_RELEASE_TEST = 'scripts/__tests__/devops-release-core.test.js';
 const PII_SCREEN_TEST = 'tests/pii-screen.spec.ts';
+const MEMORY_HYGIENE_GATE_TEST = 'scripts/__tests__/memory-hygiene-gate.test.js';
 
 const DEVOPS_RELEASE_FILES = new Set([
   '.github/workflows/sync-to-public.yml',
@@ -133,6 +134,13 @@ function affectedTestScope(changedFiles) {
     }
     if (isDevPlansFile(file)) {
       scope.add(DEV_PLANS_TEST);
+    }
+    // Memory hygiene gate (2026-07-19): any land touching a Tier-2 topic file
+    // or the index must leave the corpus contract green (frontmatter, dead
+    // pointers, index present). This is the blocking rung; the per-write hook
+    // only warns. Contacts and archive have their own formats and lifecycles.
+    if (/^memory\/[^/]+\.md$/.test(String(file).replace(/\\/g, '/'))) {
+      scope.add(MEMORY_HYGIENE_GATE_TEST);
     }
   }
 

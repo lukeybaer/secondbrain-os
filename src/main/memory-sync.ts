@@ -12,8 +12,18 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createRequire } from 'node:module';
 import { app } from 'electron';
 import { addEpisode } from './graphiti-client';
+
+const require = createRequire(import.meta.url);
+// Supersession contract: archived/superseded/stub memory must never flow
+// into prompts, sync, or search. Single source: scripts/lib/memory-active-filter.js
+const { isActiveMemoryPath, isActiveMemoryContent } =
+  require('../../scripts/lib/memory-active-filter.js') as {
+    isActiveMemoryPath: (relOrAbsPath: string) => boolean;
+    isActiveMemoryContent: (content: string) => boolean;
+  };
 
 // ── Path resolution ──────────────────────────────────────────────────────────
 
@@ -51,6 +61,10 @@ interface MemoryFile {
 function parseMemoryFile(filePath: string, relativePath: string): MemoryFile | null {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
+
+    // Superseded/archived/stub files are retired: exclude from prompts,
+    // Graphiti sync, and search (memory-active-filter contract).
+    if (!isActiveMemoryContent(raw)) return null;
 
     // Parse YAML frontmatter
     const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
@@ -98,6 +112,9 @@ function discoverMemoryFiles(dir: string, prefix = ''): MemoryFile[] {
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+
+    // Skip archive/ paths entirely (memory-active-filter contract).
+    if (!isActiveMemoryPath(relPath)) continue;
 
     if (entry.isDirectory()) {
       // Recurse into subdirectories (contacts/, etc.)
