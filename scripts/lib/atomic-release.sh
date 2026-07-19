@@ -84,6 +84,33 @@
 # is MOVE-only and no-clobber (mv -n): log content is never deleted.
 #
 # ============================================================================
+# DURABLE SHARED MUTABLE PATHS (generalized durable-logs treatment, 2026-07-19)
+# ============================================================================
+# Same defect class as durable logs: ANY mutable file or dir living INSIDE the
+# release tree is orphaned (or vanishes) on every symlink swap. The known
+# in-tree mutable paths ride the DURABLE_SHARED list below and get ONE durable
+# home OUTSIDE every release, with the release entry a SYMLINK to it:
+#     <release>/<name> -> $DURABLE_ROOT/<name>   (production default
+#                                                 /opt/secondbrain-durable)
+# logs keeps its pre-existing durable home ($DURABLE_LOGS) and pinned step.
+# The list covers: .env + secrets.env (sourced by crons, read by
+# verify-dashboard-cards-live.js), .yt-dlp-cookies.txt (mode-600, manually
+# placed), content-review/ (runtime manifests + rejections.jsonl), empire/
+# (video build config/assets), .claude/ + .auto-memory/ (state ec2-server.js
+# reads). Rules, mirroring the logs migration exactly:
+#   * MIGRATE-BEFORE-REPLACE: a live release's REAL file/dir content is moved
+#     (mv -n, no-clobber) into the durable home BEFORE any symlink replaces
+#     it; live content is NEVER deleted -- the release FAILS instead.
+#   * SECRETS DISCIPLINE: contents of env/cookie files are never printed
+#     (paths only); secret-mode durable files are enforced to mode 600 and
+#     ec2-user ownership; the durable root lives OUTSIDE every git-archived
+#     tree so nothing secret can ride a release or a git surface.
+#   * Idempotent: an already-migrated layout (every entry already a symlink)
+#     is a pure no-op on re-run.
+#   * Post-swap VERIFY: every durable name must resolve THROUGH $OPT_LINK to
+#     its durable home and be writable, or the swap is rolled back.
+#
+# ============================================================================
 # ONE-TIME /opt CUTOVER (bootstrap) -- run ONCE, supervised, per the guardrail.
 # This is now MECHANIZED by --bootstrap (idempotent + safe to re-run), so the
 # heavy node_modules + data MOVE to shared happens exactly once and correctly.
@@ -140,6 +167,13 @@
 #                      production default; <shared-root>/logs otherwise, so
 #                      --local test layouts stay self-contained and never touch
 #                      a root-owned /opt path.
+#   --durable-root     the ONE durable root holding every OTHER mutable
+#                      in-tree path from the DURABLE_SHARED list, as
+#                      <durable-root>/<name> (SB_DURABLE_ROOT). Default
+#                      /opt/secondbrain-durable when the shared root is the
+#                      production default; <shared-root>/durable otherwise
+#                      (same test-layout rule as --durable-logs). MUST live
+#                      outside the releases tree.
 #   --bootstrap        ONE-TIME cutover: MOVE the live node_modules + data out of a
 #                      plain /opt/secondbrain into <shared-root>, back the original
 #                      up as /opt/secondbrain.pre-atomic.bak, then do a normal
@@ -176,6 +210,9 @@ SHARED_NODE_MODULES="${SB_SHARED_NODE_MODULES:-}"
 SHARED_DATA="${SB_SHARED_DATA:-}"
 # DURABLE logs dir OUTSIDE releases: log files survive every symlink swap.
 DURABLE_LOGS="${SB_DURABLE_LOGS:-}"
+# DURABLE root for every OTHER mutable in-tree path (env files, cookies,
+# content-review, empire, .claude, .auto-memory): survives every swap.
+DURABLE_ROOT="${SB_DURABLE_ROOT:-}"
 LOCAL=0
 BOOTSTRAP=0
 STAGE_ONLY=0
@@ -199,6 +236,7 @@ while [ $# -gt 0 ]; do
     --shared-node-modules) SHARED_NODE_MODULES="$2"; shift 2 ;;
     --shared-data) SHARED_DATA="$2"; shift 2 ;;
     --durable-logs) DURABLE_LOGS="$2"; shift 2 ;;
+    --durable-root) DURABLE_ROOT="$2"; shift 2 ;;
     --health-port) HEALTH_PORT="$2"; shift 2 ;;
     --bootstrap) BOOTSTRAP=1; shift ;;
     --stage-only) STAGE_ONLY=1; shift ;;
@@ -224,6 +262,22 @@ if [ -z "$DURABLE_LOGS" ]; then
     DURABLE_LOGS="$SHARED_ROOT/logs"
   fi
 fi
+# Durable-root default mirrors the durable-logs rule: production gets an
+# ec2-user-owned sibling of the shared root; a NON-default shared root means a
+# test / scratch layout, so the durable home stays beside it.
+if [ -z "$DURABLE_ROOT" ]; then
+  if [ "$SHARED_ROOT" = "/opt/secondbrain-shared" ]; then
+    DURABLE_ROOT="/opt/secondbrain-durable"
+  else
+    DURABLE_ROOT="$SHARED_ROOT/durable"
+  fi
+fi
+# The durable home must NEVER live inside a git-archived release tree: a
+# release is disposable and git-archive must never be able to carry (or a
+# prune delete) durable mutable state, least of all the secret env/cookie files.
+case "$DURABLE_ROOT" in
+  "$RELEASES_ROOT"/*|"$RELEASES_ROOT") die "durable root $DURABLE_ROOT must live OUTSIDE the releases tree ($RELEASES_ROOT)" ;;
+esac
 
 # The default entrypoint set: the two server twins plus the top-level entrypoints
 # PM2 / the cloud controller load. All are `require.main === module` guarded (or
@@ -321,6 +375,127 @@ link_durable_logs_into_release() {
   " || die "failed to wire durable logs into $RELEASE_DIR (log content is never deleted -- drain any leftover real logs/ into $DURABLE_LOGS manually and re-run)"
 }
 
+# ---- wire EVERY durable mutable in-tree path into a staged release ----------
+# Generalization of the durable-logs treatment (see header): the LIST drives
+# behavior. Entry format name|kind|policy:
+#   kind=dir     durable entry is a DIRECTORY. Live real dirs are DRAINED into
+#                it (mv -n no-clobber, rmdir only when empty, NEVER force-
+#                delete a real dir) exactly like the logs migration; the live
+#                dir gets the durable symlink left behind when fully drained
+#                so pre-swap writers keep landing durable.
+#   kind=file    durable entry is a FILE symlinked into the release. A live
+#                real file is MIGRATED (mv -n) and replaced by a symlink; the
+#                release symlink may DANGLE until the file is first placed --
+#                writing through the release path then CREATES the durable
+#                file, so manual placement keeps working unchanged.
+#   policy=secret    (files) enforce mode 600 + ec2-user ownership on the
+#                    durable copy. Contents are NEVER printed, only paths.
+#   policy=seeded    (dirs) git TRACKS seed files under this name (e.g.
+#                    content-review/LEARNINGS.md), so every fresh git-archive
+#                    stages copies whose names the durable dir already owns
+#                    after the first migration. Those staged duplicates are
+#                    tracked content at the released sha (reconstructible via
+#                    `git show`), never runtime content -- the staged tree was
+#                    created THIS run -- so they are dropped after the mv -n
+#                    drain instead of failing every subsequent release.
+#                    Runtime truth in the durable dir always wins, matching
+#                    how data/ already shadows its stale tracked snapshot.
+#   policy=preserve  (dirs) no tracked seeds exist: a staged leftover FAILS
+#                    the release (rmdir of a non-empty dir) rather than delete.
+# logs rides the list for coverage/verification but is WIRED by the dedicated,
+# source-pinned link_durable_logs_into_release step above (same treatment, its
+# own pinned durable home + regression suite).
+DURABLE_SHARED="${SB_DURABLE_SHARED:-logs|dir|preserve .env|file|secret secrets.env|file|secret .yt-dlp-cookies.txt|file|secret content-review|dir|seeded empire|dir|preserve .claude|dir|seeded .auto-memory|dir|preserve}"
+
+durable_path_for() {
+  # logs predates the durable root and keeps its own pinned durable home.
+  if [ "$1" = "logs" ]; then echo "$DURABLE_LOGS"; else echo "$DURABLE_ROOT/$1"; fi
+}
+
+link_durable_into_release() {
+  local name="$1" kind="$2" policy="$3" durable
+  durable="$(durable_path_for "$name")"
+  if [ "$kind" = "dir" ]; then
+    local drop_seeded=':'
+    if [ "$policy" = "seeded" ]; then
+      # Staged git-archive duplicates of names the durable dir already owns:
+      # tracked at the released sha, reconstructible, never runtime content.
+      drop_seeded="find '$RELEASE_DIR/$name' -mindepth 1 -maxdepth 1 -exec rm -rf {} +"
+    fi
+    sh_run "
+      set -e
+      if ! mkdir -p '$durable' 2>/dev/null; then
+        sudo mkdir -p '$durable' && sudo chown ec2-user:ec2-user '$durable'
+      fi
+      live_release=\"\$(readlink -f '$OPT_LINK' 2>/dev/null || true)\"
+      if [ -n \"\$live_release\" ] && [ -d \"\$live_release/$name\" ] && [ ! -L \"\$live_release/$name\" ]; then
+        find \"\$live_release/$name\" -mindepth 1 -maxdepth 1 -exec mv -n {} '$durable/' \;
+        if rmdir \"\$live_release/$name\" 2>/dev/null; then
+          ln -s '$durable' \"\$live_release/$name\"
+        fi
+      fi
+      if [ -d '$RELEASE_DIR/$name' ] && [ ! -L '$RELEASE_DIR/$name' ]; then
+        find '$RELEASE_DIR/$name' -mindepth 1 -maxdepth 1 -exec mv -n {} '$durable/' \;
+        $drop_seeded
+        rmdir '$RELEASE_DIR/$name'
+      fi
+      if [ -L '$RELEASE_DIR/$name' ]; then rm -f '$RELEASE_DIR/$name'; fi
+      ln -s '$durable' '$RELEASE_DIR/$name'
+    " || die "failed to wire durable dir '$name' into $RELEASE_DIR (content is never deleted -- drain any leftover real $name/ into $durable manually and re-run)"
+  else
+    local enforce_secret=':'
+    if [ "$policy" = "secret" ]; then
+      # mv preserves the mode of an already-600 file; this ENFORCES 600 even
+      # when the file was placed sloppier. Ownership is best-effort because a
+      # non-root ec2-user run already owns what it migrated (and --local test
+      # layouts have no ec2-user). Never prints file contents.
+      enforce_secret="if [ -f '$durable' ]; then chmod 600 '$durable'; chown ec2-user:ec2-user '$durable' 2>/dev/null || true; fi"
+    fi
+    sh_run "
+      set -e
+      if ! mkdir -p '$DURABLE_ROOT' 2>/dev/null; then
+        sudo mkdir -p '$DURABLE_ROOT' && sudo chown ec2-user:ec2-user '$DURABLE_ROOT'
+      fi
+      live_release=\"\$(readlink -f '$OPT_LINK' 2>/dev/null || true)\"
+      if [ -n \"\$live_release\" ] && [ -f \"\$live_release/$name\" ] && [ ! -L \"\$live_release/$name\" ]; then
+        mv -n \"\$live_release/$name\" '$durable'
+        if [ ! -e \"\$live_release/$name\" ]; then
+          ln -s '$durable' \"\$live_release/$name\"
+        fi
+      fi
+      if [ -f '$RELEASE_DIR/$name' ] && [ ! -L '$RELEASE_DIR/$name' ]; then
+        # A tracked copy of a durable file inside the archive (should never
+        # happen for secrets): migrate what the durable home does not own yet,
+        # then drop the staged duplicate -- it is reconstructible from the sha
+        # and a stale secret copy must not ride the release tree.
+        mv -n '$RELEASE_DIR/$name' '$durable'
+        rm -f '$RELEASE_DIR/$name'
+      fi
+      rm -f '$RELEASE_DIR/$name'
+      if ! ln -s '$durable' '$RELEASE_DIR/$name' 2>/dev/null; then
+        # Degraded-symlink boxes (test layouts) cannot link a dangling target;
+        # materialize an empty durable file first. On production ln -s never
+        # takes this branch.
+        [ -e '$durable' ] || : > '$durable'
+        ln -s '$durable' '$RELEASE_DIR/$name'
+      fi
+      $enforce_secret
+    " || die "failed to wire durable file '$name' into $RELEASE_DIR (content is never deleted -- place/repair $durable manually and re-run)"
+  fi
+}
+
+link_durable_shared_into_release() {
+  local spec name kind policy
+  for spec in $DURABLE_SHARED; do
+    name="${spec%%|*}"
+    kind="${spec#*|}"; kind="${kind%%|*}"
+    policy="${spec##*|}"
+    # logs is wired by the pinned dedicated step above; skip, do not double-run.
+    [ "$name" = "logs" ] && continue
+    link_durable_into_release "$name" "$kind" "$policy"
+  done
+}
+
 # ---- ONE-TIME cutover: move the live node_modules + data OUT to $SHARED_ROOT ----
 # Idempotent + safe to re-run: every step is guarded, so a second run (or a run
 # after the cutover already happened) is a no-op. MOVES (never copies) the heavy
@@ -397,6 +572,8 @@ link_shared_into_release
 log "linked shared: $RELEASE_DIR/node_modules -> $SHARED_NODE_MODULES, $RELEASE_DIR/data -> $SHARED_DATA"
 link_durable_logs_into_release
 log "linked durable logs: $RELEASE_DIR/logs -> $DURABLE_LOGS (log files survive the swap by construction)"
+link_durable_shared_into_release
+log "linked durable shared: env/cookies/mutable state -> $DURABLE_ROOT/<name> per DURABLE_SHARED (in-tree mutable paths survive every swap)"
 
 # stage-only: prepared a release dir with shared symlinks wired, but DO NOT verify,
 # swap, or restart. Used to pre-stage a release and by the tests.
@@ -457,6 +634,40 @@ rollback_symlink() {
     log "ROLLBACK: no distinct previous release to restore to (first release or same sha)"
   fi
 }
+
+# ---- post-swap durable-wiring assertion (before restart) -------------------
+# Every DURABLE_SHARED name must resolve THROUGH the live path to its durable
+# home and that home must be writable (a missing durable FILE is fine -- the
+# dangling symlink IS the contract -- but its parent must be writable so a
+# write can create it). Prints paths only, never contents. On failure the
+# swap is rolled back exactly like a failed health probe.
+verify_durable_wiring() {
+  local spec name durable
+  for spec in $DURABLE_SHARED; do
+    name="${spec%%|*}"
+    durable="$(durable_path_for "$name")"
+    sh_run "
+      target=\"\$(readlink '$OPT_LINK/$name' 2>/dev/null || true)\"
+      if [ \"\$target\" != '$durable' ]; then
+        echo \"[atomic-release] durable wiring BROKEN post-swap: $OPT_LINK/$name -> \${target:-<not a symlink>} (want $durable)\" >&2
+        exit 1
+      fi
+      if [ -e '$durable' ]; then
+        [ -w '$durable' ] || { echo '[atomic-release] durable target not writable: $durable' >&2; exit 1; }
+      else
+        parent=\"\$(dirname '$durable')\"
+        [ -w \"\$parent\" ] || { echo \"[atomic-release] durable parent not writable: \$parent\" >&2; exit 1; }
+      fi
+    " || return 1
+  done
+  return 0
+}
+
+log "verify: durable wiring resolves through $OPT_LINK post-swap (every DURABLE_SHARED name)"
+if ! verify_durable_wiring; then
+  rollback_symlink
+  die "post-swap durable-wiring verification FAILED ($SHA) -- rolled the symlink back"
+fi
 
 log "restart: pm2 restart $PM2_APP"
 if ! sh_run "pm2 restart '$PM2_APP' --update-env >/dev/null 2>&1"; then
