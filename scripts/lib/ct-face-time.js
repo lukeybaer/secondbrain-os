@@ -48,4 +48,35 @@ function ctFaceTime(raw) {
   );
 }
 
-module.exports = { CT_TIME_ZONE, ISO_ZONED_TIMESTAMP_RE, ctTimeLabel, ctFaceTime };
+// Rewrite ISO-zoned timestamps ONLY in the visible text of a rendered HTML
+// document. The exemption is structural and exact: anything inside a tag
+// (attributes, including data-*) and the contents of <script>/<style> elements
+// are machine-facing by contract and pass through byte-for-byte; every text
+// node converts. This is the mechanical page-level guarantee behind
+// memory/feedback_times_in_ct_never_utc.md for the briefing dashboard: a new
+// render site added tomorrow is CT-converted without anyone remembering to
+// wrap it. Idempotent (converted text contains no ISO-zoned match).
+const HTML_MACHINE_SEGMENT_RE =
+  /<script\b[^>]*>[\s\S]*?<\/script\s*>|<style\b[^>]*>[\s\S]*?<\/style\s*>|<[^>]*>/gi;
+
+function ctFaceHtmlVisibleText(html) {
+  const raw = String(html == null ? '' : html);
+  let out = '';
+  let last = 0;
+  HTML_MACHINE_SEGMENT_RE.lastIndex = 0;
+  let m;
+  while ((m = HTML_MACHINE_SEGMENT_RE.exec(raw))) {
+    out += ctFaceTime(raw.slice(last, m.index)) + m[0];
+    last = m.index + m[0].length;
+  }
+  out += ctFaceTime(raw.slice(last));
+  return out;
+}
+
+module.exports = {
+  CT_TIME_ZONE,
+  ISO_ZONED_TIMESTAMP_RE,
+  ctTimeLabel,
+  ctFaceTime,
+  ctFaceHtmlVisibleText,
+};
