@@ -22,7 +22,12 @@ const { notifyWithFallback } = require('./notify-with-fallback.js');
 const { loadBriefingNotifyEnv, notifyBriefingPublished } = require('./briefing-notify.js');
 const { getSourceContract, controllerSourceEnv } = require('./briefing-source-contracts.js');
 const { isPerCardBoardSource } = require('./briefing-card-artifacts.js');
-const { DERIVED_CARD_IDS, MANIFEST_CARD_RENDER, markdownPathFor } = require('../refresh-card.js');
+const {
+  DERIVED_CARD_IDS,
+  LIVE_VERDICT_ExampleCo_MARKER,
+  MANIFEST_CARD_RENDER,
+  markdownPathFor,
+} = require('../refresh-card.js');
 const {
   defectKey,
   hashTacticInput,
@@ -246,17 +251,10 @@ function cardEntry(artifact, cardId) {
   );
 }
 
-function hasVerifiedScopedLiveResult({
-  command,
-  beforeArtifact,
-  afterArtifact,
-  cardId,
-  date,
-} = {}) {
-  if (command && command.verified === true) return true;
+function scopedLiveProofSignals({ command, beforeArtifact, afterArtifact, cardId, date } = {}) {
   const afterCard = cardEntry(afterArtifact, cardId);
-  if (!afterCard || !afterArtifact || afterArtifact.retry === true) return false;
-  if (date && afterArtifact.date && String(afterArtifact.date) !== String(date)) return false;
+  if (!afterCard || !afterArtifact || afterArtifact.retry === true) return null;
+  if (date && afterArtifact.date && String(afterArtifact.date) !== String(date)) return null;
   const beforeTs = Date.parse(beforeArtifact && beforeArtifact.ts);
   const afterTs = Date.parse(afterArtifact && afterArtifact.ts);
   const beforeCardTs = Date.parse(cardEntry(beforeArtifact, cardId)?.asOf);
@@ -277,15 +275,83 @@ function hasVerifiedScopedLiveResult({
   // artifact-union branch therefore demands the TARGET card's own asOf moved.
   const targetCardAdvanced =
     Number.isFinite(afterCardTs) && (!Number.isFinite(beforeCardTs) || afterCardTs > beforeCardTs);
-  const printedArtifactUnionProof =
-    Number(command && command.exitCode) === 0 &&
+  const builtScopedUnion =
     targetCardAdvanced &&
     isPerCardBoardSource(afterArtifact.source) &&
     new RegExp(`\\[refresh-card\\] produced artifact card='${escapedCardId}' status=`).test(
       stdout,
     ) &&
     stdout.includes('[refresh-card] published artifact union');
-  return timestampAdvanced && (printedScopedProof || printedArtifactUnionProof);
+  return {
+    timestampAdvanced,
+    printedScopedProof,
+    builtScopedUnion,
+    exitedZero: Number(command && command.exitCode) === 0,
+    stdout,
+  };
+}
+
+function hasVerifiedScopedLiveResult(input = {}) {
+  if (input.command && input.command.verified === true) return true;
+  const signals = scopedLiveProofSignals(input);
+  if (!signals) return false;
+  const printedArtifactUnionProof = signals.exitedZero && signals.builtScopedUnion;
+  return signals.timestampAdvanced && (signals.printedScopedProof || printedArtifactUnionProof);
+}
+
+// UNREACHABLE is not UNVERIFIED. When refresh-card could not consult the live
+// dashboard at all it prints LIVE_VERDICT_ExampleCo_MARKER and still exits
+// nonzero, because verification did not happen. Treating that nonzero exit as a
+// failed verdict would roll back a card that BUILT CLEAN over a transient
+// outage, which is the same destructive class da4dde67 fixed, re-entered
+// through a different trigger. An ExampleCo verdict therefore requires real build
+// proof (the target's own artifact advanced and the scoped union published) and
+// leaves the card standing, while the run still reports as not clean.
+function hasExampleCoLiveVerdict(input = {}) {
+  if (hasVerifiedScopedLiveResult(input)) return false;
+  const signals = scopedLiveProofSignals(input);
+  if (!signals) return false;
+  if (!signals.stdout.includes(LIVE_VERDICT_ExampleCo_MARKER)) return false;
+  return signals.timestampAdvanced && signals.builtScopedUnion;
+}
+
+const ExampleCo_VERDICT_DEFECT = 'LIVE-VERIFY-ExampleCo';
+
+// Keeping an unproven build is only honest if the BOARD says so too. A card
+// left at 'clean' would show ExampleCo no badge (cardDefectBadge suppresses clean)
+// and would be filtered straight out of the next controller plan (resolvePlan
+// skips clean cards), so an unverified card would masquerade as verified and
+// never be retried. Codex peer review 3722e41ba53b caught this. The markdown
+// build survives; the card's VERIFICATION state drops to 'stale' with a named
+// defect, which is visible on the dashboard and re-selected on the next run.
+function markCardVerificationExampleCo({ artifactFile, artifact, cardId }) {
+  const id = String(cardId || '').toLowerCase();
+  const note = `${ExampleCo_VERDICT_DEFECT}: ${id} built clean but the live dashboard could not be consulted, so the card is unproven`;
+  const cards = (Array.isArray(artifact && artifact.cards) ? artifact.cards : []).map((card) => {
+    if (!card || String(card.id || '').toLowerCase() !== id) return card;
+    return {
+      ...card,
+      status: 'stale',
+      defectKinds: [
+        ...new Set([
+          ...(Array.isArray(card.defectKinds) ? card.defectKinds : []),
+          ExampleCo_VERDICT_DEFECT,
+        ]),
+      ],
+      defects: [...new Set([...(Array.isArray(card.defects) ? card.defects : []), note])],
+    };
+  });
+  const next = {
+    ...artifact,
+    cards,
+    defects: [
+      ...new Set([...(Array.isArray(artifact && artifact.defects) ? artifact.defects : []), note]),
+    ],
+    defectiveCardCount: cards.filter((card) => card && normalizeStatus(card.status) !== 'clean')
+      .length,
+  };
+  writeJsonAtomic(artifactFile, next);
+  return next;
 }
 
 function resolvePlan({ cards, artifact } = {}) {
@@ -1053,10 +1119,20 @@ async function runCardController(options = {}, injected = {}) {
           cardId,
           date,
         });
+        const liveVerdictExampleCo =
+          !verifiedLive &&
+          hasExampleCoLiveVerdict({
+            command,
+            beforeArtifact: attemptBefore,
+            afterArtifact: attemptAfter,
+            cardId,
+            date,
+          });
         cardReceipt.command = {
           exitCode: Number(command && command.exitCode),
           timedOut: !!(command && command.timedOut),
           verifiedLive,
+          liveVerdictExampleCo,
           stderr: String((command && command.stderr) || '').slice(-4000),
         };
         cardReceipt.statusAfter = cardStatus(attemptAfter, cardId);
@@ -1069,6 +1145,23 @@ async function runCardController(options = {}, injected = {}) {
           cardReceipt.reflection = `Rolled back: ${regressions.map((row) => `${row.id} ${row.beforeStatus}->${row.afterStatus}`).join(', ')}.`;
           receipt.frozen = true;
           receipt.freezeReason = cardReceipt.reflection;
+        } else if (liveVerdictExampleCo && cardReceipt.statusAfter === 'clean') {
+          // The card BUILT clean and its own artifact advanced; the live
+          // dashboard simply could not be consulted, so the verdict is ExampleCo.
+          // Destroying a good build over an infrastructure outage is the defect
+          // class da4dde67 fixed. Keep the build, own the uncertainty out loud,
+          // and refuse to call the run clean until live proof arrives.
+          const marked = markCardVerificationExampleCo({
+            artifactFile: paths.artifact,
+            artifact: attemptAfter,
+            cardId,
+          });
+          cardReceipt.statusAfter = cardStatus(marked, cardId);
+          cardReceipt.defectsAfter = defectCodesForCard(marked, cardId);
+          cardReceipt.outcome = 'kept-unverified-live-unreachable';
+          cardReceipt.liveVerdict = 'ExampleCo';
+          cardReceipt.reflection =
+            'Live dashboard could not be consulted, so the scoped verdict is ExampleCo, not failed. The target built clean and its own artifact advanced, so the build stands rather than being rolled back. Its verification state is published as stale so the board shows it unproven and the next run re-selects it.';
         } else if (!verifiedLive) {
           restoreSnapshot(backups.markdown);
           restoreSnapshot(backups.artifact);
@@ -1177,6 +1270,9 @@ module.exports = {
   greenRegressions,
   controllerImplementationDigest,
   hasVerifiedScopedLiveResult,
+  hasExampleCoLiveVerdict,
+  markCardVerificationExampleCo,
+  ExampleCo_VERDICT_DEFECT,
   resolvePlan,
   snapshotFile,
   restoreSnapshot,

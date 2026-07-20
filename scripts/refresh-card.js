@@ -1026,36 +1026,89 @@ async function refreshCard({
 // filter its OWN result to the one card we care about, since verifyDashboard
 // and fetchLiveHtml are already exported for exactly this kind of reuse
 // (runDashboardRenderQc in cloud-morning-briefing.js does the same thing).
+//
+// A live verdict has THREE states, not two:
+//   verified   -- we fetched and graded the rendered page; the card is right.
+//   unverified -- we fetched and graded the rendered page; the card is wrong.
+//   ExampleCo    -- we could not consult the page at all (outage, DNS, module
+//                 missing, unparseable body), so we know nothing about the card.
+// Collapsing ExampleCo into unverified makes a transient dashboard outage
+// indistinguishable from a bad card, and the controller then destroys a card
+// that built CLEAN. That is the exact defect class da4dde67 was written to fix,
+// re-entered through a different trigger. The marker below rides stdout so the
+// controller can tell the two apart. The nonzero exit stays, because
+// verification genuinely did not happen: ExampleCo is surfaced, never swallowed
+// (law g14, fail loud never silent).
+const LIVE_VERDICT_ExampleCo_MARKER = '[refresh-card] --verify: LIVE VERDICT ExampleCo';
+
+function reportExampleCoLiveVerdict(detail, reasonCode) {
+  console.log(`${LIVE_VERDICT_ExampleCo_MARKER} (${reasonCode})`);
+  console.error(
+    `[refresh-card] --verify: ${detail}. The live dashboard could not be consulted, so the verdict is ExampleCo, not failed. This is a retry condition, not a card defect.`,
+  );
+  process.exitCode = 1;
+}
+
 async function runVerify({ cardId, date, dataDir }) {
   let liveQc;
   try {
     liveQc = require('./verify-dashboard-cards-live.js');
   } catch (e) {
-    console.error(
-      `[refresh-card] --verify: live render QC module unavailable: ${(e && e.message) || e}`,
+    reportExampleCoLiveVerdict(
+      `live render QC module unavailable: ${(e && e.message) || e}`,
+      'qc-module-unavailable',
     );
-    process.exitCode = 1;
     return;
   }
   let fetched;
   try {
     fetched = liveQc.fetchLiveHtml({ date });
   } catch (e) {
-    console.error(`[refresh-card] --verify: fetch threw: ${(e && e.message) || e}`);
-    process.exitCode = 1;
+    reportExampleCoLiveVerdict(`fetch threw: ${(e && e.message) || e}`, 'fetch-threw');
     return;
   }
   if (!fetched || fetched.unreachable || !fetched.html) {
-    console.error(
-      `[refresh-card] --verify: dashboard unreachable (source=${(fetched && fetched.source) || 'ExampleCo'}). This is a retry condition, not a card defect.`,
+    reportExampleCoLiveVerdict(
+      `dashboard unreachable (source=${(fetched && fetched.source) || 'ExampleCo'})`,
+      'dashboard-unreachable',
     );
-    process.exitCode = 1;
     return;
   }
-  const result = liveQc.verifyDashboard(fetched.html, date);
+  let result;
+  try {
+    result = liveQc.verifyDashboard(fetched.html, date);
+  } catch (e) {
+    // The grader itself failed to execute. We hold no opinion about the card.
+    reportExampleCoLiveVerdict(`live render QC threw: ${(e && e.message) || e}`, 'verifier-threw');
+    return;
+  }
   if (result.status === 'parse-failed') {
-    console.error('[refresh-card] --verify: dashboard render QC could not parse any tiles.');
-    process.exitCode = 1;
+    // Codex peer review 3722e41ba53b: a 0-tile parse is NOT uniformly ExampleCo.
+    // verify-dashboard-cards-live.js already splits this three ways and the
+    // split is load-bearing. The sign-in shell means the token did not
+    // authenticate, which is a retry condition. A trivial body means the
+    // dashboard is not up yet, also a retry. But a REAL page body that parses
+    // zero tiles means the render markup changed and the parser is broken:
+    // that is a hard defect, and calling it ExampleCo would let a genuine render
+    // break preserve a card forever.
+    if (result.isSignInPage) {
+      reportExampleCoLiveVerdict(
+        'fetched the briefing sign-in shell instead of the dashboard, so the token did not authenticate',
+        'auth-failed',
+      );
+      return;
+    }
+    if (result.bodyLooksReal) {
+      console.error(
+        '[refresh-card] --verify: fetched a real page body but parsed 0 tiles. The render markup changed and the tile parser is broken. This is a HARD defect, not a retry condition.',
+      );
+      process.exitCode = 1;
+      return;
+    }
+    reportExampleCoLiveVerdict(
+      'parsed 0 tiles and the body looks empty or trivial, so the dashboard is likely not up yet',
+      'dashboard-not-up',
+    );
     return;
   }
   const cardStatus = (result.cardStatuses || []).find((c) => c.id === cardId);
@@ -1244,4 +1297,5 @@ module.exports = {
   SHARED_LOCK_PATH,
   DERIVED_CARD_IDS,
   LOCK_ACQUIRED_MARKER,
+  LIVE_VERDICT_ExampleCo_MARKER,
 };
