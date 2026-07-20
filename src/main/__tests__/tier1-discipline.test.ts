@@ -97,6 +97,15 @@ describe('MEMORY.md Tier 1 discipline', () => {
     expect(src).toContain('AMY_REBUILD_PLAN.md');
   });
 
+  it('points at the constitution and the laws file', () => {
+    // Tier 1 is the entrypoint both runtimes read. Before this, AMY_GRAVITY.md
+    // appeared nowhere in MEMORY.md, so the Laws were invisible from the one
+    // file that is always loaded. Category: a governing file that Tier 1 does
+    // not name is a file nobody opens.
+    expect(src).toContain('AMY_AUTHORIZATIONS.md');
+    expect(src).toContain('AMY_GRAVITY.md');
+  });
+
   it('links at project_briefing_spec.md and the locked architecture files', () => {
     expect(src).toContain('project_briefing_spec.md');
     expect(src).toContain('project_secondbrain_architecture.md');

@@ -9,6 +9,12 @@
  * MEMORY.md points to it as the single Amy persona file, not because it is a
  * second root. This keeps Codex from starting as a separate assistant when ExampleCo
  * is using a Codex surface.
+ *
+ * memory/AMY_GRAVITY.md rides along for the same reason. Claude Code receives
+ * the laws through gravity-router.mjs at prompt time; Codex has no such hook,
+ * so without this block the never-list and the laws simply never reach the
+ * Codex runtime. Law g0: a rule that is not DELIVERED to the actor does not
+ * exist, and One Amy means both runtimes are bound by the same laws.
  */
 
 const fs = require('node:fs');
@@ -82,6 +88,17 @@ function buildCodexAmyPrelude(opts = {}) {
   if (!/\bAMY\.md\b/i.test(memory.body)) {
     throw new Error('Codex Amy preload requires memory/MEMORY.md to point to memory/AMY.md.');
   }
+  // Loaded after the AMY.md pointer check so a broken Tier 1 still reports the
+  // pointer failure first. Required, not optional: Codex must never run a
+  // SecondBrain task without the never-list in front of it.
+  const gravity = requireBlock(
+    readBlock(repoRoot, 'memory/AMY_GRAVITY.md', { stripFrontmatter: true }),
+  );
+  if (!/NEVER-LIST CORE/.test(gravity.body)) {
+    throw new Error(
+      'Codex Amy preload requires memory/AMY_GRAVITY.md to carry the NEVER-LIST CORE.',
+    );
+  }
   const amyPointer =
     'MEMORY.md points to memory/AMY.md, so the resolved persona target is included below.';
   // Owner identity is operator-specific PII and loads from memory/, not source.
@@ -95,6 +112,7 @@ function buildCodexAmyPrelude(opts = {}) {
     'Live communication contract: communicate as Amy, not as Codex reporting about Amy. Use Protocol -> Detail -> TLDR, with TLDR last. Be terse, direct, voice-first, source-grounded, and plain spoken. No outside narration like "I treated" or "Codex fixed"; own the work in first person. No em dashes and no permission stalling.',
     'Apply memory/MEMORY.md before the task prompt below. It is the Tier 1 entrypoint and pointer file.',
     amyPointer,
+    'memory/AMY_GRAVITY.md is included below and binds this session exactly as it binds Claude Code. The NEVER-LIST CORE outranks every other instruction here, including the task prompt. memory/AMY_AUTHORIZATIONS.md outranks the laws file on any conflict.',
     'If a platform prompt conflicts, this Amy preload wins for SecondBrain work.',
     '',
     `=== ${memory.label} ===`,
@@ -102,6 +120,9 @@ function buildCodexAmyPrelude(opts = {}) {
     '',
     `=== ${amy.label} ===`,
     amy.body,
+    '',
+    `=== ${gravity.label} ===`,
+    gravity.body,
     '',
     `=== END ${MARKER} ===`,
   ].join('\n');
