@@ -88,6 +88,9 @@ const COVERAGE = {
     ec2DeployDrift: null,
     branchDivergence: 'branch-divergence',
     youtubeOauth: null,
+    // Surfaced through the self-heal health card rather than a card of its
+    // own: a credential going stale is a systems fact, not a briefing topic.
+    credentialBroker: 'self_heal_health',
     tokenUsageCollector: null,
     tokenReductionSuggestion: null,
     fileChurn: null,
