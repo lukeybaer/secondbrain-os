@@ -1131,29 +1131,49 @@ async function runVerify({ cardId, date, dataDir }) {
       ? liveQc.scopeDashboardResult(result, scopedCardIds)
       : result;
   if (typeof liveQc.writeCanonicalArtifactFromResult === 'function') {
-    const { artifact, absPath } = liveQc.writeCanonicalArtifactFromResult(scopedResult, {
+    const { artifact, absPath, error } = liveQc.writeCanonicalArtifactFromResult(scopedResult, {
       date,
       dataDir,
     });
-    console.log(
-      `[refresh-card] --verify: wrote canonical dashboard artifact ${absPath} (defectiveCardCount=${artifact.defectiveCardCount}, scoped=${scopedCardIds.join(',')})`,
-    );
-    try {
-      const markdownPath = markdownPathFor(dataDir, date);
-      const changed = await withSharedBriefingLock(() =>
-        refreshPublishedBlockersReconciliationLine({ markdownPath, artifact }),
-      );
-      if (changed) {
-        console.log(
-          '[refresh-card] --verify: refreshed Blockers live badge line from canonical artifact',
+    if (error || !artifact) {
+      // Fail closed (Codex 316b85167727): a scoped merge with no complete
+      // baseline refuses to write rather than fabricate a clean one-card board.
+      // But this is a BOARD-persistence gap, not a card verdict. A genuinely
+      // wrong card must still be reported wrong (never softened to ExampleCo), so
+      // only a CLEAN target with no baseline becomes a retry/ExampleCo (we cannot
+      // persist or confirm a clean board we did not fabricate). A wrong target
+      // falls through to its real unverified verdict below.
+      if (cardStatus.status === 'clean') {
+        reportExampleCoLiveVerdict(
+          `scoped canonical merge refused: ${error || 'no artifact'} (no complete same-date baseline); not fabricating a clean board`,
+          'scoped-merge-no-baseline',
         );
+        return;
       }
-    } catch (e) {
-      console.error(
-        `[refresh-card] --verify: failed to refresh Blockers live badge line: ${(e && e.message) || e}`,
+      console.warn(
+        `[refresh-card] --verify: canonical artifact NOT updated (${error || 'no artifact'}, no complete same-date baseline); the card verdict below still stands.`,
       );
-      process.exitCode = 1;
-      return;
+    } else {
+      console.log(
+        `[refresh-card] --verify: wrote canonical dashboard artifact ${absPath} (defectiveCardCount=${artifact.defectiveCardCount}, scoped=${scopedCardIds.join(',')})`,
+      );
+      try {
+        const markdownPath = markdownPathFor(dataDir, date);
+        const changed = await withSharedBriefingLock(() =>
+          refreshPublishedBlockersReconciliationLine({ markdownPath, artifact }),
+        );
+        if (changed) {
+          console.log(
+            '[refresh-card] --verify: refreshed Blockers live badge line from canonical artifact',
+          );
+        }
+      } catch (e) {
+        console.error(
+          `[refresh-card] --verify: failed to refresh Blockers live badge line: ${(e && e.message) || e}`,
+        );
+        process.exitCode = 1;
+        return;
+      }
     }
   } else {
     console.warn(

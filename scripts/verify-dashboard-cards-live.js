@@ -199,6 +199,13 @@ function writeCanonicalArtifactFromResult(result, opts) {
   };
   if (result.scoped) {
     const existing = resolveDataArtifact(ARTIFACT_REL_PATH, writeOpts).json;
+    // Fail closed (Codex 316b85167727): a scoped grade MUST merge over a
+    // complete same-date board. Without a valid baseline, writing would
+    // fabricate a clean one-card board and drop every sibling card, so refuse
+    // to write and let the caller report the failure instead of a fake-clean.
+    if (!existing || !Array.isArray(existing.cards) || existing.cards.length === 0) {
+      return { artifact: null, absPath: null, error: 'scoped-merge-no-baseline' };
+    }
     artifact = mergeScopedArtifact(existing, artifact, result.scopeCardIds || []);
   }
   const absPath = writeDataArtifact(ARTIFACT_REL_PATH, artifact, writeOpts);
@@ -2662,6 +2669,17 @@ function verifyDashboard(html, runDate, options = {}) {
     }
   }
 
+  // A card NAMED on the Blockers card as unresolved must stay blocked even in a
+  // per-card grade (Codex 316b85167727). A genuine over-threshold AWS alert is
+  // exempt from render defects but is a standing owner decision and must not be
+  // marked clean by a scoped heal. So run the named-card check for the target
+  // card(s) in both modes; only the WHOLE-BOARD reconciliation below (FLOOR /
+  // COUNT / under-report), which a scoped grade cannot compute from one card, is
+  // skipped when scoped.
+  for (const named of blockersNamedCardDefects(tiles, defectsByCard)) {
+    if (!scoped || scopeSet.has(named.id)) recordCard(named.id, [named.defect]);
+  }
+
   // Board-level Blockers accounting is skipped in a per-card grade: the reported
   // blocker count vs distinct-defective-card reconciliation is a whole-board
   // computation, and a scoped heal cannot see the other cards' live state. The
@@ -2669,10 +2687,6 @@ function verifyDashboard(html, runDate, options = {}) {
   // writeCanonicalArtifactFromResult/mergeScopedArtifact from the persisted
   // artifact plus this one card, and by refreshPublishedBlockersReconciliationLine.
   if (!scoped) {
-    for (const named of blockersNamedCardDefects(tiles, defectsByCard)) {
-      recordCard(named.id, [named.defect]);
-    }
-
     // BLOCKERS-CARD FLOOR: the briefing renders its own "N hard blockers" count on
     // the Blockers card. The QC must never read fully clean while Blockers itself
     // says the briefing is blocked. Do not compare the blocker count one-to-one
