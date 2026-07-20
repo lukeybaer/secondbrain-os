@@ -14,16 +14,28 @@
 // build's own targeted refresh; this module only renders the artifact
 // (producers never live in shared card modules).
 
-const { formatKingdomEquippingSection } = require('../../kingdom-equipping-ideas.js');
+const {
+  formatKingdomEquippingSection,
+  readKingdomEquippingArtifact,
+} = require('../../kingdom-equipping-ideas.js');
 const { legacySection } = require('./card-format.js');
 
 const TITLE = 'KINGDOM EQUIPPING IDEAS';
 
 function buildKingdomEquippingCard(dataDir, date) {
   const body = formatKingdomEquippingSection(dataDir, date);
+  // ok used to be Boolean(body.trim()) with source hardcoded 'artifact', so
+  // recycled curriculum fallback published as a fresh clean card. Non-empty
+  // text is not evidence that today's ideas were generated.
+  const artifact = readKingdomEquippingArtifact(dataDir, date);
+  const isFallback = Boolean(artifact && artifact.isCurriculumFallback);
   return {
     markdown: legacySection(TITLE, body),
-    state: { id: 'kingdom-equipping', ok: Boolean(body && body.trim()), source: 'artifact' },
+    state: {
+      id: 'kingdom-equipping',
+      ok: Boolean(body && body.trim()) && !isFallback,
+      source: isFallback ? 'curriculum-fallback' : 'artifact',
+    },
   };
 }
 
