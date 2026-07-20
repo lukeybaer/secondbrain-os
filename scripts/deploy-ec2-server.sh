@@ -450,14 +450,30 @@ fi
 # with no host or Graphiti dependency, so nothing below is a prerequisite.
 # ============================================================================
 echo "[deploy] recording deploy receipt"
-if ! node "$ROOT/scripts/record-ec2-deploy-receipt.js"; then
+if ! RECEIPT_JSON="$(node "$ROOT/scripts/record-ec2-deploy-receipt.js")"; then
   echo "[deploy] RECEIPT FAIL: the release landed but could not be receipted. Fix and re-run so the parity probe has a receipt to verify against." >&2
   exit 1
 fi
-scp -i "$KEY" -o StrictHostKeyChecking=no "$ROOT/data/agent/ec2-deploy-receipts.jsonl" "$HOST:/tmp/secondbrain-deploy-receipts.jsonl"
-ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-  'sudo mkdir -p /opt/secondbrain/data/agent && sudo cp /tmp/secondbrain-deploy-receipts.jsonl /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl && sudo chown ec2-user:ec2-user /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl && rm -f /tmp/secondbrain-deploy-receipts.jsonl'
-echo "[deploy] receipt recorded + mirrored to /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl"
+
+# APPEND the one receipt just written; never mirror the local ledger over the
+# remote one. Codex gate ff30fbb4d641 round 3, then confirmed by executing it:
+# the local ledger is gitignored (.gitignore:126) and absent from every fresh
+# worktree, while record-ec2-deploy-receipt.js appends to the DEPLOYING
+# worktree by design. So a deploy from a fresh worktree produced a ONE-LINE
+# ledger, and `cp` over the remote file collapsed real history to that one
+# line. Measured: a 5-receipt production ledger truncated to 1, unrecoverable,
+# because nothing tracks or backs up that file. Two deploys in a night from
+# two worktrees also made overnight-watch-report.js (which windows over ALL
+# rows via readWindowedJsonl) undercount deploys.
+#
+# Appending a single line is idempotent-safe here: the receipt ExampleCos its own
+# timestamp and sha, and readLatestReceipt consumers take the final line.
+if ! printf '%s\n' "$RECEIPT_JSON" | ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  'sudo mkdir -p /opt/secondbrain/data/agent && sudo touch /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl && sudo tee -a /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl > /dev/null && sudo chown ec2-user:ec2-user /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl'; then
+  echo "[deploy] RECEIPT MIRROR FAIL: the release is LIVE but /opt has no receipt for it. The parity probe will report receipt drift until this is repaired. Re-run the receipt append against $HOST." >&2
+  exit 1
+fi
+echo "[deploy] receipt recorded + appended to /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl"
 
 # The owner graph now contains more than 100,000 embedded facts. Build and
 # replace the Graphiti MCP container with the repo-owned indexed wrapper. Send
