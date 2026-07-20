@@ -551,6 +551,23 @@ log "releasing sha=$SHA -> $RELEASE_DIR (link=$OPT_LINK, mode=$([ "$LOCAL" = 1 ]
 # ---- 0. BOOTSTRAP (opt-in): one-time cutover BEFORE staging the first release ----
 [ "$BOOTSTRAP" = "1" ] && bootstrap_shared_layout
 
+# ---- 0c. SAME-SHA GUARD: never rm -rf the LIVE release dir ------------------
+# RELEASE_DIR is "$RELEASES_ROOT/$SHA", so redeploying the sha that is already
+# live means RELEASE_DIR == the current symlink target. The STAGE step below
+# rm -rf's RELEASE_DIR before rebuilding it, which would delete the RUNNING
+# release; worse, rollback (step 4) cannot restore it because PREV_TARGET would
+# equal the dir we just destroyed and rollback_symlink would hit its "same sha"
+# no-op branch. A receipt-repair retry (redeploy the sha that just went live) is
+# exactly this case. So when the target sha is already live, stage into a FRESH
+# sibling dir and let the atomic swap move the symlink to it; the old dir stays
+# intact as the rollback target and is reaped by the normal release sweep.
+CURRENT_LIVE_TARGET="$(sh_run "readlink -f '$OPT_LINK' 2>/dev/null || true" || true)"
+RESOLVED_RELEASE_DIR="$(sh_run "readlink -f '$RELEASE_DIR' 2>/dev/null || echo '$RELEASE_DIR'" || echo "$RELEASE_DIR")"
+if [ -n "$CURRENT_LIVE_TARGET" ] && [ "$CURRENT_LIVE_TARGET" = "$RESOLVED_RELEASE_DIR" ]; then
+  RELEASE_DIR="$RELEASES_ROOT/$SHA.reland-$(date +%s)-$$"
+  log "same-sha reland: $SHA is already live at $CURRENT_LIVE_TARGET; staging into a fresh dir $RELEASE_DIR so the live release is never destroyed"
+fi
+
 # ---- 1. STAGE: rsync a FULL checkout of exactly this sha into the release dir ----
 # git archive gives a clean tree of exactly the sha (no worktree dirt), which we
 # rsync into place. Idempotent: an identical existing release is overwritten with
