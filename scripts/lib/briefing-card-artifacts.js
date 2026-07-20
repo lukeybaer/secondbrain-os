@@ -26,9 +26,7 @@ const LLM_CARD_IDS = Object.freeze([
   'mortgage_industry_news',
   'covid_news',
   'communication_coaching',
-  'kingdom_equipping',
   'reputation_risk',
-  'viral_tech_clips',
   'shorts_proposals',
 ]);
 
@@ -49,6 +47,10 @@ const CONTENT_HEAL_CARD_CONFIG = Object.freeze({
 const CARD_TITLE_OVERRIDES = Object.freeze({
   blockers: 'BLOCKERS - briefing quality gates',
   shorts_proposals: "TODAY'S 10 SHORTS PROPOSALS",
+  // Derived from the id this would be 'UNCOMMITTED PARKED', which does not
+  // satisfy the manifest matcher /^UNCOMMITTED & PARKED WORK\b/i, so the card
+  // would emit a header the per-card parser cannot match back to its own row.
+  uncommitted_parked: 'UNCOMMITTED & PARKED WORK',
 });
 
 function defaultDataDir() {
@@ -211,7 +213,9 @@ function inferMarkdownSectionStatus(body, cardId = '') {
   ) {
     return 'blocked';
   }
-  if (/^Card refresh pending:\s*fresh data and scoped live QC are still in progress\./i.test(first)) {
+  if (
+    /^Card refresh pending:\s*fresh data and scoped live QC are still in progress\./i.test(first)
+  ) {
     return 'blocked';
   }
   if (/^(HARD-BLOCKED|BLOCKED\b|Blocked:|This card is held\b)/i.test(first)) return 'blocked';
@@ -302,7 +306,9 @@ function artifactContentFailures(artifact) {
   ) {
     failures.push('card ExampleCos broken cloud-build fallback copy');
   }
-  if (/Card refresh pending:\s*fresh data and scoped live QC are still in progress\./i.test(markdown)) {
+  if (
+    /Card refresh pending:\s*fresh data and scoped live QC are still in progress\./i.test(markdown)
+  ) {
     failures.push('card ExampleCos pending refresh shell copy');
   }
   const parsed = splitMarkdownCards(markdown)[0] || {
@@ -318,15 +324,9 @@ function artifactContentFailures(artifact) {
     { surface: 'card-artifact' },
   ).failures.filter(
     (failure) =>
-      !(
-        artifact.id === 'big_decisions' &&
-        /raw operational detail/i.test(String(failure || ''))
-      ),
+      !(artifact.id === 'big_decisions' && /raw operational detail/i.test(String(failure || ''))),
   );
-  return uniqueList([
-    ...failures,
-    ...qcFailures,
-  ]);
+  return uniqueList([...failures, ...qcFailures]);
 }
 
 function scheduleEventStart(event) {
@@ -388,7 +388,10 @@ function normalizeScheduleEvents(raw) {
   if (Array.isArray(raw.items)) return raw.items;
   if (Array.isArray(raw.days)) {
     return raw.days.flatMap((day) =>
-      (day.events || day.meetings || []).map((event) => ({ ...event, date: event.date || day.date })),
+      (day.events || day.meetings || []).map((event) => ({
+        ...event,
+        date: event.date || day.date,
+      })),
     );
   }
   return [];
@@ -476,7 +479,10 @@ function produceBigDecisionsCardArtifact({ date, dataDir, now = new Date() }) {
   const markdown = renderBigDecisionsMarkdown(section);
   if (!markdown) return null;
   const body = markdown.replace(/^BIG DECISIONS:\s*/i, '').trim();
-  const qc = qcCard({ id: 'big_decisions', title: cardTitle('big_decisions'), body }, { surface: 'card-artifact' });
+  const qc = qcCard(
+    { id: 'big_decisions', title: cardTitle('big_decisions'), body },
+    { surface: 'card-artifact' },
+  );
   return createCardArtifact({
     id: 'big_decisions',
     title: cardTitle('big_decisions'),
@@ -867,6 +873,43 @@ function produceSystemHealthCardArtifact({
   });
 }
 
+// Pull the live board's own QC messages for one card. The board records
+// defects as free-form strings that name the card id and/or its title, e.g.
+// 'VALUE-SANITY: aws_costs (AWS COSTS) metric "unavailable" ...'. Match on
+// either, dedupe, and cap so one noisy card cannot crowd out the rest.
+function defectMessagesForCard(artifact, card, { max = 2 } = {}) {
+  const raw = Array.isArray(artifact && artifact.defects) ? artifact.defects : [];
+  const id = String((card && card.id) || '').trim();
+  const title = String((card && card.title) || '').trim();
+  if (!id && !title) return [];
+  const seen = new Set();
+  const out = [];
+  for (const entry of raw) {
+    const message = String(
+      typeof entry === 'string' ? entry : (entry && (entry.message || entry.title)) || '',
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!message) continue;
+    // Whole-token match, not naked substring. No current manifest id or title
+    // contains another (verified across all 35 cards), but `includes` would
+    // start misattributing the moment someone adds e.g. `us_news_weekly`
+    // alongside `us_news`. Codex flagged the latent hazard; this closes it.
+    const names = [id, title].some((needle) => {
+      if (!needle || needle.length < 3) return false;
+      const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`, 'i').test(message);
+    });
+    if (!names) continue;
+    const key = message.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(message.length > 300 ? `${message.slice(0, 297)}...` : message);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 function formatBlockersCardBodyFromLiveBoard(liveBoardEnvelope = {}) {
   const artifact = liveBoardEnvelope.artifact || null;
   const cards = Array.isArray(artifact && artifact.cards) ? artifact.cards : [];
@@ -896,12 +939,29 @@ function formatBlockersCardBodyFromLiveBoard(liveBoardEnvelope = {}) {
     const title = card.title || card.id || `Defective card ${index + 1}`;
     lines.push('');
     lines.push(`${index + 1}. ${title}`);
-    if (card.id === 'system_health') {
+    // The live board already ExampleCos the real QC diagnosis for every defect it
+    // counted. Surface it. Restating "this card is not clean" tells ExampleCo only
+    // what the heading above already said, and it is the same evidence-stripping
+    // class as the 2026-06-11 rule-recital incident
+    // (scripts/__tests__/blocker-copy-from-artifact.test.js). Guarded here by
+    // scripts/__tests__/blockers-card-ExampleCos-real-defect-evidence.test.js.
+    const evidence = defectMessagesForCard(artifact, card);
+    if (evidence.length) {
+      // ONE Evidence line only. ec2-server.js:6626-6632 parses `Evidence:` with
+      // `cur.blocker = ...`, a plain assignment, so a second line silently
+      // overwrites the first and the renderer shows only the last. Codex caught
+      // this (review d28809172c23) after I verified the builder output but not
+      // the rendered surface. Join instead, so every diagnosis survives.
+      lines.push(`Evidence: ${evidence.join(' | ')}`);
+    } else if (card.id === 'system_health') {
       lines.push(
         'Evidence: The health card needs attention; subsystem detail stays in SYSTEM HEALTH.',
       );
     } else {
-      lines.push('Evidence: This card is not clean in the latest live board.');
+      // Never invent a diagnosis. Say plainly that the board recorded none.
+      lines.push(
+        'Evidence: the live board counted this card as defective but recorded no defect detail for it.',
+      );
     }
     lines.push('Next step: refresh this card source and republish.');
   });
@@ -999,6 +1059,324 @@ function produceTokenUsageCardArtifact({
       })),
     },
     blockedReason: failures[0] || '',
+    qc: { ok: failures.length === 0, failures },
+  });
+}
+
+// AWS COSTS had no named producer, so produceDataCardArtifact fell through to
+// existingSourceArtifact and copied whatever sat on disk. On 2026-07-20 that
+// was the 11pm bootstrap shell ("Card refresh pending"), stamped clean. The
+// card could never carry a spend figure because the per-card path never called
+// the real builder. This producer calls it, and gates on CONTENT freshness
+// rather than filename: agent/aws-costs-2026-07-20.md existed with today's name
+// while carrying an April-May window, so a filename-only check passes a
+// 71-day-old number off as today's spend.
+// Parse the window end date out of either artifact dialect. The live EC2
+// artifact writes "Window: <start> through <end>"; the PC multi-profile format
+// writes "AWS COST DETAIL <dash> <start> to <end>" (the dash is U+2014, matched
+// as a short non-digit run so no forbidden literal appears in source).
+const {
+  awsCostContractFailures,
+  awsCostArtifactIsSelfSufficient,
+} = require('./aws-cost-window.js');
+
+// The local awsCostWindowEnd / awsCostStaleDays / awsCostArtifactNeedsRebuild
+// helpers that lived here are gone, replaced by ./aws-cost-window.js above.
+// awsCostArtifactNeedsRebuild was a NEGATIVE gate whose default was "reuse",
+// and its last line `return staleDays !== null && staleDays > 1` short-circuited
+// to false for every artifact with no parseable window. Running the real code
+// proved that a reworded pending shell carrying an unrelated "$15.05" reached
+// the board with status clean and qc.ok true. The replacement is positive:
+// an artifact is reused only if it PROVES its own freshness and structure, so
+// every ExampleCo falls through to a real rebuild.
+
+function produceAwsCostsCardArtifact({
+  date,
+  dataDir = defaultDataDir(),
+  now = new Date(),
+  buildAwsCostsCardFn,
+} = {}) {
+  const title = cardTitle('aws_costs');
+  const artifactRef = `agent/aws-costs-${date}.md`;
+  const blocked = (reason, source = {}) =>
+    createCardArtifact({
+      id: 'aws_costs',
+      title,
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `${title}:\n${reason}`,
+      blockedReason: reason,
+      source: { mode: 'aws-cost-explorer-live', artifact: artifactRef, ...source },
+      qc: { ok: false, failures: [reason] },
+    });
+
+  const build = buildAwsCostsCardFn || require('../cloud-morning-briefing.js').buildAwsCostsCard;
+  let card;
+  try {
+    // allowLiveRefresh drives the live Cost Explorer query on the EC2 build
+    // host, which rewrites the dated snapshot before it is parsed back.
+    card = build(dataDir, date, { allowLiveRefresh: true });
+  } catch (error) {
+    const detail = String((error && error.message) || error).slice(0, 200);
+    return blocked(`AWS cost builder threw: ${detail}`, { threw: true });
+  }
+
+  if (!card || card.real !== true) {
+    // card.detail is already answer-first prose that ec2-server's
+    // parseAwsCostsBody recognizes verbatim. Do not prefix it.
+    return blocked(
+      String((card && card.detail) || 'AWS cost builder returned no verified spend figure.'),
+      { missing: true },
+    );
+  }
+
+  const body = String(card.body || '');
+  // ONE validator, shared with the source contract and the 5:30 full build, so
+  // the three can never drift apart again. The inline copy this replaced parsed
+  // for a "Window:" line that buildAwsCostsCard has never emitted, so it would
+  // have blocked every genuine success while its own tests stayed green (they
+  // used an invented fixture). It also required a "Top services" heading that
+  // appears in no real artifact.
+  const { failures: contractFailures, freshness } = awsCostContractFailures({
+    text: body,
+    date,
+    snapshotDate: card.snapshotDate || null,
+  });
+
+  if (!freshness.current) {
+    const totalLine = body.match(/^Total:\s*(\$[\d,.]+)/im);
+    const totalLabel = totalLine ? totalLine[1] : 'no total parsed';
+    return blocked(
+      `AWS cost snapshot is not current: ${freshness.reason}, so today's spend cannot be ` +
+        `verified. Dated context only: ${totalLabel}. Remediation: re-run the live Cost ` +
+        `Explorer scan on the EC2 build host (SECONDBRAIN_DATA_DIR=/opt/secondbrain/data node ` +
+        `scripts/refresh-card.js aws_costs --publish).`,
+      { staleWindowEnd: freshness.windowEnd, staleDays: freshness.staleDays },
+    );
+  }
+
+  const cardTitleText = String(card.title || title);
+  const localFailures = contractFailures.slice();
+  if (/\$\s?\d/.test(body) && /\$0(?:\.00)?\b|unavailable|n\/a/i.test(cardTitleText)) {
+    localFailures.push(
+      'AWS metric shows $0/unavailable while the body ExampleCos a verified dollar figure',
+    );
+  }
+
+  const qc = qcCard({ id: 'aws_costs', title: cardTitleText, body }, { surface: 'card-artifact' });
+  const failures = [...(qc.failures || []), ...localFailures];
+
+  // DO NOT add a threshold-based failure here. A projected monthly over $1000
+  // renders RED by policy and that is a correctly surfaced business fact, not a
+  // card defect. Deriving status from the size of the dollar figure would make
+  // self-heal chase a number it must never "repair".
+  const pick = (re) => (body.match(re) || [])[1] || null;
+  return createCardArtifact({
+    id: 'aws_costs',
+    // The builder's title ExampleCos the run-rate figure that both the ec2-server
+    // awsCosts tile branch and awsCostsIsCleanThresholdAlert parse. Keep it.
+    title: cardTitleText,
+    date,
+    kind: 'data',
+    status: failures.length ? 'defect' : 'clean',
+    generatedAt: now.toISOString(),
+    markdown: `${cardTitleText}:\n${body}`,
+    source: {
+      mode: 'aws-cost-explorer-live',
+      artifact: artifactRef,
+      builder: 'cloud-morning-briefing.buildAwsCostsCard',
+      windowStart: freshness.windowStart,
+      windowEnd: freshness.windowEnd,
+      staleDays: freshness.staleDays,
+      priorDay: freshness.priorDay,
+      dialect: freshness.dialect,
+      total: pick(/^Verified accessible AWS spend:\s*\$?([\d,.]+)/im),
+      projectedMonthly: pick(/^Projected monthly \(from 72h avg\):\s*\$([\d,.]+)/im),
+      currentMonthlyRunRate: pick(/^Current monthly run-rate:\s*\$([\d,.]+)/im),
+      liveRefresh: true,
+    },
+    blockedReason: '',
+    qc: { ok: failures.length === 0, failures },
+  });
+}
+
+// UNCOMMITTED & PARKED WORK had no named producer, so it fell through to the
+// generic existingSourceArtifact copy and published the 11pm "Card refresh
+// pending" shell as clean, while the real git-hygiene data sat unread on the
+// same host. The snapshot REFRESHER was already wired (briefing-card-producers
+// 'git-hygiene' maps this card to git-hygiene-snapshot.json); only the artifact
+// producer was missing, so the refreshed snapshot was never rendered.
+function produceUncommittedParkedCardArtifact({
+  date,
+  dataDir = defaultDataDir(),
+  now = new Date(),
+  formatUncommittedParkedWorkSectionFn,
+} = {}) {
+  const title = cardTitle('uncommitted_parked');
+  const render =
+    formatUncommittedParkedWorkSectionFn ||
+    require('./git-hygiene-briefing.js').formatUncommittedParkedWorkSection;
+  const snapshotPath = path.join(dataDir, 'agent', 'git-hygiene-snapshot.json');
+
+  let body = '';
+  try {
+    // snapshotPath ONLY. Never pass cwd or classifier: EC2 has no working git
+    // tree, and on the desktop the live classifier shells out ~6 git calls
+    // against a 248-branch .git, which is the pinned hang class (483cd8ee).
+    body = String(render({ today: date, snapshotPath, nowMs: now.getTime() }) || '').trim();
+  } catch (error) {
+    const reason = `git hygiene renderer threw: ${String((error && error.message) || error).slice(0, 200)}`;
+    return createCardArtifact({
+      id: 'uncommitted_parked',
+      title,
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `${title}:\n${reason}`,
+      blockedReason: reason,
+      source: {
+        mode: 'git-hygiene-snapshot',
+        artifact: 'agent/git-hygiene-snapshot.json',
+        threw: true,
+      },
+      qc: { ok: false, failures: [reason] },
+    });
+  }
+
+  if (!body) {
+    const reason = 'Git hygiene renderer returned no content.';
+    return createCardArtifact({
+      id: 'uncommitted_parked',
+      title,
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `${title}:\n${reason}`,
+      blockedReason: reason,
+      source: { mode: 'git-hygiene-snapshot', missing: true },
+      qc: { ok: false, failures: [reason] },
+    });
+  }
+
+  // Drop the operational preamble. The renderer's canonical body ExampleCos an
+  // Actions legend, a branch-state glossary, and the janitor's own invocation
+  // ("git-janitor --apply --cap=5"). That is maintenance plumbing for whoever
+  // runs the janitor, not something ExampleCo needs in a briefing, and the shared
+  // artifact QC correctly flags it as raw operational detail. Trimming it is
+  // honest; suppressing the QC failure would not be. The substance (which
+  // branches are parked, stray, landed, locked) is untouched below.
+  const OPERATIONAL_PREAMBLE = /^(?:Actions|Legend|Janitor timing):/i;
+  body = body
+    .split('\n')
+    .filter((line) => !OPERATIONAL_PREAMBLE.test(line.trim()))
+    .join('\n')
+    .trim();
+
+  // The renderer already emits its own honest blocker prose when the snapshot
+  // is missing, stale past 30h, or malformed. Carry that verdict through rather
+  // than re-deriving it, so builder and card never disagree.
+  const rendererBlocked = /^hard blocker:/i.test(body);
+  const qc = qcCard({ id: 'uncommitted_parked', title, body }, { surface: 'card-artifact' });
+  const failures = rendererBlocked ? [body.split('\n')[0]] : qc.failures || [];
+
+  return createCardArtifact({
+    id: 'uncommitted_parked',
+    title,
+    date,
+    kind: 'data',
+    status: rendererBlocked ? 'blocked' : failures.length ? 'defect' : 'clean',
+    generatedAt: now.toISOString(),
+    markdown: `${title}:\n${body}`,
+    source: { mode: 'git-hygiene-snapshot', artifact: 'agent/git-hygiene-snapshot.json' },
+    blockedReason: rendererBlocked ? body.split('\n')[0] : '',
+    qc: { ok: failures.length === 0, failures },
+  });
+}
+
+// viral_tech_clips and kingdom_equipping were listed in LLM_CARD_IDS, so
+// produceCardArtifact routed them down the LLM branch and asked a model to
+// "Produce the <id> Daily Briefing card. Return concise markdown only." with no
+// access to their data. Both outcomes were wrong: if the model answered, the
+// card ExampleCod FABRICATED clip proposals with invented sources stamped clean
+// (feedback_no_fabrication_in_briefings.md); if it failed, the card was blocked
+// with "LLM unavailable" while real verified proposals sat unread on disk.
+// Verified live 2026-07-20: viral_tech_clips.json was blocked at 11:12:57Z
+// while agent/viral-tech-clips/2026-07-20.json held 3 real YouTube-sourced
+// proposals. Neither card is LLM-rendered; both have deterministic builders
+// reading a dated artifact. The LLM only participates upstream, inside the
+// generator that writes that artifact.
+const DETERMINISTIC_CARD_BUILDERS = Object.freeze({
+  viral_tech_clips: (dataDir, date, now) =>
+    require('../cloud-morning-briefing.js').buildViralTechCard(dataDir, date, [], now),
+  kingdom_equipping: (dataDir, date) =>
+    require('./briefing-cards/kingdom-equipping-card.js').buildKingdomEquippingCard(dataDir, date),
+});
+
+function produceDeterministicBuilderCardArtifact({
+  id,
+  date,
+  dataDir = defaultDataDir(),
+  now = new Date(),
+  buildFn,
+} = {}) {
+  const title = cardTitle(id);
+  const build = buildFn || DETERMINISTIC_CARD_BUILDERS[id];
+  const blocked = (reason, source = {}) =>
+    createCardArtifact({
+      id,
+      title,
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `${title}:\n${reason}`,
+      blockedReason: reason,
+      source: { mode: 'deterministic-card-builder', ...source },
+      qc: { ok: false, failures: [reason] },
+    });
+
+  if (!build) return blocked(`No deterministic builder registered for ${id}.`, { missing: true });
+
+  let built;
+  try {
+    built = build(dataDir, date, now);
+  } catch (error) {
+    return blocked(
+      `${id} builder threw: ${String((error && error.message) || error).slice(0, 200)}`,
+      { threw: true },
+    );
+  }
+
+  // These builders return { markdown, state } where markdown already ExampleCos
+  // the card's own canonical header, e.g. "VIRAL TECH CLIP PROPOSALS (3)".
+  // Keep it: cardTitle() derives "VIRAL TECH CLIPS" from the id, which does not
+  // satisfy the manifest matcher /^VIRAL TECH CLIP PROPOSALS\b/i.
+  const markdown = String((built && built.markdown) || '').trim();
+  if (!markdown) return blocked(`${id} builder returned no content.`, { empty: true });
+
+  const firstLine = markdown.split('\n')[0] || '';
+  const body = markdown.split('\n').slice(1).join('\n').trim();
+  const qc = qcCard({ id, title: firstLine, body }, { surface: 'card-artifact' });
+  const failures = qc.failures || [];
+
+  return createCardArtifact({
+    id,
+    title: firstLine.replace(/:\s*$/, '') || title,
+    date,
+    kind: 'data',
+    status: failures.length ? 'defect' : 'clean',
+    generatedAt: now.toISOString(),
+    markdown,
+    source: {
+      mode: 'deterministic-card-builder',
+      builder: id,
+      state: (built && built.state) || null,
+    },
+    blockedReason: '',
     qc: { ok: failures.length === 0, failures },
   });
 }
@@ -1459,6 +1837,28 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
   if (card.id === 'otter_speaker_pareto') {
     return produceOtterSpeakerParetoCardArtifact({ date, dataDir, now });
   }
+  if (DETERMINISTIC_CARD_BUILDERS[card.id]) {
+    return produceDeterministicBuilderCardArtifact({ id: card.id, date, dataDir, now });
+  }
+  if (card.id === 'uncommitted_parked') {
+    return produceUncommittedParkedCardArtifact({ date, dataDir, now });
+  }
+  if (card.id === 'aws_costs') {
+    // Take over ONLY when the on-disk artifact cannot stand on its own: the
+    // pending bootstrap shell, no dollar figure at all, or a content-stale
+    // window wearing today's filename. Those are the three ways the generic
+    // fallthrough laundered a non-card into a clean one. A genuinely populated
+    // artifact is reused as-is, which keeps desktop and fixture runs honest and
+    // avoids re-billing Cost Explorer on every scoped refresh.
+    const existing = existingSourceArtifact({ dataDir, date, id: card.id });
+    if (
+      !existing ||
+      isMissingSourcePlaceholderArtifact(existing) ||
+      !awsCostArtifactIsSelfSufficient(existing, date)
+    ) {
+      return produceAwsCostsCardArtifact({ date, dataDir, now });
+    }
+  }
   const existing = existingSourceArtifact({ dataDir, date, id: card.id });
   if (!existing || isMissingSourcePlaceholderArtifact(existing)) {
     const represented = representedByMergePartnerArtifact({ card, date, dataDir, now });
@@ -1659,6 +2059,9 @@ module.exports = {
   produceBlockersCardArtifact,
   produceSystemHealthCardArtifact,
   produceTokenUsageCardArtifact,
+  produceAwsCostsCardArtifact,
+  produceUncommittedParkedCardArtifact,
+  produceDeterministicBuilderCardArtifact,
   produceOtterSpeakerParetoCardArtifact,
   produceAllCardArtifacts,
   producerTimeoutMs,

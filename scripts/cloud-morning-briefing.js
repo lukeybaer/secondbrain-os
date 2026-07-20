@@ -3444,9 +3444,76 @@ const NEWS_RENDER_HARD_BAD_TITLE_RE =
 const NEWS_RENDER_HARD_BAD_CONTENT_RE =
   /(?:\bHawaii gun restriction\b|\bHeard on\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*\b|\bCBS News Sunday Morning\b|\bbroadcast on (?:the )?CBS\b|\bstreams on (?:the )?CBS\b|\bwatch CBS News\b|\bAP Photo\b|\bGetty Images\b|\[?deltaMinutes?\]?|\bmore coverage\b|\bhide caption\b|\btoggle caption\b|\bMAKING AMERICA SAFE AGAIN\b|\bDownload it here\b|\bJane Pauley hosts\b|\bSunday Morning["']?s familiar faces\b|\bEssential American Songbook\b|\bLISTEN\s*&\s*FOLLOW\b|\bAudio will be available\b|\bCoast Guard is smashing records\b|\bKnow Before You Go\b|\bOffice Closings?\b|\bDelegation of Immigration Authority\b|\bSection 287\(g\)\b|\bVictims Of Immigration Crime Engagement\b|\bPartner With ICE Through the 287\(g\) Program\b|\bImmigration Enforcement Frequently Asked Questions\b|\bWorst of the Worst\b|\bEven areas above 1,000 metres\b|\bAdd NBC News to Google\b|\bHat-Trick\b|\bBaln de Oro\b|\bEN VIVO\b|\bBy Andrew Greif\b|\bTrailblazer in Legal Technology\b|\bEnhance your law practice\b|\bLeave your feedback\b|\bShare Copy URL\b|\bListen Listen\b|\bshare-nodes\b|\bClick here to share\b|\bText settings Story text\b|\bSubscribers only\b|\bMinimize to nav\b|\bsponsored article\b|\bFounder Summit\b|\bEarly Bird rates\b|\bsave up to \$?\d+\b|\bWhy you can trust ZDNET\b|\bIf you buy through our links\b|\breader experiencing an access issue\b|\bcontact support@\b|\bcontentlicensing@\b|\bwhatismyip\.com\b|\bAttention Required\b|\bCloudflare\b|\bPlease enable cookies\b|\bPBS Watch Preview\b|\bKeep Your Station Strong\b|\bNo one should face the immigration system alone\b|\bHelp ensure someone has a lawyer\b|\bExclusive National Guard deployments\b|\bFrancia celebra\b|\bNoruega\b|\bDeschamps\b|\bMundial\b|\bBielsa\b|\bSenegal aplasta\b|\bIrak\b|\bPalestinians grieve\b|\bWest Bank\b|\bAustralia plans to strengthen laws banning children from social media\b|\bTankers and cargo vessels\b|\bGulf of Oman\b|\bStrait of Hormuz\b|\bRequest a Consultation\b|\bStart RFP Process\b|\bA Global Law Firm\b|\bJOIN AILA TODAY\b|\bAI agents are becoming more sophisticated\b|\bThe move was highly unusual\b|\bfaking his own death\b)/i;
 
+// CATEGORY detector, deliberately not another literal.
+//
+// 2026-07-20 (ExampleCo, live briefing): the US NEWS drilldown for "'The Odyssey'
+// opens with $264.1 million globally" rendered pure page furniture as its
+// summary: photo credits, "Read More", a Bluesky/Flipboard/Pinterest/Reddit
+// share row, "Add AP News on Google", and the same caption twice. Not one
+// sentence about the film.
+//
+// Root cause: NEWS_RENDER_HARD_BAD_CONTENT_RE above is ~120 literal past
+// defects (it contains "Deschamps", "Bielsa", "faking his own death"). It has
+// "Add NBC News to Google" but not the AP equivalent, so the AP page sailed
+// through. Running the real stripPublisherChrome against the real stored text
+// removed ZERO characters. Chasing publishers one at a time cannot converge;
+// feedback_frugal_regression_tests.md says encode the CATEGORY, not the
+// trigger.
+//
+// These signals describe what page furniture IS, in any publisher's markup:
+// gallery pagination, a share-button run, a syndication promo, stacked photo
+// credits, repeated "Read More", and the duplicated captions that scrapers
+// produce. Real prose has at most one of these incidentally, so requiring TWO
+// distinct signals keeps a legitimate summary safe.
+const NEWS_CHROME_SIGNALS = [
+  ['gallery-pagination', (s) => /\b\d{1,2} of \d{1,2}\s*\|/.test(s)],
+  [
+    'share-widget-run',
+    (s) =>
+      (
+        s.match(
+          /\b(?:Bluesky|Flipboard|Pinterest|Reddit|WhatsApp|Telegram|Threads|Mastodon)\b/gi,
+        ) || []
+      ).length >= 2,
+  ],
+  [
+    'syndication-promo',
+    (s) => /\bas your preferred source\b|\bAdd\b[^.]{0,30}\bon Google\b/i.test(s),
+  ],
+  [
+    'photo-credit-density',
+    (s) => (s.match(/\((?:Photo by|AP Photo|Image|Courtesy)[^)]{0,80}\)/gi) || []).length >= 2,
+  ],
+  ['read-more-repeat', (s) => (s.match(/\bRead More\b/gi) || []).length >= 2],
+  [
+    'duplicated-sentence',
+    (s) => {
+      const seen = new Set();
+      for (const raw of String(s).split(/(?<=[.!?])\s+|\n+/)) {
+        const key = raw.trim().toLowerCase().replace(/\s+/g, ' ');
+        if (key.length < 40) continue;
+        if (seen.has(key)) return true;
+        seen.add(key);
+      }
+      return false;
+    },
+  ],
+];
+
+/** Names the chrome categories present. Two or more means it is furniture. */
+function newsChromeSignals(text) {
+  const s = String(text || '');
+  return NEWS_CHROME_SIGNALS.filter(([, test]) => test(s)).map(([name]) => name);
+}
+
+function newsEvidenceLooksLikeChromeByCategory(text) {
+  return newsChromeSignals(text).length >= 2;
+}
+
 function newsEvidenceLooksLikePublisherChrome(text) {
   const s = String(text || '');
   return (
+    newsEvidenceLooksLikeChromeByCategory(s) ||
     NEWS_RENDER_HARD_BAD_CONTENT_RE.test(s) ||
     /\b(?:News\s+(?:Mobile|Samsung|Gaming|Tech)|Gaming\s+Xbox|June\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s+(?:am|pm)\s+EST|By\s+[A-Z][A-Za-z .'-]{2,80}\s+June\s+\d{1,2},\s+\d{4}|This is a prime example of a bad deal|what-to-expect-at-the-next-samsung-galaxy-unpacked)\b/i.test(
       s,
@@ -7950,9 +8017,25 @@ function buildAwsCostsCard(dataDir, date, { allowLiveRefresh = true } = {}) {
   const trendMatch = text.match(/^30-day trend:\s*([^\n.]+)/im);
   const trendLine = trendMatch ? `30-day trend: ${trendMatch[1].trim()}.` : null;
   const services = extractAwsArtifactServices(text);
+  // Freshness comes from the artifact's OWN declared window, never from
+  // latest.date, which is only the FILENAME (findLatestDatedFile parses it out
+  // of the name). On 2026-07-20 that distinction was the whole defect: the file
+  // was named aws-costs-2026-07-20.md and ExampleCod the window 2026-04-10 to
+  // 2026-05-10, so the card told ExampleCo "Snapshot: 2026-07-20" over April money.
+  const { awsCostFreshness } = require('./lib/aws-cost-window.js');
+  const freshness = awsCostFreshness({ text, date });
   const lines = [
     `Verified accessible AWS spend: ${total}.`,
-    `Snapshot: ${latest.date}; older or partial snapshot status is named here so totals never appear to silently change between runs.`,
+    // The window travels with the value, so the provenance is user-visible and
+    // every downstream consumer can re-derive freshness from the body alone.
+    freshness.windowEnd
+      ? `Cost window: ${freshness.windowStart} through ${freshness.windowEnd}${
+          freshness.priorDay ? ' (prior day; today is not settled yet)' : ''
+        }.`
+      : 'Cost window: not declared by the snapshot.',
+    // Deliberately relabelled from the old bare "Snapshot: <date>", which read
+    // like a data date but was only ever a filename.
+    `Snapshot file: agent/${path.basename(latest.file)} (filename date ${latest.date}).`,
   ];
   // Surface the run-rate projection right at the top of the body so the tile
   // shows it prominently. This is the alarm signal (avg over last 72h * 30);
@@ -7968,16 +8051,32 @@ function buildAwsCostsCard(dataDir, date, { allowLiveRefresh = true } = {}) {
   // read because the EC2 role lacks ce:GetCostAndUsage, the last-known number +
   // its date as DATED CONTEXT ONLY, and the one-line remediation. CATEGORY = the
   // current value cannot be refreshed, not one literal $ figure.
+  // 2026-07-20: `liveDenied &&` used to gate this block, and `snapshotIsCached`
+  // compared FILENAME dates. Both were wrong. On an untargeted build the live
+  // query is never attempted, so liveDenied is false; and the corrupted file
+  // ExampleCod today's NAME, so snapshotIsCached was false too. The card therefore
+  // sailed past this blocker and rendered a 71-day-old total green, complete
+  // with the unconditional "Threshold band:" line below, which in turn made
+  // awsCostsIsCleanThresholdAlert exempt it from defect reporting.
+  // The condition is now purely about whether the CONTENT can be dated to today.
   const liveDenied = liveError && /AccessDenied|not authorized|ce:GetCostAndUsage/i.test(liveError);
-  const snapshotIsCached = latest.date !== date;
-  if (liveDenied && snapshotIsCached) {
+  if (!freshness.current) {
     return {
       title: 'AWS COSTS',
       real: false,
+      windowStart: freshness.windowStart,
+      windowEnd: freshness.windowEnd,
+      staleDays: freshness.staleDays,
       detail: [
-        "Current AWS cost cannot be read: the EC2 instance role lacks the ce:GetCostAndUsage Cost Explorer permission, so today's live spend could not be fetched.",
-        `Dated context only (not current): the last cached total was ${total} on ${latest.date}.`,
-        'Remediation: ExampleCo ce:GetCostAndUsage to the EC2 instance role secondbrain-ec2-ssm-role (an owner action), then the live MTD/30d figure returns.',
+        liveDenied
+          ? "Current AWS cost cannot be read: the EC2 instance role lacks the ce:GetCostAndUsage Cost Explorer permission, so today's live spend could not be fetched."
+          : `Current AWS cost cannot be verified: ${freshness.reason}.`,
+        `Dated context only (not current): the last readable total was ${total} covering ${
+          freshness.windowStart || 'an undeclared start'
+        } through ${freshness.windowEnd || 'an undeclared end'}, from agent/${path.basename(latest.file)}.`,
+        liveDenied
+          ? 'Remediation: ExampleCo ce:GetCostAndUsage to the EC2 instance role secondbrain-ec2-ssm-role (an owner action), then the live MTD/30d figure returns.'
+          : 'Remediation: re-run the live Cost Explorer scan on the EC2 build host (SECONDBRAIN_DATA_DIR=/opt/secondbrain/data node scripts/refresh-card.js aws_costs --publish).',
       ].join(' '),
     };
   }
@@ -8013,6 +8112,13 @@ function buildAwsCostsCard(dataDir, date, { allowLiveRefresh = true } = {}) {
   }
   return {
     title,
+    // Structured provenance so downstream consumers never have to re-parse
+    // prose to learn how old this number is.
+    windowStart: freshness.windowStart,
+    windowEnd: freshness.windowEnd,
+    staleDays: freshness.staleDays,
+    priorDay: freshness.priorDay,
+    snapshotFile: path.basename(latest.file),
     body: lines.join('\n'),
     real: true,
   };
@@ -9693,6 +9799,8 @@ module.exports = {
   isActionItemSpam,
   isSelfSentAsk,
   buildAwsCostsCard,
+  newsChromeSignals,
+  newsEvidenceLooksLikePublisherChrome,
   buildReputationCard,
   buildFullLifeBackupCard,
   buildVideoQueueCard,
