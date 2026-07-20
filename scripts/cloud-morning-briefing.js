@@ -6028,11 +6028,22 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
   // Life-archive backup freshness (the same source the FULL-LIFE card reads).
   try {
     const report = readJson(path.join(dataDir, 'life-archive', 'health-latest.json'), null);
-    if (report && Array.isArray(report.sources) && report.sources.length) {
+    const lifeFreshness = report ? lifeArchiveSnapshotFreshness(report, new Date()) : null;
+    if (report && Array.isArray(report.sources) && report.sources.length && lifeFreshness.fresh) {
       const flowing = report.sources.filter((s) => s.flowing_last_24h).length;
       push(
         flowing > 0 ? OK : BAD,
         `Life-archive backup: ${flowing}/${report.sources.length} sources flowed in the last 24h.`,
+      );
+    } else if (report && Array.isArray(report.sources) && report.sources.length) {
+      // Codex gate 77f4d75c42f6 finding 1: this row counted flowing_last_24h
+      // off a 42-day-old snapshot and pushed OK, so SYSTEM HEALTH showed the
+      // life archive GREEN while the FULL-LIFE card called the same file a
+      // defect. "Flowed in the last 24h" cannot be read from a snapshot that
+      // is not from the last 24h; the age gate has to come first.
+      push(
+        ExampleCo,
+        `Life-archive backup: snapshot is ${lifeFreshness.ageDays == null ? 'undated' : `${lifeFreshness.ageDays} days stale`}, so 24h flow cannot be verified.`,
       );
     } else {
       push(ExampleCo, 'Life-archive backup: health snapshot not present on this host.');

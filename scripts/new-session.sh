@@ -76,11 +76,40 @@ if [ -e "$WORKTREE/node_modules" ]; then
   echo "[new-session] node_modules already present in worktree, leaving it."
 elif [ -d "$MAIN/node_modules" ]; then
   # mklink needs backslash paths and runs via cmd. /J = directory junction.
-  WIN_LINK="$(printf '%s' "$WORKTREE/node_modules" | sed 's#/#\\#g')"
-  WIN_TARGET="$(printf '%s' "$MAIN/node_modules" | sed 's#/#\\#g')"
-  cmd //c "mklink /J \"$WIN_LINK\" \"$WIN_TARGET\"" >/dev/null \
-    && echo "[new-session] junctioned node_modules -> $MAIN/node_modules" \
-    || echo "[new-session] WARNING: could not junction node_modules; run 'npm install' in the worktree if needed." >&2
+  #
+  # MSYS_NO_PATHCONV=1 is load-bearing. Under Git Bash, MSYS rewrites anything
+  # that looks like a POSIX path inside the command, so the `/J` flag was being
+  # mangled into a filesystem path and mklink failed every time. The `cmd //c`
+  # double-slash was an older workaround for the same mangling and it does not
+  # cover flags in the quoted command string.
+  #
+  # This failed SILENTLY in practice: the warning goes to stderr and callers
+  # pipe through `tail`, so every fresh worktree came up with no node_modules
+  # and the first `npx vitest` died with "Cannot find module 'vitest/config'".
+  # Verified failing then fixed on 2026-07-20 while working out of sess-gate3
+  # and sess-wedge.
+  # ROOT CAUSE of the silent failure, measured 2026-07-20: the previous
+  # `sed 's#/#\\#g'` here died with "unterminated `s' command" under Git Bash,
+  # so WIN_LINK and WIN_TARGET were both EMPTY STRINGS and mklink was handed
+  # nothing. The error went to stderr inside a command substitution and the
+  # junction step then reported only its generic warning, so the real cause was
+  # invisible. Bash parameter expansion needs no subprocess and cannot be
+  # mangled by MSYS path conversion.
+  WIN_LINK="${WORKTREE//\//\\}\\node_modules"
+  WIN_TARGET="${MAIN//\//\\}\\node_modules"
+  if [ -z "$WIN_LINK" ] || [ -z "$WIN_TARGET" ]; then
+    echo "[new-session] WARNING: could not build Windows paths for the junction (link='$WIN_LINK' target='$WIN_TARGET')." >&2
+  fi
+  if MSYS_NO_PATHCONV=1 cmd /c "mklink /J \"$WIN_LINK\" \"$WIN_TARGET\"" >/dev/null 2>&1; then
+    echo "[new-session] junctioned node_modules -> $MAIN/node_modules"
+  else
+    echo "[new-session] WARNING: could not junction node_modules; run 'npm install' in the worktree if needed." >&2
+  fi
+  # Verify rather than trust the exit code: a junction that did not appear is
+  # the actual failure mode, and it must not be reported as success.
+  if [ ! -e "$WORKTREE/node_modules" ]; then
+    echo "[new-session] WARNING: node_modules is STILL absent after the junction attempt. Tests in this worktree will fail to resolve vitest." >&2
+  fi
 else
   echo "[new-session] WARNING: $MAIN/node_modules not found; run 'npm install' in the worktree before working." >&2
 fi
