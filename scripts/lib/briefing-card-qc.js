@@ -540,7 +540,11 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
   // "Claude Max"), so they are soft-neutralized the same way. Every other card is
   // checked verbatim. HARD error signatures survive neutralization and still fail.
   const isNews = isNewsCardTitle(title);
-  const isSoftNeutralized = isSoftTermNeutralizedCardTitle(title);
+  // Key aws_costs soft-neutralization on the card ID, not the title. The builder
+  // title format varies (and a title-only regex missed the producer path), so
+  // the id the producer passes is the reliable signal. Self-heal 2026-07-20.
+  const isSoftNeutralized =
+    isSoftTermNeutralizedCardTitle(title) || id === 'aws_costs' || id === 'token_usage';
   const operationalScope = isNews
     ? [title, neutralizeNewsSoftTerms(body)].filter(Boolean).join('\n')
     : isSoftNeutralized
