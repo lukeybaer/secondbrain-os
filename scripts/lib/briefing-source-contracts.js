@@ -638,10 +638,23 @@ function simpleProducer({ family, cards, command, timeoutMs, artifacts, evidence
         runCommand,
         node,
         cwd,
-        commands: [[command(date, dataDir), timeoutMs, extraEnv]],
+        // A contract may return null from command() to mean "not on this host".
+        // refreshCommandSet passes args straight to runNodeCommand, so a null
+        // must never reach it; an EMPTY commands array is a well-defined no-op
+        // loop, and the contract's evidence check then decides the outcome.
+        commands: [[command(date, dataDir), timeoutMs, extraEnv]].filter(
+          ([args]) => Array.isArray(args) && args.length > 0,
+        ),
         evidence: contractEvidence,
       }),
   };
+}
+
+// The PC AWS generator needs named profiles. A Linux host serving
+// /opt/secondbrain is the cloud build host, where those do not exist.
+function awsSourceGeneratorRunsHere() {
+  if (process.platform !== 'linux') return true;
+  return !String(process.env.SECONDBRAIN_DATA_DIR || '').startsWith('/opt/secondbrain');
 }
 
 const CONTRACTS = {
@@ -680,7 +693,18 @@ const CONTRACTS = {
   'aws-costs': simpleProducer({
     family: 'aws-costs',
     cards: ['aws_costs'],
-    command: (date) => ['scripts/aws-cost-section.js', '--date', date],
+    // THE CORRUPTION SOURCE (Codex gate 50032535f442). aws-cost-section.js
+    // always passes --profile, and the EC2 instance role has no named
+    // profiles, so on the cloud host it cannot authenticate. It then falls
+    // back to its last good snapshot and REWRITES it under today's filename.
+    // That is how a byte-identical copy of aws-costs-2026-05-10.md landed as
+    // aws-costs-2026-07-20.md and clobbered 29 consecutive healthy artifacts.
+    //
+    // On EC2 this generator can only destroy, so it is skipped there and the
+    // per-card producer's live Cost Explorer path (instance role, no profile)
+    // is the only writer. On the desktop, where profiles exist, it still runs.
+    command: (date) =>
+      awsSourceGeneratorRunsHere() ? ['scripts/aws-cost-section.js', '--date', date] : null,
     timeoutMs: 5 * 60 * 1000,
     // The live card reads the dated markdown snapshot, not a legacy JSON alias.
     evidence: datedArtifactEvidence((date) => [['agent', `aws-costs-${date}.md`]]),
