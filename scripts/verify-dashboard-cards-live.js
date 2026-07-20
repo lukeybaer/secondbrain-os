@@ -2545,8 +2545,20 @@ function verifyDashboard(html, runDate, options = {}) {
   const defects = [];
   const present = [];
   const advisories = [];
-  defects.push(...milestoneOrderDefects(html));
-  defects.push(...dashboardCardOrderDefects(tiles));
+  // Per-card grade (ExampleCo 2026-07-20: "every path is per-card. Grader too."): a
+  // single-card refresh grades ONLY its target card's tile, never the whole
+  // board. options.scopeCardIds narrows the grading loop to those cards and
+  // skips every board-level check (card order, milestone order, Blockers
+  // accounting) because those are whole-board concerns owned by the full 5:30
+  // build, not a per-card heal. Same ONE render-QC (invariant 2/13), scoped:
+  // the scoped result ExampleCos scoped/scopeCardIds so writeCanonicalArtifactFromResult
+  // merges it over the persisted artifact, leaving every other card untouched.
+  const scopeSet = new Set((options.scopeCardIds || []).map(String).filter(Boolean));
+  const scoped = scopeSet.size > 0;
+  if (!scoped) {
+    defects.push(...milestoneOrderDefects(html));
+    defects.push(...dashboardCardOrderDefects(tiles));
+  }
   // Per-card defect buckets so the publish-then-label wire-in can stamp each card
   // clean/defect on its tile and name the defective ones on the Blockers card.
   // Every manifest card gets an entry; a card with zero defects is clean.
@@ -2567,6 +2579,7 @@ function verifyDashboard(html, runDate, options = {}) {
   };
 
   for (const card of manifest.CARDS) {
+    if (scoped && !scopeSet.has(card.id)) continue;
     const matches = findTiles(tiles, card);
     const tile = matches[0] || null;
     if (tile && tile.name) cardTitleById.set(card.id, tile.name);
@@ -2649,56 +2662,67 @@ function verifyDashboard(html, runDate, options = {}) {
     }
   }
 
-  for (const named of blockersNamedCardDefects(tiles, defectsByCard)) {
-    recordCard(named.id, [named.defect]);
-  }
+  // Board-level Blockers accounting is skipped in a per-card grade: the reported
+  // blocker count vs distinct-defective-card reconciliation is a whole-board
+  // computation, and a scoped heal cannot see the other cards' live state. The
+  // Blockers card's canonical line is instead recomputed by
+  // writeCanonicalArtifactFromResult/mergeScopedArtifact from the persisted
+  // artifact plus this one card, and by refreshPublishedBlockersReconciliationLine.
+  if (!scoped) {
+    for (const named of blockersNamedCardDefects(tiles, defectsByCard)) {
+      recordCard(named.id, [named.defect]);
+    }
 
-  // BLOCKERS-CARD FLOOR: the briefing renders its own "N hard blockers" count on
-  // the Blockers card. The QC must never read fully clean while Blockers itself
-  // says the briefing is blocked. Do not compare the blocker count one-to-one
-  // against defective rendered cards: one red SYSTEM HEALTH card can legitimately
-  // contain several subsystem blockers.
-  const blockersTile = tiles.find((t) => /\bblockers\b/i.test(t.name));
-  const reportedBlockers = blockersTile
-    ? parseInt((String(blockersTile.metric).match(/\d+/) || ['0'])[0], 10)
-    : 0;
-  // distinctDefectiveCards is the canonical denominator for BOTH accounting
-  // checks: one defective card counts once, whether it ExampleCos one defect string
-  // or several (a red SYSTEM HEALTH with multiple subsystem strings is ONE card),
-  // and a card NAMED on the Blockers card as unresolved is already recorded into
-  // defectsByCard above (blockersNamedCardDefects), so it counts here as exactly
-  // one defective card. Using this single basis keeps BLOCKERS-FLOOR and
-  // BLOCKERS-COUNT reconciled instead of comparing the reported count against the
-  // raw defect-string total (which double-counted multi-defect cards and produced
-  // the "5 reported but 7 found" drift, live 2026-06-29 blockers-accounting defect).
-  const distinctDefectiveCards = [...defectsByCard.values()].filter((b) => b.length).length;
-  if (reportedBlockers > 0 && distinctDefectiveCards === 0) {
-    defects.push(
-      `BLOCKERS-FLOOR: the briefing's Blockers card reports ${reportedBlockers} hard blocker(s) but the QC found no defective cards; the QC must not call the dashboard clean while Blockers says it is blocked`,
-    );
-  }
-  // STRICT, never papered over: every distinct defective card (including each card
-  // named on the Blockers card as unresolved) must be reflected in the reported
-  // hard-blocker count. When the reported count is lower than the distinct
-  // defective-card count, the Blockers card under-reports and this fires.
-  if (blockersTile && distinctDefectiveCards > 0 && reportedBlockers < distinctDefectiveCards) {
-    defects.push(
-      `BLOCKERS-COUNT: the Blockers card reports ${reportedBlockers} hard blocker(s), but live render QC found ${distinctDefectiveCards} defective card(s); every defective card (including each card named on the Blockers card as unresolved) must count as a blocker`,
-    );
-  }
+    // BLOCKERS-CARD FLOOR: the briefing renders its own "N hard blockers" count on
+    // the Blockers card. The QC must never read fully clean while Blockers itself
+    // says the briefing is blocked. Do not compare the blocker count one-to-one
+    // against defective rendered cards: one red SYSTEM HEALTH card can legitimately
+    // contain several subsystem blockers.
+    const blockersTile = tiles.find((t) => /\bblockers\b/i.test(t.name));
+    const reportedBlockers = blockersTile
+      ? parseInt((String(blockersTile.metric).match(/\d+/) || ['0'])[0], 10)
+      : 0;
+    // distinctDefectiveCards is the canonical denominator for BOTH accounting
+    // checks: one defective card counts once, whether it ExampleCos one defect string
+    // or several (a red SYSTEM HEALTH with multiple subsystem strings is ONE card),
+    // and a card NAMED on the Blockers card as unresolved is already recorded into
+    // defectsByCard above (blockersNamedCardDefects), so it counts here as exactly
+    // one defective card. Using this single basis keeps BLOCKERS-FLOOR and
+    // BLOCKERS-COUNT reconciled instead of comparing the reported count against the
+    // raw defect-string total (which double-counted multi-defect cards and produced
+    // the "5 reported but 7 found" drift, live 2026-06-29 blockers-accounting defect).
+    const distinctDefectiveCards = [...defectsByCard.values()].filter((b) => b.length).length;
+    if (reportedBlockers > 0 && distinctDefectiveCards === 0) {
+      defects.push(
+        `BLOCKERS-FLOOR: the briefing's Blockers card reports ${reportedBlockers} hard blocker(s) but the QC found no defective cards; the QC must not call the dashboard clean while Blockers says it is blocked`,
+      );
+    }
+    // STRICT, never papered over: every distinct defective card (including each card
+    // named on the Blockers card as unresolved) must be reflected in the reported
+    // hard-blocker count. When the reported count is lower than the distinct
+    // defective-card count, the Blockers card under-reports and this fires.
+    if (blockersTile && distinctDefectiveCards > 0 && reportedBlockers < distinctDefectiveCards) {
+      defects.push(
+        `BLOCKERS-COUNT: the Blockers card reports ${reportedBlockers} hard blocker(s), but live render QC found ${distinctDefectiveCards} defective card(s); every defective card (including each card named on the Blockers card as unresolved) must count as a blocker`,
+      );
+    }
 
-  // BLOCKERS UNDER-REPORT: complementary to BLOCKERS-FLOOR. A specific card that
-  // is blocked (red tile or "BLOCKER:"/"hard blocker" in its body) but is not
-  // NAMED on the top Blockers card -- the contradiction ExampleCo caught 2026-06-22
-  // (OTTER SPEAKER PARETO body says "BLOCKER:" while the Blockers card says
-  // "Clear"). Not bucketed per-card: it is a cross-card consistency defect.
-  defects.push(...blockersUnderReportDefects(tiles));
+    // BLOCKERS UNDER-REPORT: complementary to BLOCKERS-FLOOR. A specific card that
+    // is blocked (red tile or "BLOCKER:"/"hard blocker" in its body) but is not
+    // NAMED on the top Blockers card -- the contradiction ExampleCo caught 2026-06-22
+    // (OTTER SPEAKER PARETO body says "BLOCKER:" while the Blockers card says
+    // "Clear"). Not bucketed per-card: it is a cross-card consistency defect.
+    defects.push(...blockersUnderReportDefects(tiles));
+  }
 
   // One status per manifest card: 'clean' when it has zero defects, else 'defect'.
   // `title` ExampleCos the real rendered tile name (when the card rendered a
   // tile at all) so downstream consumers (scripts/lib/live-board-truth.js)
-  // can show ExampleCo the actual tile name, not the bare manifest id.
-  const cardStatuses = manifest.CARDS.map((c) => {
+  // can show ExampleCo the actual tile name, not the bare manifest id. In a per-card
+  // grade only the scoped cards get a status; every other card is left to the
+  // persisted artifact by the merge.
+  const gradedCards = scoped ? manifest.CARDS.filter((c) => scopeSet.has(c.id)) : manifest.CARDS;
+  const cardStatuses = gradedCards.map((c) => {
     const cardDefects = defectsByCard.get(c.id) || [];
     return {
       id: c.id,
@@ -2716,6 +2740,7 @@ function verifyDashboard(html, runDate, options = {}) {
     advisories,
     cardStatuses,
     cardTitleById: Object.fromEntries(cardTitleById),
+    ...(scoped ? { scoped: true, scopeCardIds: [...scopeSet] } : {}),
   };
 }
 

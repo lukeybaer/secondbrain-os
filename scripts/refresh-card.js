@@ -1074,9 +1074,15 @@ async function runVerify({ cardId, date, dataDir }) {
     );
     return;
   }
+  const scopedCardIds = scopedCardIdsForRefresh(cardId);
   let result;
   try {
-    result = liveQc.verifyDashboard(fetched.html, date);
+    // Per-card grade (ExampleCo 2026-07-20): hand the grader the scope so it grades
+    // ONLY these cards and skips every whole-board check. An older deployed
+    // grader that ignores the option still returns a full result; the
+    // scopeDashboardResult fallback below narrows it, so this stays backward
+    // compatible during a rolling deploy.
+    result = liveQc.verifyDashboard(fetched.html, date, { scopeCardIds: scopedCardIds });
   } catch (e) {
     // The grader itself failed to execute. We hold no opinion about the card.
     reportExampleCoLiveVerdict(`live render QC threw: ${(e && e.message) || e}`, 'verifier-threw');
@@ -1117,9 +1123,11 @@ async function runVerify({ cardId, date, dataDir }) {
     process.exitCode = 1;
     return;
   }
-  const scopedCardIds = scopedCardIdsForRefresh(cardId);
-  const scopedResult =
-    typeof liveQc.scopeDashboardResult === 'function'
+  // The grader already scoped the result when it honored scopeCardIds; only fall
+  // back to the post-filter for an older grader that returned a full board.
+  const scopedResult = result.scoped
+    ? result
+    : typeof liveQc.scopeDashboardResult === 'function'
       ? liveQc.scopeDashboardResult(result, scopedCardIds)
       : result;
   if (typeof liveQc.writeCanonicalArtifactFromResult === 'function') {
