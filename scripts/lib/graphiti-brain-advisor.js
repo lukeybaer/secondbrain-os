@@ -755,12 +755,13 @@ function buildAdvisorPromptBlock(envelope) {
       lines.push(`- Ref ${index + 1} [${fact.id}] ${fact.fact}${temporal ? ` (${temporal})` : ''}`);
     }
     lines.push(
-      'Use only facts that materially change the work. Write one concise verdict-first line: "Graphiti impact: Impacted by N/T recalled facts (refs: 1, 3). <brief impact>. Other checks that did not help: <brief categories>." If none changed the work, start "Graphiti impact: Not impacted (0/T used)." A timeout starts "Timed out." and an unavailable advisor starts "Failed." Ordinal refs create the durable per-fact receipt without exposing UUIDs.',
+      'Use only facts that materially change the work. IF a recalled fact shaped this answer, add ONE concise verdict line: "Graphiti impact: Impacted by N/T recalled facts (refs: 1, 3). <brief impact>." Ordinal refs create the durable per-fact receipt without exposing UUIDs. If nothing changed the work, no visible impact line is required (g25, ExampleCo 2026-07-20: trailer optional, one answer per prompt).',
     );
   }
-  lines.push(
-    'Place Codex impact before Graphiti impact, and Graphiti impact immediately before TLDR.',
-  );
+  // g25 amendment (ExampleCo 2026-07-20): the Codex/Graphiti/TLDR trailer is optional,
+  // never forced. When an impact line IS included, keep the order Codex impact,
+  // then Graphiti impact, then TLDR; but do not manufacture a trailer just to
+  // satisfy a format on a reply that does not need one.
   return lines.join('\n');
 }
 
