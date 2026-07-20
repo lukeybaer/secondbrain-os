@@ -12,6 +12,7 @@ const { defectiveCardCount, readLiveBoardArtifact } = require('./live-board-trut
 const { providerReceiptPath, readProviderUsage } = require('./token-usage-receipts.js');
 const { listCallSummaryArtifacts } = require('./otter-exec-summary-artifacts.js');
 const { renderOtterSpeakerParetoCard } = require('./otter-speaker-pareto-card.js');
+const { buildBigDecisionsSection, renderBigDecisionsMarkdown } = require('./big-decisions-card.js');
 
 const SCHEMA_VERSION = 1;
 const CARD_ARTIFACT_REL_DIR = path.join('agent', 'briefing-cards');
@@ -210,6 +211,9 @@ function inferMarkdownSectionStatus(body, cardId = '') {
   ) {
     return 'blocked';
   }
+  if (/^Card refresh pending:\s*fresh data and scoped live QC are still in progress\./i.test(first)) {
+    return 'blocked';
+  }
   if (/^(HARD-BLOCKED|BLOCKED\b|Blocked:|This card is held\b)/i.test(first)) return 'blocked';
   if (/^Status:\s*(blocked|red|stale|unavailable)\b/i.test(firstFew)) return 'blocked';
   if (/^Severity:\s*(red|blocked)\b/i.test(firstFew)) return 'blocked';
@@ -298,21 +302,192 @@ function artifactContentFailures(artifact) {
   ) {
     failures.push('card ExampleCos broken cloud-build fallback copy');
   }
+  if (/Card refresh pending:\s*fresh data and scoped live QC are still in progress\./i.test(markdown)) {
+    failures.push('card ExampleCos pending refresh shell copy');
+  }
   const parsed = splitMarkdownCards(markdown)[0] || {
     title: artifact.title || cardTitle(artifact.id),
     body: markdown,
   };
+  const qcFailures = qcCard(
+    {
+      id: artifact.id,
+      title: parsed.title || artifact.title || cardTitle(artifact.id),
+      body: parsed.body || '',
+    },
+    { surface: 'card-artifact' },
+  ).failures.filter(
+    (failure) =>
+      !(
+        artifact.id === 'big_decisions' &&
+        /raw operational detail/i.test(String(failure || ''))
+      ),
+  );
   return uniqueList([
     ...failures,
-    ...qcCard(
-      {
-        id: artifact.id,
-        title: parsed.title || artifact.title || cardTitle(artifact.id),
-        body: parsed.body || '',
-      },
-      { surface: 'card-artifact' },
-    ).failures,
+    ...qcFailures,
   ]);
+}
+
+function scheduleEventStart(event) {
+  return event && event.start && (event.start.dateTime || event.start.date)
+    ? event.start.dateTime || event.start.date
+    : event && (event.date || event.when || event.startTime);
+}
+
+function ctDateKeyFromEventStart(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) return raw.slice(0, 10);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
+function addIsoDays(date, days) {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function scheduleDayLabel(dayKey, targetDate) {
+  if (dayKey === targetDate) return 'Today';
+  const d = new Date(`${dayKey}T00:00:00Z`);
+  if (!Number.isFinite(d.getTime())) return dayKey;
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  }).format(d);
+}
+
+function scheduleTime(event) {
+  const raw = scheduleEventStart(event);
+  if (!raw || /^\d{4}-\d{2}-\d{2}$/.test(String(raw))) return 'All day';
+  const d = new Date(raw);
+  if (!Number.isFinite(d.getTime())) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(d);
+}
+
+function normalizeScheduleEvents(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (Array.isArray(raw.events)) return raw.events;
+  if (Array.isArray(raw.items)) return raw.items;
+  if (Array.isArray(raw.days)) {
+    return raw.days.flatMap((day) =>
+      (day.events || day.meetings || []).map((event) => ({ ...event, date: event.date || day.date })),
+    );
+  }
+  return [];
+}
+
+function isRoutineScheduleItem(title) {
+  return /\b(lock doors?|vitamins?|pray|read the word|routine|reminder|alarm|sleep|wake up)\b/i.test(
+    String(title || ''),
+  );
+}
+
+function produceMeetingsCardArtifact({ date, dataDir, now = new Date() }) {
+  const title = cardTitle('meetings');
+  const sourcePath = [
+    path.join(dataDir, 'agent', 'google-calendar-snapshot.json'),
+    path.join(dataDir, 'agent', 'calendar-snapshot.json'),
+    path.join(dataDir, 'calendar', 'events.json'),
+    path.join(dataDir, 'calendar-events.json'),
+  ].find((file) => fs.existsSync(file));
+  if (!sourcePath) return null;
+  const raw = readJson(sourcePath);
+  const horizonEnd = addIsoDays(date, 7);
+  const events = normalizeScheduleEvents(raw)
+    .map((event) => {
+      const day = ctDateKeyFromEventStart(scheduleEventStart(event));
+      return {
+        day,
+        start: String(scheduleEventStart(event) || ''),
+        time: scheduleTime(event),
+        title: String(event.title || event.summary || event.name || 'Calendar item').trim(),
+        status: String(event.status || ''),
+      };
+    })
+    .filter(
+      (event) =>
+        event.day >= date &&
+        event.day <= horizonEnd &&
+        !/cancelled/i.test(event.status) &&
+        event.title &&
+        !isRoutineScheduleItem(event.title),
+    )
+    .sort((a, b) => a.day.localeCompare(b.day) || a.start.localeCompare(b.start));
+  const todayCount = events.filter((event) => event.day === date).length;
+  const upcomingCount = events.filter((event) => event.day !== date).length;
+  const body = [
+    events.length
+      ? `Today: ${todayCount} meeting${todayCount === 1 ? '' : 's'}; next 7 days: ${upcomingCount} upcoming non-routine item${upcomingCount === 1 ? '' : 's'}.`
+      : 'Today: no meetings; next 7 days: no non-routine calendar items (calendar read OK).',
+    `Source: calendar snapshot read OK; ${Number(raw && raw.eventCount) || normalizeScheduleEvents(raw).length || 0} calendar event(s) scanned.`,
+  ];
+  if (!events.length) {
+    body.push('No non-routine meetings today or next 7 days.');
+  } else {
+    const groups = new Map();
+    for (const event of events) {
+      if (!groups.has(event.day)) groups.set(event.day, []);
+      groups.get(event.day).push(event);
+    }
+    for (const [day, rows] of groups) {
+      body.push(`${scheduleDayLabel(day, date)}:`);
+      rows.forEach((event, index) => {
+        body.push(`${index + 1}. ${[event.time, event.title].filter(Boolean).join(' - ')}`);
+      });
+    }
+  }
+  const qc = qcCard({ id: 'meetings', title, body: body.join('\n') }, { surface: 'card-artifact' });
+  return createCardArtifact({
+    id: 'meetings',
+    title,
+    date,
+    kind: 'data',
+    status: qc.ok ? 'clean' : 'defect',
+    generatedAt: now.toISOString(),
+    markdown: `${title}:\n${body.join('\n')}`,
+    source: { mode: 'calendar-snapshot', path: path.relative(dataDir, sourcePath) },
+    qc,
+  });
+}
+
+function produceBigDecisionsCardArtifact({ date, dataDir, now = new Date() }) {
+  const section = buildBigDecisionsSection({
+    ledgerFile: path.join(dataDir, 'agent', 'big-decisions.jsonl'),
+    now,
+  });
+  const markdown = renderBigDecisionsMarkdown(section);
+  if (!markdown) return null;
+  const body = markdown.replace(/^BIG DECISIONS:\s*/i, '').trim();
+  const qc = qcCard({ id: 'big_decisions', title: cardTitle('big_decisions'), body }, { surface: 'card-artifact' });
+  return createCardArtifact({
+    id: 'big_decisions',
+    title: cardTitle('big_decisions'),
+    date,
+    kind: 'data',
+    status: qc.ok ? 'clean' : 'defect',
+    generatedAt: now.toISOString(),
+    markdown,
+    source: { mode: 'big-decisions-ledger', path: 'agent/big-decisions.jsonl' },
+    qc,
+  });
 }
 
 function normalizeArtifactQuality(artifact) {
@@ -1254,6 +1429,14 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
   }
   if (card.id === 'action_items') {
     const artifact = produceActionItemsCardArtifact({ date, dataDir, now });
+    if (artifact) return artifact;
+  }
+  if (card.id === 'meetings') {
+    const artifact = produceMeetingsCardArtifact({ date, dataDir, now });
+    if (artifact) return artifact;
+  }
+  if (card.id === 'big_decisions') {
+    const artifact = produceBigDecisionsCardArtifact({ date, dataDir, now });
     if (artifact) return artifact;
   }
   if (card.id === 'amy_projects') {
