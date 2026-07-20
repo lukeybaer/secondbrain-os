@@ -21,8 +21,39 @@
  */
 
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const WORKTREE_SEGMENT = /^(.*)[\\/]\.claude[\\/]worktrees[\\/][^\\/]+/;
+
+// Codex gate 05a8e5b45303 finding 2: the regex above only recognises worktrees
+// NESTED under <main>/.claude/worktrees. scripts/new-session.sh creates them as
+// SIBLINGS under sb-sessions/<name>, so the pattern never matched, the shared
+// checkout was never added, and sharedCheckoutRoots() returned only the
+// disposable session path. codex-peer-review.js then wrote its receipt solely
+// into a directory that land.js reaps, so the two-bot gate could pass with no
+// durable copy of the review that authorised the deploy.
+//
+// Adding a second path pattern would just fail again on the next layout, so
+// ask git instead. `--git-common-dir` resolves to the MAIN repo's .git from
+// inside any worktree regardless of where it sits on disk, and its parent is
+// the shared checkout. The regex stays as a fallback for callers that pass a
+// path with no git available.
+function gitSharedCheckout(fromDir) {
+  try {
+    const common = execFileSync('git', ['-C', fromDir, 'rev-parse', '--git-common-dir'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+    }).trim();
+    if (!common) return null;
+    const abs = path.isAbsolute(common) ? common : path.resolve(fromDir, common);
+    // <root>/.git -> <root>. A bare or unusual layout yields no useful parent.
+    if (path.basename(abs).toLowerCase() !== '.git') return null;
+    return path.dirname(abs);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Repo roots to search or mirror into, nearest first, shared checkout last.
@@ -54,6 +85,12 @@ function sharedCheckoutRoots(opts = {}) {
       current = m[1];
       add(current);
     }
+    // Git is authoritative about which checkout is the real one, and it works
+    // for sibling worktrees (sb-sessions/<name>) that the path pattern above
+    // cannot see. Runs after the pattern so nearest-first ordering is kept and
+    // the shared checkout still lands last.
+    const shared = gitSharedCheckout(path.resolve(String(start)));
+    if (shared) add(shared);
   };
 
   unwind(cwd);
