@@ -85,7 +85,17 @@ function isSelfHealHealthCardTitle(title) {
 // LLM-subscription card and the SYSTEM HEALTH internal-infra roster. News cards
 // are handled on their own third-party-prose path.
 function isSoftTermNeutralizedCardTitle(title) {
-  return isTokenUsageCardTitle(title) || isSystemHealthCardTitle(title);
+  // AWS COSTS legitimately names cloud/provider services as its OWN content: a
+  // Cost Explorer breakdown lists line items like "Claude Sonnet 4.6 (Amazon
+  // Bedrock Edition)". Like token_usage ("Claude Max") and SYSTEM HEALTH
+  // ("active provider"), its SOFT vendor terms are neutralized before the
+  // operational-leak check, while HARD error signatures (HTTP 5xx, traceback)
+  // still fail. Self-heal aws_costs BLOCKERS-NAMED-CARD fix, 2026-07-20.
+  return (
+    isTokenUsageCardTitle(title) ||
+    isSystemHealthCardTitle(title) ||
+    /^AWS COSTS\b/i.test(String(title || '').trim())
+  );
 }
 
 // The otter speaker-pareto card mixes Amy's status preamble (As of / Freshness /
@@ -423,7 +433,9 @@ function otterCallHistoryContentFailures({ id, title, body, surface = 'briefing-
     );
   }
   if (/\b\d+\.\s+\d\w?\b/i.test(text)) {
-    failures.push(`${prefix}: OTTER-CALL-SUMMARY splits a numeric value while trimming the call summary`);
+    failures.push(
+      `${prefix}: OTTER-CALL-SUMMARY splits a numeric value while trimming the call summary`,
+    );
   }
   if (
     /\b(?:Briefing summary|Detail:)\b/i.test(text) ||
@@ -458,7 +470,10 @@ function otterCallHistoryContentFailures({ id, title, body, surface = 'briefing-
   ];
   const missingPeople = [];
   for (const row of rows) {
-    if (summaryNamesPersonAsParticipant(row.summary, /\bExampleCo\b/i) && !/\bExampleCo\b/i.test(row.speakers)) {
+    if (
+      summaryNamesPersonAsParticipant(row.summary, /\bExampleCo\b/i) &&
+      !/\bExampleCo\b/i.test(row.speakers)
+    ) {
       missingPeople.push(`${row.title || 'call'}:ExampleCo`);
     }
     for (const [display, rx] of expectedPeople) {
