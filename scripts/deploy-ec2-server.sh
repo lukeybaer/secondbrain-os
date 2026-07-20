@@ -306,6 +306,46 @@ cleanup_deploy_locks() {
 trap cleanup_deploy_locks EXIT
 
 # ============================================================================
+# SOURCE-PROVENANCE GATE (2026-07-19): runs BEFORE the atomic swap below.
+# ============================================================================
+# Defect class this kills: shipping a sha that is not origin/master. This script
+# used to take `git rev-parse HEAD` and ship it, with no fetch, no comparison to
+# origin/master, and no ancestry check anywhere before the swap. Every other
+# gate here is an INTEGRITY check (does the tree parse, require, import-smoke,
+# answer /health); none of them is a PROVENANCE check, and a stale tree passes
+# integrity perfectly. On 2026-07-19 sha 59d92950 shipped BEHIND master and only
+# a human reading the receipt afterward caught it. record-ec2-deploy-receipt.js
+# below runs AFTER the swap is already live and only WARNS, so it can report the
+# accident but cannot prevent it.
+#
+# Fail CLOSED: fetch origin and refuse unless the sha being shipped IS
+# origin/master. Behind (stale), ahead (unlanded), diverged, and any unprovable
+# state all refuse, naming both shas. Override for genuine emergencies:
+# SB_DEPLOY_ALLOW_STALE_SOURCE=1, which prints a loud warning and records the
+# override to data/agent/deploy-provenance-overrides.jsonl.
+#
+# The gate EMITS the exact sha it approved, and the release below ships that
+# pinned sha after re-proving HEAD has not moved. Without the pin this would be
+# a TOCTOU hole: the gate checks HEAD here, the release re-runs
+# `git rev-parse HEAD` ~80 lines later, and the worktree lock only stops the
+# janitor from reaping the tree, not a concurrent checkout/reset/rebase from
+# moving the ref in between (Codex peer review, 2026-07-19).
+echo "[deploy] source-provenance gate: verifying the deploying sha is origin/master"
+PROVENANCE_SHA_FILE="$(mktemp "${TMPDIR:-/tmp}/sb-deploy-provenance-XXXXXX")"
+cleanup_provenance_tmp() { rm -f "$PROVENANCE_SHA_FILE" 2>/dev/null || true; }
+if ! node "$ROOT/scripts/check-deploy-provenance.js" --emit-sha-file "$PROVENANCE_SHA_FILE"; then
+  cleanup_provenance_tmp
+  echo "[deploy] REFUSED: source-provenance gate failed (named shas + reason above). /opt is untouched. Land your work, then redeploy from a checkout at origin/master, or override with SB_DEPLOY_ALLOW_STALE_SOURCE=1." >&2
+  exit 1
+fi
+VERIFIED_SHA="$(tr -d '[:space:]' < "$PROVENANCE_SHA_FILE")"
+cleanup_provenance_tmp
+if [ -z "$VERIFIED_SHA" ]; then
+  echo "[deploy] REFUSED: the source-provenance gate passed but emitted no sha, so there is nothing to pin the release to (fail closed)." >&2
+  exit 1
+fi
+
+# ============================================================================
 # DEPLOY-WINDOW GUARD (2026-07-19): runs BEFORE the atomic swap below.
 # ============================================================================
 # Race class this kills: an atomic symlink swap landing seconds after a
@@ -379,7 +419,14 @@ fi
 #     [ -L "$d" ] && continue; for f in "$d"/*; do [ -f "$f" ] && \
 #     cat "$f" >> "/opt/secondbrain-logs/orphan-shards-$(basename "$f")"; done; done
 SHA="$(git -C "$ROOT" rev-parse HEAD)"
-echo "[deploy] delegating live write to atomic-release.sh (sha $SHA)"
+# Ship the sha the provenance gate APPROVED, and prove HEAD is still that sha.
+# If the ref moved between the gate and here, the approval no longer covers what
+# we would ship, so refuse rather than deploy an unvetted commit.
+if [ "$SHA" != "$VERIFIED_SHA" ]; then
+  echo "[deploy] REFUSED: HEAD moved after the source-provenance gate approved it. approved=$VERIFIED_SHA now=$SHA. /opt is untouched. Re-run the deploy so the gate re-verifies the current sha." >&2
+  exit 1
+fi
+echo "[deploy] delegating live write to atomic-release.sh (sha $SHA, provenance-verified)"
 echo "[deploy]   ships /opt/secondbrain/server.js + /opt/secondbrain/ec2-server.js inside the release tree"
 echo "[deploy]   release logs/ is a symlink to the durable /opt/secondbrain-logs -- live log files survive the swap"
 if ! bash "$ROOT/scripts/lib/atomic-release.sh" \
