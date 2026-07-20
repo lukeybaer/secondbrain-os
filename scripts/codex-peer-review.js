@@ -16,7 +16,6 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const crypto = require('crypto');
 const { withCodexAmyPrelude } = require('./lib/codex-amy-prelude.js');
-const { sharedCheckoutRoots } = require('./lib/shared-checkout-root.js');
 
 const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
 const DEFAULT_RESULTS = path.join(REPO, 'data', 'agent', 'codex-peer-review-results.jsonl');
@@ -37,10 +36,6 @@ function parseArgs(argv) {
     else if (a === '--runner') out.runner = argv[++i];
     else if (a === '--focus') out.focus.push(argv[++i]);
     else if (a === '--title') out.title = argv[++i];
-    // --gate <id> stamps the receipt as a review OF a specific irreversible
-    // action (see GATED_ACTIONS in scripts/claude-hooks/two-bot-gate.mjs).
-    // The gate requires this declaration: keyword similarity is not consent.
-    else if (a === '--gate') out.gate = argv[++i];
   }
   return out;
 }
@@ -59,10 +54,7 @@ function looksLikePlaceholder(text) {
   try {
     const j = JSON.parse(s);
     const joined = JSON.stringify(j);
-    if (
-      joined.length < 180 &&
-      /\bplaceholder\b|\bstub\b|full findings in task prompt/i.test(joined)
-    ) {
+    if (joined.length < 180 && /\bplaceholder\b|\bstub\b|full findings in task prompt/i.test(joined)) {
       return true;
     }
   } catch {
@@ -93,40 +85,38 @@ function buildReviewPrompt({ artifactPath, text, focus = [], title }) {
           '- Lead with bugs, behavioral regressions, missing tests, and unsafe assumptions.',
           '- Call out any path that still writes only a placeholder or waits for manual handoff.',
         ].join('\n');
-  return withCodexAmyPrelude(
-    [
-      'You are Amy operating through the Codex runtime, acting as an automated peer reviewer for Claude Code.',
-      'Do not edit files. Inspect the repository read-only and produce review findings only.',
-      '',
-      `Artifact: ${rel(artifactPath)}`,
-      `Review title: ${title || path.basename(artifactPath)}`,
-      '',
-      'Review stance:',
-      '- Findings first, ordered by severity.',
-      '- Cite concrete files and lines whenever possible.',
-      '- Distinguish confirmed facts from inferences.',
-      '- If there are no issues, say so and name residual risk.',
-      '- Lifecycle note: this invocation writes its receipt after your answer returns. Review whether the code has a durable receipt path; do not flag the current run for lacking its own not-yet-written receipt.',
-      '',
-      'Focus:',
-      focusLines,
-      '',
-      'Return format:',
-      'VERDICT: approve | changes-required | blocked',
-      'FINDINGS:',
-      '- [severity] file:line - issue, impact, suggested fix',
-      'OPEN QUESTIONS:',
-      '- ...',
-      'TESTS/RISK:',
-      '- ...',
-      '',
-      'Artifact content follows. Use it as the starting point, but verify against source.',
-      '',
-      '```',
-      text,
-      '```',
-    ].join('\n'),
-  );
+  return withCodexAmyPrelude([
+    'You are Amy operating through the Codex runtime, acting as an automated peer reviewer for Claude Code.',
+    'Do not edit files. Inspect the repository read-only and produce review findings only.',
+    '',
+    `Artifact: ${rel(artifactPath)}`,
+    `Review title: ${title || path.basename(artifactPath)}`,
+    '',
+    'Review stance:',
+    '- Findings first, ordered by severity.',
+    '- Cite concrete files and lines whenever possible.',
+    '- Distinguish confirmed facts from inferences.',
+    '- If there are no issues, say so and name residual risk.',
+    '- Lifecycle note: this invocation writes its receipt after your answer returns. Review whether the code has a durable receipt path; do not flag the current run for lacking its own not-yet-written receipt.',
+    '',
+    'Focus:',
+    focusLines,
+    '',
+    'Return format:',
+    'VERDICT: approve | changes-required | blocked',
+    'FINDINGS:',
+    '- [severity] file:line - issue, impact, suggested fix',
+    'OPEN QUESTIONS:',
+    '- ...',
+    'TESTS/RISK:',
+    '- ...',
+    '',
+    'Artifact content follows. Use it as the starting point, but verify against source.',
+    '',
+    '```',
+    text,
+    '```',
+  ].join('\n'));
 }
 
 function writePrompt(prompt, promptDir = DEFAULT_PROMPT_DIR) {
@@ -145,9 +135,7 @@ function assertRealReview(review) {
 }
 
 function runCompanionCodexRunner({ promptPath, timeoutMin = 20, runner, spawnSyncFn = spawnSync }) {
-  const runnerPath = runner
-    ? path.resolve(REPO, runner)
-    : path.join(REPO, 'scripts', 'codex-run.js');
+  const runnerPath = runner ? path.resolve(REPO, runner) : path.join(REPO, 'scripts', 'codex-run.js');
   const args = [
     runnerPath,
     '--read-only',
@@ -164,9 +152,7 @@ function runCompanionCodexRunner({ promptPath, timeoutMin = 20, runner, spawnSyn
     windowsHide: true,
   });
   if (res.error || res.status !== 0) {
-    const detail = [res.error && res.error.message, res.stderr, res.stdout]
-      .filter(Boolean)
-      .join('\n');
+    const detail = [res.error && res.error.message, res.stderr, res.stdout].filter(Boolean).join('\n');
     throw new Error(`Codex peer review failed: ${detail.slice(0, 4000)}`);
   }
   const review = String(res.stdout || '').trim();
@@ -243,74 +229,6 @@ function appendJsonl(file, row) {
   fs.appendFileSync(file, JSON.stringify(row) + '\n', 'utf8');
 }
 
-/**
- * Every copy of the results file this receipt must land in.
- *
- * A review run from inside .claude/worktrees/<id> writes its receipt into that
- * worktree's data/agent, and the worktree gets reaped. The receipt is then gone
- * while the reviewed change is still live, so scripts/claude-hooks/two-bot-gate.mjs
- * re-blocks work that WAS peer reviewed and nobody can audit what was reviewed
- * before a deploy. Mirror into the shared checkout so the receipt outlives the
- * worktree. data/agent/*-peer-review-results.jsonl is gitignored runtime state,
- * so this never dirties the shared tree.
- */
-function durableResultsFiles(primary) {
-  // Identity by realpath, not by string. C:\Users\ExampleCod\secondbrain is a
-  // junction onto the real checkout, so two different-looking roots are often
-  // one physical file and must not receive the receipt twice.
-  const identity = (p) => {
-    const abs = path.resolve(p);
-    try {
-      return (
-        fs.realpathSync(path.dirname(abs)).toLowerCase() + '|' + path.basename(abs).toLowerCase()
-      );
-    } catch {
-      return abs.toLowerCase();
-    }
-  };
-
-  const files = [path.resolve(primary)];
-  const seen = new Set([identity(primary)]);
-  for (const root of sharedCheckoutRoots({ cwd: REPO, extraRoots: [REPO] })) {
-    if (!fs.existsSync(root)) continue;
-    const candidate = path.join(root, 'data', 'agent', path.basename(primary));
-    const key = identity(candidate);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    files.push(candidate);
-  }
-  return files;
-}
-
-const isWorktreeFile = (f) => /[\\/]\.claude[\\/]worktrees[\\/]/.test(f);
-
-function appendReceipt(primary, row) {
-  const written = [];
-  for (const file of durableResultsFiles(primary)) {
-    try {
-      appendJsonl(file, row);
-      written.push(file);
-    } catch (err) {
-      // The primary must succeed. A mirror failing (read-only volume, missing
-      // shared checkout) must not fail the review that already ran.
-      if (written.length === 0) throw err;
-    }
-  }
-  // A receipt that ExampleCos `gate` exists to unlock an irreversible action. If
-  // its ONLY copy sits in a worktree, the worktree gets reaped and the evidence
-  // for a production deploy disappears. Best-effort mirroring is not good
-  // enough for that class, so fail loudly instead of silently writing a receipt
-  // with a lifespan shorter than the change it approved.
-  if (row && row.gate && !written.some((f) => !isWorktreeFile(f))) {
-    throw new Error(
-      `Gated peer-review receipt (gate=${row.gate}) could not reach a durable shared root. ` +
-        `Written only to: ${written.join(', ') || '(nothing)'}. ` +
-        'A receipt that dies with the worktree cannot authorize an irreversible action.',
-    );
-  }
-  return written;
-}
-
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -373,8 +291,7 @@ async function runReview(opts, deps = {}) {
     review,
     source: 'scripts/codex-peer-review.js',
   };
-  if (opts.gate) row.gate = String(opts.gate).trim().toLowerCase();
-  row.receiptFiles = appendReceipt(opts.resultsFile || DEFAULT_RESULTS, row).map((f) => rel(f));
+  appendJsonl(opts.resultsFile || DEFAULT_RESULTS, row);
   if (opts.writePlan) {
     const html = fs.readFileSync(artifactPath, 'utf8');
     const block = buildHtmlBlock({ review, ts, id });
@@ -397,9 +314,7 @@ if (require.main === module) {
 module.exports = {
   AUTO_END,
   AUTO_START,
-  appendReceipt,
   buildReviewPrompt,
-  durableResultsFiles,
   looksLikePlaceholder,
   parseArgs,
   readRealArtifact,
