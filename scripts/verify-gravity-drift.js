@@ -53,6 +53,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const {
   parseGravityBlock,
   parseRatifiedCount,
@@ -117,6 +118,37 @@ function checkGravity(repoRoot = REPO) {
   const seen = new Set();
   const userEntries = readSettingsEntries(path.join(repoRoot, 'claude-config', 'settings.json'));
   const projectEntries = readSettingsEntries(path.join(repoRoot, '.claude', 'settings.json'));
+
+  // DELIVERY OF THE REGISTRATION ITSELF. claude-config/settings.json is the
+  // TRACKED TEMPLATE; the file Claude Code actually loads is the profile copy
+  // at ~/.claude/settings.json. Registering a hook in the template does not
+  // run it, so a hook could be built, tested, landed, template-registered, and
+  // still never fire. That is not hypothetical: on 2026-07-20 both
+  // shared-checkout-promote.mjs and two-bot-gate.mjs, the fixes for this exact
+  // disease, sat in the template with zero live registrations. Law g0 as
+  // amended requires enforcement AND delivery, so the lint checks the live
+  // file too. Skipped when the profile file is absent (CI, other machines).
+  // Real tree only. Fixture repos in the drift tests carry their own template
+  // settings whose hooks are, correctly, absent from this machine's profile;
+  // comparing those against the live file would fail every fixture.
+  const liveSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+  const lintingRealRepo = path.resolve(repoRoot) === path.resolve(REPO);
+  if (lintingRealRepo && fs.existsSync(liveSettingsPath)) {
+    const liveEntries = readSettingsEntries(liveSettingsPath);
+    const nameOf = (cmd) => {
+      const m = String(cmd || '').match(/claude-hooks\/([A-Za-z0-9._-]+)/);
+      return m ? m[1] : null;
+    };
+    const liveNames = new Set((liveEntries || []).map((e) => nameOf(e.command)).filter(Boolean));
+    const undelivered = [
+      ...new Set((userEntries || []).map((e) => nameOf(e.command)).filter(Boolean)),
+    ].filter((n) => !liveNames.has(n));
+    for (const n of undelivered) {
+      failures.push(
+        `${n} is registered in claude-config/settings.json but NOT in the live ~/.claude/settings.json, so it never runs (declared, not delivered)`,
+      );
+    }
+  }
 
   const exists = (rel) => fs.existsSync(path.join(repoRoot, rel));
 
