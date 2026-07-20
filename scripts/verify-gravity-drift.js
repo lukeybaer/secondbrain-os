@@ -3,9 +3,10 @@
 //
 // verify-gravity-drift.js -- the mechanical heart of the Laws of Amy Gravity.
 //
-// Law g0 says a rule that is not mechanically enforced does not exist. This
-// lint applies g0 to the laws themselves: every row in memory/AMY_GRAVITY.md
-// must point at enforcement that EXISTS and is WIRED, so a law physically
+// Law g0 says a rule that is not mechanically enforced AND DELIVERED to the
+// actor does not exist. This lint applies g0 to the laws themselves: every row
+// in memory/AMY_GRAVITY.md must point at enforcement that EXISTS, is WIRED,
+// and (for injector hooks) actually REACHES THE MODEL, so a law physically
 // cannot decay to memory-only without this going red. Checks per token type:
 //
 //   test:<path>       file exists on disk
@@ -21,6 +22,28 @@
 // closed status vocabulary, row cap (MAX_LAWS), never-list core present, and
 // the g0 teeth: a row whose only tokens are policy: cannot claim SOLID or
 // PARTIAL.
+//
+// DELIVERY (added 2026-07-20, the amendment that gave g0 its second half).
+// Declaration is not delivery. Nine hooks were registered, on disk, and named
+// by law rows while emitting {"systemMessage": ...}, which renders to ExampleCo's
+// terminal and NEVER enters model context, so every rule they ExampleCod was
+// inert. Two rungs now prove delivery:
+//
+//   STATIC   every hook registered on UserPromptSubmit or SessionStart in
+//            either settings file is screened for the systemMessage-only
+//            shape. Coverage follows REGISTRATION, not law citation, because
+//            the first version of this check missed verify-hook-paths.mjs,
+//            which no law names (Codex peer review b81696804b98).
+//   DYNAMIC  every law-cited injector is spawned in production form, on its
+//            registered event, with the minimal prompt that trips its
+//            declared matcher, and must produce model-visible output. Exit 2
+//            counts as enforcement by decision. A probe that cannot run FAILS
+//            CLOSED: unverifiable is not verified.
+//
+// See scripts/lib/hook-delivery.js for the contract. Offline, no network,
+// per-hook timeout, one probe per hook regardless of how many rows cite it,
+// and AMY_HOOK_DELIVERY_PROBE=1 so hooks with side effects prove the channel
+// without doing the work.
 //
 // Run: npm run verify:gravity-drift. Runs on every land via
 // scripts/__tests__/core.test.js. Companion test:
@@ -39,34 +62,23 @@ const {
   MAX_LAWS,
 } = require('./lib/gravity-registry.js');
 const { parseRegistryBlock } = require('./lib/core-component-registry.js');
+const {
+  readSettingsEntries,
+  classifyHook,
+  buildTriggerPrompt,
+  probeInjector,
+  screenInjectorSources,
+  matcherLiterals,
+  INJECTION_EVENTS,
+} = require('./lib/hook-delivery.js');
 
 const REPO = path.resolve(__dirname, '..');
 
-function fileExists(repoRel) {
-  return fs.existsSync(path.join(REPO, repoRel));
-}
-
-function settingsCommands(settingsPath) {
-  try {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    const out = [];
-    for (const groups of Object.values(settings.hooks || {})) {
-      if (!Array.isArray(groups)) continue;
-      for (const group of groups) {
-        for (const h of group?.hooks || []) {
-          if (typeof h?.command === 'string') out.push(h.command);
-        }
-      }
-    }
-    return out;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Lint a repo tree. Returns an array of failure strings (empty = clean).
- * repoRoot is overridable for fixture tests.
+ * repoRoot is overridable for fixture tests. Delivery probes FAIL CLOSED: a
+ * probe that could not run counts as a violation, because unverifiable is not
+ * verified (Codex peer review b81696804b98).
  */
 function checkGravity(repoRoot = REPO) {
   const failures = [];
@@ -103,10 +115,65 @@ function checkGravity(repoRoot = REPO) {
   }
 
   const seen = new Set();
-  const userCommands = settingsCommands(path.join(repoRoot, 'claude-config', 'settings.json'));
-  const projectCommands = settingsCommands(path.join(repoRoot, '.claude', 'settings.json'));
+  const userEntries = readSettingsEntries(path.join(repoRoot, 'claude-config', 'settings.json'));
+  const projectEntries = readSettingsEntries(path.join(repoRoot, '.claude', 'settings.json'));
 
   const exists = (rel) => fs.existsSync(path.join(repoRoot, rel));
+
+  // STATIC RUNG. Screen EVERY hook registered on a context event, not only
+  // those a law row happens to cite. Codex peer review b81696804b98: the
+  // dynamic rung alone missed verify-hook-paths.mjs, which no law names, so
+  // the hook auditor was still reporting through the dead channel after the
+  // first sweep. Coverage follows registration.
+  for (const f of screenInjectorSources(repoRoot, [
+    ...(userEntries || []),
+    ...(projectEntries || []),
+  ])) {
+    failures.push(`delivery screen: ${f}`);
+  }
+
+  // DYNAMIC RUNG. One probe per hook however many rows cite it
+  // (memory-path-enforce.sh is named by both g8 and g18). Lazily built so a
+  // tree with zero hook tokens spawns nothing.
+  const deliveryCache = new Map();
+  let unionPrompt = null;
+  const probeDelivery = (hookName, entries) => {
+    if (deliveryCache.has(hookName)) return deliveryCache.get(hookName);
+    const registrations = (entries || []).filter(
+      (e) => e.command.includes(hookName) && INJECTION_EVENTS.includes(e.event),
+    );
+    // Probe each registration on its OWN event with the MINIMAL prompt that
+    // trips its declared matcher. A union prompt cannot prove which token a
+    // hook matched, so it is the fallback for empty matchers only, where the
+    // hook does its trigger detection in-process and configuration says
+    // nothing about it.
+    let result = { status: 'skipped', detail: 'no injection-event registration found' };
+    for (const reg of registrations) {
+      const literals = matcherLiterals(reg.matcher);
+      let prompt;
+      if (literals.length > 0) {
+        prompt = literals[0];
+      } else {
+        if (unionPrompt === null) {
+          unionPrompt = buildTriggerPrompt(repoRoot, [
+            ...(userEntries || []),
+            ...(projectEntries || []),
+          ]);
+        }
+        prompt = unionPrompt;
+      }
+      result = probeInjector({
+        repoRoot,
+        hookName,
+        command: reg.command,
+        prompt,
+        event: reg.event,
+      });
+      if (result.status !== 'delivered' && result.status !== 'blocked') break;
+    }
+    deliveryCache.set(hookName, result);
+    return result;
+  };
 
   for (const row of rows) {
     const where = `${row.id} (line ${row.line})`;
@@ -142,18 +209,49 @@ function checkGravity(repoRoot = REPO) {
         }
         if (!scripts[tok.value]) failures.push(`${label}: npm script not in package.json`);
       } else if (tok.type === 'hook') {
-        const commands = tok.scope === 'project' ? projectCommands : userCommands;
+        const entries = tok.scope === 'project' ? projectEntries : userEntries;
         const file =
           tok.scope === 'project' ? '.claude/settings.json' : 'claude-config/settings.json';
+        let registered = false;
         if (!tok.scope || (tok.scope !== 'user' && tok.scope !== 'project')) {
           failures.push(`${label}: hook token needs @user or @project scope`);
-        } else if (!commands) {
+        } else if (!entries) {
           failures.push(`${label}: ${file} missing or unparseable`);
-        } else if (!commands.some((c) => c.includes(tok.value))) {
+        } else if (!entries.some((e) => e.command.includes(tok.value))) {
           failures.push(`${label}: not registered in any command in ${file}`);
+        } else {
+          registered = true;
         }
         const hookPath = `scripts/claude-hooks/${tok.value}`;
-        if (!exists(hookPath)) failures.push(`${label}: hook script missing on disk: ${hookPath}`);
+        const onDisk = exists(hookPath);
+        if (!onDisk) failures.push(`${label}: hook script missing on disk: ${hookPath}`);
+
+        // g0's second half: a registered, on-disk INJECTOR that reaches only
+        // the terminal enforces nothing. Prove delivery or fail.
+        if (registered && onDisk) {
+          const kind = classifyHook({ hookName: tok.value, entries });
+          if (kind.kind === 'injector') {
+            const probe = probeDelivery(tok.value, entries);
+            if (probe.status === 'inert') {
+              failures.push(
+                `${label}: INJECTOR reaches the terminal but NOT the model, so the law it ExampleCos does not exist (g0 delivery). ${probe.detail}. Emit via emitToModel() from scripts/claude-hooks/lib/hook-context.mjs.`,
+              );
+            } else if (probe.status === 'crashed') {
+              failures.push(
+                `${label}: INJECTOR failed to run in production form (${probe.detail}); a hook that cannot start delivers nothing`,
+              );
+            } else if (probe.status === 'skipped') {
+              // FAIL CLOSED (Codex peer review b81696804b98). A probe that
+              // cannot run proves nothing; treating it as a pass lets a hook
+              // sit permanently unverified while the lint prints green.
+              failures.push(
+                `${label}: INJECTOR delivery could NOT be verified (${probe.detail}); unverifiable is not verified`,
+              );
+            }
+            // `delivered` and `blocked` both pass: injection reached the
+            // model, or the hook enforced by stopping the prompt outright.
+          }
+        }
       } else if (tok.type === 'registry') {
         let memText = '';
         try {
@@ -175,9 +273,11 @@ function checkGravity(repoRoot = REPO) {
 }
 
 function main() {
-  const failures = checkGravity();
+  const failures = checkGravity(REPO);
   if (failures.length === 0) {
-    console.log(`[verify-gravity-drift] CLEAN: every law's enforcement exists and is wired.`);
+    console.log(
+      `[verify-gravity-drift] CLEAN: every law's enforcement exists, is wired, and every injector delivers to the model.`,
+    );
     process.exit(0);
   }
   console.error(`[verify-gravity-drift] DRIFT: ${failures.length} violation(s):`);
