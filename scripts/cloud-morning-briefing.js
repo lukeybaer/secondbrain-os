@@ -11,6 +11,7 @@ const { buildBriefingDashboardUrl } = require('./lib/briefing-auth.js');
 const { notifyWithFallback } = require('./lib/notify-with-fallback.js');
 const { notifyBriefingPublished, loadBriefingNotifyEnv } = require('./lib/briefing-notify.js');
 const { fallbackExpiresAt, isFallbackExpired } = require('./lib/briefing-fallback-expiry.js');
+const { lifeArchiveSnapshotFreshness } = require('./lib/life-archive-freshness.js');
 // W6 shared card-format helpers (single copy consumed by this generator, the
 // shared per-card builders, and manual-briefing-v3.js through those builders).
 const {
@@ -6774,6 +6775,31 @@ function buildFullLifeBackupCard(dataDir, { allowLiveRefresh = true } = {}) {
       real: false,
       detail:
         'Full-life backup health was not synced to the cloud build, so the per-source Life backup chips cannot be shown and a clean value here would be fabricated. Needs: the life-archive health snapshot synced to the cloud host.',
+    };
+  }
+
+  // STALENESS, on the path that actually reaches ExampleCo. Codex gate 05a8e5b45303
+  // finding 1: this builder checked only that `sources` was non-empty, so the
+  // 42-day-old snapshot (generated 2026-06-08, db_path a Windows desktop path)
+  // rendered here as real with +0 deltas on all 11 sources, while the per-card
+  // producer correctly called the SAME file a defect. The permissive reader was
+  // the one publishing the 5:30 briefing.
+  //
+  // Both paths now share scripts/lib/life-archive-freshness.js so they cannot
+  // drift apart again. Non-empty sources is necessary, never sufficient.
+  const freshness = lifeArchiveSnapshotFreshness(report, new Date());
+  if (!freshness.fresh) {
+    return {
+      title: 'FULL-LIFE DATA BACKUP',
+      real: false,
+      detail:
+        `Full-life backup health is ${freshness.ageDays == null ? 'undated' : `${freshness.ageDays} days`} stale ` +
+        `(snapshot generated ${freshness.generatedAt || 'ExampleCo'}), so today's backup coverage across ` +
+        `${freshness.sourceCount} source(s) is unverified and any number here would be fabricated. ` +
+        (freshness.foreignHost
+          ? `It was produced on another host (db_path ${freshness.dbPath}). `
+          : '') +
+        'Needs: a cloud-host generator for data/life-archive/health-latest.json, or retire this card.',
     };
   }
   const total = report.sources.length;

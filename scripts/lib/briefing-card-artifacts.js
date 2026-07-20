@@ -1430,7 +1430,14 @@ function produceDeterministicBuilderCardArtifact({
 // 42-day-old numbers as today's backup health is fabrication (law G13,
 // feedback_no_fabrication_in_briefings.md). Until a generator exists this card
 // cannot be clean, so it says so and names the missing generator.
-const LIFE_ARCHIVE_MAX_SNAPSHOT_AGE_MS = 36 * 60 * 60 * 1000;
+// Shared with cloud-morning-briefing.js buildFullLifeBackupCard. Codex gate
+// 05a8e5b45303 finding 1: the two readers had different rules, and the LIVE
+// 5:30 builder was the permissive one, so the same snapshot was a defect here
+// and published as real there. One module, one rule.
+const {
+  LIFE_ARCHIVE_MAX_SNAPSHOT_AGE_MS,
+  lifeArchiveSnapshotFreshness,
+} = require('./life-archive-freshness.js');
 
 function produceFullLifeBackupCardArtifact({
   date,

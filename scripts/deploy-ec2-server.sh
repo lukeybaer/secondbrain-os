@@ -468,9 +468,30 @@ fi
 #
 # Appending a single line is idempotent-safe here: the receipt ExampleCos its own
 # timestamp and sha, and readLatestReceipt consumers take the final line.
-if ! printf '%s\n' "$RECEIPT_JSON" | ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
-  'sudo mkdir -p /opt/secondbrain/data/agent && sudo touch /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl && sudo tee -a /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl > /dev/null && sudo chown ec2-user:ec2-user /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl'; then
-  echo "[deploy] RECEIPT MIRROR FAIL: the release is LIVE but /opt has no receipt for it. The parity probe will report receipt drift until this is repaired. Re-run the receipt append against $HOST." >&2
+# APPEND-IF-ABSENT, under a lock. Codex gate 05a8e5b45303 finding 3: a plain
+# `tee -a` is not idempotent. The failure path below tells the operator to
+# retry, and a retry of the SAME attempt used to append a second row, which
+# overnight-watch-report.js:261 counts as a separate deploy event. So the naive
+# append traded truncation for double-counting.
+#
+# The dedupe key is (repoHead, serverSha256), taken from the receipt itself.
+# A retry of the same attempt reproduces both, so it is suppressed; a genuinely
+# different release changes serverSha256, so it appends. Known and accepted
+# trade-off: re-deploying byte-identical content twice records one row, which is
+# correct for a parity ledger whose subject is what /opt CONTAINS.
+#
+# flock serializes concurrent deploys so two racing appends cannot interleave.
+# The receipt travels base64 in an env var and the program travels on stdin via
+# `node -`, the same shape as the deploy-graphiti-indexed.sh handoff, so no JSON
+# quoting ever reaches the SSH command line. The dedupe and append rules live in
+# scripts/lib/append-deploy-receipt.js where they are readable and testable,
+# rather than inline in nested shell quoting.
+RECEIPT_B64="$(printf '%s' "$RECEIPT_JSON" | base64 | tr -d '\n')"
+if ! ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  "SB_DEPLOY_RECEIPT_B64='$RECEIPT_B64' sudo -E node - \
+   && sudo chown ec2-user:ec2-user /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl" \
+  < "$ROOT/scripts/lib/append-deploy-receipt.js"; then
+  echo "[deploy] RECEIPT MIRROR FAIL: the release is LIVE but /opt has no receipt for it. The parity probe will report receipt drift until this is repaired. Re-run this deploy; the append is idempotent on (repoHead, serverSha256), so a retry cannot double-count." >&2
   exit 1
 fi
 echo "[deploy] receipt recorded + appended to /opt/secondbrain/data/agent/ec2-deploy-receipts.jsonl"
