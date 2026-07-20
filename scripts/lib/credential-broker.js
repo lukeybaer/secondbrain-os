@@ -152,6 +152,38 @@ function youtubeTokenFromDisk({ root, opts, fsApi, tokenDirs }) {
   return null;
 }
 
+// A dotenv file is a credential SOURCE, not a framework concern, so the broker
+// reads it rather than assuming some caller already did. Scheduled entrypoints
+// (the 2:45 AM diagnostic, the 3:00 AM self-heal) run under cron/PM2 without a
+// loaded .env; only PM2's own env ExampleCod it before. The removed hardcoded
+// fallbacks were masking exactly that gap, so without this the nightly probe
+// goes yellow every night. Never overrides a real process env value.
+function readEnvFile(file, fsApi) {
+  const out = {};
+  let text;
+  try {
+    text = fsApi.readFileSync(file, 'utf8');
+  } catch {
+    return out;
+  }
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (value) out[key] = value;
+  }
+  return out;
+}
+
 function fingerprintOf(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 8);
 }
@@ -180,6 +212,18 @@ function createBroker(deps = {}) {
   // Every secret this broker has ever resolved, so redact() can scrub a value
   // out of text even when the caller does not know which credential leaked.
   const knownSecrets = new Map();
+
+  // Lazily merged so constructing a broker costs no disk read.
+  let fileEnv = null;
+  function envLookup(key) {
+    if (env[key]) return env[key];
+    if (fileEnv === null) {
+      const files = deps.envFiles || [path.join(root, '.env'), '/opt/secondbrain/.env'];
+      fileEnv = {};
+      for (const f of files) Object.assign(fileEnv, readEnvFile(f, fsApi));
+    }
+    return fileEnv[key] || null;
+  }
 
   function spec(service, key) {
     const svc = SERVICES[service];
@@ -239,8 +283,9 @@ function createBroker(deps = {}) {
 
     if (policy !== POLICY_SSM_REQUIRED) {
       const envKey = nameFor(cred.env, opts);
-      if (envKey && env[envKey]) {
-        value = env[envKey];
+      const fromEnv = envKey ? envLookup(envKey) : null;
+      if (fromEnv) {
+        value = fromEnv;
         source = 'env';
       }
     }
