@@ -51,6 +51,11 @@ const CARD_TITLE_OVERRIDES = Object.freeze({
   // satisfy the manifest matcher /^UNCOMMITTED & PARKED WORK\b/i, so the card
   // would emit a header the per-card parser cannot match back to its own row.
   uncommitted_parked: 'UNCOMMITTED & PARKED WORK',
+  // Codex gate 50032535f442: derived would be 'FULL LIFE BACKUP', but the
+  // manifest matcher is /^FULL[- ]LIFE DATA BACKUP/i. Without this the
+  // card's truthful defect renders under a header the parser cannot match,
+  // so an honest defect reads as a MISSING card instead.
+  full_life_backup: 'FULL-LIFE DATA BACKUP',
 });
 
 function defaultDataDir() {
@@ -1379,7 +1384,20 @@ function produceDeterministicBuilderCardArtifact({
   const firstLine = markdown.split('\n')[0] || '';
   const body = markdown.split('\n').slice(1).join('\n').trim();
   const qc = qcCard({ id, title: firstLine, body }, { surface: 'card-artifact' });
-  const failures = qc.failures || [];
+  const failures = [...(qc.failures || [])];
+  // Codex gate 50032535f442: the builder's OWN verdict outranks generic text
+  // QC. viral-tech-clips emits nonempty placeholder prose ("No viral clip
+  // proposals are ready yet.") with state.ok false when there is no data, and
+  // that text passes every generic check. Ignoring state.ok traded a
+  // fabrication path for a fake-green one.
+  const builderState = (built && built.state) || null;
+  if (builderState && builderState.ok === false) {
+    failures.unshift(
+      `${id} builder reported insufficient data (state.ok false${
+        builderState.count == null ? '' : `, count ${builderState.count}`
+      }).`,
+    );
+  }
 
   return createCardArtifact({
     id,
