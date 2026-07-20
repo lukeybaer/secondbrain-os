@@ -158,12 +158,29 @@ function isMasterPush(cmd) {
   return true;
 }
 
+// Obstruction, as distinct from destruction. Staging in the shared checkout
+// destroys nothing, but it leaves index residue that makes the tree dirty, and
+// a dirty shared tree makes shared-checkout-reconciler.js (the SOLE promoter,
+// devops-release Invariant 6) refuse to fast-forward. One session's leftovers
+// therefore hold every other session's landed work off the live tree, which is
+// exactly what g10 ("the shared checkout is read-only to agents") exists to
+// prevent. Found 2026-07-19 when a peer's staged 3-file dev-plan retirement
+// kept the injection-channel fix from reaching the live hook path for hours.
+function isSharedIndexWrite(cmd) {
+  // `git add`, `git rm`, `git mv` in the shared tree. Deliberately narrow: read
+  // ops (status/diff/log/show) and worktree-scoped `git -C <worktree>` calls
+  // are unaffected, the latter because operatesOnMainCheckout() gates this.
+  return /\bgit\b[^\n|]*\s(add|rm|mv)\b/.test(cmd);
+}
+
 function classifyDestructive(command, opts = {}) {
   const cmd = String(command || '');
   if (isResetHard(cmd)) return 'git reset --hard discards all worktree and index changes';
   if (isCleanForce(cmd)) return 'git clean -f deletes untracked files';
   if (isCheckoutDiscard(cmd)) return 'git checkout -- . discards worktree changes';
   if (isDestructiveStash(cmd)) return 'destructive git stash hides or discards worktree state';
+  if (isSharedIndexWrite(cmd))
+    return "staging in the shared checkout leaves index residue that blocks the reconciler, holding every other session's landed work off the live tree";
   // Mainline mutation (direct commit/push to master in the shared tree) is the
   // breaking half of the policy: it forces sessions onto worktrees + the land
   // gate. It is included by default now that the worktree launcher and land
