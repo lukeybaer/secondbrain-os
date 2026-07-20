@@ -761,6 +761,24 @@ function isMissingSourcePlaceholderArtifact(artifact) {
   );
 }
 
+// The 11pm bootstrap writes every card a "Card refresh pending" shell. The
+// generic fallthrough preserves an artifact's own status, so any shell that was
+// stamped clean got REPUBLISHED as clean and the board counted a non-card as a
+// good card. Measured on ExampleCo's 2026-07-20 board: voice_confirmation was status
+// clean carrying nothing but that shell.
+//
+// artifactContentFailures already recognises the shell copy; it simply never
+// got to override an inherited clean. A shell is not a card, whatever it says
+// about itself, so this is the single place that decides. Fixing it here covers
+// every card at once instead of one producer at a time.
+function cleanStatusUnlessPendingShell(existing) {
+  const markdown = String((existing && existing.markdown) || '');
+  if (/Card refresh pending/i.test(markdown)) return 'defect';
+  return existing && existing.status === 'clean'
+    ? 'clean'
+    : normalizeStatus(existing && existing.status);
+}
+
 function existingSourceArtifact({ dataDir, date, id }) {
   const current = readCardArtifact({ dataDir, date, id });
   const fallback = readMarkdownFallbackArtifacts({ dataDir, date }).find(
@@ -1539,9 +1557,20 @@ function produceOtterSpeakerParetoCardArtifact({
       qc: { ok: false, failures: [reason] },
     });
   }
+  // Drop the table-header instruction. The renderer emits
+  // "Columns: Time | Call | Length | Speakers | Executive summary", which is
+  // layout scaffolding for a fixed-width dump, not content, and the shared
+  // artifact QC correctly flags it as raw operational detail. That single line
+  // is why this card was DEFECT on ExampleCo's 2026-07-20 board while its data was
+  // fine. Trimmed here rather than in the renderer, which the 5:30 monolith and
+  // an existing test both depend on.
   const markdown = String(
     rendered && typeof rendered === 'object' ? rendered.markdown || '' : rendered || '',
-  ).trim();
+  )
+    .split('\n')
+    .filter((line) => !/^\s*Columns:\s/i.test(line))
+    .join('\n')
+    .trim();
   if (!markdown) {
     const reason = 'Otter per-call summary renderer returned no content.';
     return createCardArtifact({
@@ -1937,7 +1966,7 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
       return normalizeArtifactQuality({
         ...existing,
         kind: 'data',
-        status: existing.status === 'clean' ? 'clean' : normalizeStatus(existing.status),
+        status: cleanStatusUnlessPendingShell(existing),
         generatedAt: now.toISOString(),
         source: { ...(existing.source || {}), producer: 'data-card-artifact' },
       });
@@ -1981,7 +2010,7 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
     return normalizeArtifactQuality({
       ...existing,
       kind: 'data',
-      status: existing.status === 'clean' ? 'clean' : normalizeStatus(existing.status),
+      status: cleanStatusUnlessPendingShell(existing),
       generatedAt: now.toISOString(),
       source: { ...(existing.source || {}), producer: 'data-card-artifact' },
     });
@@ -2175,6 +2204,7 @@ module.exports = {
   produceAwsCostsCardArtifact,
   produceUncommittedParkedCardArtifact,
   produceFullLifeBackupCardArtifact,
+  cleanStatusUnlessPendingShell,
   produceDeterministicBuilderCardArtifact,
   produceOtterSpeakerParetoCardArtifact,
   produceAllCardArtifacts,
