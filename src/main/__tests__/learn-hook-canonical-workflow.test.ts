@@ -28,20 +28,32 @@ function runRawHook(prompt: string): string {
   });
 }
 
-function runHook(prompt = '#learn remember this'): { systemMessage: string } {
+// 2026-07-20: this helper used to return { systemMessage }. That field renders
+// to ExampleCo's terminal and NEVER enters model context, so every content
+// assertion below was green while the workflow it locked reached nobody. A
+// test that pins the CONTENT of a dead channel is worse than no test: it
+// manufactures confidence. It now reads the delivered channel, so a
+// regression to systemMessage fails here instead of passing silently.
+function deliveredContext(prompt = '#learn remember this'): string {
   const stdout = runRawHook(prompt);
-  return JSON.parse(stdout);
+  const parsed = JSON.parse(stdout);
+  return parsed?.hookSpecificOutput?.additionalContext ?? '';
 }
 
 describe('#learn hook (scripts/claude-hooks/learn-and-usage.js)', () => {
   let msg: string;
 
-  it('produces valid JSON with a systemMessage field', () => {
-    const out = runHook();
-    expect(out).toHaveProperty('systemMessage');
-    expect(typeof out.systemMessage).toBe('string');
-    expect(out.systemMessage.length).toBeGreaterThan(200);
-    msg = out.systemMessage;
+  it('delivers the workflow into MODEL context, not the terminal-only channel', () => {
+    const stdout = runRawHook('#learn remember this');
+    const parsed = JSON.parse(stdout);
+    expect(
+      parsed?.hookSpecificOutput?.additionalContext,
+      'the #learn workflow must arrive as additionalContext; systemMessage never reaches Amy',
+    ).toBeTruthy();
+    expect(parsed).not.toHaveProperty('systemMessage');
+    msg = parsed.hookSpecificOutput.additionalContext;
+    expect(typeof msg).toBe('string');
+    expect(msg.length).toBeGreaterThan(200);
   });
 
   it('stays silent for ordinary prompts when Claude matcher leaks', () => {
@@ -50,7 +62,7 @@ describe('#learn hook (scripts/claude-hooks/learn-and-usage.js)', () => {
 
   describe('canonical workflow content (locked)', () => {
     beforeAll(() => {
-      msg = runHook().systemMessage;
+      msg = deliveredContext();
     });
 
     it('opens with a loud "HOOK FIRED" marker so it is hard to miss', () => {
