@@ -30,13 +30,30 @@ const BASH_CANDIDATES = [
 ];
 const BASH = BASH_CANDIDATES.find((p) => existsSync(p));
 
-/** Returns true when the guard flagged the text as permission-asking drift. */
+/**
+ * Returns true when the guard flagged the text as permission-asking drift.
+ *
+ * RECLASSIFIED 2026-07-20 (#gap: the injection channel). This used to be
+ * `out.includes('systemMessage')`, a substring check on the terminal-only
+ * field. It was green while the guard was doing two things wrong at once:
+ * writing to a channel the model never reads, AND emitting malformed JSON
+ * (its printf format string expanded \n into raw newlines inside a JSON
+ * string literal). A substring check cannot see either defect.
+ *
+ * Now it parses the output and requires the correction to arrive on
+ * hookSpecificOutput.additionalContext, so unparseable JSON or a relapse to
+ * systemMessage both fail. See scripts/claude-hooks/README.md.
+ */
 function flags(text: string): boolean {
   const out = execFileSync(BASH as string, [HOOK], {
     input: JSON.stringify({ assistant_text: text }),
     encoding: 'utf8',
   });
-  return out.includes('systemMessage');
+  const parsed = JSON.parse(out) as {
+    hookSpecificOutput?: { additionalContext?: string };
+  };
+  const ctx = parsed.hookSpecificOutput?.additionalContext;
+  return typeof ctx === 'string' && ctx.includes('INDEPENDENCE GUARD');
 }
 
 describe.skipIf(!BASH)('independence-guard permission-asking detection', () => {
@@ -50,7 +67,7 @@ describe.skipIf(!BASH)('independence-guard permission-asking detection', () => {
     'This goes to her from your account, so I need you to okay the exact words first.',
     'The draft, for your approval.',
     'Tell me what to change in the image or the words and I will rework it first.',
-    'Confirm and I\'ll send it.',
+    "Confirm and I'll send it.",
     'Waiting for your go-ahead before it ships.',
     'Shall I send it now?',
   ];

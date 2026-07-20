@@ -11,6 +11,17 @@
  * Claude Code runs them via settings.json hook registration. A purely-unit
  * test of the file contents would miss shell-quoting bugs, node -e failures,
  * and routing logic.
+ *
+ * RECLASSIFIED 2026-07-20 (#gap: the injection channel).
+ * These tests used to read `parsed.systemMessage`, which pinned the WRONG
+ * channel. `systemMessage` renders to ExampleCo's terminal and never enters model
+ * context, so an ingest session was never actually told any of the rules this
+ * file asserts. The assertions themselves were right; the field was not.
+ * They now read `hookSpecificOutput.additionalContext`, the channel the model
+ * actually receives. The two routing tests were ALREADY red for this reason
+ * after session-start-inject.sh migrated ahead of its test, which is what a
+ * test pinning a dead channel looks like from the outside.
+ * See scripts/claude-hooks/README.md, section "Injection channel".
  */
 
 import { describe, it, expect } from 'vitest';
@@ -19,7 +30,12 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
-const INGEST_HOOK = path.join(REPO_ROOT, 'scripts', 'claude-hooks', 'session-start-inject-ingest.sh');
+const INGEST_HOOK = path.join(
+  REPO_ROOT,
+  'scripts',
+  'claude-hooks',
+  'session-start-inject-ingest.sh',
+);
 const MAIN_HOOK = path.join(REPO_ROOT, 'scripts', 'claude-hooks', 'session-start-inject.sh');
 const BASH = (() => {
   if (process.platform !== 'win32') return 'bash';
@@ -61,13 +77,21 @@ function runHookViaNode(scriptPath: string, env: Record<string, string>): string
       '',
       'Move files atomically (rename). Never leave items in in-progress/ on exit.',
     ].join('\n');
-    return JSON.stringify({ systemMessage: msg }) + '\n';
+    return (
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: msg },
+      }) + '\n'
+    );
   }
 
   const secondbrain = (env.SECONDBRAIN_ROOT || REPO_ROOT).replace(/\\/g, '/');
   const memory = fs.readFileSync(path.join(secondbrain, 'memory', 'MEMORY.md'), 'utf8');
-  const stateLocations = fs.readFileSync(path.join(secondbrain, 'memory', 'reference_amy_state_locations.md'), 'utf8');
-  const requirements = fs.readFileSync(path.join(secondbrain, 'memory', 'AMY_REQUIREMENTS.md'), 'utf8')
+  const stateLocations = fs.readFileSync(
+    path.join(secondbrain, 'memory', 'reference_amy_state_locations.md'),
+    'utf8',
+  );
+  const requirements = fs
+    .readFileSync(path.join(secondbrain, 'memory', 'AMY_REQUIREMENTS.md'), 'utf8')
     .split('\n')
     .slice(0, 80)
     .join('\n');
@@ -87,11 +111,36 @@ function runHookViaNode(scriptPath: string, env: Record<string, string>): string
     '',
     '=== END SESSION START ===',
   ].join('\n');
-  return JSON.stringify({ systemMessage: msg }) + '\n';
+  return (
+    JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: msg },
+    }) + '\n'
+  );
+}
+
+/**
+ * The text the MODEL actually receives. Reading .systemMessage here is what
+ * let these tests stay green while the payload reached nobody.
+ */
+function contextOf(stdout: string): string {
+  const parsed = JSON.parse(stdout) as {
+    hookSpecificOutput?: { additionalContext?: string };
+  };
+  const ctx = parsed.hookSpecificOutput?.additionalContext;
+  if (typeof ctx !== 'string' || !ctx.trim()) {
+    throw new Error(
+      'hook emitted no hookSpecificOutput.additionalContext, so nothing reaches the model: ' +
+        stdout.slice(0, 300),
+    );
+  }
+  return ctx;
 }
 
 /** Run a bash script with a given environment and return { stdout, bytes, tokens }. */
-function runHook(scriptPath: string, env: Record<string, string> = {}): {
+function runHook(
+  scriptPath: string,
+  env: Record<string, string> = {},
+): {
   stdout: string;
   bytes: number;
   tokens: number;
@@ -109,11 +158,10 @@ describe('session-start-inject-ingest.sh', () => {
     expect(fs.existsSync(INGEST_HOOK)).toBe(true);
   });
 
-  it('emits valid JSON with a systemMessage field', () => {
+  it('emits valid JSON carrying additionalContext, the channel the model reads', () => {
     const { stdout } = runHook(INGEST_HOOK);
-    const parsed = JSON.parse(stdout) as { systemMessage?: string };
-    expect(typeof parsed.systemMessage).toBe('string');
-    expect(parsed.systemMessage!.length).toBeGreaterThan(100);
+    const ctx = contextOf(stdout);
+    expect(ctx.length).toBeGreaterThan(100);
   });
 
   it('emits a payload smaller than 3000 bytes (~750 tokens max)', () => {
@@ -124,8 +172,7 @@ describe('session-start-inject-ingest.sh', () => {
 
   it('contains all four rules ingest sessions must honor', () => {
     const { stdout } = runHook(INGEST_HOOK);
-    const parsed = JSON.parse(stdout) as { systemMessage: string };
-    const msg = parsed.systemMessage;
+    const msg = contextOf(stdout);
 
     expect(msg).toContain('Raw archival');
     expect(msg).toContain('Fail loud');
@@ -135,14 +182,12 @@ describe('session-start-inject-ingest.sh', () => {
 
   it('explicitly tells the session NOT to load Tier 1 context', () => {
     const { stdout } = runHook(INGEST_HOOK);
-    const parsed = JSON.parse(stdout) as { systemMessage: string };
-    expect(parsed.systemMessage).toMatch(/Do NOT load MEMORY\.md/);
+    expect(contextOf(stdout)).toMatch(/Do NOT load MEMORY\.md/);
   });
 
   it('documents the queue layout the drain worker must follow', () => {
     const { stdout } = runHook(INGEST_HOOK);
-    const parsed = JSON.parse(stdout) as { systemMessage: string };
-    const msg = parsed.systemMessage;
+    const msg = contextOf(stdout);
     expect(msg).toContain('pending/');
     expect(msg).toContain('done/');
     expect(msg).toContain('failed/');
@@ -152,12 +197,19 @@ describe('session-start-inject-ingest.sh', () => {
 });
 
 describe('session-start-inject.sh routing', () => {
+  // SECONDBRAIN_ROOT is pinned to REPO_ROOT because the main hook execs the
+  // ingest stub via "$SECONDBRAIN/scripts/claude-hooks/...". Without it the
+  // env var points at the shared checkout and this test silently exercises
+  // SOMEONE ELSE'S copy of the hook, passing or failing on code that is not
+  // the code under test. That is how the stale channel survived here.
   it('routes to the ingest stub when SECONDBRAIN_SESSION_MODE=ingest is set', () => {
-    const { bytes, stdout } = runHook(MAIN_HOOK, { SECONDBRAIN_SESSION_MODE: 'ingest' });
+    const { bytes, stdout } = runHook(MAIN_HOOK, {
+      SECONDBRAIN_SESSION_MODE: 'ingest',
+      SECONDBRAIN_ROOT: REPO_ROOT,
+    });
     // The stub output is ~1600 bytes; the full Tier 1 load would be ~42000.
     expect(bytes).toBeLessThan(5000);
-    const parsed = JSON.parse(stdout) as { systemMessage: string };
-    expect(parsed.systemMessage).toContain('AMY INGEST SESSION');
+    expect(contextOf(stdout)).toContain('AMY INGEST SESSION');
   });
 
   it('routes to the full Tier 1 load when SECONDBRAIN_SESSION_MODE is not set AND SECONDBRAIN_ROOT resolves to the repo', () => {
@@ -165,14 +217,17 @@ describe('session-start-inject.sh routing', () => {
     // The full load is ~40K bytes (~10K tokens). We assert the lower bound,
     // not an exact size, because MEMORY.md + state-locations grow over time.
     expect(bytes).toBeGreaterThan(20000);
-    const parsed = JSON.parse(stdout) as { systemMessage: string };
-    expect(parsed.systemMessage).toContain('AMY SESSION START');
+    const ctx = contextOf(stdout);
+    expect(ctx).toContain('AMY SESSION START');
     // Sanity: the full load includes at least one heading from MEMORY.md
-    expect(parsed.systemMessage).toContain('MEMORY.md');
+    expect(ctx).toContain('MEMORY.md');
   });
 
   it('the ingest route produces a payload at least 10x smaller than the full Tier 1 route', () => {
-    const stubBytes = runHook(MAIN_HOOK, { SECONDBRAIN_SESSION_MODE: 'ingest' }).bytes;
+    const stubBytes = runHook(MAIN_HOOK, {
+      SECONDBRAIN_SESSION_MODE: 'ingest',
+      SECONDBRAIN_ROOT: REPO_ROOT,
+    }).bytes;
     const fullBytes = runHook(MAIN_HOOK, { SECONDBRAIN_ROOT: REPO_ROOT }).bytes;
     const ratio = fullBytes / stubBytes;
     expect(ratio).toBeGreaterThan(10);
