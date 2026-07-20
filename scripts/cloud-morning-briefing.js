@@ -7522,6 +7522,14 @@ function runningOnEc2(dataDir) {
 // renders as a real card. This is the cloud counterpart to the PC's
 // aws-cost-section.buildSection (which always passes --profile and therefore
 // cannot run against the bare EC2 role). Never throws.
+// Cost Explorer End is exclusive. The inclusive last-covered day is end-1.
+function awsInclusiveEnd(end) {
+  const d = new Date(`${String(end || '').slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(d.getTime())) return String(end || '');
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
 function fetchEc2CostExplorer30d(date) {
   const end = String(date || new Date().toISOString().slice(0, 10)).slice(0, 10);
   const startDate = new Date(`${end}T00:00:00Z`);
@@ -7778,7 +7786,11 @@ function materializeEc2AwsCostsArtifact(dataDir, date) {
     `AWS COSTS (last 30d, $${ce.total.toFixed(2)} total, EC2 IAM role / account default):`,
     '',
     `Total: $${ce.total.toFixed(2)}`,
-    `Window: ${ce.start} through ${ce.end} (live Cost Explorer on the EC2 instance role).`,
+    // Cost Explorer's End is EXCLUSIVE: a query of start..end returns data
+    // through end-1. Writing "through ${ce.end}" claimed a day the figures do
+    // not cover, which also made the freshness gate read a prior-day window as
+    // same-day and skip its own prior-day label. Codex gate 50032535f442.
+    `Window: ${ce.start} through ${awsInclusiveEnd(ce.end)} (live Cost Explorer on the EC2 instance role).`,
     ...renderAwsProjectionLines(projection),
     '',
   ];
