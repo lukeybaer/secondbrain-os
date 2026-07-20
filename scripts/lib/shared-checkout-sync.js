@@ -38,6 +38,16 @@ function parsePorcelain(raw) {
     });
 }
 
+/**
+ * Does a dirty worktree entry stand in the way of an incoming file?
+ * Porcelain reports an untracked DIRECTORY as `dir/`, which blocks every
+ * incoming file beneath it, so directory entries match by prefix.
+ */
+function dirtyEntryCollides(rel, incoming) {
+  if (rel.endsWith('/')) return incoming.some((f) => f.startsWith(rel));
+  return incoming.includes(rel);
+}
+
 function fastForwardShared({
   sharedRoot,
   remote = 'origin',
@@ -55,9 +65,6 @@ function fastForwardShared({
   const status = runGit(['status', '--porcelain'], sharedRoot);
   if (!status.ok) return { ok: false, reason: 'status-failed' };
   const dirty = parsePorcelain(status.stdout);
-  if (dirty.length > 0) {
-    return { ok: false, reason: 'dirty-shared-checkout', dirty };
-  }
 
   const fetch = runGit(['fetch', remote, target], sharedRoot);
   if (!fetch.ok) return { ok: false, reason: 'fetch-failed' };
@@ -74,13 +81,44 @@ function fastForwardShared({
     return { ok: false, reason: 'shared-ahead-of-target', ahead, behind };
   }
   if (behind === 0) {
-    return { ok: true, reason: 'already-current', ahead, behind, synced: false };
+    // Nothing to promote. Dirt is somebody else's business: freshness is the
+    // only thing this function owns.
+    const current = { ok: true, reason: 'already-current', ahead, behind, synced: false };
+    if (dirty.length > 0) current.dirty = dirty;
+    return current;
+  }
+
+  // 2026-07-20. This used to refuse on ANY dirt, before even fetching. Git can
+  // fast-forward a dirty tree fine when the dirty paths do not collide with the
+  // incoming changes, so a single unrelated stray file (a runtime JSONL, an
+  // editor scratch file) held every landed commit off the live hook path until
+  // a human noticed. Refusing is correct only when the paths ACTUALLY collide.
+  // Safety is unchanged: nothing is discarded, nothing is forced, and
+  // `merge --ff-only` remains the backstop that refuses on its own if git
+  // disagrees with our intersection.
+  let dirtyNonColliding;
+  if (dirty.length > 0) {
+    const changed = runGit(['diff', '--name-only', `HEAD..${remoteRef}`], sharedRoot);
+    if (!changed.ok) {
+      // Cannot prove non-collision, so refuse. Fail closed on ExampleCos.
+      return { ok: false, reason: 'dirty-shared-checkout', dirty, ahead, behind };
+    }
+    const incoming = String(changed.stdout || '')
+      .split(/\r?\n/)
+      .filter(Boolean);
+    const collisions = dirty.filter((d) => dirtyEntryCollides(d.rel, incoming)).map((d) => d.rel);
+    if (collisions.length > 0) {
+      return { ok: false, reason: 'dirty-shared-checkout', dirty, collisions, ahead, behind };
+    }
+    dirtyNonColliding = dirty.map((d) => d.rel);
   }
 
   const merge = runGit(['merge', '--ff-only', remoteRef], sharedRoot);
   if (!merge.ok) return { ok: false, reason: 'ff-refused', ahead, behind };
 
-  return { ok: true, reason: 'fast-forwarded', ahead, behind, synced: true };
+  const result = { ok: true, reason: 'fast-forwarded', ahead, behind, synced: true };
+  if (dirtyNonColliding) result.dirtyNonColliding = dirtyNonColliding;
+  return result;
 }
 
 module.exports = {
