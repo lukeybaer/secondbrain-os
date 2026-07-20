@@ -2,7 +2,12 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { advisorPaths, readRecentLearnings, runtimeDataDir } = require('./graphiti-brain-advisor');
+const {
+  advisorPaths,
+  isMaterialAdjustment,
+  readRecentLearnings,
+  runtimeDataDir,
+} = require('./graphiti-brain-advisor');
 
 const DEFAULT_SURFACES = [
   'claude-code',
@@ -61,6 +66,7 @@ function computeGraphitiAdvisorHealth({
   now = Date.now(),
   windowMs = 24 * 60 * 60 * 1000,
   learningCount,
+  trendWindow = 25,
 } = {}) {
   const nowMs = now instanceof Date ? now.getTime() : Number(now);
   const cutoff = nowMs - windowMs;
@@ -85,9 +91,27 @@ function computeGraphitiAdvisorHealth({
         : 0)
     );
   }, 0);
-  const influenced = uniqueConsults.filter((row) => {
+  const reportedInfluenced = uniqueConsults.filter((row) => {
     const receipt = dispositionById.get(row.advisor_id);
     return receipt && receipt.facts && receipt.facts.some((fact) => fact.disposition === 'used');
+  }).length;
+  const materiallyInfluenced = (row) => {
+    const receipt = dispositionById.get(row.advisor_id);
+    return Boolean(
+      receipt &&
+      receipt.facts &&
+      receipt.facts.some(
+        (fact) => fact.disposition === 'used' && isMaterialAdjustment(fact.resulting_adjustment),
+      ),
+    );
+  };
+  const influenced = uniqueConsults.filter(materiallyInfluenced).length;
+  const falseImpactClaims = uniqueConsults.filter((row) => {
+    const receipt = dispositionById.get(row.advisor_id);
+    const used = (receipt && receipt.facts ? receipt.facts : []).filter(
+      (fact) => fact.disposition === 'used',
+    );
+    return used.length > 0 && !used.some((fact) => isMaterialAdjustment(fact.resulting_adjustment));
   }).length;
   const statuses = uniqueConsults.reduce((acc, row) => {
     acc[row.status || 'ExampleCo'] = (acc[row.status || 'ExampleCo'] || 0) + 1;
@@ -129,12 +153,86 @@ function computeGraphitiAdvisorHealth({
   if (lessons <= 0)
     failures.push('The Graphiti consult skill has no learning entries to adapt future queries.');
   const latencies = uniqueConsults.map((row) => Number(row.latency_ms)).filter(Number.isFinite);
+  const chronological = [...uniqueConsults].sort(
+    (a, b) => Date.parse(a.ts || a.completed_at || 0) - Date.parse(b.ts || b.completed_at || 0),
+  );
+  const boundedTrendWindow = Math.max(1, Number(trendWindow) || 25);
+  const recentTrendRows = chronological.slice(-boundedTrendWindow);
+  const previousTrendRows = chronological.slice(-2 * boundedTrendWindow, -boundedTrendWindow);
+  const impactRate = (rows) =>
+    rows.length ? rows.filter(materiallyInfluenced).length / rows.length : null;
+  const recentImpactRate = impactRate(recentTrendRows);
+  const previousImpactRate = impactRate(previousTrendRows);
+  const impactDelta =
+    recentImpactRate == null || previousImpactRate == null
+      ? null
+      : recentImpactRate - previousImpactRate;
+  const impactTrend =
+    previousTrendRows.length < boundedTrendWindow || impactDelta == null
+      ? 'insufficient-data'
+      : impactDelta > 0.02
+        ? 'improving'
+        : impactDelta < -0.02
+          ? 'declining'
+          : 'flat';
+  const completeTrendWindowCount = Math.min(
+    4,
+    Math.floor(chronological.length / boundedTrendWindow),
+  );
+  const completeTrendRows = chronological.slice(-completeTrendWindowCount * boundedTrendWindow);
+  const impactWindowRates = Array.from({ length: completeTrendWindowCount }, (_, index) =>
+    impactRate(
+      completeTrendRows.slice(index * boundedTrendWindow, (index + 1) * boundedTrendWindow),
+    ),
+  );
+  const impactSteadyImprovement =
+    impactWindowRates.length >= 3 &&
+    impactWindowRates.slice(1).every((rate, index) => rate - impactWindowRates[index] > 0.02);
+  const queryVariants = {};
+  for (const row of uniqueConsults.filter(
+    (consult) => consult.status !== 'reused' && consult.experiment_eligible !== false,
+  )) {
+    const name = row.query_variant || 'legacy';
+    if (!queryVariants[name]) {
+      queryVariants[name] = {
+        consults: 0,
+        impacted: 0,
+        timeouts: 0,
+        false_impact_claims: 0,
+      };
+    }
+    const bucket = queryVariants[name];
+    bucket.consults += 1;
+    if (materiallyInfluenced(row)) bucket.impacted += 1;
+    if (['timeout', 'unavailable'].includes(row.status)) bucket.timeouts += 1;
+    const receipt = dispositionById.get(row.advisor_id);
+    const used = (receipt && receipt.facts ? receipt.facts : []).filter(
+      (fact) => fact.disposition === 'used',
+    );
+    if (used.length && !used.some((fact) => isMaterialAdjustment(fact.resulting_adjustment))) {
+      bucket.false_impact_claims += 1;
+    }
+  }
+  for (const bucket of Object.values(queryVariants)) {
+    bucket.impact_rate = bucket.consults ? bucket.impacted / bucket.consults : 0;
+    bucket.timeout_rate = bucket.consults ? bucket.timeouts / bucket.consults : 0;
+  }
   const metrics = {
     consults: total,
     substantive_yield_rate: total
       ? uniqueConsults.filter((row) => Number(row.fact_count || 0) > 0).length / total
       : 0,
+    impact_rate: total ? influenced / total : 0,
     influence_rate: total ? influenced / total : 0,
+    reported_influence_rate: total ? reportedInfluenced / total : 0,
+    false_impact_claims: falseImpactClaims,
+    impact_rate_previous_window: previousImpactRate,
+    impact_rate_recent_window: recentImpactRate,
+    impact_rate_delta: impactDelta,
+    impact_trend: impactTrend,
+    impact_window_rates: impactWindowRates,
+    impact_steady_improvement: impactSteadyImprovement,
+    impact_trend_window: boundedTrendWindow,
     disposition_completeness: expectedFacts ? dispositionFacts / expectedFacts : 1,
     reuse_rate: total ? (statuses.reused || 0) / total : 0,
     timeout_rate: total ? timeoutCount / total : 0,
@@ -154,6 +252,7 @@ function computeGraphitiAdvisorHealth({
     metrics,
     statuses,
     surfaces,
+    query_variants: queryVariants,
     failures,
   };
 }

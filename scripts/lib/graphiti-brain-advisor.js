@@ -9,6 +9,7 @@ const SCHEMA = 'amy.graphiti_advisor.v1';
 const DEFAULT_TIMEOUT_MS = Number(process.env.GRAPHITI_ADVISOR_TIMEOUT_MS) || 30_000;
 const DEFAULT_REUSE_TTL_MS = Number(process.env.GRAPHITI_ADVISOR_REUSE_TTL_MS) || 30 * 60 * 1000;
 const MAX_FACTS = Number(process.env.GRAPHITI_ADVISOR_MAX_FACTS) || 8;
+const QUERY_VARIANTS = ['balanced_v1', 'decision_delta_v1'];
 const CONTINUATION_RE =
   /^(?:y|yes|yep|ok|okay|go|go ahead|do it|continue|proceed|approved?|ship it|sounds good|great|perfect)(?:[,.!\s]+(?:continue|proceed|go ahead|do it|please))*[.!\s]*$/i;
 const STOPWORDS = new Set(
@@ -166,6 +167,9 @@ function buildAdvisorQuery(input, learnings = []) {
   const recipient = compact(input.recipient || '', 120);
   const action = compact(input.action || '', 240);
   const adjustments = learningAdjustments(learnings);
+  const queryVariant = QUERY_VARIANTS.includes(input.queryVariant)
+    ? input.queryVariant
+    : 'balanced_v1';
   const namedScope = [
     project && `project ${project}`,
     recipient && `person ${recipient}`,
@@ -179,11 +183,15 @@ function buildAdvisorQuery(input, learnings = []) {
     `prior decisions and approach changes relevant to ${project || names.join(', ') || 'this work'}`,
     `recent experience with ${recipient || names.join(', ') || project || 'the people and project involved'}`,
   ];
+  const recallInstruction =
+    queryVariant === 'decision_delta_v1'
+      ? "Recall only current Graphiti context that could change Amy's answer or action: a ExampleCo preference or constraint not already explicit, a prior reversal plus its reason, or a recent outcome with the same people or project. Exclude generic component descriptions and stale or invalidated history."
+      : "Recall current Graphiti facts that could materially change Amy's response or action: ExampleCo preferences and constraints; prior decisions, reversals, and reasons; recent outcomes and experience with the named people or project.";
   const query = [
     `Intent: ${prompt || action || 'the pending Amy action'}.`,
     namedScope ? `Context: ${namedScope}.` : '',
     history ? `Recent context: ${history}.` : '',
-    "Recall current Graphiti facts that could materially change Amy's response or action: ExampleCo preferences and constraints; prior decisions, reversals, and reasons; recent outcomes and experience with the named people or project.",
+    recallInstruction,
   ]
     .filter(Boolean)
     .join(' ');
@@ -192,6 +200,7 @@ function buildAdvisorQuery(input, learnings = []) {
     // group-filter count are >= 128. owner-ea contributes one group entry, so
     // 126 words is the largest safe advisor query that preserves BM25.
     query: limitWords(compact(query, 760), 126),
+    query_variant: queryVariant,
     consulted_about: consultedAbout.map((item) => compact(item, 320)),
     learning_adjustments: adjustments,
     learning_controls: {
@@ -312,6 +321,8 @@ function createGraphitiAdvisor(deps = {}) {
         fact_count: envelope.facts.length,
         consulted_about: envelope.consulted_about,
         query_hash: envelope.query_hash,
+        query_variant: envelope.query_variant,
+        experiment_eligible: envelope.experiment_eligible,
         learning_count: envelope.learning_count,
         learning_adjustments: envelope.learning_adjustments,
         learning_controls: envelope.learning_controls,
@@ -350,7 +361,15 @@ function createGraphitiAdvisor(deps = {}) {
     const startedMs = now();
     const advisorId = input.advisorId || `ga_${startedMs}_${crypto.randomBytes(5).toString('hex')}`;
     const learnings = lessonsLoader().slice(-10);
-    const built = buildAdvisorQuery(input, learnings);
+    const assignedVariant =
+      input.queryVariant ||
+      QUERY_VARIANTS[
+        Number.parseInt(
+          crypto.createHash('sha256').update(advisorId).digest('hex').slice(0, 8),
+          16,
+        ) % QUERY_VARIANTS.length
+      ];
+    const built = buildAdvisorQuery({ ...input, queryVariant: assignedVariant }, learnings);
     const promptTokens = contentTokens(input.prompt || input.action || '');
     const base = {
       schema: SCHEMA,
@@ -372,6 +391,8 @@ function createGraphitiAdvisor(deps = {}) {
       started_ms: startedMs,
       query: built.query,
       query_hash: crypto.createHash('sha256').update(built.query).digest('hex').slice(0, 16),
+      query_variant: built.query_variant,
+      experiment_eligible: true,
       consulted_about: built.consulted_about,
       learning_count: learnings.length,
       learning_adjustments: built.learning_adjustments,
@@ -385,6 +406,8 @@ function createGraphitiAdvisor(deps = {}) {
     if (reused) {
       resolved = {
         ...base,
+        query_variant: reused.query_variant || base.query_variant,
+        experiment_eligible: false,
         status: 'reused',
         reused_from: reused.advisor_id,
         facts: reused.facts,
@@ -500,6 +523,50 @@ function adjustmentFromLine(line) {
   return clean ? clean.replace(/^[-*]\s*/, '') : 'materially shaped the answer or action';
 }
 
+function isMaterialAdjustment(value) {
+  const text = compact(value || '', 500);
+  if (!text || /^none\.?$/i.test(text)) return false;
+  return !/\b(?:did not|does not|do not|not change|no change|not impact|not drive|no substantive|was not|were not|is not|are not)\b/i.test(
+    text,
+  );
+}
+
+function compactImpactClaim(output, envelope) {
+  const text = String(output || '');
+  const start = text.search(/^\s*(?:#{1,6}\s*)?Graphiti impact\s*:/im);
+  if (start < 0) return null;
+  const tail = text.slice(start);
+  const tldr = tail.search(/^\s*(?:#{1,6}\s*)?TLDR\s*:/im);
+  const section = tldr >= 0 ? tail.slice(0, tldr) : tail;
+  const match = section.match(
+    /Graphiti impact\s*:\s*Impacted by\s+(\d+)\s*\/\s*(\d+)\s+recalled facts\s*\(refs:\s*([0-9,\s]+)\)\.\s*(.*?)(?=\s+Other checks that did not help:|$)/is,
+  );
+  if (!match) return null;
+  const refs = Array.from(
+    new Set(
+      match[3]
+        .split(',')
+        .map((value) => Number(value.trim()))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    ),
+  );
+  const facts = envelope.facts || [];
+  if (
+    Number(match[1]) !== refs.length ||
+    Number(match[2]) !== facts.length ||
+    refs.some((index) => !facts[index - 1])
+  ) {
+    return null;
+  }
+  return {
+    claimed_count: Number(match[1]),
+    claimed_total: Number(match[2]),
+    refs,
+    fact_ids: refs.map((index) => facts[index - 1] && facts[index - 1].id).filter(Boolean),
+    adjustment: compact(match[4], 500),
+  };
+}
+
 function createDispositionReceipt({
   envelope,
   output = '',
@@ -512,11 +579,19 @@ function createDispositionReceipt({
     throw new Error('Graphiti disposition requires an advisor envelope');
   if (!answerActionId) throw new Error('Graphiti disposition requires an answer or action ID');
   const effectiveVisibility = visibility || envelope.visibility || 'owner_private';
+  const compactClaim = compactImpactClaim(output, envelope);
+  const compactClaimIds = new Set((compactClaim && compactClaim.fact_ids) || []);
   const facts = (envelope.facts || []).map((fact) => {
     const line = factLineForOutput(output, fact.id);
     const forcedInvalid = Boolean(fact.invalid_at);
     const forcedConflict = authorityConflict(fact.fact);
-    const used = Boolean(line) && !forcedInvalid && !forcedConflict;
+    const adjustment = compactClaimIds.has(fact.id)
+      ? compactClaim.adjustment
+      : line
+        ? adjustmentFromLine(line)
+        : '';
+    const claimed = compactClaimIds.has(fact.id) || Boolean(line);
+    const used = claimed && isMaterialAdjustment(adjustment) && !forcedInvalid && !forcedConflict;
     let reason;
     if (forcedInvalid)
       reason = `Ignored because Graphiti marks the fact invalidated at ${fact.invalid_at}.`;
@@ -533,7 +608,7 @@ function createDispositionReceipt({
       fact_id: fact.id,
       disposition: used ? 'used' : 'ignored',
       reason,
-      resulting_adjustment: used ? adjustmentFromLine(line) : 'none',
+      resulting_adjustment: used ? adjustment : 'none',
       answer_action_id: String(answerActionId),
       private_detail_redacted: effectiveVisibility !== 'owner_private',
     };
@@ -593,39 +668,62 @@ function publicFactSummary(fact, visibility) {
   return compact(fact.fact || 'a relevant memory', 180);
 }
 
+function ignoredCheckSummary(envelope, receipt) {
+  const byId = new Map((envelope.facts || []).map((fact) => [fact.id, fact]));
+  const ignored = (receipt && receipt.facts ? receipt.facts : [])
+    .filter((fact) => fact.disposition === 'ignored')
+    .map((fact) => ({ disposition: fact, fact: byId.get(fact.fact_id) || {} }));
+  if (!ignored.length) return 'none';
+  const categories = new Set();
+  for (const row of ignored) {
+    const text = `${row.fact.fact || ''} ${row.disposition.reason || ''}`.toLowerCase();
+    if (row.fact.invalid_at || /invalidat|stale|supersed/.test(text)) {
+      categories.add('stale or invalidated history');
+    } else if (/prefer|helpful|working style|constraint|wants?\b/.test(text)) {
+      categories.add('preferences and constraints');
+    } else if (
+      /prior|previous|earlier|decision|reversal|approach|plan|architecture|changed/.test(text)
+    ) {
+      categories.add('prior decisions and reversals');
+    } else if (/recent|status|project|person|people|recipient|pending|latest|last\b/.test(text)) {
+      categories.add('recent people or project history');
+    } else {
+      categories.add('other project context');
+    }
+  }
+  return Array.from(categories).slice(0, 3).join(', ');
+}
+
+function attemptedCheckSummary() {
+  return 'current intent, preferences and constraints, prior decisions and reversals, and recent people or project history';
+}
+
 function formatGraphitiImpact(envelope, receipt) {
   const status = envelope.status || 'unavailable';
-  const warning = ['timeout', 'unavailable', 'pending'].includes(status)
-    ? ` WARNING: ${status}${envelope.error ? `: ${compact(envelope.error, 160)}` : ''}`
-    : '';
-  const lines = [`Graphiti impact:${warning}`];
-  lines.push(`- Graphiti was asked about ${envelope.consulted_about.join('; ')}.`);
-  const byId = new Map((envelope.facts || []).map((fact) => [fact.id, fact]));
+  if (status === 'pending' || status === 'timeout') {
+    return `Graphiti impact: Timed out. No recalled fact could influence this answer or action. Checks attempted: ${attemptedCheckSummary()}.`;
+  }
+  if (status === 'unavailable') {
+    return `Graphiti impact: Failed. The advisor was unavailable, so no recalled fact could influence this answer or action. Checks attempted: ${attemptedCheckSummary()}.`;
+  }
+  const facts = envelope.facts || [];
   const used = (receipt && receipt.facts ? receipt.facts : []).filter(
-    (fact) => fact.disposition === 'used',
+    (fact) => fact.disposition === 'used' && isMaterialAdjustment(fact.resulting_adjustment),
   );
-  for (const disposition of used) {
-    const fact = byId.get(disposition.fact_id) || { fact: 'a recalled fact' };
-    lines.push(
-      `- [${disposition.fact_id}] Graphiti's recall of ${publicFactSummary(fact, receipt.visibility)} influenced our plan/action/message in this fashion: ${disposition.resulting_adjustment}.`,
-    );
+  const otherChecks = ignoredCheckSummary(envelope, receipt);
+  if (!used.length) {
+    return `Graphiti impact: Not impacted (0/${facts.length} used). Recall did not materially change this answer or action. Other checks that did not help: ${otherChecks}.`;
   }
-  if (!used.length && status === 'fresh') {
-    lines.push('- No substantive Graphiti recall changed this answer or action.');
-  } else if (!used.length && status === 'reused') {
-    lines.push(
-      `- Existing substantive recall was reused from ${envelope.reused_from}; no new influence was claimed.`,
-    );
-  }
-  const total = (envelope.facts || []).length;
-  const ignored =
-    receipt && receipt.facts
-      ? receipt.facts.filter((fact) => fact.disposition === 'ignored').length
-      : total;
-  lines.push(
-    `- Coverage: ${total} recalled, ${used.length} used, ${ignored} ignored; every retrieved fact has a durable disposition receipt.`,
+  const usedIds = new Set(used.map((fact) => fact.fact_id));
+  const refs = facts
+    .map((fact, index) => (usedIds.has(fact.id) ? index + 1 : null))
+    .filter(Boolean);
+  const adjustments = Array.from(
+    new Set(used.map((fact) => compact(fact.resulting_adjustment, 220)).filter(Boolean)),
   );
-  return lines.join('\n');
+  const impact =
+    compact(adjustments.join('; '), 260) || 'Recall materially changed this answer or action.';
+  return `Graphiti impact: Impacted by ${used.length}/${facts.length} recalled facts (refs: ${refs.join(', ')}). ${impact.replace(/\.*$/, '.')} Other checks that did not help: ${otherChecks}.`;
 }
 
 function buildAdvisorPromptBlock(envelope) {
@@ -647,17 +745,17 @@ function buildAdvisorPromptBlock(envelope) {
     lines.push('Graphiti returned no substantive facts. Say that honestly in Graphiti impact.');
   } else {
     lines.push('Retrieved facts:');
-    for (const fact of envelope.facts) {
+    for (const [index, fact] of envelope.facts.entries()) {
       const temporal = [
         fact.valid_at && `valid ${fact.valid_at}`,
         fact.invalid_at && `invalid ${fact.invalid_at}`,
       ]
         .filter(Boolean)
         .join(', ');
-      lines.push(`- [${fact.id}] ${fact.fact}${temporal ? ` (${temporal})` : ''}`);
+      lines.push(`- Ref ${index + 1} [${fact.id}] ${fact.fact}${temporal ? ` (${temporal})` : ''}`);
     }
     lines.push(
-      'Use only facts that materially change the work. Cite every used fact ID in the Graphiti impact section. Every uncited retrieved fact will be durably recorded as ignored with no adjustment.',
+      'Use only facts that materially change the work. Write one concise verdict-first line: "Graphiti impact: Impacted by N/T recalled facts (refs: 1, 3). <brief impact>. Other checks that did not help: <brief categories>." If none changed the work, start "Graphiti impact: Not impacted (0/T used)." A timeout starts "Timed out." and an unavailable advisor starts "Failed." Ordinal refs create the durable per-fact receipt without exposing UUIDs.',
     );
   }
   lines.push(
@@ -725,6 +823,7 @@ async function consultBeforeAmyAction(input = {}) {
 }
 
 module.exports = {
+  QUERY_VARIANTS,
   SCHEMA,
   advisorPaths,
   attachGraphitiImpact,
@@ -736,6 +835,7 @@ module.exports = {
   createDispositionReceipt,
   createGraphitiAdvisor,
   formatGraphitiImpact,
+  isMaterialAdjustment,
   normalizeFacts,
   readRecentLearnings,
   recordLateCompletionDisposition,

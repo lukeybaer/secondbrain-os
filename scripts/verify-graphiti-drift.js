@@ -213,6 +213,16 @@ const MUST_CONTAIN = [
     'every retrieved fact receives the permanent privacy-aware disposition fields',
   ],
   [
+    'scripts/lib/graphiti-brain-advisor.js',
+    'Impacted by ${used.length}/${facts.length} recalled facts',
+    'official Graphiti impact uses the concise verdict-first binary-use metric',
+  ],
+  [
+    'scripts/lib/graphiti-advisor-health.js',
+    'false_impact_claims',
+    'health exposes attempts to count negated adjustments as influence',
+  ],
+  [
     'scripts/graphiti-brain-advisor.js',
     'startDetached',
     'short-lived hooks and synchronous runners can start recall without blocking ordinary work',
