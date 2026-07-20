@@ -1496,7 +1496,16 @@ function produceFullLifeBackupCardArtifact({
     );
   }
 
-  const stale = sources.filter((s) => s && s.status && s.status !== 'FLOWING_24H');
+  // SCHEMA, not a guess. Production life-archive snapshots carry the boolean
+  // flowing_last_24h (cloud-morning-briefing.js:6031 and :6780 both filter on
+  // it). The first cut tested `status !== 'FLOWING_24H'`, so a genuinely
+  // non-flowing source with flowing_last_24h:false and NO status field counted
+  // as healthy. Codex gate ff30fbb4d641 caught it: a false-health path inside
+  // the card whose entire job is refusing to report false health.
+  //
+  // A source is flowing ONLY on an explicit true. Missing or malformed reads
+  // as not flowing, so the failure direction is a visible defect.
+  const stale = sources.filter((s) => !(s && s.flowing_last_24h === true));
   const body = [
     `Backup coverage: ${sources.length - stale.length}/${sources.length} source(s) flowing in the last 24h.`,
     `Snapshot generated ${generatedAt}.`,

@@ -652,9 +652,18 @@ function simpleProducer({ family, cards, command, timeoutMs, artifacts, evidence
 
 // The PC AWS generator needs named profiles. A Linux host serving
 // /opt/secondbrain is the cloud build host, where those do not exist.
-function awsSourceGeneratorRunsHere() {
+function awsSourceGeneratorRunsHere(dataDir) {
   if (process.platform !== 'linux') return true;
-  return !String(process.env.SECONDBRAIN_DATA_DIR || '').startsWith('/opt/secondbrain');
+  // FAIL-CLOSED on the RESOLVED argument. Codex gate ff30fbb4d641: the first
+  // cut read only the ambient SECONDBRAIN_DATA_DIR, so
+  // `card-controller.js --data-dir /opt/secondbrain/data` with that variable
+  // unset still ran the corrupting generator on EC2. The guard was inert in
+  // the exact invocation path that matters. The caller's dataDir wins; the
+  // env var is only a fallback.
+  const resolved = String(dataDir || process.env.SECONDBRAIN_DATA_DIR || '');
+  if (resolved.startsWith('/opt/secondbrain')) return false;
+  // On Linux with NO signal either way, refuse rather than risk clobbering.
+  return resolved !== '';
 }
 
 const CONTRACTS = {
@@ -703,8 +712,8 @@ const CONTRACTS = {
     // On EC2 this generator can only destroy, so it is skipped there and the
     // per-card producer's live Cost Explorer path (instance role, no profile)
     // is the only writer. On the desktop, where profiles exist, it still runs.
-    command: (date) =>
-      awsSourceGeneratorRunsHere() ? ['scripts/aws-cost-section.js', '--date', date] : null,
+    command: (date, dataDir) =>
+      awsSourceGeneratorRunsHere(dataDir) ? ['scripts/aws-cost-section.js', '--date', date] : null,
     timeoutMs: 5 * 60 * 1000,
     // The live card reads the dated markdown snapshot, not a legacy JSON alias.
     evidence: datedArtifactEvidence((date) => [['agent', `aws-costs-${date}.md`]]),
