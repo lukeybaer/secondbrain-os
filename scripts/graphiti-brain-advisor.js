@@ -107,6 +107,45 @@ function resultPath(paths, advisorId) {
   return path.join(paths.results, `${advisorId}.json`);
 }
 
+// One prompt, one injection. The marker is keyed on the advisor, and every
+// submitted prompt starts a new advisor, so it resets itself per prompt.
+function deliveryMarkerPath(paths, advisorId) {
+  return path.join(paths.results, `${advisorId}.delivered`);
+}
+
+function alreadyDelivered(paths, advisorId) {
+  return fs.existsSync(deliveryMarkerPath(paths, advisorId));
+}
+
+// Exclusive create IS the lock. Tool calls that fire at the same moment race
+// here and exactly one wins, so parallel PreToolUse hooks cannot both inject.
+// Claiming happens after the block is built, so a hook that times out while
+// waiting never burns the one delivery.
+function claimDelivery(paths, advisorId) {
+  const marker = deliveryMarkerPath(paths, advisorId);
+  try {
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, new Date().toISOString(), { flag: 'wx', mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Pending, timed out, and unavailable all mean the same thing to a caller: no
+// usable recall yet. None of them should spend the single delivery on a read,
+// and all of them must still be stated before a side effect.
+function isRecallIncomplete(envelope) {
+  const status = String((envelope && envelope.status) || '').toLowerCase();
+  return (
+    status === '' ||
+    status === 'pending' ||
+    status === 'started' ||
+    status === 'timeout' ||
+    status === 'unavailable'
+  );
+}
+
 function pendingEnvelope(request, advisorId, waitMs) {
   return {
     schema: 'amy.graphiti_advisor.v1',
@@ -222,11 +261,31 @@ async function main() {
     const advisorId = resolveAdvisorId(args, paths);
     if (!advisorId) throw new Error('await/context requires --advisor-id or --session-id');
     const request = readJson(path.join(paths.requests, `${advisorId}.json`), {}) || {};
-    const envelope = await waitForResult(paths, advisorId, Number(args.waitMs) || 0, request);
-    output =
-      command === 'context'
-        ? { envelope, prompt_block: buildAdvisorPromptBlock(envelope) }
-        : envelope;
+    const waitMs = Number(args.waitMs) || 0;
+    const once = command === 'context' && Boolean(args.once);
+    if (once && alreadyDelivered(paths, advisorId)) {
+      // The block is already in this prompt's transcript. Repeating it on every
+      // later tool call only burns context, so hand back the envelope with an
+      // empty block and skip the wait entirely.
+      output = {
+        envelope: readJson(resultPath(paths, advisorId)) || pendingEnvelope(request, advisorId, 0),
+        prompt_block: '',
+        suppressed: 'already-delivered',
+      };
+    } else {
+      const envelope = await waitForResult(paths, advisorId, waitMs, request);
+      if (command !== 'context') output = envelope;
+      else if (once && waitMs === 0 && isRecallIncomplete(envelope)) {
+        // Recall has not landed and nothing is about to happen that needs it.
+        // Stay quiet and let a later tool call deliver the real facts.
+        output = { envelope, prompt_block: '', suppressed: 'pending' };
+      } else if (once && !claimDelivery(paths, advisorId)) {
+        // A tool call running in parallel won the race and already injected.
+        output = { envelope, prompt_block: '', suppressed: 'already-delivered' };
+      } else {
+        output = { envelope, prompt_block: buildAdvisorPromptBlock(envelope) };
+      }
+    }
   } else if (command === 'receipt') {
     const advisorId = resolveAdvisorId(args, paths);
     if (!advisorId) throw new Error('receipt requires --advisor-id or --session-id');
