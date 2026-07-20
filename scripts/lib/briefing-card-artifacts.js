@@ -1381,6 +1381,116 @@ function produceDeterministicBuilderCardArtifact({
   });
 }
 
+// FULL LIFE BACKUP renders from life-archive/health-latest.json. On EC2 that
+// file is 42 days stale (generated_at 2026-06-08), its db_path is a Windows
+// desktop path proving it was produced on the OLD PC and hand-copied, and NO
+// GENERATOR EXISTS: maybeRegenLifeArchiveHealth spawns gmail-s3-flow-health.py,
+// which writes a DIFFERENT file with no `sources` array, so the regen has been
+// a silent no-op since June. A repo-wide search for writers of this path finds
+// only readers.
+//
+// The 5:30 path published this card CLEAN off that frozen snapshot, rendering
+// "Data refreshed: Jun 7, 2026" with +0 deltas on all 11 sources. Presenting
+// 42-day-old numbers as today's backup health is fabrication (law G13,
+// feedback_no_fabrication_in_briefings.md). Until a generator exists this card
+// cannot be clean, so it says so and names the missing generator.
+const LIFE_ARCHIVE_MAX_SNAPSHOT_AGE_MS = 36 * 60 * 60 * 1000;
+
+function produceFullLifeBackupCardArtifact({
+  date,
+  dataDir = defaultDataDir(),
+  now = new Date(),
+} = {}) {
+  const title = cardTitle('full_life_backup');
+  const rel = 'life-archive/health-latest.json';
+  const file = path.join(dataDir, 'life-archive', 'health-latest.json');
+  const defect = (reason, source = {}) =>
+    createCardArtifact({
+      id: 'full_life_backup',
+      title,
+      date,
+      kind: 'data',
+      status: 'defect',
+      generatedAt: now.toISOString(),
+      markdown: `${title}:\n${reason}`,
+      blockedReason: reason,
+      source: { mode: 'life-archive-health-snapshot', artifact: rel, ...source },
+      qc: { ok: false, failures: [reason] },
+    });
+
+  let snapshot = null;
+  try {
+    snapshot = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return defect(
+      `Life-archive backup health cannot be read: ${rel} is missing or unparseable, so backup ` +
+        `coverage cannot be verified. Root cause: no generator writes this file. Remediation: ` +
+        `write a cloud-host generator for it, or retire this card.`,
+      { missing: true, noGenerator: true },
+    );
+  }
+
+  const generatedAt = String((snapshot && snapshot.generated_at) || '').trim();
+  const generatedMs = Date.parse(generatedAt);
+  const ageMs = Number.isFinite(generatedMs) ? now.getTime() - generatedMs : null;
+  const ageDays = ageMs == null ? null : Math.round(ageMs / 86400000);
+  const sources = Array.isArray(snapshot && snapshot.sources) ? snapshot.sources : [];
+
+  if (ageMs == null || ageMs > LIFE_ARCHIVE_MAX_SNAPSHOT_AGE_MS) {
+    const dbPath = String((snapshot && snapshot.db_path) || '');
+    // A Windows path on a Linux host proves the snapshot was ExampleCod over from
+    // the desktop rather than generated where it is read.
+    const foreignHost = /^[A-Za-z]:\\/.test(dbPath) && process.platform !== 'win32';
+    return defect(
+      `Life-archive backup health is ${ageDays == null ? 'undated' : `${ageDays} days`} stale ` +
+        `(snapshot generated ${generatedAt || 'ExampleCo'}), so today's backup coverage across ` +
+        `${sources.length} source(s) is unverified. ` +
+        (foreignHost ? `It was produced on another host (db_path ${dbPath}). ` : '') +
+        `Root cause: no generator writes ${rel}; the regen path spawns gmail-s3-flow-health.py, ` +
+        `which writes a different file with no sources array. Remediation: write a cloud-host ` +
+        `generator for ${rel}, or retire this card.`,
+      { generatedAt, ageDays, sourceCount: sources.length, noGenerator: true },
+    );
+  }
+
+  if (!sources.length) {
+    return defect(
+      `Life-archive backup health snapshot ExampleCos no sources array, so no backup coverage can be reported.`,
+      { generatedAt, malformed: true },
+    );
+  }
+
+  const stale = sources.filter((s) => s && s.status && s.status !== 'FLOWING_24H');
+  const body = [
+    `Backup coverage: ${sources.length - stale.length}/${sources.length} source(s) flowing in the last 24h.`,
+    `Snapshot generated ${generatedAt}.`,
+    ...(stale.length
+      ? [`Not flowing: ${stale.map((s) => s.id || s.source).join(', ')}.`]
+      : ['All tracked sources are flowing.']),
+  ].join('\n');
+  const qc = qcCard({ id: 'full_life_backup', title, body }, { surface: 'card-artifact' });
+  const failures = qc.failures || [];
+
+  return createCardArtifact({
+    id: 'full_life_backup',
+    title,
+    date,
+    kind: 'data',
+    status: failures.length ? 'defect' : 'clean',
+    generatedAt: now.toISOString(),
+    markdown: `${title}:\n${body}`,
+    source: {
+      mode: 'life-archive-health-snapshot',
+      artifact: rel,
+      generatedAt,
+      ageDays,
+      sourceCount: sources.length,
+    },
+    blockedReason: '',
+    qc: { ok: failures.length === 0, failures },
+  });
+}
+
 function produceOtterSpeakerParetoCardArtifact({
   date,
   dataDir,
@@ -1840,6 +1950,9 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
   if (DETERMINISTIC_CARD_BUILDERS[card.id]) {
     return produceDeterministicBuilderCardArtifact({ id: card.id, date, dataDir, now });
   }
+  if (card.id === 'full_life_backup') {
+    return produceFullLifeBackupCardArtifact({ date, dataDir, now });
+  }
   if (card.id === 'uncommitted_parked') {
     return produceUncommittedParkedCardArtifact({ date, dataDir, now });
   }
@@ -2061,6 +2174,7 @@ module.exports = {
   produceTokenUsageCardArtifact,
   produceAwsCostsCardArtifact,
   produceUncommittedParkedCardArtifact,
+  produceFullLifeBackupCardArtifact,
   produceDeterministicBuilderCardArtifact,
   produceOtterSpeakerParetoCardArtifact,
   produceAllCardArtifacts,
