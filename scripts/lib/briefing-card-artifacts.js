@@ -328,8 +328,16 @@ function artifactContentFailures(artifact) {
     },
     { surface: 'card-artifact' },
   ).failures.filter(
+    // big_decisions and aws_costs legitimately name cloud/provider services in
+    // their bodies (a billing breakdown lists AWS Cost Explorer service names
+    // such as "Claude Sonnet 4.6 (Amazon Bedrock Edition)"), so the exec-crispness
+    // provider-name rule must not stamp them as a "raw operational detail" leak.
+    // Self-heal aws_costs BLOCKERS-NAMED-CARD fix, 2026-07-20.
     (failure) =>
-      !(artifact.id === 'big_decisions' && /raw operational detail/i.test(String(failure || ''))),
+      !(
+        (artifact.id === 'big_decisions' || artifact.id === 'aws_costs') &&
+        /raw operational detail/i.test(String(failure || ''))
+      ),
   );
   return uniqueList([...failures, ...qcFailures]);
 }
