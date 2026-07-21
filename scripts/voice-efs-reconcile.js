@@ -55,7 +55,18 @@ function copyIfNewer(src, dst) {
   if (ds && ds.mtimeMs > ss.mtimeMs) return 'skip_uptodate';
   if (ds && ds.mtimeMs === ss.mtimeMs && ds.size === ss.size) return 'skip_uptodate';
   fs.mkdirSync(path.dirname(dst), { recursive: true });
-  fs.copyFileSync(src, dst);
+  // Stage beside the destination, then rename. Some historical EC2 voice
+  // runs left root-owned cache files behind. Opening those files for an
+  // in-place copy fails for the scheduled ec2-user reconciler even though it
+  // owns the parent directory. A same-directory rename is atomic and replaces
+  // the stale inode without requiring write permission on that inode.
+  const staged = `${dst}.reconcile-${process.pid}-${Date.now().toString(36)}.tmp`;
+  try {
+    fs.copyFileSync(src, staged);
+    fs.renameSync(staged, dst);
+  } finally {
+    try { fs.rmSync(staged, { force: true }); } catch { /* best effort */ }
+  }
   return ds ? 'updated' : 'created';
 }
 
