@@ -2838,6 +2838,112 @@ function appendUniqueNewsItems(items, supplement, target) {
   return out;
 }
 
+const NEWS_RENDER_LABEL_BY_KEY = Object.freeze({
+  aitech: 'AI & TECH NEWS',
+  us: 'US NEWS',
+  world: 'WORLD NEWS',
+  immigration: 'US IMMIGRATION NEWS',
+  mortgage: 'MORTGAGE INDUSTRY NEWS',
+  covid: 'COVID-19 TREATMENTS & NEWS',
+});
+
+function normalizedPriorNewsUrl(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  try {
+    const url = new URL(value);
+    url.hash = '';
+    url.search = '';
+    return url.toString().replace(/\/$/, '').toLowerCase();
+  } catch {
+    return value
+      .replace(/[?#].*$/, '')
+      .replace(/\/$/, '')
+      .toLowerCase();
+  }
+}
+
+function normalizedPriorNewsTitle(raw) {
+  return String(raw || '')
+    .toLowerCase()
+    .replace(/&(?:amp|apos|quot|#39);/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function priorNewsDateString(dateStr) {
+  const match = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return '';
+  const value = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  value.setUTCDate(value.getUTCDate() - 1);
+  return value.toISOString().slice(0, 10);
+}
+
+function previousRenderedNewsIdentities(dataDir, date, label) {
+  const empty = { urls: new Set(), titles: new Set() };
+  const previousDate = priorNewsDateString(date);
+  if (!previousDate || !label) return empty;
+  let markdown = '';
+  try {
+    markdown = fs.readFileSync(
+      path.join(dataDir, 'briefings', `briefing-${previousDate}.md`),
+      'utf8',
+    );
+  } catch {
+    return empty;
+  }
+  const normalizedLabel = normalizedPriorNewsTitle(label);
+  const lines = String(markdown).split(/\r?\n/);
+  const section = [];
+  let inside = false;
+  const headingLabel = (line) => {
+    const raw = String(line || '').trim();
+    const markdownHeading = raw.match(/^##\s+(.+)$/);
+    const legacyHeading = raw.match(/^([A-Z][A-Za-z0-9 &/(),.'-]{2,200}):$/);
+    const value = (markdownHeading && markdownHeading[1]) || (legacyHeading && legacyHeading[1]);
+    return value ? normalizedPriorNewsTitle(value.replace(/\s*\(\d+\)\s*$/, '')) : '';
+  };
+  for (const line of lines) {
+    const heading = headingLabel(line);
+    if (!inside) {
+      if (heading === normalizedLabel) inside = true;
+      continue;
+    }
+    if (heading) break;
+    section.push(line);
+  }
+  if (!section.length) return empty;
+  const rows = [];
+  let current = null;
+  for (const line of section) {
+    const item = line.match(/^\s*\d+\.\s+(.+)$/);
+    if (item) {
+      if (current) rows.push(current);
+      current = { title: item[1].trim(), url: '' };
+      continue;
+    }
+    if (!current) continue;
+    const source = line.match(/\bSource:\s*(https?:\/\/\S+)/i);
+    if (source) current.url = source[1];
+  }
+  if (current) rows.push(current);
+  return {
+    urls: new Set(rows.map((row) => normalizedPriorNewsUrl(row.url)).filter(Boolean)),
+    titles: new Set(rows.map((row) => normalizedPriorNewsTitle(row.title)).filter(Boolean)),
+  };
+}
+
+function newsItemWasRenderedPreviously(item, identities) {
+  if (!item || !identities) return false;
+  const url = normalizedPriorNewsUrl(item.url);
+  const title = normalizedPriorNewsTitle(renderNewsDisplayTitle(item) || item.title);
+  return Boolean(
+    (url && identities.urls && identities.urls.has(url)) ||
+    (title && identities.titles && identities.titles.has(title)),
+  );
+}
+
 function healedNewsItems(dataDir, date, cardKey) {
   const raw = readContentHealForCard(dataDir, date, cardKey);
   const card = raw && raw.cards && raw.cards[cardKey];
@@ -2904,6 +3010,29 @@ function healedNewsItems(dataDir, date, cardKey) {
       return ag - bg || a.i - b.i;
     })
     .map(({ it }) => it);
+  // Freshness rejection feeds back into selection. The source fetch deliberately
+  // over-collects; yesterday's rendered identities go behind every unseen
+  // candidate so the summarizer and renderer keep drawing from today's well
+  // instead of letting an old cached summary monopolize the top-N.
+  const previousIdentities = previousRenderedNewsIdentities(
+    dataDir,
+    date,
+    NEWS_RENDER_LABEL_BY_KEY[cardKey],
+  );
+  items = items
+    .map((item, index) => ({
+      item: {
+        ...item,
+        _previouslyRendered: newsItemWasRenderedPreviously(item, previousIdentities),
+      },
+      index,
+    }))
+    .sort(
+      (a, b) =>
+        Number(a.item._previouslyRendered) - Number(b.item._previouslyRendered) ||
+        a.index - b.index,
+    )
+    .map(({ item }) => item);
   // Attach any real LLM summary computed cloud-side (summarizeCloudNews) and
   // cached by url. The renderer prefers item.summary (real 3-ExampleCoraph article
   // summary) over the raw excerpt; an item with no cached summary falls back to
@@ -2931,13 +3060,15 @@ function healedNewsItems(dataDir, date, cardKey) {
         ),
     }));
   }
-  // Final render order follows the live QC contract: valid cached summaries
-  // first, then summary-grade source evidence, then non-Google URLs, then any
-  // headline-only fallback rows. This prevents a card with enough real summaries
-  // from rendering Google/title-only rows into the top-N and tripping NEWS-STUB.
+  // Final selection order follows the live QC contract: unseen candidates first,
+  // then valid summaries, summary-grade source evidence, non-Google URLs, and
+  // headline-only fallback rows. A cached summary is useful, but it cannot outrank
+  // a story solely because ExampleCo already saw it yesterday.
   items = items
     .map((it, i) => ({ it, i }))
     .sort((a, b) => {
+      const aRepeated = a.it && a.it._previouslyRendered ? 1 : 0;
+      const bRepeated = b.it && b.it._previouslyRendered ? 1 : 0;
       const aSummary = buildRenderableNewsSummaryParas(a.it.summary, a.it) ? 0 : 1;
       const bSummary = buildRenderableNewsSummaryParas(b.it.summary, b.it) ? 0 : 1;
       const aFailed = a.it && a.it._summaryFailureRecent ? 1 : 0;
@@ -2947,7 +3078,12 @@ function healedNewsItems(dataDir, date, cardKey) {
       const aGoogle = /news\.google\.com/i.test(a.it.url || '') ? 1 : 0;
       const bGoogle = /news\.google\.com/i.test(b.it.url || '') ? 1 : 0;
       return (
-        aSummary - bSummary || aFailed - bFailed || aTier - bTier || aGoogle - bGoogle || a.i - b.i
+        aRepeated - bRepeated ||
+        aSummary - bSummary ||
+        aFailed - bFailed ||
+        aTier - bTier ||
+        aGoogle - bGoogle ||
+        a.i - b.i
       );
     })
     .map(({ it }) => it);
@@ -3857,10 +3993,12 @@ function formatHealedNewsSection(dataDir, date, cardKey, label, options = {}) {
   const dedupedRows = dedupeNewsRenderRows(sourceLinkedRows)
     .filter(newsRenderRowTitleAllowed)
     .filter((row) => !(crossCardSeen && crossCardSeen.collides(row)));
-  const fullRows = dedupedRows.filter((item) => item._summaryParas);
-  const fallbackRows = dedupedRows.filter((item) => !item._summaryParas);
-  const shown = fullRows
-    .concat(fallbackRows)
+  const unseenRows = dedupedRows.filter((item) => !item._previouslyRendered);
+  const repeatedRows = dedupedRows.filter((item) => item._previouslyRendered);
+  const summaryFirst = (rows) =>
+    rows.filter((item) => item._summaryParas).concat(rows.filter((item) => !item._summaryParas));
+  const shown = summaryFirst(unseenRows)
+    .concat(summaryFirst(repeatedRows))
     .map((item) => ({ ...item, title: renderNewsDisplayTitle(item) }))
     .filter(newsRenderRowTitleAllowed)
     .slice(0, healed.target);
@@ -9854,6 +9992,9 @@ module.exports = {
   extractScheduleLines,
   formatExampleCoNewsSection,
   formatHealedNewsSection,
+  // Exported so the candidate-selection regression can prove an unseen
+  // unsummarized row stays ahead of a cached repeat before summarization.
+  healedNewsItems,
   stripNewsDateline,
   renderNewsDisplayTitle,
   summarizeCloudNews,

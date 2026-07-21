@@ -117,6 +117,7 @@ const {
   writeTextAtomic,
   DEFAULT_DATA_DIR,
 } = require('./cloud-morning-briefing.js');
+const { runContentHeal } = require('./content-heal.js');
 const { qcBriefingMarkdown } = require('./lib/briefing-card-qc.js');
 const { CARDS, getCardById } = require('./lib/briefing-card-manifest.js');
 const { ctDayKeyForInstant } = require('./lib/ct-day.js');
@@ -245,10 +246,22 @@ async function prepareTargetedRebuild({
   date,
   now,
   cardId,
+  healContent = runContentHeal,
   summarizeNews = summarizeCloudNews,
 } = {}) {
   const cardKey = newsSummaryCardKeyForTarget(cardId);
   if (!cardKey || typeof summarizeNews !== 'function') return { skipped: true };
+  // Overfetch the target well first. Summarization can only backfill from the
+  // candidates it can see, and the artifact-first CLI no longer enters the old
+  // full builder that used to run content-heal as a side effect.
+  if (typeof healContent === 'function') {
+    await healContent({
+      date,
+      now,
+      cards: [cardKey],
+      outDir: path.join(dataDir, 'agent'),
+    });
+  }
   return summarizeNews({
     dataDir,
     date,
@@ -1233,8 +1246,22 @@ async function publishArtifactUnion({ dataDir, date, refreshedCardId = '', now =
   return { union, board, markdownPath };
 }
 
-async function refreshOneCardArtifact({ cardId, date, dataDir, publish, verify } = {}) {
-  const artifact = await produceCardArtifact({ cardId, date, dataDir });
+async function refreshOneCardArtifact({
+  cardId,
+  date,
+  dataDir,
+  publish,
+  verify,
+  prepareFn = prepareTargetedRebuild,
+  produceCardArtifactFn = produceCardArtifact,
+} = {}) {
+  const now = new Date();
+  // The artifact-first CLI still owns the same source/summarization preparation
+  // as the legacy splice path. Without this handoff, a news "refresh" merely
+  // re-renders cached content-heal rows, advances generatedAt, and never gives
+  // fresh source candidates a chance to displace yesterday's stories.
+  await prepareFn({ dataDir, date, now, cardId });
+  const artifact = await produceCardArtifactFn({ cardId, date, dataDir, now });
   const artifactPath = writeCardArtifact({ dataDir, date, artifact });
   console.log(
     `[refresh-card] produced artifact card='${cardId}' status=${artifact.status} path=${artifactPath}`,
