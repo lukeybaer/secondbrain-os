@@ -109,6 +109,16 @@ def audio_quality(wav: torch.Tensor, sample_rate: int) -> dict:
     floor = max(0.004, q(0.35) * 1.35)
     voiced = sorted_rms[sorted_rms >= floor]
     voiced_ratio = float(voiced.numel() / sorted_rms.numel()) if sorted_rms.numel() else 0.0
+    # The original gate only accepted frames above -48 dBFS (0.004 RMS).
+    # Quiet, continuously spoken meeting audio can sit below that level while
+    # still carrying a strong, valid speaker signal. In that shape the
+    # quantile-relative threshold also rises above almost every frame, so a
+    # real 30-second utterance was misclassified as silence even though ECAPA
+    # returned a complete embedding. Keep the burst/voiced-frame gate, but also
+    # accept a sustained audible signal. The median and p90 floors reject true
+    # silence; the peak floor rejects low-level codec hiss.
+    sustained_signal = q(0.5) >= 0.001 and q(0.9) >= 0.0015 and peak >= 0.02
+    burst_signal = voiced.numel() >= 120 and voiced_ratio >= 0.22
     return {
         "duration_seconds": round(duration, 3),
         "total_frames": int(sorted_rms.numel()),
@@ -117,7 +127,9 @@ def audio_quality(wav: torch.Tensor, sample_rate: int) -> dict:
         "rms_p50": round(q(0.5), 8),
         "rms_p90": round(q(0.9), 8),
         "peak": round(peak, 8),
-        "usable": duration >= 6 and voiced.numel() >= 120 and voiced_ratio >= 0.22,
+        "burst_signal": bool(burst_signal),
+        "sustained_signal": bool(sustained_signal),
+        "usable": duration >= 6 and (burst_signal or sustained_signal),
     }
 
 
