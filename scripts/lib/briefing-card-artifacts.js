@@ -2026,11 +2026,20 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
     // fallthrough laundered a non-card into a clean one. A genuinely populated
     // artifact is reused as-is, which keeps desktop and fixture runs honest and
     // avoids re-billing Cost Explorer on every scoped refresh.
+    //
+    // A self-sufficient but DEFECTIVE artifact is also re-produced: its QC
+    // failures may be false positives that a code fix just resolved (e.g. a
+    // Cost Explorer service name like "Claude Sonnet 4.6 (Amazon Bedrock
+    // Edition)" triggering the soft-vendor-term check before aws_costs was
+    // added to isSoftTermNeutralizedCardTitle). Re-running the producer
+    // re-evaluates the artifact against current QC rules without re-querying
+    // Cost Explorer (buildAwsCostsCard reads the on-disk snapshot).
     const existing = existingSourceArtifact({ dataDir, date, id: card.id });
     if (
       !existing ||
       isMissingSourcePlaceholderArtifact(existing) ||
-      !awsCostArtifactIsSelfSufficient(existing, date)
+      !awsCostArtifactIsSelfSufficient(existing, date) ||
+      existing.status === 'defect'
     ) {
       return produceAwsCostsCardArtifact({ date, dataDir, now });
     }
