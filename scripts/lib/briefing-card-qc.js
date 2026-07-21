@@ -125,7 +125,13 @@ function otterStatusPreamble(body) {
 
 function systemHealthContentFailures({ id, title, body, surface = 'briefing-card' } = {}) {
   if (id !== 'system_health' && !isSystemHealthCardTitle(title)) return [];
-  const redRows = String(body || '')
+  // The Attention block repeats each non-green subsystem as a drilldown
+  // heading. It is explanation, not a second measurement. Count only the
+  // primary roster above that boundary or one failed metric becomes two repair
+  // units and recreates the exact denominator ambiguity this gate is meant to
+  // prevent.
+  const primaryRoster = String(body || '').split(/^\s*Attention on \d+ subsystem\(s\):\s*$/im)[0];
+  const redRows = primaryRoster
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => /^(?:\u2717|âœ—|\?)\s+/.test(line));
