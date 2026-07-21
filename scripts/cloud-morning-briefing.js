@@ -35,6 +35,7 @@ const {
 } = require('./lib/briefing-clean-contract.js');
 const {
   containsRawOperationalLeak,
+  containsExecutiveSelfTalk,
   scrubExecutiveText,
   scrubInternalIdsFromFace,
   faceCopyHasInternalIdLeak,
@@ -3983,7 +3984,15 @@ function formatHealedNewsSection(dataDir, date, cardKey, label, options = {}) {
       buildRenderableNewsSummaryParas(item.summary, item) ||
       buildSourceBackfillNewsSummaryParas(item),
   }));
-  const sourceLinkedRows = renderCandidates.filter(newsItemCanRenderAsNewsRow);
+  const sourceLinkedRows = renderCandidates
+    .filter(newsItemCanRenderAsNewsRow)
+    // A third-party quote such as "let me..." is still first-person copy on the
+    // Amy surface. Reject that candidate here and let the overfetched pool
+    // backfill it, instead of failing the whole card after the top-N is fixed.
+    .filter((item) => {
+      const prose = [item.title, ...(item._summaryParas || [])].filter(Boolean).join('\n');
+      return !containsExecutiveSelfTalk(prose);
+    });
   // In-card dedup first (exact/near title + url within this card), then
   // cross-card dedup: drop any row already claimed by an earlier news card so
   // the same story never appears in two cards (ExampleCo 2026-07-07). The seen set

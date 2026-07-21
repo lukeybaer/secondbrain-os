@@ -55,6 +55,12 @@ function containsRawOperationalLeak(text) {
   return isCliFailureOutput(s) || RAW_OPERATIONAL_PATTERNS.some((re) => re.test(s));
 }
 
+function containsExecutiveSelfTalk(text) {
+  const s = String(text || '');
+  if (!s.trim()) return false;
+  return SELF_TALK_PATTERNS.some((re) => re.test(s));
+}
+
 function scrubExecutiveText(text) {
   let s = String(text || '');
   for (const re of RAW_OPERATIONAL_PATTERNS) {
@@ -248,6 +254,7 @@ module.exports = {
   SELF_TALK_PATTERNS,
   INTERNAL_ID_FACE_PATTERNS,
   containsRawOperationalLeak,
+  containsExecutiveSelfTalk,
   scrubExecutiveText,
   assertExecutiveText,
   toExecutiveServiceStatus,
