@@ -254,16 +254,23 @@ function loadExampleCoQuotePool(opts = {}) {
   const days = opts.days || 7;
   const max = opts.max || 60;
   const today = opts.today || new Date();
-
-  const profileCurated = safe(() => loadProfileCurated(root), []).filter((q) =>
-    withinDays(q.when, days, today),
+  const allowedDates = new Set(
+    (Array.isArray(opts.allowedDates) ? opts.allowedDates : [])
+      .map((value) => String(value || '').slice(0, 10))
+      .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)),
   );
+  const inAllowedDates = (quote) =>
+    allowedDates.size === 0 || allowedDates.has(String((quote && quote.when) || '').slice(0, 10));
+
+  const profileCurated = safe(() => loadProfileCurated(root), [])
+    .filter((q) => withinDays(q.when, days, today))
+    .filter(inAllowedDates);
   // The grounding file proves values and allowed literature, but its quotes do
   // not carry an observation date. It cannot satisfy a recent-speech card.
   const groundingReference = [];
-  const gmailSent = safe(() => loadGmailSent(root, days, today), []);
-  const telegram = safe(() => loadTelegram(root, days, today), []);
-  const dispatch = safe(() => loadDispatch(root, days, today), []);
+  const gmailSent = safe(() => loadGmailSent(root, days, today), []).filter(inAllowedDates);
+  const telegram = safe(() => loadTelegram(root, days, today), []).filter(inAllowedDates);
+  const dispatch = safe(() => loadDispatch(root, days, today), []).filter(inAllowedDates);
 
   const quotes = finalize(
     [...profileCurated, ...groundingReference, ...gmailSent, ...telegram, ...dispatch],

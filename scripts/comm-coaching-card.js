@@ -52,6 +52,15 @@ function ctDateKey(d) {
   return parts; // en-CA yields YYYY-MM-DD
 }
 
+function evidenceDatesForDay(day) {
+  const current = /^\d{4}-\d{2}-\d{2}$/.test(String(day || ''))
+    ? new Date(`${day}T12:00:00Z`)
+    : new Date();
+  const previous = new Date(current.getTime());
+  previous.setUTCDate(previous.getUTCDate() - 1);
+  return [current.toISOString().slice(0, 10), previous.toISOString().slice(0, 10)];
+}
+
 // Output directory for the daily snapshot. On EC2 the producer runs from the
 // build CHECKOUT (/home/ec2-user/secondbrain-current) but the live dashboard
 // injector (ec2-server.js) reads the snapshot from the canonical live data store
@@ -360,6 +369,11 @@ async function generateCommCoachingCard({
     root,
     days,
     today: new Date(`${day}T12:00:00Z`),
+    // The card contract is calendar-scoped: briefing day plus the immediately
+    // prior day. A rolling 48-hour cutoff can admit two-days-old evening text,
+    // which the live reader then correctly rejects. Filter at collection so
+    // the generator and reader cannot disagree.
+    allowedDates: evidenceDatesForDay(day),
   });
 
   if (!grounding || literatureKeys.length === 0) {
@@ -458,5 +472,6 @@ module.exports = {
   recentTitles,
   QUALITIES,
   outDir,
+  evidenceDatesForDay,
   deterministicFallbackCard,
 };

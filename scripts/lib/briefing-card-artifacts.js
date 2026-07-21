@@ -1886,9 +1886,42 @@ async function produceLlmCardArtifact({ card, date, dataDir, now = new Date() })
 function produceSourceBackedLlmCardArtifact({ card, date, dataDir, now = new Date() } = {}) {
   if (card && card.id === 'communication_coaching') {
     try {
+      const snapshotPath = path.join(dataDir, 'agent', 'comm-coaching', `${date}.json`);
+      const snapshot = readJson(snapshotPath);
+      if (snapshot && snapshot.date === date && snapshot.status === 'blocked') {
+        const reason = String(snapshot.reason || 'No qualified recent ExampleCo evidence is available.');
+        return createCardArtifact({
+          id: card.id,
+          title: cardTitle(card),
+          date,
+          kind: 'llm',
+          status: 'blocked',
+          generatedAt: now.toISOString(),
+          markdown: `${cardTitle(card)}:\nBlocked: ${reason}`,
+          blockedReason: reason,
+          source: { mode: 'comm-coaching-snapshot', path: snapshotPath },
+          qc: { ok: false, failures: [reason] },
+        });
+      }
       const { formatCommCoachingSection } = require('../cloud-morning-briefing.js');
       if (typeof formatCommCoachingSection !== 'function') return null;
       const body = formatCommCoachingSection(dataDir, date);
+      if (!body && snapshot && snapshot.date === date) {
+        const reason =
+          'Communication Coaching has no complete ExampleCo-only evidence from the briefing day or prior day.';
+        return createCardArtifact({
+          id: card.id,
+          title: cardTitle(card),
+          date,
+          kind: 'llm',
+          status: 'blocked',
+          generatedAt: now.toISOString(),
+          markdown: `${cardTitle(card)}:\nBlocked: ${reason}`,
+          blockedReason: reason,
+          source: { mode: 'comm-coaching-snapshot', path: snapshotPath },
+          qc: { ok: false, failures: [reason] },
+        });
+      }
       if (!body) return null;
       const title = cardTitle(card);
       const markdown = `${title}:\n${body}`;
