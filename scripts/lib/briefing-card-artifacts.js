@@ -1352,6 +1352,17 @@ const DETERMINISTIC_CARD_BUILDERS = Object.freeze({
     ),
   tesla_cybercab: (_dataDir, date) =>
     require('./briefing-cards/tesla-cybercab-card.js').buildTeslaCybercabCard(date),
+  // self_heal_health: generateSelfHealHealthCard always produces real content
+  // (zero-state or counts + executor status), so state.ok is always true here.
+  // The card's defect/clean status is determined by qcCard on the rendered
+  // markdown, not by state.ok. This builder fixes the produceDataCardArtifact
+  // fallthrough that was returning the stale markdown-fallback placeholder
+  // "Card refresh pending..." instead of the real self-heal data.
+  self_heal_health: (dataDir, date) => {
+    const { generateSelfHealHealthCard } = require('../self-heal/self-heal-health-card.js');
+    const { card, section } = generateSelfHealHealthCard({ dataDir, date, write: false });
+    return { markdown: section, state: { ok: true, severity: card.severity } };
+  },
 });
 
 function produceDeterministicBuilderCardArtifact({
