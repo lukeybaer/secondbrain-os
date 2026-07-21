@@ -85,17 +85,7 @@ function isSelfHealHealthCardTitle(title) {
 // LLM-subscription card and the SYSTEM HEALTH internal-infra roster. News cards
 // are handled on their own third-party-prose path.
 function isSoftTermNeutralizedCardTitle(title) {
-  // AWS COSTS legitimately names cloud/provider services as its OWN content: a
-  // Cost Explorer breakdown lists line items like "Claude Sonnet 4.6 (Amazon
-  // Bedrock Edition)". Like token_usage ("Claude Max") and SYSTEM HEALTH
-  // ("active provider"), its SOFT vendor terms are neutralized before the
-  // operational-leak check, while HARD error signatures (HTTP 5xx, traceback)
-  // still fail. Self-heal aws_costs BLOCKERS-NAMED-CARD fix, 2026-07-20.
-  return (
-    isTokenUsageCardTitle(title) ||
-    isSystemHealthCardTitle(title) ||
-    /^AWS COSTS\b/i.test(String(title || '').trim())
-  );
+  return isTokenUsageCardTitle(title) || isSystemHealthCardTitle(title);
 }
 
 // The otter speaker-pareto card mixes Amy's status preamble (As of / Freshness /
@@ -433,9 +423,7 @@ function otterCallHistoryContentFailures({ id, title, body, surface = 'briefing-
     );
   }
   if (/\b\d+\.\s+\d\w?\b/i.test(text)) {
-    failures.push(
-      `${prefix}: OTTER-CALL-SUMMARY splits a numeric value while trimming the call summary`,
-    );
+    failures.push(`${prefix}: OTTER-CALL-SUMMARY splits a numeric value while trimming the call summary`);
   }
   if (
     /\b(?:Briefing summary|Detail:)\b/i.test(text) ||
@@ -470,10 +458,7 @@ function otterCallHistoryContentFailures({ id, title, body, surface = 'briefing-
   ];
   const missingPeople = [];
   for (const row of rows) {
-    if (
-      summaryNamesPersonAsParticipant(row.summary, /\bExampleCo\b/i) &&
-      !/\bExampleCo\b/i.test(row.speakers)
-    ) {
+    if (summaryNamesPersonAsParticipant(row.summary, /\bExampleCo\b/i) && !/\bExampleCo\b/i.test(row.speakers)) {
       missingPeople.push(`${row.title || 'call'}:ExampleCo`);
     }
     for (const [display, rx] of expectedPeople) {
@@ -540,11 +525,7 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
   // "Claude Max"), so they are soft-neutralized the same way. Every other card is
   // checked verbatim. HARD error signatures survive neutralization and still fail.
   const isNews = isNewsCardTitle(title);
-  // Key aws_costs soft-neutralization on the card ID, not the title. The builder
-  // title format varies (and a title-only regex missed the producer path), so
-  // the id the producer passes is the reliable signal. Self-heal 2026-07-20.
-  const isSoftNeutralized =
-    isSoftTermNeutralizedCardTitle(title) || id === 'aws_costs' || id === 'token_usage';
+  const isSoftNeutralized = isSoftTermNeutralizedCardTitle(title);
   const operationalScope = isNews
     ? [title, neutralizeNewsSoftTerms(body)].filter(Boolean).join('\n')
     : isSoftNeutralized
