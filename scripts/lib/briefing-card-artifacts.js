@@ -241,6 +241,10 @@ function inferMarkdownSectionStatus(body, cardId = '') {
   ) {
     return 'blocked';
   }
+  // "not synced to cloud yet" is the honest fallback emitted by the generated-
+  // section-injectors loop when the injector fails or is disabled. It is always
+  // a blocker, never a clean card. 2026-07-21.
+  if (/^Status:\s*not synced to cloud yet\b/i.test(first)) return 'blocked';
   if (/held back rather than shown as today|more than 24 hours old/i.test(first)) return 'blocked';
   return 'clean';
 }
@@ -1551,10 +1555,10 @@ function produceFullLifeBackupCardArtifact({
     // the desktop rather than generated where it is read.
     const foreignHost = /^[A-Za-z]:\\/.test(dbPath) && process.platform !== 'win32';
     return defect(
-      `Life-archive backup health is ${ageDays == null ? 'undated' : `${ageDays} days`} stale ` +
+      `Blocked: Life-archive backup health is ${ageDays == null ? 'undated' : `${ageDays} days`} stale ` +
         `(snapshot generated ${generatedAt || 'ExampleCo'}), so today's backup coverage across ` +
         `${sources.length} source(s) is unverified. ` +
-        (foreignHost ? `It was produced on another host (db_path ${dbPath}). ` : '') +
+        (foreignHost ? 'It was produced on another host (desktop-origin snapshot). ' : '') +
         `Root cause: no generator writes ${rel}; the regen path spawns gmail-s3-flow-health.py, ` +
         `which writes a different file with no sources array. Remediation: write a cloud-host ` +
         `generator for ${rel}, or retire this card.`,
@@ -1604,6 +1608,86 @@ function produceFullLifeBackupCardArtifact({
       ageDays,
       sourceCount: sources.length,
     },
+    blockedReason: '',
+    qc: { ok: failures.length === 0, failures },
+  });
+}
+
+// voice_confirmation has no bespoke producer, so it fell through to the generic
+// existingSourceArtifact path which read the morning build's "not synced to cloud
+// yet" fallback and incorrectly marked it clean. The fix: produce the card
+// directly from renderVoiceConfirmationSection() the same way the morning build
+// intended to, so the artifact always reflects the live injector result.
+// 2026-07-21.
+function produceVoiceConfirmationCardArtifact({
+  date,
+  dataDir,
+  now = new Date(),
+  renderVoiceConfirmationSectionFn = null,
+} = {}) {
+  const title = 'VOICE CONFIRMATION / SPEAKER LEARNING';
+  const id = 'voice_confirmation';
+  const blocked = (reason, extra = {}) =>
+    createCardArtifact({
+      id,
+      title,
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `${title}:\n${reason}`,
+      blockedReason: reason,
+      source: { mode: 'voice-injector', ...extra },
+      qc: { ok: false, failures: [reason] },
+    });
+
+  let rendered = '';
+  try {
+    const fn =
+      renderVoiceConfirmationSectionFn ||
+      require('../refresh-briefing-generated-sections.js').renderVoiceConfirmationSection;
+    if (typeof fn !== 'function')
+      return blocked('renderVoiceConfirmationSection is not a function.');
+    rendered = String(fn() || '').trim();
+  } catch (e) {
+    return blocked(`Voice injector threw: ${String((e && e.message) || e).slice(0, 200)}`);
+  }
+  if (!rendered) return blocked('Voice injector returned no content.');
+
+  // Past-7-day archive health RED is a hard blocker for this card (pinned lesson
+  // 2026-07-18). Detect it here so the artifact honestly says blocked rather than
+  // carrying a clean status that contradicts the rendered RED tile.
+  if (/\bPast-7-day Otter archive health:\s*RED\b/i.test(rendered)) {
+    const reason = 'Past-7-day Otter archive health is RED.';
+    return createCardArtifact({
+      id,
+      title,
+      date,
+      kind: 'data',
+      status: 'blocked',
+      generatedAt: now.toISOString(),
+      markdown: `${title}:\n${rendered}`,
+      blockedReason: reason,
+      source: { mode: 'voice-injector', archiveHealthRed: true },
+      qc: { ok: false, failures: [reason] },
+    });
+  }
+
+  const parsed = splitMarkdownCards(rendered)[0] || { title, body: rendered };
+  const qc = qcCard(
+    { id, title: parsed.title || title, body: parsed.body || '' },
+    { surface: 'card-artifact' },
+  );
+  const failures = qc.failures || [];
+  return createCardArtifact({
+    id,
+    title,
+    date,
+    kind: 'data',
+    status: failures.length ? 'defect' : 'clean',
+    generatedAt: now.toISOString(),
+    markdown: `${title}:\n${parsed.body || rendered}`,
+    source: { mode: 'voice-injector' },
     blockedReason: '',
     qc: { ok: failures.length === 0, failures },
   });
@@ -2098,6 +2182,9 @@ function produceDataCardArtifact({ card, date, dataDir, now = new Date() }) {
     }
     return produceTokenUsageCardArtifact({ date, dataDir, now });
   }
+  if (card.id === 'voice_confirmation') {
+    return produceVoiceConfirmationCardArtifact({ date, dataDir, now });
+  }
   if (card.id === 'otter_speaker_pareto') {
     return produceOtterSpeakerParetoCardArtifact({ date, dataDir, now });
   }
@@ -2340,6 +2427,8 @@ module.exports = {
   produceFullLifeBackupCardArtifact,
   cleanStatusUnlessPendingShell,
   produceDeterministicBuilderCardArtifact,
+  produceVoiceConfirmationCardArtifact,
+  _produceVoiceConfirmationCardArtifact: produceVoiceConfirmationCardArtifact,
   produceOtterSpeakerParetoCardArtifact,
   produceAllCardArtifacts,
   producerTimeoutMs,

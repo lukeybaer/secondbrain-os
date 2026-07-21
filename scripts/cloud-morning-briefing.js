@@ -6813,12 +6813,10 @@ function buildFullLifeBackupCard(dataDir, { allowLiveRefresh = true } = {}) {
       title: 'FULL-LIFE DATA BACKUP',
       real: false,
       detail:
-        `Full-life backup health is ${freshness.ageDays == null ? 'undated' : `${freshness.ageDays} days`} stale ` +
+        `Blocked: full-life backup health is ${freshness.ageDays == null ? 'undated' : `${freshness.ageDays} days`} stale ` +
         `(snapshot generated ${freshness.generatedAt || 'ExampleCo'}), so today's backup coverage across ` +
         `${freshness.sourceCount} source(s) is unverified and any number here would be fabricated. ` +
-        (freshness.foreignHost
-          ? `It was produced on another host (db_path ${freshness.dbPath}). `
-          : '') +
+        (freshness.foreignHost ? 'It was produced on another host (desktop-origin snapshot). ' : '') +
         'Needs: a cloud-host generator for data/life-archive/health-latest.json, or retire this card.',
     };
   }
