@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { isHealerExcluded, sidecarPathFor } = require('./collector-degrade.js');
 
 const PROVIDERS = new Set(['claude', 'codex', 'bedrock']);
 const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -12,7 +13,9 @@ const LEGACY_FILES = Object.freeze({
 });
 
 function assertProvider(provider) {
-  const normalized = String(provider || '').trim().toLowerCase();
+  const normalized = String(provider || '')
+    .trim()
+    .toLowerCase();
   if (!PROVIDERS.has(normalized)) {
     throw new Error(`PRIVATE_NAME token usage provider: ${provider || '<missing>'}`);
   }
@@ -57,7 +60,8 @@ function writeProviderReceipt({
   if (!dataDir) throw new Error('dataDir is required for a token provider receipt');
   const id = assertProvider(provider);
   const day = String(date || ctDateKey(observedAt)).slice(0, 10);
-  const normalizedStatus = status === 'clean' ? 'clean' : status === 'inconclusive' ? 'inconclusive' : 'blocked';
+  const normalizedStatus =
+    status === 'clean' ? 'clean' : status === 'inconclusive' ? 'inconclusive' : 'blocked';
   const receipt = {
     schemaVersion: 1,
     provider: id,
@@ -103,7 +107,10 @@ function receiptState(receipt, { now = new Date(), maxAgeMs = DEFAULT_MAX_AGE_MS
   if (!Number.isFinite(observedMs)) {
     return {
       state: 'blocked',
-      defect: { code: 'parse_error', detail: 'Provider receipt has no valid observedAt timestamp.' },
+      defect: {
+        code: 'parse_error',
+        detail: 'Provider receipt has no valid observedAt timestamp.',
+      },
     };
   }
   const ageMs = Math.max(0, nowMs - observedMs);
@@ -132,10 +139,7 @@ function legacyState({ dataDir, provider, now, maxAgeMs }) {
       observedAt = '';
     }
   }
-  const verdict = receiptState(
-    { status: 'clean', observedAt },
-    { now, maxAgeMs },
-  );
+  const verdict = receiptState({ status: 'clean', observedAt }, { now, maxAgeMs });
   return { ...verdict, payload, observedAt, file, sourceMode: 'legacy-fallback', receipt: null };
 }
 
@@ -153,6 +157,28 @@ function readProviderUsage({
   const receipt = readJson(file);
   if (receipt) {
     const verdict = receiptState(receipt, { now, maxAgeMs });
+    // When the receipt is blocked AND the degrade sidecar for the legacy file
+    // marks this as a structural/healer-excluded fault (e.g. Cloudflare 403 on
+    // EC2 datacenter IPs), fall back to the last-good legacy snapshot rather
+    // than surfacing a blocked card. The PC credential authority keeps
+    // claude-plan-usage.json fresh via hourly sync, so the legacy file is the
+    // authoritative source when EC2 direct collection is provisioning-blocked.
+    if (verdict.state === 'blocked') {
+      const legacyFile = path.join(dataDir, 'agent', LEGACY_FILES[id]);
+      let healerExcluded = false;
+      try {
+        const sidecar = readJson(sidecarPathFor(legacyFile));
+        healerExcluded = isHealerExcluded(sidecar);
+      } catch {
+        // sidecar unreadable -> not healer-excluded, keep blocked verdict
+      }
+      if (healerExcluded) {
+        const legacy = legacyState({ dataDir, provider: id, now, maxAgeMs });
+        if (legacy && legacy.state === 'fresh') {
+          return { provider: id, date: day, ...legacy };
+        }
+      }
+    }
     return {
       ...verdict,
       provider: id,
