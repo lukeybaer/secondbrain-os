@@ -541,13 +541,25 @@ function qcCard(card, { surface = 'briefing-card' } = {}) {
   // (LLM plans; subsystem evidence like "active provider", "Backend PM2 fleet",
   // "Claude Max"), so they are soft-neutralized the same way. Every other card is
   // checked verbatim. HARD error signatures survive neutralization and still fail.
+  //
+  // OTTER SPEAKER PARETO is a MIXED card: its Amy-status preamble ("As of:",
+  // "Freshness:", repair lines) is Amy's own text, but everything from the first
+  // "Past 24 Hours" / "Day Before" / "Lifetime stats" heading onward is THIRD-PARTY
+  // call exec-summary prose. Calls legitimately discuss AI tools and configuration
+  // files by name (e.g. "CLAUDE.md", "Amy architecture"), so the full-card
+  // operational scrub creates false "raw operational detail" failures. Scope the
+  // executive and raw-operational checks to the Amy-status preamble only; hard
+  // error signatures (HTTP 5xx, stack traces) are still caught there. 2026-07-21.
   const isNews = isNewsCardTitle(title);
   const isSoftNeutralized = isSoftTermNeutralizedCardTitle(title);
-  const operationalScope = isNews
-    ? [title, neutralizeNewsSoftTerms(body)].filter(Boolean).join('\n')
-    : isSoftNeutralized
-      ? neutralizeNewsSoftTerms(text)
-      : text;
+  const isOtterPareto = /OTTER SPEAKER PARETO/i.test(title);
+  const operationalScope = isOtterPareto
+    ? [title, otterStatusPreamble(body)].filter(Boolean).join('\n')
+    : isNews
+      ? [title, neutralizeNewsSoftTerms(body)].filter(Boolean).join('\n')
+      : isSoftNeutralized
+        ? neutralizeNewsSoftTerms(text)
+        : text;
 
   const executive = assertExecutiveText(operationalScope, { surface: `${surface}:${id}` });
   failures.push(...executive.failures);
