@@ -1747,6 +1747,31 @@ async function produceLlmCardArtifact({ card, date, dataDir, now = new Date() })
 }
 
 function produceSourceBackedLlmCardArtifact({ card, date, dataDir, now = new Date() } = {}) {
+  if (card && card.id === 'communication_coaching') {
+    try {
+      const { formatCommCoachingSection } = require('../cloud-morning-briefing.js');
+      if (typeof formatCommCoachingSection !== 'function') return null;
+      const body = formatCommCoachingSection(dataDir, date);
+      if (!body) return null;
+      const title = cardTitle(card);
+      const markdown = `${title}:\n${body}`;
+      const qc = qcCard({ id: card.id, title, body }, { surface: 'card-artifact' });
+      if (!qc.ok) return null;
+      return createCardArtifact({
+        id: card.id,
+        title,
+        date,
+        kind: 'llm',
+        status: 'clean',
+        generatedAt: now.toISOString(),
+        markdown,
+        source: { mode: 'comm-coaching-snapshot' },
+        qc: { ok: true, failures: [] },
+      });
+    } catch {
+      return null;
+    }
+  }
   if (card && card.id === 'reputation_risk') {
     try {
       const { buildReputationCard } = require('../cloud-morning-briefing.js');
