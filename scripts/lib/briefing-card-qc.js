@@ -80,12 +80,24 @@ function isSelfHealHealthCardTitle(title) {
   return /^SELF-HEAL HEALTH\b/i.test(String(title || '').trim());
 }
 
+// AWS COSTS legitimately shows AWS Cost Explorer service names verbatim, which
+// can include AI model names like "Claude Sonnet 4.6 (Amazon Bedrock Edition)"
+// and "provider" attribution lines. These are real AWS billing line items, not
+// operational leaks, so the card is soft-term-neutralized before the operational
+// checks. HARD error signatures (HTTP 5xx, stack trace, etc.) still fire.
+function isAwsCostsCardTitle(title) {
+  return /^AWS COSTS\b/i.test(String(title || '').trim());
+}
+
 // Cards that legitimately name soft vendor/process/plan words as their OWN
 // content and must NOT be collapsed by the operational scrub: the token-usage /
-// LLM-subscription card and the SYSTEM HEALTH internal-infra roster. News cards
-// are handled on their own third-party-prose path.
+// LLM-subscription card, the SYSTEM HEALTH internal-infra roster, and the AWS
+// COSTS card (which shows real AWS service billing names). News cards are
+// handled on their own third-party-prose path.
 function isSoftTermNeutralizedCardTitle(title) {
-  return isTokenUsageCardTitle(title) || isSystemHealthCardTitle(title);
+  return (
+    isTokenUsageCardTitle(title) || isSystemHealthCardTitle(title) || isAwsCostsCardTitle(title)
+  );
 }
 
 // The otter speaker-pareto card mixes Amy's status preamble (As of / Freshness /
@@ -423,7 +435,9 @@ function otterCallHistoryContentFailures({ id, title, body, surface = 'briefing-
     );
   }
   if (/\b\d+\.\s+\d\w?\b/i.test(text)) {
-    failures.push(`${prefix}: OTTER-CALL-SUMMARY splits a numeric value while trimming the call summary`);
+    failures.push(
+      `${prefix}: OTTER-CALL-SUMMARY splits a numeric value while trimming the call summary`,
+    );
   }
   if (
     /\b(?:Briefing summary|Detail:)\b/i.test(text) ||
@@ -458,7 +472,10 @@ function otterCallHistoryContentFailures({ id, title, body, surface = 'briefing-
   ];
   const missingPeople = [];
   for (const row of rows) {
-    if (summaryNamesPersonAsParticipant(row.summary, /\bExampleCo\b/i) && !/\bExampleCo\b/i.test(row.speakers)) {
+    if (
+      summaryNamesPersonAsParticipant(row.summary, /\bExampleCo\b/i) &&
+      !/\bExampleCo\b/i.test(row.speakers)
+    ) {
       missingPeople.push(`${row.title || 'call'}:ExampleCo`);
     }
     for (const [display, rx] of expectedPeople) {
@@ -750,6 +767,7 @@ module.exports = {
   isCovidNewsCardTitle,
   isTokenUsageCardTitle,
   isSystemHealthCardTitle,
+  isAwsCostsCardTitle,
   isSelfHealHealthCardTitle,
   isSoftTermNeutralizedCardTitle,
 };
