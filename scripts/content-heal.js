@@ -141,10 +141,21 @@ function nonEmpty(text) {
 }
 
 function cleanText(text) {
-  return String(text || '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return (
+    String(text || '')
+      .replace(/<[^>]+>/g, ' ')
+      // Decode common HTML entities that RSS feeds embed in title/excerpt fields
+      // so they are not double-encoded when later passed through escapeHtml().
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }
 
 function cleanNewsEvidenceText(text) {
@@ -1310,6 +1321,7 @@ async function runContentHeal(opts = {}) {
 module.exports = {
   runContentHeal,
   healCard,
+  cleanText,
   collectViralEvidence,
   collectMortgageEvidence,
   collectNewsEvidence,
