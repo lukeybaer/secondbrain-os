@@ -1363,6 +1363,22 @@ const DETERMINISTIC_CARD_BUILDERS = Object.freeze({
     const { card, section } = generateSelfHealHealthCard({ dataDir, date, write: false });
     return { markdown: section, state: { ok: true, severity: card.severity } };
   },
+  // memory_hygiene: formatMemoryHygieneSection reads the weekly consolidation
+  // receipt (data/agent/memory-consolidation-state.json) and returns a body
+  // string, or null when the receipt is missing or unreadable. Returning null
+  // here causes produceDeterministicBuilderCardArtifact to emit an honest
+  // blocked artifact instead of laundering the stale markdown-fallback
+  // "Card refresh pending" as a defect on every cycle.
+  memory_hygiene: (dataDir, _date, now) => {
+    const { formatMemoryHygieneSection } = require('../cloud-morning-briefing.js');
+    const nowMs = now instanceof Date ? +now : now || Date.now();
+    const body = formatMemoryHygieneSection(dataDir, nowMs);
+    if (!body) return null;
+    return {
+      markdown: `MEMORY HYGIENE:\n\n${body}`,
+      state: { ok: true },
+    };
+  },
 });
 
 function produceDeterministicBuilderCardArtifact({
