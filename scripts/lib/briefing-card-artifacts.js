@@ -1342,6 +1342,8 @@ const DETERMINISTIC_CARD_BUILDERS = Object.freeze({
       dataDir,
       date,
     ),
+  tesla_cybercab: (_dataDir, date) =>
+    require('./briefing-cards/tesla-cybercab-card.js').buildTeslaCybercabCard(date),
 });
 
 function produceDeterministicBuilderCardArtifact({
