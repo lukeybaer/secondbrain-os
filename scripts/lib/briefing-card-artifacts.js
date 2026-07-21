@@ -1379,6 +1379,16 @@ const DETERMINISTIC_CARD_BUILDERS = Object.freeze({
       state: { ok: true },
     };
   },
+  // snack_dude_invoice: buildSnackDudeInvoiceCard reads the on-disk
+  // snackdude-invoices-cache.json snapshot and formats invoice activity lines
+  // deterministically. Without this entry the card fell through to
+  // existingSourceArtifact, which returned the stale markdown-fallback
+  // "Card refresh pending" as a defect on every cycle (2026-07-20 incident).
+  snack_dude_invoice: (dataDir, date) => {
+    const { buildSnackDudeInvoiceCard } = require('./briefing-cards/snack-dude-invoice-card.js');
+    const raw = readJson(path.join(dataDir, 'agent', 'snackdude-invoices-cache.json'));
+    return buildSnackDudeInvoiceCard(raw, date);
+  },
 });
 
 function produceDeterministicBuilderCardArtifact({
