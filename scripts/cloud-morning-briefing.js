@@ -6463,6 +6463,9 @@ function gradeOtterProcessingSeverity({
   const timestampsComplete = totalSegments === 0 || timestampedSegments >= totalSegments;
   const inBoundsVerified = Number(s.timestamped_segments_verified_within_audio_duration || 0);
   const inBoundsOutside = Number(s.timestamped_segments_outside_audio_duration || 0);
+  const sourceLimitedOutside = Number(
+    s.timestamped_segments_outside_audio_duration_source_limited || 0,
+  );
   const inBoundsChecked = inBoundsVerified + inBoundsOutside;
   const inBoundsClean = inBoundsChecked === 0 || inBoundsVerified / inBoundsChecked >= 0.999;
   // Unverifiable is the explicit field when present, and is ALSO derived from
@@ -6471,7 +6474,7 @@ function gradeOtterProcessingSeverity({
   const inAudioTimestamped = Number(s.timestamped_segments_in_audio_calls || 0);
   const unverifiable = Math.max(
     Number(s.timestamped_segments_unverifiable_audio_duration || 0),
-    inAudioTimestamped - inBoundsChecked,
+    inAudioTimestamped - (inBoundsChecked + sourceLimitedOutside),
   );
   const durationsVerifiable = unverifiable <= 0;
   const recentRecoverableDefect = !timestampsComplete || !inBoundsClean || !durationsVerifiable;
