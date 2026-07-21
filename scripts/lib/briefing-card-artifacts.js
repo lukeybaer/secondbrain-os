@@ -27,7 +27,11 @@ const LLM_CARD_IDS = Object.freeze([
   'covid_news',
   'communication_coaching',
   'reputation_risk',
-  'shorts_proposals',
+  // shorts_proposals moved to DETERMINISTIC_CARD_BUILDERS (2026-07-21): it has
+  // buildShortsProposalsCard that reads agent/shorts-proposals/<date>.json. The
+  // LLM only runs inside morning-shorts-proposals.js upstream; routing the card
+  // render through LLM_CARD_IDS caused "Blocked: LLM unavailable" whenever the
+  // LLM fleet was down, while valid fallback proposals sat unread on disk.
 ]);
 
 const RECIPROCAL_MERGE_PARTNERS = Object.freeze({
@@ -1388,6 +1392,16 @@ const DETERMINISTIC_CARD_BUILDERS = Object.freeze({
     const { buildSnackDudeInvoiceCard } = require('./briefing-cards/snack-dude-invoice-card.js');
     const raw = readJson(path.join(dataDir, 'agent', 'snackdude-invoices-cache.json'));
     return buildSnackDudeInvoiceCard(raw, date);
+  },
+  // shorts_proposals: buildShortsProposalsCard reads agent/shorts-proposals/<date>.json
+  // and falls back to the latest complete set within 2 days. Without this entry
+  // the card was routed through LLM_CARD_IDS, so any LLM outage produced
+  // "Blocked: LLM unavailable" while real fallback proposals sat unread on disk.
+  // The LLM belongs in morning-shorts-proposals.js (the generator), not the
+  // render layer (2026-07-21 incident, same class as viral_tech_clips 2026-07-20).
+  shorts_proposals: (dataDir, date, now) => {
+    const { buildShortsProposalsCard } = require('./briefing-cards/shorts-proposals-card.js');
+    return buildShortsProposalsCard(dataDir, date, [], now);
   },
 });
 
