@@ -146,6 +146,7 @@ const {
   writeCardArtifact,
   readCardArtifactUnion,
   writeLiveBoardArtifactFromCardArtifacts,
+  writeCompatibilityMarkdown,
 } = require('./lib/briefing-card-artifacts.js');
 
 // The delimiter buildCloudMorningBriefing joins its own fresh output with
@@ -1205,7 +1206,8 @@ async function publishArtifactUnion({ dataDir, date, refreshedCardId = '', now =
     refreshedCardId,
     now,
   });
-  return { union, board };
+  const markdownPath = writeCompatibilityMarkdown({ dataDir, date, artifacts: union.artifacts, now });
+  return { union, board, markdownPath };
 }
 
 async function refreshOneCardArtifact({ cardId, date, dataDir, publish, verify } = {}) {
@@ -1215,12 +1217,28 @@ async function refreshOneCardArtifact({ cardId, date, dataDir, publish, verify }
     `[refresh-card] produced artifact card='${cardId}' status=${artifact.status} path=${artifactPath}`,
   );
   if (publish) {
-    const { union, board } = await publishArtifactUnion({ dataDir, date, refreshedCardId: cardId });
+    let { union, board, markdownPath } = await publishArtifactUnion({
+      dataDir,
+      date,
+      refreshedCardId: cardId,
+    });
     console.log(
       `[refresh-card] published artifact union cards=${union.artifacts.length} ${summarizeArtifactPublish(
         union.artifacts,
-      )} board=${board.absPath}`,
+      )} board=${board.absPath} markdown=${markdownPath}`,
     );
+    if (cardId !== 'blockers' && artifact.status === 'clean') {
+      const blockers = await produceCardArtifact({ cardId: 'blockers', date, dataDir });
+      const blockersPath = writeCardArtifact({ dataDir, date, artifact: blockers });
+      ({ union, board, markdownPath } = await publishArtifactUnion({
+        dataDir,
+        date,
+        refreshedCardId: 'blockers',
+      }));
+      console.log(
+        `[refresh-card] refreshed derived blockers artifact status=${blockers.status} path=${blockersPath} board=${board.absPath} markdown=${markdownPath}`,
+      );
+    }
   }
   if (verify) {
     if (artifact.status !== 'clean') {

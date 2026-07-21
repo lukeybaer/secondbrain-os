@@ -44,6 +44,8 @@ const CONTENT_HEAL_CARD_CONFIG = Object.freeze({
   covid_news: { key: 'covid', label: 'COVID-19 TREATMENTS & NEWS', minimum: 1 },
 });
 
+const MENTION_OR_ZERO_CARD_ID = (CARDS.find((card) => card && card.mentionOrZero) || {}).id;
+
 const CARD_TITLE_OVERRIDES = Object.freeze({
   blockers: 'BLOCKERS - briefing quality gates',
   shorts_proposals: "TODAY'S 10 SHORTS PROPOSALS",
@@ -1333,6 +1335,12 @@ function produceUncommittedParkedCardArtifact({
 // reading a dated artifact. The LLM only participates upstream, inside the
 // generator that writes that artifact.
 const DETERMINISTIC_CARD_BUILDERS = Object.freeze({
+  ...(MENTION_OR_ZERO_CARD_ID
+    ? {
+        [MENTION_OR_ZERO_CARD_ID]: (dataDir, date) =>
+          require('../cloud-morning-briefing.js').formatExampleCoNewsSection(dataDir, date),
+      }
+    : {}),
   viral_tech_clips: (dataDir, date, now) =>
     require('../cloud-morning-briefing.js').buildViralTechCard(dataDir, date, [], now),
   kingdom_equipping: (dataDir, date) =>
