@@ -1212,7 +1212,14 @@ async function runAgenticHealer(opts = {}) {
       return receipt;
     }
 
-    const defectiveCards = artifact.cards.filter((c) => c && c.status !== 'clean');
+    const allDefectiveCards = artifact.cards.filter((c) => c && c.status !== 'clean');
+    const defectiveCards = scopeDefectiveCards(allDefectiveCards, opts.cards);
+    if (opts.cards && opts.cards.length) {
+      log(
+        `[agentic-healer] card subset requested (${opts.cards.join(',')}): healing ` +
+          `${defectiveCards.length} of ${allDefectiveCards.length} defective card(s).`,
+      );
+    }
     const defectsBefore = {
       count: defectiveCards.length,
       artifactTs: artifact.ts,
@@ -1650,8 +1657,22 @@ function parseCliArgs(argv) {
     else if (a === '--data-dir') opts.dataDir = argv[++i];
     else if (a === '--repo-root') opts.repoRoot = argv[++i];
     else if (a === '--dry-run') opts.dryRun = true;
+    else if (a === '--cards' || a === '--only')
+      opts.cards = String(argv[++i] || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
   }
   return opts;
+}
+
+// Scope the healer to a subset of cards (ExampleCo 2026-07-20): a single, possibly
+// overloaded, box should not be asked to heal the whole board at once. An empty
+// or absent subset means "all defective cards" (the prior whole-board default).
+function scopeDefectiveCards(defectiveCards, cards) {
+  if (!Array.isArray(cards) || cards.length === 0) return defectiveCards;
+  const only = new Set(cards.map(String));
+  return (defectiveCards || []).filter((c) => c && only.has(String(c.id)));
 }
 
 async function main() {
@@ -1664,10 +1685,15 @@ async function main() {
   ) {
     const envelope = readLiveBoardArtifact({ dataDir: opts.dataDir || dataDir(opts) });
     const artifact = envelope && envelope.artifact;
-    const defective =
+    const allDefective =
       artifact && artifact.cards ? artifact.cards.filter((c) => c.status !== 'clean') : [];
+    const defective = scopeDefectiveCards(allDefective, opts.cards);
+    const scopeNote =
+      opts.cards && opts.cards.length
+        ? ` [subset ${opts.cards.join(',')}: ${defective.length} of ${allDefective.length}]`
+        : '';
     process.stdout.write(
-      `[agentic-healer] DRY-RUN: would heal ${defective.length} defective card(s) ` +
+      `[agentic-healer] DRY-RUN: would heal ${defective.length} defective card(s)${scopeNote} ` +
         `(artifact ts ${artifact ? artifact.ts : 'missing'}, stale=${envelope ? envelope.stale : 'n/a'}) ` +
         `via ladder ${TACTIC_LADDER.join(' -> ')} with a ${opts.budgetMinutes || DEFAULT_BUDGET_MINUTES}m budget. No session spawned.\n`,
     );
@@ -1716,6 +1742,7 @@ module.exports = {
   feedSelfHealHealth,
   runAgenticHealer,
   parseCliArgs,
+  scopeDefectiveCards,
 };
 
 if (require.main === module) {
