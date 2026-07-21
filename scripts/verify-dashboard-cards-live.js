@@ -91,6 +91,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--date') opts.date = argv[++i];
     else if (a === '--html') opts.htmlFile = argv[++i];
+    else if (a === '--previous-html') opts.previousHtmlFile = argv[++i];
     else if (a === '--url') opts.url = argv[++i];
     else if (a === '--host') opts.host = argv[++i];
     // Write the canonical dashboard-qc-result.json artifact after this run,
@@ -716,6 +717,72 @@ function newsFaceRows(tile) {
     rows.push({ title, why, url });
   }
   return rows;
+}
+
+function previousDateString(dateStr) {
+  const m = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  const date = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function normalizedNewsCarryUrl(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  try {
+    const url = new URL(value);
+    url.hash = '';
+    url.search = '';
+    return url.toString().replace(/\/$/, '').toLowerCase();
+  } catch {
+    return value
+      .replace(/[?#].*$/, '')
+      .replace(/\/$/, '')
+      .toLowerCase();
+  }
+}
+
+function normalizedNewsCarryTitle(raw) {
+  return String(raw || '')
+    .toLowerCase()
+    .replace(/&(?:amp|apos|quot|#39);/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function newsCarryForwardDefects(card, tile, previousTile, { requirePrevious = false } = {}) {
+  if (!isNewsCard(card)) return [];
+  const currentRows = newsFaceRows(tile);
+  // Mention-or-zero cards have no story set to compare. Their separate source
+  // provenance contract still decides whether zero is honest.
+  if (!currentRows.length) return [];
+  if (!previousTile) {
+    return requirePrevious
+      ? [
+          `NEWS-FRESHNESS-UNVERIFIED: ${card.id} (${tile.name}) has a current freshness stamp but the previous briefing's rendered article set was unavailable; it cannot be marked clean without day-over-day proof`,
+        ]
+      : [];
+  }
+  const previousRows = newsFaceRows(previousTile);
+  if (!previousRows.length) return [];
+  const previousUrls = new Set(
+    previousRows.map((row) => normalizedNewsCarryUrl(row.url)).filter(Boolean),
+  );
+  const previousTitles = new Set(
+    previousRows.map((row) => normalizedNewsCarryTitle(row.title)).filter(Boolean),
+  );
+  const repeated = currentRows.filter((row) => {
+    const url = normalizedNewsCarryUrl(row.url);
+    const title = normalizedNewsCarryTitle(row.title);
+    return Boolean((url && previousUrls.has(url)) || (title && previousTitles.has(title)));
+  });
+  const threshold = Math.max(2, Math.ceil(currentRows.length * 0.5));
+  if (repeated.length < threshold) return [];
+  return [
+    `NEWS-CARRY-FORWARD: ${card.id} (${tile.name}) repeats ${repeated.length}/${currentRows.length} rendered article(s) from the previous briefing; a current timestamp cannot make yesterday's story set clean`,
+  ];
 }
 
 // The authoritative live-QC definition of news "chrome" is COMPILED from the
@@ -2530,6 +2597,8 @@ function blockersFalseCleanDefects(card, tile) {
 function verifyDashboard(html, runDate, options = {}) {
   const builderCounts = (options && options.builderCounts) || {};
   const tiles = parseTiles(html);
+  const previousTiles = options.previousHtml ? parseTiles(options.previousHtml) : [];
+  const requirePreviousNews = options.requirePreviousNews === true;
   if (tiles.length === 0) {
     // A 0-tile parse is ambiguous at THIS layer: it is a genuine retry condition
     // only when the body was trivial/empty. When the fetch returned a real page
@@ -2617,6 +2686,12 @@ function verifyDashboard(html, runDate, options = {}) {
       recordCard(card.id, valueSanityDefects(card, tile, builderCounts));
       recordCard(card.id, execCrispnessDefects(card, tile, runDate));
       recordCard(card.id, cardSpecificDefects(card, tile, runDate));
+      recordCard(
+        card.id,
+        newsCarryForwardDefects(card, tile, findTile(previousTiles, card), {
+          requirePrevious: requirePreviousNews,
+        }),
+      );
       advisories.push(...advisoryNotes(card, tile));
       continue;
     }
@@ -2629,6 +2704,12 @@ function verifyDashboard(html, runDate, options = {}) {
         recordCard(card.id, valueSanityDefects(card, tile, builderCounts));
         recordCard(card.id, execCrispnessDefects(card, tile, runDate));
         recordCard(card.id, cardSpecificDefects(card, tile, runDate));
+        recordCard(
+          card.id,
+          newsCarryForwardDefects(card, tile, findTile(previousTiles, card), {
+            requirePrevious: requirePreviousNews,
+          }),
+        );
         advisories.push(...advisoryNotes(card, tile));
       }
       continue;
@@ -2884,7 +2965,26 @@ function main() {
     process.exit(EXIT_UNREACHABLE);
   }
 
-  let result = verifyDashboard(html, opts.date);
+  let previousHtml = '';
+  let requirePreviousNews = false;
+  if (opts.previousHtmlFile) {
+    previousHtml = fs.readFileSync(opts.previousHtmlFile, 'utf8');
+    requirePreviousNews = true;
+  } else if (!opts.htmlFile) {
+    const previousDate = previousDateString(opts.date);
+    if (previousDate) {
+      requirePreviousNews = true;
+      const previous = fetchLiveHtml({
+        ...opts,
+        date: previousDate,
+        url: undefined,
+        htmlFile: undefined,
+      });
+      if (previous && !previous.unreachable && previous.html) previousHtml = previous.html;
+    }
+  }
+
+  let result = verifyDashboard(html, opts.date, { previousHtml, requirePreviousNews });
   if (opts.cardIds && opts.cardIds.length) {
     result = scopeDashboardResult(result, opts.cardIds);
   }
@@ -2993,6 +3093,8 @@ module.exports = {
   writeCanonicalArtifactFromResult,
   mergeScopedArtifact,
   parseCardScope,
+  previousDateString,
+  newsCarryForwardDefects,
   scopeDashboardResult,
   summaryNamesPersonAsParticipant,
   FACE_DENYLIST,

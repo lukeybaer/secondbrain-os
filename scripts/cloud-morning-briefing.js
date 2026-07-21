@@ -773,7 +773,25 @@ function runDashboardRenderQc({ date, verifier = null, htmlFetcher = null } = {}
     return { ran: false, retry: true, source: fetched && fetched.source };
   }
 
-  const result = qc.verifyDashboard(fetched.html, date);
+  let previousHtml = '';
+  let requirePreviousNews = false;
+  const previousDate =
+    typeof qc.previousDateString === 'function' ? qc.previousDateString(date) : '';
+  if (previousDate) {
+    requirePreviousNews = true;
+    try {
+      const previous = fetchHtml({ date: previousDate });
+      if (previous && !previous.unreachable && previous.html) previousHtml = previous.html;
+    } catch {
+      // The grader will emit NEWS-FRESHNESS-UNVERIFIED for rendered news cards.
+      // A missing prior proof is not permission to relabel ExampleCod-forward rows clean.
+    }
+  }
+
+  const result = qc.verifyDashboard(fetched.html, date, {
+    previousHtml,
+    requirePreviousNews,
+  });
   if (result.status === 'parse-failed') {
     // A real page body that parses 0 tiles is a HARD render defect (the markup
     // changed); an empty/trivial body is a transient retry.
@@ -6815,7 +6833,9 @@ function buildFullLifeBackupCard(dataDir, { allowLiveRefresh = true } = {}) {
         `Blocked: full-life backup health is ${freshness.ageDays == null ? 'undated' : `${freshness.ageDays} days`} stale ` +
         `(snapshot generated ${freshness.generatedAt || 'ExampleCo'}), so today's backup coverage across ` +
         `${freshness.sourceCount} source(s) is unverified and any number here would be fabricated. ` +
-        (freshness.foreignHost ? 'It was produced on another host (desktop-origin snapshot). ' : '') +
+        (freshness.foreignHost
+          ? 'It was produced on another host (desktop-origin snapshot). '
+          : '') +
         'Needs: the Windows life-archive producer to generate and ship a fresh proven snapshot.',
     };
   }

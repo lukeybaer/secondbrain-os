@@ -1076,6 +1076,20 @@ async function runVerify({ cardId, date, dataDir }) {
     return;
   }
   const scopedCardIds = scopedCardIdsForRefresh(cardId);
+  const requirePreviousNews = Boolean(newsSummaryCardKeyForTarget(cardId));
+  let previousHtml = '';
+  if (requirePreviousNews && typeof liveQc.previousDateString === 'function') {
+    const previousDate = liveQc.previousDateString(date);
+    if (previousDate) {
+      try {
+        const previous = liveQc.fetchLiveHtml({ date: previousDate });
+        if (previous && !previous.unreachable && previous.html) previousHtml = previous.html;
+      } catch {
+        // The scoped grader will mark freshness unverified. A current card cannot
+        // pass merely because the previous rendered article set was unreachable.
+      }
+    }
+  }
   let result;
   try {
     // Per-card grade (ExampleCo 2026-07-20): hand the grader the scope so it grades
@@ -1083,7 +1097,11 @@ async function runVerify({ cardId, date, dataDir }) {
     // grader that ignores the option still returns a full result; the
     // scopeDashboardResult fallback below narrows it, so this stays backward
     // compatible during a rolling deploy.
-    result = liveQc.verifyDashboard(fetched.html, date, { scopeCardIds: scopedCardIds });
+    result = liveQc.verifyDashboard(fetched.html, date, {
+      scopeCardIds: scopedCardIds,
+      previousHtml,
+      requirePreviousNews,
+    });
   } catch (e) {
     // The grader itself failed to execute. We hold no opinion about the card.
     reportExampleCoLiveVerdict(`live render QC threw: ${(e && e.message) || e}`, 'verifier-threw');
@@ -1206,7 +1224,12 @@ async function publishArtifactUnion({ dataDir, date, refreshedCardId = '', now =
     refreshedCardId,
     now,
   });
-  const markdownPath = writeCompatibilityMarkdown({ dataDir, date, artifacts: union.artifacts, now });
+  const markdownPath = writeCompatibilityMarkdown({
+    dataDir,
+    date,
+    artifacts: union.artifacts,
+    now,
+  });
   return { union, board, markdownPath };
 }
 
