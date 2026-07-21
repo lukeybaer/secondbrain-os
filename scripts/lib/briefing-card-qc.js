@@ -89,14 +89,26 @@ function isAwsCostsCardTitle(title) {
   return /^AWS COSTS\b/i.test(String(title || '').trim());
 }
 
+// BIG DECISIONS is allowed to name the provider, runtime, or process that a
+// consequential architecture decision governs. Those names are the subject of
+// the card, not leaked failure output. Hard signatures such as HTTP 5xx, stack
+// traces, and "claude exit N" remain unmasked and still fail.
+function isBigDecisionsCardTitle(title) {
+  return /^BIG DECISIONS\b/i.test(String(title || '').trim());
+}
+
 // Cards that legitimately name soft vendor/process/plan words as their OWN
 // content and must NOT be collapsed by the operational scrub: the token-usage /
 // LLM-subscription card, the SYSTEM HEALTH internal-infra roster, and the AWS
-// COSTS card (which shows real AWS service billing names). News cards are
-// handled on their own third-party-prose path.
+// COSTS card (which shows real AWS service billing names), and BIG DECISIONS
+// (which can legitimately record a provider/runtime architecture choice).
+// News cards are handled on their own third-party-prose path.
 function isSoftTermNeutralizedCardTitle(title) {
   return (
-    isTokenUsageCardTitle(title) || isSystemHealthCardTitle(title) || isAwsCostsCardTitle(title)
+    isTokenUsageCardTitle(title) ||
+    isSystemHealthCardTitle(title) ||
+    isAwsCostsCardTitle(title) ||
+    isBigDecisionsCardTitle(title)
   );
 }
 
@@ -780,6 +792,7 @@ module.exports = {
   isTokenUsageCardTitle,
   isSystemHealthCardTitle,
   isAwsCostsCardTitle,
+  isBigDecisionsCardTitle,
   isSelfHealHealthCardTitle,
   isSoftTermNeutralizedCardTitle,
 };
