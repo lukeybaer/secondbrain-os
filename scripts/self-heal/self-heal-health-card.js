@@ -85,10 +85,21 @@ function resolveExecutorRow(rows, opts = {}) {
     return opts.executorRow;
   }
   if (opts.preflight) return executorHealthRow(opts.preflight, opts.executorHealthSignals || {});
+  const latestCompletedCheckpointIndex = (() => {
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const r = rows[i];
+      if (r && r.stage === CHECKPOINT_STAGE && r.phase === 'completed') return i;
+    }
+    return -1;
+  })();
   // newest persisted executor row, newest-first
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const r = rows[i];
     if (!r) continue;
+    // A stale persisted executor row from an older run must not override a later
+    // completed checkpoint. The checkpoint is the current proof that the executor
+    // launched and finished this window.
+    if (latestCompletedCheckpointIndex >= 0 && i < latestCompletedCheckpointIndex) break;
     if (r.executorHealthRow && r.executorHealthRow.label && r.executorHealthRow.status) {
       return r.executorHealthRow;
     }
@@ -246,6 +257,9 @@ function thrashingDefects(date, opts = {}) {
       if (ledger.isClearedRow(row)) {
         failsByMove.clear(); // a clear resets the no-repeat memory
         continue;
+      }
+      if (String(row.qcResult || '').toLowerCase() === 'no-spin-skip') {
+        continue; // the no-repeat guard worked; a skipped repeat is not thrash
       }
       const moveKey = `${row.tacticKey || ''} ${row.tacticInputHash || ''}`;
       const n = (failsByMove.get(moveKey) || 0) + 1;
