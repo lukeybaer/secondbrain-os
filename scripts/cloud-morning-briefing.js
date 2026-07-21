@@ -4336,14 +4336,23 @@ function buildMemoryDeltaMarkdownSection(dataDir) {
 
 // Build the PEOPLE FILES CHANGES (24H) markdown section from the snapshot the
 // generator wrote to <dataDir>/agent/people-files-snapshot.json. Returns a
-// populated legacySection when real per-contact changes exist, else null so the
-// honest blocker fires. Aggregator/index files (_gmail-daily-intel, INDEX) are
-// already excluded at snapshot-write time.
+// populated legacySection with real per-contact changes when they exist, or a
+// clean "0 files" section when the 24h window is quiet. Returning null only
+// when the snapshot itself is missing (no generator ran) so the honest blocker
+// fires for a missing source, not for a legitimate zero-change day.
+// Aggregator/index files (_gmail-daily-intel, INDEX) are already excluded at
+// snapshot-write time.
 function buildPeopleFilesMarkdownSection(dataDir) {
   const snap = readSnapshotForMarkdown(dataDir, 'people-files-snapshot.json');
   if (!snap) return null;
   const entries = Array.isArray(snap.allEntries) ? snap.allEntries : [];
-  if (snap.empty || entries.length === 0) return null;
+  if (snap.empty || entries.length === 0) {
+    // A quiet 24h window is valid: return a clean zero-change section so the
+    // honest-blocker fallback does not fire. ec2-server.js builds the live tile
+    // from the snapshot directly (dropping the markdown placeholder), so this
+    // section is only a markdown consistency marker -- it never misrepresents data.
+    return legacySection('PEOPLE FILES CHANGES (24H)', '0 people files touched in last 24h.');
+  }
   const totalFiles = Number(snap.totalFiles || entries.length);
   const totalLines = Number(snap.totalLines || 0);
   // "updated", not "changed": the render-QC PEOPLE-FILE-DETAIL check bans the exact
