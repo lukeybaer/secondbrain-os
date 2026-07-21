@@ -5,7 +5,7 @@
  * VOICE CONFIRMATION / SPEAKER LEARNING card.
  *
  * The underlying otter-text-audio-coverage-latest.json `last_7_days.status` is
- * RED whenever ANY timestamped segment falls outside its audio's duration, even
+ * RED when a repairable timestamp wall falls outside its audio's duration, even
  * when every call in the window has full audio and every transcript segment is
  * backed by that audio. A SMALL rounding-tail of out-of-bounds timestamps (a
  * couple of segments landing microscopically past the audio's end -- an
@@ -23,7 +23,10 @@
  * below OUT_OF_BOUNDS_RATE_CAP -- Codex adversarial review 2026-07-06 caught an
  * earlier version of this function downgrading ANY nonzero anomaly count
  * regardless of rate, which would have silently greenwashed a live incident of
- * 2,649/2,651 (99.9%) timestamps out of bounds.
+ * 2,649/2,651 (99.9%) timestamps out of bounds. A provider-declared duration
+ * that agrees with the downloaded audio while the provider's own transcript
+ * extends beyond both is a separate, unrecoverable source limitation and is
+ * graded YELLOW by the report producer. This helper preserves that YELLOW.
  *
  * One module owns this rule so the render (ec2-server.js
  * otterTextAudioCoverageSummary) and the markdown generator

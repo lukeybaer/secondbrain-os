@@ -98,6 +98,7 @@ LIVE_DEPS=(
   "scripts/ensure-neo4j-cpu-cap.js"
   "scripts/install-ec2-card-controller-cron.sh"
   "scripts/install-ec2-self-heal-cron.sh"
+  "scripts/install-ec2-deploy-parity-cron.sh"
   # Wave 4 rung 2: the agentic overnight healer. The morning runner (deployed
   # above) invokes the wrapper, which invokes the driver; ship both so the /opt
   # copy never drifts behind a land (feedback_ec2_build_path_silent_revert).
@@ -532,6 +533,18 @@ else
   exit 1
 fi
 
+# Deploy parity is evidence, not a one-time deployment side effect. Install an
+# independent hourly probe from the Git build path so the artifact cannot age
+# out when no deploy happens for several days.
+echo "[deploy] installing periodic deploy-parity proof"
+if ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  'SECONDBRAIN_BUILD_PATH_ROOT=/home/ec2-user/secondbrain-current SECONDBRAIN_DATA_DIR=/opt/secondbrain/data bash /opt/secondbrain/scripts/install-ec2-deploy-parity-cron.sh'; then
+  echo "[deploy] deploy-parity cron: PASS"
+else
+  echo "[deploy] CRON FAIL: release is live but periodic deploy-parity proof was not installed." >&2
+  exit 1
+fi
+
 # Observational post-release scheduled-skill rescue canary. The release has
 # already passed atomic swap + /health, so this proof never rolls good code
 # back. It forces the Claude rung to fail, proves the Codex rescue reaches a
@@ -591,4 +604,12 @@ fi
 # The receipt is recorded immediately after the atomic swap above, not here,
 # so a post-release step that exits cannot leave /opt running an unreceipted
 # release.
+cleanup_deploy_lock
+echo "[deploy] running an unlocked post-deploy parity proof"
+if ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  'cd /home/ec2-user/secondbrain-current && SECONDBRAIN_DATA_DIR=/opt/secondbrain/data /usr/bin/node scripts/verify-deploy-parity.js --json'; then
+  echo "[deploy] post-deploy parity: PASS"
+else
+  echo "[deploy] WARNING: post-deploy parity is non-green; release remains live and the hourly proof will retry after build-path sync." >&2
+fi
 echo "[deploy] OK: released $SHA via atomic-release (/opt/secondbrain -> releases/$SHA), health-verified."

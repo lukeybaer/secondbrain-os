@@ -41,6 +41,7 @@ const {
   buildRescueCanaryReceipt,
   writeRescueCanaryReceipt,
 } = require('./lib/scheduled-skill-rescue-canary.js');
+const { createScheduledSkillGraphiti } = require('./lib/scheduled-skill-graphiti.js');
 
 // Git-worthy output areas a scheduled skill legitimately produces: its own
 // LESSONS.md / skill files and Tier-2 memory (contact scans, notes). Tracked
@@ -292,74 +293,43 @@ if (process.env.RUN_SCHEDULED_SKILL_ISOLATED !== '1' && NEEDS_ISOLATED_RERUN) {
 }
 
 const GRAPHITI_ADVISOR_CLI = path.join(SECONDBRAIN_ROOT, 'scripts', 'graphiti-brain-advisor.js');
-let graphitiAdvisorId = '';
+const scheduledSkillGraphiti = createScheduledSkillGraphiti({
+  cliPath: GRAPHITI_ADVISOR_CLI,
+  root: SECONDBRAIN_ROOT,
+  dataDir: DATA_DIR,
+  skillName,
+  scheduleDate: process.env.AMY_SCHEDULE_DATE || new Date().toISOString().slice(0, 10),
+  canaryMode: CANARY_MODE,
+});
+
 function startGraphitiAdvisor() {
-  const request = {
-    prompt: `Run the scheduled Amy skill ${skillName}`,
-    action: `Execute scheduled-tasks/${skillName}/SKILL.md and persist its authorized outputs`,
-    surface: 'scheduled-skill',
-    conversationId: `scheduled-${skillName}-${process.env.AMY_SCHEDULE_DATE || new Date().toISOString().slice(0, 10)}`,
-    project: skillName,
-    visibility: 'owner_private',
-  };
-  const result = spawnSync(process.execPath, [GRAPHITI_ADVISOR_CLI, 'start'], {
-    cwd: SECONDBRAIN_ROOT,
-    env: { ...process.env, SECONDBRAIN_DATA_DIR: DATA_DIR },
-    input: JSON.stringify(request),
-    encoding: 'utf8',
-    timeout: 5000,
-  });
-  try {
-    graphitiAdvisorId = JSON.parse(result.stdout || '{}').advisor_id || '';
-  } catch {
-    graphitiAdvisorId = '';
-  }
+  return scheduledSkillGraphiti.start();
 }
 
 function graphitiAdvisorContext() {
-  if (!graphitiAdvisorId) {
-    return 'Graphiti Brain Advisor was unavailable at start. Expose this first failure in Graphiti impact and do not invent recall.';
-  }
-  const result = spawnSync(
-    process.execPath,
-    [GRAPHITI_ADVISOR_CLI, 'context', '--advisor-id', graphitiAdvisorId, '--wait-ms', '30000'],
-    {
-      cwd: SECONDBRAIN_ROOT,
-      env: { ...process.env, SECONDBRAIN_DATA_DIR: DATA_DIR },
-      encoding: 'utf8',
-      timeout: 35000,
-    },
-  );
-  try {
-    return (
-      JSON.parse(result.stdout || '{}').prompt_block ||
-      'Graphiti Brain Advisor context was unavailable.'
-    );
-  } catch {
-    return 'Graphiti Brain Advisor context was unavailable. Expose the failure in Graphiti impact.';
-  }
+  return scheduledSkillGraphiti.context();
 }
 
 function recordGraphitiAdvisorOutput(output, answerActionId) {
-  if (!graphitiAdvisorId) return;
-  spawnSync(
-    process.execPath,
-    [
-      GRAPHITI_ADVISOR_CLI,
-      'receipt',
-      '--advisor-id',
-      graphitiAdvisorId,
-      '--answer-action-id',
-      answerActionId,
-    ],
-    {
-      cwd: SECONDBRAIN_ROOT,
-      env: { ...process.env, SECONDBRAIN_DATA_DIR: DATA_DIR },
-      input: String(output || ''),
-      encoding: 'utf8',
-      timeout: 5000,
-    },
+  return scheduledSkillGraphiti.recordOutput(output, answerActionId);
+}
+
+// Every process.exit() after Advisor start now has an honest fallback receipt.
+// The normal answer receipt is idempotent and wins when present. Synthetic
+// release canaries never start a consultation, so these hooks are no-ops there.
+process.once('exit', (code) => {
+  scheduledSkillGraphiti.flushAbandonment(
+    `Ignored because the scheduled skill exited with code ${code} before an answer or action boundary.`,
   );
+});
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.once(signal, () => {
+    scheduledSkillGraphiti.flushAbandonment(
+      `Ignored because the scheduled skill was terminated by ${signal} before an answer or action boundary.`,
+    );
+    const signalNumber = (os.constants.signals && os.constants.signals[signal]) || 1;
+    process.exit(128 + signalNumber);
+  });
 }
 
 const hooks = require('./skill-runner-hooks');

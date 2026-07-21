@@ -301,6 +301,7 @@ async function main() {
       answerActionId:
         args.answerActionId || `answer_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
       visibility: args.visibility || envelope.visibility,
+      ignoredReason: args.ignoredReason,
     });
     recordDispositionReceipt(receipt, { dataDir });
     output = { envelope, receipt, graphiti_impact: formatGraphitiImpact(envelope, receipt) };
@@ -309,7 +310,7 @@ async function main() {
   } else {
     output = {
       usage:
-        'graphiti-brain-advisor.js start|await|context|receipt|health [--advisor-id ID] [--session-id ID] [--wait-ms N]',
+        'graphiti-brain-advisor.js start|await|context|receipt|health [--advisor-id ID] [--session-id ID] [--wait-ms N] [--ignored-reason TEXT]',
     };
   }
   process.stdout.write(JSON.stringify(output, null, 2) + '\n');

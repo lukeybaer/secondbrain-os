@@ -97,6 +97,7 @@ function cardFamily(cardId) {
   if (id === 'kingdom_equipping') return 'kingdom-equipping';
   if (id === 'communication_coaching') return 'communication-coaching';
   if (id === 'linkedin') return 'linkedin';
+  if (id === 'full_life_backup') return 'life-archive-health';
   return 'card-local';
 }
 
@@ -135,6 +136,49 @@ function evidenceForFiles(dataDir, files = []) {
   const artifacts = files.map((parts) => fileEvidence(dataFile(dataDir, ...parts)));
   const facts = artifacts.map((entry) => entry.facts);
   return { digest: sha256(JSON.stringify(facts)), facts };
+}
+
+function lifeArchiveHealthEvidence({ dataDir }) {
+  return evidenceForFiles(dataDir, [['life-archive', 'health-latest.json']]);
+}
+
+async function refreshLifeArchiveHealth({
+  dataDir,
+  date,
+  runCommand,
+  cwd = REPO_ROOT,
+  node = process.execPath,
+} = {}) {
+  const resolved = String(dataDir || process.env.SECONDBRAIN_DATA_DIR || '');
+  if (process.platform === 'linux' && resolved.startsWith('/opt/secondbrain')) {
+    return {
+      ok: true,
+      skipped: true,
+      skipReason: 'desktop producer ships the proven snapshot to the cloud file-deploy',
+      evidence: lifeArchiveHealthEvidence({ dataDir, date }),
+    };
+  }
+  return refreshCommandSet({
+    family: 'life-archive-health',
+    dataDir,
+    date,
+    runCommand,
+    node,
+    cwd,
+    commands: [
+      [
+        [
+          'scripts/refresh-briefing-card-snapshots.js',
+          '--producer',
+          'life-archive-health',
+          '--main-root',
+          cwd,
+        ],
+        4 * 60 * 1000,
+      ],
+    ],
+    evidence: lifeArchiveHealthEvidence,
+  });
 }
 
 async function refreshCommandSet({
@@ -338,6 +382,10 @@ async function refreshOtter({
     [['scripts/otter-speaker-identity-completeness.js', '--write'], 5 * 60 * 1000],
     [['scripts/otter-voice-discovery-roster.js', '--write'], 5 * 60 * 1000],
     [['scripts/voiceprint-health-report.js', '--write'], 5 * 60 * 1000],
+    // System Health ages probe-eligibility-latest.json alongside the coverage
+    // artifacts. Refresh it first so a green coverage calculation cannot stay
+    // red solely because this ledger was omitted from the source contract.
+    [['scripts/otter-track-probe-builder.js', '--backfill'], 15 * 60 * 1000],
     [['scripts/otter-processing-coverage-probe.js'], 5 * 60 * 1000],
     // Missing exec summaries and generic/raw call titles are the recurring
     // otter_speaker_pareto defect class (2026-07-09 LEARNINGS): the legacy
@@ -749,6 +797,12 @@ const CONTRACTS = {
     cards: ['linkedin'],
     evidence: simpleEvidence([['agent', 'linkedin-scan-status.json']]),
   },
+  'life-archive-health': {
+    family: 'life-archive-health',
+    cards: ['full_life_backup'],
+    evidence: lifeArchiveHealthEvidence,
+    refresh: refreshLifeArchiveHealth,
+  },
   'card-local': {
     family: 'card-local',
     cards: [],
@@ -776,6 +830,8 @@ module.exports = {
   tokenUsageEvidence,
   planUsageIsCurrent,
   refreshTokenUsage,
+  refreshLifeArchiveHealth,
+  lifeArchiveHealthEvidence,
   refreshCommandSet,
   controllerSourceEnv,
   fileEvidence,

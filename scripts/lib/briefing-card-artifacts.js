@@ -1537,9 +1537,9 @@ function produceFullLifeBackupCardArtifact({
   } catch {
     return defect(
       `Life-archive backup health cannot be read: ${rel} is missing or unparseable, so backup ` +
-        `coverage cannot be verified. Root cause: no generator writes this file. Remediation: ` +
-        `write a cloud-host generator for it, or retire this card.`,
-      { missing: true, noGenerator: true },
+        `coverage cannot be verified. Remediation: run the Windows life-archive producer and ` +
+        `ship its proven snapshot to the cloud host.`,
+      { missing: true },
     );
   }
 
@@ -1559,10 +1559,23 @@ function produceFullLifeBackupCardArtifact({
         `(snapshot generated ${generatedAt || 'ExampleCo'}), so today's backup coverage across ` +
         `${sources.length} source(s) is unverified. ` +
         (foreignHost ? 'It was produced on another host (desktop-origin snapshot). ' : '') +
-        `Root cause: no generator writes ${rel}; the regen path spawns gmail-s3-flow-health.py, ` +
-        `which writes a different file with no sources array. Remediation: write a cloud-host ` +
-        `generator for ${rel}, or retire this card.`,
-      { generatedAt, ageDays, sourceCount: sources.length, noGenerator: true },
+        `Remediation: run the Windows life-archive producer and ship a fresh proven snapshot.`,
+      { generatedAt, ageDays, sourceCount: sources.length },
+    );
+  }
+
+  if (snapshot.proof_complete !== true) {
+    return defect(
+      `Blocked: Life-archive backup health is fresh, but live S3 inventory proof is incomplete, ` +
+        `so backup coverage cannot be verified. Remediation: ExampleCo the briefing host read-only ` +
+        `Windows life-archive producer, ship its proven snapshot, then refresh this card.`,
+      {
+        generatedAt,
+        ageDays,
+        sourceCount: sources.length,
+        proofComplete: false,
+        proofErrors: Array.isArray(snapshot.proof_errors) ? snapshot.proof_errors : [],
+      },
     );
   }
 

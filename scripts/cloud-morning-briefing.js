@@ -6038,11 +6038,27 @@ function buildEc2SubsystemHealthRows(dataDir, opts = {}) {
   try {
     const report = readJson(path.join(dataDir, 'life-archive', 'health-latest.json'), null);
     const lifeFreshness = report ? lifeArchiveSnapshotFreshness(report, new Date()) : null;
-    if (report && Array.isArray(report.sources) && report.sources.length && lifeFreshness.fresh) {
+    if (
+      report &&
+      report.proof_complete === true &&
+      Array.isArray(report.sources) &&
+      report.sources.length &&
+      lifeFreshness.fresh
+    ) {
       const flowing = report.sources.filter((s) => s.flowing_last_24h).length;
       push(
         flowing > 0 ? OK : BAD,
         `Life-archive backup: ${flowing}/${report.sources.length} sources flowed in the last 24h.`,
+      );
+    } else if (
+      report &&
+      lifeFreshness.fresh &&
+      Array.isArray(report.sources) &&
+      report.sources.length
+    ) {
+      push(
+        ExampleCo,
+        'Life-archive backup: snapshot is fresh, but live S3 inventory proof is incomplete.',
       );
     } else if (report && Array.isArray(report.sources) && report.sources.length) {
       // Codex gate 77f4d75c42f6 finding 1: this row counted flowing_last_24h
@@ -6652,31 +6668,11 @@ function formatScheduledFleetHealth(scheduleFleet) {
 // otherwise return an honest blocker that names the missing capability so the
 // card never vanishes and never shows a fake clean value.
 function maybeRegenLifeArchiveHealth(dataDir) {
-  if (!runningOnEc2(dataDir)) return;
-  if (isSelfHealRefreshMode() && !selfHealRefreshTargets().has('full_life_backup')) return;
-  // Only attempt a regen when the snapshot is missing or very stale, because the
-  // generator (gmail-s3-flow-health.py) is a heavy Gmail/S3 pass and must not be
-  // run on every briefing at 5:30am. Tight timeout so a slow/hung generator can
-  // never block the build; on any failure the reader falls back to the existing
-  // snapshot, then the honest blocker. Never throws.
-  try {
-    const report = readJson(path.join(dataDir, 'life-archive', 'health-latest.json'), null);
-    const stamp = report && (report.generatedAt || report.generated_at || report.ts);
-    const fresh = stamp && hoursSinceIso(stamp) <= 30;
-    if (report && Array.isArray(report.sources) && report.sources.length && fresh) return;
-    const scriptPath = path.join(__dirname, 'gmail-s3-flow-health.py');
-    if (!fs.existsSync(scriptPath)) return;
-    const python = process.env.PYTHON_EXE || 'python3';
-    spawnSync(python, [scriptPath, '--days', '30', '--daily-live', '--write', '--json'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      timeout: 120000,
-      maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, SECONDBRAIN_DATA_DIR: dataDir },
-    });
-  } catch {
-    /* best-effort: reader below falls back to the existing snapshot or honest-blocks */
-  }
+  // The cloud role cannot inventory the full backup bucket, so generating here
+  // would be a permanent fail-closed loop. The Windows card producer owns the
+  // live DB + S3 check and atomically ships only proof_complete snapshots to
+  // this exact dataDir. The cloud build consumes that shipped artifact below.
+  void dataDir;
 }
 
 // Best-effort: rebuild the speaker-pareto artifact on EC2 from the Otter
@@ -6817,7 +6813,15 @@ function buildFullLifeBackupCard(dataDir, { allowLiveRefresh = true } = {}) {
         `(snapshot generated ${freshness.generatedAt || 'ExampleCo'}), so today's backup coverage across ` +
         `${freshness.sourceCount} source(s) is unverified and any number here would be fabricated. ` +
         (freshness.foreignHost ? 'It was produced on another host (desktop-origin snapshot). ' : '') +
-        'Needs: a cloud-host generator for data/life-archive/health-latest.json, or retire this card.',
+        'Needs: the Windows life-archive producer to generate and ship a fresh proven snapshot.',
+    };
+  }
+  if (report.proof_complete !== true) {
+    return {
+      title: 'FULL-LIFE DATA BACKUP',
+      real: false,
+      detail:
+        'Blocked: the life-archive snapshot is fresh, but live S3 inventory proof is incomplete, so backup coverage cannot be verified. Needs: rerun the Windows life-archive producer, ship its proven snapshot, then refresh this card.',
     };
   }
   const total = report.sources.length;

@@ -2,11 +2,12 @@
 'use strict';
 //
 // refresh-briefing-card-snapshots.js -- the single idempotent producer runner
-// for the two DESKTOP-generated briefing card snapshots that used to go
+// for DESKTOP-generated briefing card snapshots that used to go
 // stale-red overnight because nothing regenerated them on a cadence:
 //
 //   * git-hygiene-snapshot.json  (card: UNCOMMITTED & PARKED WORK)
 //   * devops-health-latest.json  (card: SYSTEM HEALTH / Dev Ops subsystem)
+//   * the life-archive health snapshot (card: FULL-LIFE DATA BACKUP)
 //
 // It regenerates BOTH against the desktop shared checkout and ships each to EC2,
 // reusing the existing writers/transport (publish-git-hygiene-snapshot.js and
@@ -32,7 +33,13 @@
 //             1 = at least one producer failed (loud; the others still ran).
 //             2 = usage error.
 
-const { runAllProducers, defaultDataDir, defaultMainRoot } = require('./lib/briefing-card-producers.js');
+const {
+  runAllProducers,
+  runProducer,
+  producerById,
+  defaultDataDir,
+  defaultMainRoot,
+} = require('./lib/briefing-card-producers.js');
 
 let ctDayKeyForInstant;
 try {
@@ -48,6 +55,7 @@ function parseArgs(argv) {
     if (a === '--no-ship') opts.ship = false;
     else if (a === '--data-dir') opts.dataDir = argv[++i];
     else if (a === '--main-root') opts.mainRoot = argv[++i];
+    else if (a === '--producer') opts.producerId = argv[++i];
     else if (a === '--git-timeout-ms') opts.gitTimeoutMs = argv[++i];
     else if (a === '--json') opts.json = true;
     else if (a === '--help' || a === '-h') opts.help = true;
@@ -63,7 +71,7 @@ function usage() {
   return [
     'Usage:',
     '  node scripts/refresh-briefing-card-snapshots.js [--no-ship] [--data-dir DIR]',
-    '       [--main-root DIR] [--git-timeout-ms N] [--json]',
+    '       [--main-root DIR] [--producer ID] [--git-timeout-ms N] [--json]',
   ].join('\n');
 }
 
@@ -90,13 +98,21 @@ function main(argv = process.argv) {
       `ship=${opts.ship} gitTimeoutMs=${effectiveGitTimeout} today=${today}`,
   );
 
-  const { results, ok } = runAllProducers({
-    dataDir,
-    mainRoot,
-    today,
-    ship: opts.ship,
-    logger: console,
-  });
+  const runOptions = { dataDir, mainRoot, today, ship: opts.ship, logger: console };
+  let results;
+  let ok;
+  if (opts.producerId) {
+    const producer = producerById(opts.producerId);
+    if (!producer) {
+      console.error(`[refresh-briefing-card-snapshots] ExampleCo producer: ${opts.producerId}`);
+      return 2;
+    }
+    const result = runProducer(producer, runOptions);
+    results = [result];
+    ok = result.ok;
+  } else {
+    ({ results, ok } = runAllProducers(runOptions));
+  }
 
   const summary = {
     ok,

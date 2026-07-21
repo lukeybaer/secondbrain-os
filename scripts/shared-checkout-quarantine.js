@@ -52,11 +52,75 @@ function originContent(root, rel, ref = 'origin/master') {
   }
 }
 
+function reparsePointEvidence(abs) {
+  let lst;
+  try {
+    lst = fs.lstatSync(abs);
+  } catch {
+    return null;
+  }
+  // Node exposes Windows directory junctions as symbolic links through lstat.
+  // stat/cp follows or recreates them, which is exactly what quarantine must
+  // never do: it can escape the checkout and can fail with EPERM on Windows.
+  if (!lst.isSymbolicLink()) return null;
+
+  let target = '';
+  try {
+    target = fs.readlinkSync(abs);
+  } catch {
+    target = '(unreadable)';
+  }
+  let resolvedTarget = '';
+  try {
+    resolvedTarget = fs.realpathSync.native(abs);
+  } catch {
+    resolvedTarget = target && target !== '(unreadable)'
+      ? path.resolve(path.dirname(abs), target)
+      : '';
+  }
+  let targetType = 'missing_or_unreadable';
+  try {
+    const targetStat = fs.statSync(abs);
+    targetType = targetStat.isDirectory() ? 'directory' : targetStat.isFile() ? 'file' : 'other';
+  } catch {
+    // A dangling link is still evidence and must still receive a stub.
+  }
+  return {
+    type:
+      process.platform === 'win32' && targetType === 'directory'
+        ? 'windows_junction_or_directory_symlink'
+        : 'symbolic_link',
+    target,
+    resolvedTarget,
+    targetType,
+  };
+}
+
+function reparsePointStubPath(dest) {
+  return `${dest}.quarantine-reparse-point.json`;
+}
+
+function writeReparsePointStub(abs, dest, evidence = reparsePointEvidence(abs)) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(
+    dest,
+    JSON.stringify({ path: abs, copied: false, ...evidence }, null, 2) + '\n',
+  );
+}
+
 function safeCopy(src, dest) {
-  const st = fs.statSync(src);
+  const link = reparsePointEvidence(src);
+  if (link) {
+    writeReparsePointStub(src, reparsePointStubPath(dest), link);
+    return;
+  }
+  const st = fs.lstatSync(src);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   if (st.isDirectory()) {
-    fs.cpSync(src, dest, { recursive: true, force: true });
+    fs.mkdirSync(dest, { recursive: true });
+    for (const name of fs.readdirSync(src)) {
+      safeCopy(path.join(src, name), path.join(dest, name));
+    }
   } else {
     fs.copyFileSync(src, dest);
   }
@@ -87,7 +151,14 @@ function writeDirectoryStub(abs, dest) {
 
 function classifyEntry(root, entry, rescueFilesDir, ref = 'origin/master') {
   const abs = path.join(root, entry.path);
-  const exists = fs.existsSync(abs);
+  let lst = null;
+  try {
+    lst = fs.lstatSync(abs);
+  } catch {
+    // Missing paths are handled below. lstat, unlike exists/stat, still sees a
+    // dangling symlink and lets us preserve its link evidence.
+  }
+  const exists = Boolean(lst);
   const origin = originContent(root, entry.path, ref);
   const item = {
     ...entry,
@@ -101,7 +172,24 @@ function classifyEntry(root, entry, rescueFilesDir, ref = 'origin/master') {
     item.action = origin ? 'review_before_restore' : 'safe_after_sync';
     return item;
   }
-  const st = fs.statSync(abs);
+  const link = reparsePointEvidence(abs);
+  if (link) {
+    item.kind = 'reparse_point';
+    item.size = lst.size;
+    item.mtime = lst.mtime.toISOString();
+    item.reparsePoint = link;
+    item.category = entry.status.startsWith('??')
+      ? 'unique_untracked_reparse_point'
+      : 'dirty_reparse_point';
+    item.action = 'preserved_as_stub_then_review';
+    writeReparsePointStub(
+      abs,
+      reparsePointStubPath(path.join(rescueFilesDir, entry.path)),
+      link,
+    );
+    return item;
+  }
+  const st = lst;
   item.kind = st.isDirectory() ? 'directory' : 'file';
   item.size = st.size;
   item.mtime = st.mtime.toISOString();
@@ -201,6 +289,9 @@ module.exports = {
   classifyEntry,
   summarize,
   optionValue,
+  reparsePointEvidence,
+  reparsePointStubPath,
+  safeCopy,
   shouldSkipRuntimeDir,
   main,
 };

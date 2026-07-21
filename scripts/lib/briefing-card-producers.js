@@ -1,7 +1,7 @@
 'use strict';
 //
-// briefing-card-producers.js -- the INDEPENDENT producers for the two briefing
-// SYSTEM HEALTH cards whose snapshots are generated on the DESKTOP shared
+// briefing-card-producers.js -- the INDEPENDENT producers for briefing
+// cards whose snapshots are generated on the DESKTOP shared
 // checkout and shipped to EC2, and which have historically gone stale-red
 // overnight because nothing regenerated them on a reliable cadence:
 //
@@ -17,6 +17,10 @@
 //       desktop shared checkout via scripts/verify-shared-checkout-clean.js
 //       --write-snapshot. Card reader (cloud-morning-briefing readDevOpsSnapshot)
 //       red-lines once the snapshot is > 6h old. It also had NO schedule.
+//
+//   * life-archive/health-latest.json -> card `full_life_backup`
+//       The desktop can inspect the hot DB and all backup-bucket prefixes;
+//       EC2 cannot. Only proof-complete desktop snapshots are shipped.
 //
 // DESIGN (ExampleCo's card-independence contract, breakpoint 3):
 //   - Each card is produced on its OWN timeline. There is NO monolithic
@@ -37,7 +41,7 @@
 //     labelling its freshness itself. That honest-freshness labelling is the
 //     card's job and is intentionally left untouched here.
 //
-// Both the every-~2h runner (scripts/refresh-briefing-card-snapshots.js) and the
+// Both the scheduled runner (scripts/refresh-briefing-card-snapshots.js) and the
 // per-card controller (scripts/refresh-card.js) drive producers through this
 // single module, so there is exactly one place that knows how a card's snapshot
 // is made and shipped.
@@ -45,6 +49,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const childProcess = require('node:child_process');
 
 const gitHygienePublisher = require('../publish-git-hygiene-snapshot.js');
 const devopsVerifier = require('../verify-shared-checkout-clean.js');
@@ -62,6 +67,7 @@ const devopsVerifier = require('../verify-shared-checkout-clean.js');
 // ---------------------------------------------------------------------------
 const GIT_HYGIENE_MAX_AGE_MS = 30 * 60 * 60 * 1000;
 const DEVOPS_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const LIFE_ARCHIVE_MAX_AGE_MS = 30 * 60 * 60 * 1000;
 
 function defaultDataDir() {
   return (
@@ -90,8 +96,27 @@ function isCloudFileDeploy(dataDir) {
   return process.platform === 'linux' && resolved.startsWith('/opt/secondbrain');
 }
 
-function snapshotPathFor(producer, dataDir) {
+function snapshotPathFor(producer, dataDir, mainRoot = defaultMainRoot()) {
+  if (typeof producer.snapshotPath === 'function') {
+    return producer.snapshotPath({ dataDir: dataDir || defaultDataDir(), mainRoot });
+  }
   return path.join(dataDir || defaultDataDir(), 'agent', producer.snapshotBasename);
+}
+
+function pythonInvocation() {
+  const configured = process.env.PYTHON_EXE;
+  const candidates = [
+    configured,
+    process.platform === 'win32' ? 'C:\\Program Files\\Python314\\python.exe' : null,
+    process.platform === 'win32' ? 'C:\\Python314\\python.exe' : null,
+    process.platform === 'win32' ? 'C:\\Windows\\py.exe' : 'python3',
+  ].filter(Boolean);
+  const executable = candidates.find((candidate) => !path.isAbsolute(candidate) || fs.existsSync(candidate));
+  if (!executable) throw new Error('Python 3 executable was not found');
+  return {
+    executable,
+    prefix: /(^|[\\/])py(?:\.exe)?$/i.test(executable) ? ['-3'] : [],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +182,49 @@ const PRODUCERS = [
       };
     },
   },
+  {
+    id: 'life-archive-health',
+    label: 'full-life backup health',
+    cardIds: ['full_life_backup'],
+    snapshotBasename: 'health-latest.json',
+    remotePath: '/opt/secondbrain/data/life-archive/health-latest.json',
+    maxAgeMs: LIFE_ARCHIVE_MAX_AGE_MS,
+    snapshotPath({ mainRoot }) {
+      return path.join(mainRoot, 'data', 'life-archive', this.snapshotBasename);
+    },
+    parseGeneratedAt(payload) {
+      return (payload && payload.generated_at) || null;
+    },
+    regenerate({ mainRoot }) {
+      const archiveDataDir = path.join(mainRoot, 'data');
+      const invocation = pythonInvocation();
+      childProcess.execFileSync(
+        invocation.executable,
+        [
+          ...invocation.prefix,
+          path.join(mainRoot, 'scripts', 'life-archive-health.py'),
+          '--shallow',
+          '--write',
+        ],
+        {
+          cwd: mainRoot,
+          encoding: 'utf8',
+          timeout: 4 * 60 * 1000,
+          maxBuffer: 8 * 1024 * 1024,
+          env: { ...process.env, SECONDBRAIN_DATA_DIR: archiveDataDir },
+        },
+      );
+      const outPath = snapshotPathFor(this, null, mainRoot);
+      const payload = readJsonSafe(outPath);
+      if (!payload || payload.proof_complete !== true) {
+        throw new Error('life-archive generator did not produce complete DB + live S3 proof');
+      }
+      if (!Array.isArray(payload.sources) || payload.sources.length !== 11) {
+        throw new Error('life-archive generator did not produce the 11-source contract');
+      }
+      return { outPath, generatedAt: payload.generated_at, verdict: 'proven' };
+    },
+  },
 ];
 
 function readJsonSafe(file, readFile = fs.readFileSync) {
@@ -178,8 +246,11 @@ function producerForCard(cardId) {
 
 // Age (ms) of the on-disk snapshot for a producer, or null when the snapshot is
 // missing / unparseable / has no timestamp. Injectable readFile for tests.
-function snapshotAgeMs(producer, { dataDir, now = Date.now(), readFile = fs.readFileSync } = {}) {
-  const payload = readJsonSafe(snapshotPathFor(producer, dataDir), readFile);
+function snapshotAgeMs(
+  producer,
+  { dataDir, mainRoot = defaultMainRoot(), now = Date.now(), readFile = fs.readFileSync } = {},
+) {
+  const payload = readJsonSafe(snapshotPathFor(producer, dataDir, mainRoot), readFile);
   if (!payload) return null;
   const generatedAt = producer.parseGeneratedAt(payload);
   const generatedMs = generatedAt ? Date.parse(generatedAt) : NaN;
@@ -248,7 +319,7 @@ function runProducer(
     error: null,
   };
 
-  result.ageBeforeMs = snapshotAgeMs(producer, { dataDir, now, readFile });
+  result.ageBeforeMs = snapshotAgeMs(producer, { dataDir, mainRoot, now, readFile });
   result.staleBefore = isStale(producer, result.ageBeforeMs);
 
   try {
@@ -323,7 +394,7 @@ function refreshProducerForCard({
   const producer = producerForCard(cardId);
   if (!producer) return { skipped: 'no-producer', cardId };
 
-  const ageMs = snapshotAgeMs(producer, { dataDir, now, readFile });
+  const ageMs = snapshotAgeMs(producer, { dataDir, mainRoot, now, readFile });
   if (!isStale(producer, ageMs)) {
     logger.log(
       `[card-producer] ${producer.id}: snapshot fresh (${humanAge(ageMs)} <= ${humanAge(
@@ -358,6 +429,7 @@ module.exports = {
   PRODUCERS,
   GIT_HYGIENE_MAX_AGE_MS,
   DEVOPS_MAX_AGE_MS,
+  LIFE_ARCHIVE_MAX_AGE_MS,
   defaultDataDir,
   defaultMainRoot,
   isCloudFileDeploy,

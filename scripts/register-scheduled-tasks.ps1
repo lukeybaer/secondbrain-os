@@ -178,6 +178,11 @@ Bat-Minute-Task 'SecondBrain-ClaudeTokenRefresh' "$root\scripts\claude-token-ref
 # this has zero practical lag.
 Bat-Minute-Task 'SecondBrain-GhCliTokenSync' "$root\scripts\gh-cli-token-sync.bat" 360
 
+# Desktop-owned briefing card proof. The producer writes both Git hygiene and
+# Dev Ops snapshots, then ships them to EC2. Its own source contract is safe to
+# run every two hours and keeps the 6-hour System Health freshness gate honest.
+Bat-Minute-Task 'SecondBrain-BriefingCardSnapshots' "$root\scripts\refresh-briefing-card-snapshots.js" 120
+
 # ── Persistent watchers ───────────────────────────────────────────────────────
 # The gmail-amy-scan watcher writes a heartbeat every ~5 min and scans new mail
 # for #Amy dispatches + contact enrichment. It must always be running; if it
