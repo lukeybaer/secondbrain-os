@@ -341,7 +341,7 @@ async function generateCommCoachingCard({
   root = REPO_ROOT,
   date,
   llmFn = defaultLlmFn,
-  days = 7,
+  days = 2,
   forceDeterministic = process.env.COMM_COACHING_DETERMINISTIC === '1',
 } = {}) {
   const day = date || ctDateKey();
@@ -356,7 +356,11 @@ async function generateCommCoachingCard({
     }
   })();
   const literatureKeys = parseLiteratureKeys(grounding);
-  const { quotes, counts } = loadExampleCoQuotePool({ root, days });
+  const { quotes, counts } = loadExampleCoQuotePool({
+    root,
+    days,
+    today: new Date(`${day}T12:00:00Z`),
+  });
 
   if (!grounding || literatureKeys.length === 0) {
     return {

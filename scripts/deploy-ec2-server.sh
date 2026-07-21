@@ -64,6 +64,9 @@ LIVE_DEPS=(
   "scripts/lib/briefing-markdown-sections.js"
   "scripts/lib/briefing-news-reader.js"
   "scripts/cloud-morning-briefing.js"
+  # Curated state is intentionally outside immutable releases. The deploy gate
+  # asserts and atomically seeds this required input into durable runtime data.
+  "data/agent/big-decisions.jsonl"
   # Graphiti Brain Advisor: ec2-server.js requires the shared runtime; the
   # scheduled-skill runner invokes the detached CLI; the runtime reads the
   # git-tracked skill learnings at query time. Keep all three in the audited
@@ -427,6 +430,29 @@ if [ "$SHA" != "$VERIFIED_SHA" ]; then
   echo "[deploy] REFUSED: HEAD moved after the source-provenance gate approved it. approved=$VERIFIED_SHA now=$SHA. /opt is untouched. Re-run the deploy so the gate re-verifies the current sha." >&2
   exit 1
 fi
+
+# BIG DECISIONS is git-tracked curated state, but atomic releases replace the
+# archived data/ tree with the one durable runtime symlink. Seed this required
+# input explicitly on every deploy, preserving the prior runtime copy by SHA.
+# A missing local ledger refuses before the live code swap, so a replacement
+# instance cannot silently render an empty decision card.
+BIG_DECISIONS_SOURCE="$ROOT/data/agent/big-decisions.jsonl"
+BIG_DECISIONS_REMOTE_TMP="/tmp/secondbrain-big-decisions-$SHA.jsonl"
+if [ ! -s "$BIG_DECISIONS_SOURCE" ]; then
+  echo "[deploy] REFUSED: required curated input is missing or empty: $BIG_DECISIONS_SOURCE" >&2
+  exit 1
+fi
+if ! scp -i "$KEY" -o StrictHostKeyChecking=no "$BIG_DECISIONS_SOURCE" "$HOST:$BIG_DECISIONS_REMOTE_TMP"; then
+  echo "[deploy] REFUSED: could not stage Big Decisions ledger on EC2; /opt is untouched." >&2
+  exit 1
+fi
+if ! ssh -i "$KEY" -o StrictHostKeyChecking=no "$HOST" \
+  "set -e; mkdir -p /opt/secondbrain/data/agent; if [ -f /opt/secondbrain/data/agent/big-decisions.jsonl ] && ! cmp -s /opt/secondbrain/data/agent/big-decisions.jsonl '$BIG_DECISIONS_REMOTE_TMP'; then cp -p /opt/secondbrain/data/agent/big-decisions.jsonl /opt/secondbrain/data/agent/big-decisions.pre-deploy-$SHA.jsonl; fi; mv '$BIG_DECISIONS_REMOTE_TMP' /opt/secondbrain/data/agent/big-decisions.jsonl"; then
+  echo "[deploy] REFUSED: could not atomically seed Big Decisions ledger; live code is untouched." >&2
+  exit 1
+fi
+echo "[deploy] required Big Decisions ledger: PASS"
+
 echo "[deploy] delegating live write to atomic-release.sh (sha $SHA, provenance-verified)"
 echo "[deploy]   ships /opt/secondbrain/server.js + /opt/secondbrain/ec2-server.js inside the release tree"
 echo "[deploy]   release logs/ is a symlink to the durable /opt/secondbrain-logs -- live log files survive the swap"

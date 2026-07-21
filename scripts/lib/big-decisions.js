@@ -25,6 +25,18 @@ const MAX_SUMMARY_CHARS = 300;
 const MAX_PER_DAY = 10;
 const CATEGORIES = new Set(['rule-supersession', 'policy', 'architecture', 'spend', 'other']);
 
+function isBigDecisionRow(row) {
+  return Boolean(
+    row &&
+      /^\d{4}-\d{2}-\d{2}$/.test(String(row.date || '')) &&
+      Number.isFinite(Number(row.seq)) &&
+      typeof row.summary === 'string' &&
+      row.summary.trim() &&
+      CATEGORIES.has(row.category) &&
+      row.source,
+  );
+}
+
 function ledgerPath(opts) {
   return (opts && opts.ledgerFile) || process.env.BIG_DECISIONS_FILE || DEFAULT_LEDGER;
 }
@@ -71,7 +83,11 @@ function shiftDateString(day, deltaDays) {
 // entries" (that older reading resurfaced weeks-old decisions as current
 // during a sparse period, bug found 2026-07-11 building the briefing card).
 function readBigDecisions(opts) {
-  const rows = readAll(opts);
+  // The ledger is curated, but older consolidation jobs bypassed the append
+  // API and wrote per-file housekeeping rows into it. Those rows are useful in
+  // the Memory Hygiene report, not in ExampleCo's executive decision surface. Read
+  // only entries that satisfy this ledger's own high-bar schema.
+  const rows = readAll(opts).filter(isBigDecisionRow);
   const days = opts && opts.days;
   const sorted = rows
     .slice()
@@ -94,7 +110,7 @@ function appendBigDecision(entry, opts) {
   if (!e.source) problems.push('source required (dispatch, session, or call that authorized this)');
   if (problems.length) throw new Error('big-decisions: invalid entry: ' + problems.join('; '));
 
-  const existing = readAll(opts).filter((r) => r.date === e.date);
+  const existing = readAll(opts).filter((r) => r.date === e.date && isBigDecisionRow(r));
   if (existing.length >= MAX_PER_DAY) {
     throw new Error(
       `big-decisions: ${MAX_PER_DAY} entries already logged for ${e.date}. ` +
@@ -124,4 +140,5 @@ module.exports = {
   MAX_PER_DAY,
   MAX_SUMMARY_CHARS,
   DEFAULT_LEDGER,
+  isBigDecisionRow,
 };

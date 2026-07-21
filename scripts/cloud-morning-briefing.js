@@ -1337,6 +1337,7 @@ function formatMemoryHygieneSection(dataDir, now = Date.now()) {
   if (!Number.isFinite(lastRunMs)) return null;
 
   const counts = (receipt && receipt.counts) || {};
+  const actions = Array.isArray(receipt && receipt.actions) ? receipt.actions : [];
   const questions = Array.isArray(receipt && receipt.questions) ? receipt.questions : [];
   const ageHours = (Number(now) - lastRunMs) / 3600000;
   // The pass is weekly, so an 8-day window is on-schedule; past that it is overdue.
@@ -1355,6 +1356,17 @@ function formatMemoryHygieneSection(dataDir, now = Date.now()) {
     `Last pass: ${formatCtDateTime(lastRunMs)} (ran in last 48h: ${ranLast48h ? 'yes' : 'no'})`,
     `Scanned ${Number(counts.scanned) || 0} memories, ${Number(counts.clusters) || 0} clusters, ${Number(counts.adjudicated) || 0} adjudicated, ${Number(counts.applied) || 0} applied.`,
   ];
+  if (actions.length) {
+    lines.push('', 'Actions applied this pass:');
+    for (const action of actions.slice(0, 5)) {
+      const summary = scrubExecutiveText(String((action && action.summary) || ''))
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (summary) lines.push(`- ${summary.slice(0, 220)}`);
+    }
+    const remaining = Math.max(0, (Number(counts.applied) || actions.length) - 5);
+    if (remaining > 0) lines.push(`- ${remaining} more in the full report.`);
+  }
   if (receipt.report_relpath) lines.push(`Full report: ${receipt.report_relpath}`);
   if (questions.length) {
     lines.push('', 'Open questions for you:');
@@ -1402,7 +1414,17 @@ function readCommCoachingArtifact(dataDir, date) {
   const complete = [...chosen.strengths, ...chosen.recommendations].every((it) => {
     const evidence = (it && it.evidence) || {};
     const literature = (it && it.literature) || {};
-    return Boolean(String(evidence.quote || '').trim() && String(literature.cite || '').trim());
+    const evidenceDay = parseIsoDay(String(evidence.when || '').slice(0, 10));
+    const briefingDay = parseIsoDay(date);
+    const ageDays = evidenceDay && briefingDay ? daysBetween(evidenceDay, briefingDay) : null;
+    return Boolean(
+      String(evidence.quote || '').trim() &&
+        String(literature.cite || '').trim() &&
+        evidence.speaker === 'ExampleCo' &&
+        Number.isFinite(ageDays) &&
+        ageDays >= 0 &&
+        ageDays <= 1,
+    );
   });
   if (!complete) return null;
   return chosen;

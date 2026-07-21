@@ -212,6 +212,12 @@ function writeReport(opts) {
       keep_distinct: buckets.distinct.length,
       edge_reviewed_only: buckets.edgeOnly.length,
     },
+    actions: buckets.applied.map((a) => ({
+      id: a.cluster_id || a.id || '',
+      verdict: a.verdict || '',
+      summary: a.action || a.rationale || '',
+      files: Array.isArray(a.files) ? a.files : [],
+    })),
     questions: buckets.questions.map((q) => ({
       id: q.id,
       question: q.question,

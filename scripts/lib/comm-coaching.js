@@ -267,6 +267,7 @@ function validateCard(parsed, { pool, literatureKeys }) {
       oneLiner: sanitize(item.oneLiner),
       evidence: {
         quote: sanitize(item.evidenceQuote),
+        speaker: pooled.speaker || 'ExampleCo',
         source: pooled.source || 'ExampleCo',
         when: pooled.when || '',
         ref: pooled.ref || '',

@@ -71,7 +71,7 @@ function loadProfileCurated(root) {
     const context = m[2].replace(/\s*\(\d+\s*segments?,\s*[\d,]+\s*words?\)\s*$/i, '').trim();
     const text = cleanText(m[3]);
     if (!isSubstantiveQuote(text)) continue;
-    out.push({ text, source: 'meeting', when, ref: context, context });
+    out.push({ text, speaker: 'ExampleCo', source: 'meeting', when, ref: context, context });
   }
   return out;
 }
@@ -98,6 +98,7 @@ function loadGroundingReference(root) {
     if (/^\d+\.\s*\*\*/.test(text)) continue;
     out.push({
       text,
+      speaker: 'ExampleCo',
       source: 'grounding',
       when: 'reference_communication_coaching',
       ref: file,
@@ -160,6 +161,7 @@ function loadGmailSent(root, days, today) {
         if (!isSubstantiveQuote(s)) continue;
         out.push({
           text: cleanText(s),
+          speaker: 'ExampleCo',
           source: 'email',
           when: `${y}-${mo}-${da}`,
           ref: msg.gmail_url || msg.subject || 'sent email',
@@ -187,7 +189,7 @@ function withinDays(ts, days, today) {
   const t = safe(() => new Date(ts).getTime(), NaN);
   if (Number.isNaN(t)) return true;
   const base = (today instanceof Date ? today : new Date(today)).getTime();
-  return base - t <= days * 86400000;
+  return t <= base && base - t <= days * 86400000;
 }
 
 function loadTelegram(root, days, today) {
@@ -198,6 +200,7 @@ function loadTelegram(root, days, today) {
     .filter((r) => isSubstantiveQuote(r.text))
     .map((r) => ({
       text: r.text,
+      speaker: 'ExampleCo',
       source: 'directive',
       when: String(r.raw.ts || '').slice(0, 10),
       ref: r.raw.command_id || 'telegram',
@@ -213,6 +216,7 @@ function loadDispatch(root, days, today) {
     .filter((r) => isSubstantiveQuote(r.text))
     .map((r) => ({
       text: r.text,
+      speaker: 'ExampleCo',
       source: 'feedback',
       when: String(r.raw.ts || r.raw.date || '').slice(0, 10),
       ref: r.raw.section || 'dashboard',
@@ -251,8 +255,12 @@ function loadExampleCoQuotePool(opts = {}) {
   const max = opts.max || 60;
   const today = opts.today || new Date();
 
-  const profileCurated = safe(() => loadProfileCurated(root), []);
-  const groundingReference = safe(() => loadGroundingReference(root), []);
+  const profileCurated = safe(() => loadProfileCurated(root), []).filter((q) =>
+    withinDays(q.when, days, today),
+  );
+  // The grounding file proves values and allowed literature, but its quotes do
+  // not carry an observation date. It cannot satisfy a recent-speech card.
+  const groundingReference = [];
   const gmailSent = safe(() => loadGmailSent(root, days, today), []);
   const telegram = safe(() => loadTelegram(root, days, today), []);
   const dispatch = safe(() => loadDispatch(root, days, today), []);

@@ -113,6 +113,7 @@ MECH_CMD=("$NODE_BIN" scripts/overnight-self-heal-orchestrator.js --mechanical-o
 # Budget (45m hard wall clock), no-repeat-tactics ledger, and the
 # honest-blocked-receipt-on-expiry rail live in scripts/agentic-healer-driver.js.
 HEALER_CMD=(bash scripts/overnight-agentic-healer.sh)
+SELF_HEAL_REFRESH_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/refresh-card.js" self_heal_health --date "$DATE" --data-dir "$DATA_DIR" --publish --verify)
 CAP_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/ensure-neo4j-cpu-cap.js" --apply --data-dir "$DATA_DIR")
 
 # Deterministic incident report from canonical board truth. It is generated
@@ -151,6 +152,23 @@ notify_briefing_state() {
     echo "[morning-briefing-run] $(date -u +%FT%TZ) briefing-$phase-notify: exit $notify_status; recorded internally, briefing continues." >&2
   fi
   return 0
+}
+
+# SELF-HEAL HEALTH summarizes the repair batch that just completed, so it must
+# be regenerated after that batch, never before it. This closes the stale 0/0
+# class where the morning build painted the process card and the later healer
+# changed the ledger without repainting its own status surface.
+refresh_self_heal_health_after_batch() {
+  if [ "$TEST_MODE" = "1" ]; then
+    echo "[morning-briefing-run] DRY-RUN: would refresh SELF-HEAL HEALTH after the healer batch with: ${SELF_HEAL_REFRESH_CMD[*]}"
+    return 0
+  fi
+  if timeout --kill-after=5s 120s "${SELF_HEAL_REFRESH_CMD[@]}"; then
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) self-heal-health post-batch refresh: PASS."
+  else
+    refresh_status=$?
+    echo "[morning-briefing-run] WARNING: self-heal-health post-batch refresh failed with exit $refresh_status; final status will remain honestly non-green."
+  fi
 }
 
 # Render the overnight watch report from the night's ledgers. Bounded and
@@ -380,6 +398,7 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
     else
       echo "[morning-briefing-run] DRY-RUN (card-controller authority): agentic-healer rung 2 would run after the controller pass: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
     fi
+    refresh_self_heal_health_after_batch
     notify_briefing_state final
     write_morning_report
     snapshot_parity_artifact 0
@@ -423,6 +442,7 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
     echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: finished with exit $healer_status (receipt: $DATA_DIR/agent/overnight-agentic-healer-runs.jsonl)."
   fi
   if [ "$status" != "1" ]; then
+    refresh_self_heal_health_after_batch
     notify_briefing_state final
   else
     echo "[morning-briefing-run] briefing-final-notify: skipped because this invocation did not own a completed build."
@@ -481,6 +501,7 @@ if [ "$TEST_MODE" = "1" ]; then
   else
     echo "[morning-briefing-run] DRY-RUN (test mode): agentic-healer rung 2 would run after the briefing: (cd $ROOT && BRIEFING_DATE=$DATE SECONDBRAIN_DATA_DIR=$DATA_DIR HOME=$HOME ${HEALER_CMD[*]})"
   fi
+  refresh_self_heal_health_after_batch
   notify_briefing_state final
   write_morning_report
   snapshot_parity_artifact 0
@@ -537,6 +558,7 @@ else
   echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: finished with exit $healer_status (receipt: $DATA_DIR/agent/overnight-agentic-healer-runs.jsonl)."
 fi
 if [ "$status" != "1" ]; then
+  refresh_self_heal_health_after_batch
   notify_briefing_state final
 else
   echo "[morning-briefing-run] briefing-final-notify: skipped because this invocation did not own a completed build."
