@@ -1337,6 +1337,11 @@ const DETERMINISTIC_CARD_BUILDERS = Object.freeze({
     require('../cloud-morning-briefing.js').buildViralTechCard(dataDir, date, [], now),
   kingdom_equipping: (dataDir, date) =>
     require('./briefing-cards/kingdom-equipping-card.js').buildKingdomEquippingCard(dataDir, date),
+  mortgage_rate_indexes: (dataDir, date) =>
+    require('./briefing-cards/mortgage-rate-indexes-card.js').buildMortgageRateIndexesCard(
+      dataDir,
+      date,
+    ),
 });
 
 function produceDeterministicBuilderCardArtifact({
