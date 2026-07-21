@@ -1,7 +1,7 @@
 const COMMON_FIRST_NAME_FAMILIES = [
   ['alex', 'ExampleCo', 'alexandra', 'alexandria', 'alessandra'],
   ['andy', 'andrew'],
-  ['bill', 'will', 'william', 'billy'],
+  ['bill', 'will', 'william', 'PRIVATE_NAME'],
   ['bob', 'rob', 'ExampleCo', 'bobby'],
   ['ExampleCo', 'ExampleCotopher', 'ExampleCotine', 'ExampleCotina'],
   ['dan', 'daniel', 'danny'],
