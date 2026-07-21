@@ -73,6 +73,41 @@ function stageRawToEfs(ids) {
   return out;
 }
 
+// The EC2 registry is canonical job INPUT. Fargate may rewrite its workspace
+// copy while running the legacy monolithic tail, but that copy never comes back
+// through the reconciler. Each launch replaces it with a fresh local snapshot.
+function stageVoiceIdentityRegistry() {
+  const localData =
+    process.env.SECONDBRAIN_DATA_DIR || process.env.SECONDBRAIN_DATA || '/opt/secondbrain/data';
+  const efsData = process.env.VOICE_EFS_MOUNT || '/mnt/sbvoice';
+  const source = path.join(localData, 'life-archive', 'voice-identity-registry.json');
+  const destination = path.join(efsData, 'life-archive', 'voice-identity-registry.json');
+  let registry;
+  try {
+    registry = JSON.parse(fs.readFileSync(source, 'utf8'));
+  } catch (error) {
+    return { status: 'error', error: `canonical registry unreadable: ${error.message}` };
+  }
+  if (!registry || typeof registry !== 'object' || Array.isArray(registry)) {
+    return { status: 'error', error: 'canonical registry is not a JSON object' };
+  }
+  const staged = `${destination}.stage-${process.pid}-${Date.now().toString(36)}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(source, staged);
+    fs.renameSync(staged, destination);
+    return {
+      status: 'staged',
+      people: Object.keys(registry.people || {}).length,
+      enrollments: Array.isArray(registry.enrollments) ? registry.enrollments.length : 0,
+    };
+  } catch (error) {
+    return { status: 'error', error: `canonical registry stage failed: ${error.message}` };
+  } finally {
+    try { fs.rmSync(staged, { force: true }); } catch { /* best effort */ }
+  }
+}
+
 // Count voice tasks currently RUNNING or PENDING in the cluster. Single-
 // concurrency is the primary defense against the EFS shared-state races (probe
 // index, probe wavs, embedding cache, registry): with at most one voice task
@@ -163,6 +198,16 @@ function launchVoiceTask(otids, opts = {}) {
     }
   }
   // Stage the raw transcript(s) onto EFS first; the container reads raw from EFS.
+  const registry = stageVoiceIdentityRegistry();
+  if (registry.status !== 'staged') {
+    return {
+      launched: false,
+      reason: 'registry_stage_failed',
+      detail: registry.error || 'voice identity registry could not be staged',
+      otids: ids,
+      registry,
+    };
+  }
   const staged = stageRawToEfs(ids);
   // Public-subnet, short-lived task with a locked-down SG (no NAT Gateway -> the
   // image pull needs a public IP). Codex P2.
@@ -209,6 +254,7 @@ function launchVoiceTask(otids, opts = {}) {
       detail: String(res.stderr || '').slice(-400),
       otids: ids,
       staged,
+      registry,
     };
   }
   let taskArn = null;
@@ -217,12 +263,13 @@ function launchVoiceTask(otids, opts = {}) {
   } catch {
     /* ignore */
   }
-  return { launched: true, otids: ids, taskArn, staged };
+  return { launched: true, otids: ids, taskArn, staged, registry };
 }
 
 module.exports = {
   launchVoiceTask,
   stageRawToEfs,
+  stageVoiceIdentityRegistry,
   countActiveVoiceTasks,
   voiceTaskEnvironment,
   VOICE_TASK_STANDARD_ENV,
