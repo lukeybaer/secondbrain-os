@@ -171,8 +171,8 @@ const MUST_CONTAIN = [
   ],
   [
     'scripts/agentic-healer-driver.js',
-    'lessonsByCard',
-    'doc 4h: LESSONS FEED THE HEALER -- the mission prompt ExampleCos prior lessons for each target card',
+    'sameNightAttemptMemory',
+    'ExampleCo correction 2026-07-21: the healer receives bounded same-night/same-defect attempts, never prior-night or cross-night lessons',
   ],
   [
     'scripts/agentic-healer-driver.js',

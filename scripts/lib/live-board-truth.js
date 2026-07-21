@@ -1,6 +1,11 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { resolveDataArtifact } = require('./data-root.js');
+
+function exactEvidenceHash(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
 
 /**
  * live-board-truth.js
@@ -137,6 +142,12 @@ function blockersToCards(blockers, ts) {
       title: String(b.title),
       status: 'defect',
       defectKinds: [kind],
+      defectEvidenceHash: exactEvidenceHash({
+        id,
+        title: String(b.title),
+        category: String(b.category || ''),
+        blocker: String(b.blocker || b.evidence || ''),
+      }),
       asOf: ts,
     });
   }
@@ -187,6 +198,10 @@ function buildLiveBoardArtifact({
       title: c.title || cardTitles[c.id] || c.id,
       status,
       defectKinds: status === 'clean' ? [] : defectKinds,
+      defectEvidenceHash: exactEvidenceHash({
+        id: c.id,
+        defects: defects.map(String),
+      }),
       asOf: ts,
     };
   });
@@ -327,11 +342,10 @@ function blockerMatchesSystemHealthIssue(blocker, systemHealthIssueNames = []) {
   });
 }
 
-// Executive issue count for the BLOCKERS tile face. This is deliberately
-// separate from defectiveCardCount(): badges need distinct live-rendered card
-// status, while ExampleCo's top-card issue count is "non-health blockers + individual
-// System Health failures" so one red System Health card with four failed checks
-// reads as four issues, not one card.
+// Executive issue count for the BLOCKERS tile face. System Health measurements
+// are first-class work units on their own card and never inflate or duplicate
+// the general Blockers count. We still return their names so the renderer can
+// explain how many were intentionally separated.
 function blockerIssueSummary({ blockers = [], systemHealthIssueNames = [] } = {}) {
   const uniqueHealth = [];
   const seenHealth = new Set();
@@ -350,8 +364,101 @@ function blockerIssueSummary({ blockers = [], systemHealthIssueNames = [] } = {}
     systemHealthIssueCount: uniqueHealth.length,
     nonHealthBlockerCount: nonHealthBlockers.length,
     nonHealthBlockers,
-    issueCount: uniqueHealth.length + nonHealthBlockers.length,
+    issueCount: nonHealthBlockers.length,
   };
+}
+
+function blockerCardIdentity(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\brender\s+qc\s+defect\b|\bknown\s+blocker\b/g, '')
+    .replace(/[^a-z0-9]+/g, '')
+    .trim();
+}
+
+// One row collection for both the Blockers tile face and its drilldown. Parsed
+// markdown owns the prose when it already identifies a card. Fresh live-board
+// truth adds any missing non-clean card so the face count, clickable data-item,
+// and detail body cannot disagree.
+function reconcileBlockerRows({ blockers = [], liveCards = [] } = {}) {
+  const rows = (Array.isArray(blockers) ? blockers : []).map((row) => ({ ...row }));
+  const rowMatchesCard = (row, card) => {
+    const carExampleCoses = [card && card.id, card && card.title, card && card.manifestTitle]
+      .map(blockerCardIdentity)
+      .filter(Boolean);
+    const rowAliases = [row && row.id, row && row.cardId, row && row.title]
+      .map(blockerCardIdentity)
+      .filter(Boolean);
+    return rowAliases.some((left) =>
+      carExampleCoses.some((right) => left === right || left.includes(right) || right.includes(left)),
+    );
+  };
+  for (const card of Array.isArray(liveCards) ? liveCards : []) {
+    if (!card || rows.some((row) => rowMatchesCard(row, card))) continue;
+    rows.push({
+      id: card.id,
+      title: card.title || card.id,
+      blocker:
+        (Array.isArray(card.defectKinds) ? card.defectKinds : []).join(', ') ||
+        'Fresh live QC reports this card non-clean; the rendered Blockers body had no row.',
+      nextRepair: 'Refresh this card source and republish through the controller.',
+    });
+  }
+  return rows.map((row, index) => ({ ...row, n: index + 1 }));
+}
+
+function applySystemHealthMeasurementTruth(artifact, measurements, { reason = '' } = {}) {
+  const next = {
+    ...(artifact || {}),
+    cards: Array.isArray(artifact && artifact.cards)
+      ? artifact.cards.map((card) => ({ ...card }))
+      : [],
+    defects: Array.isArray(artifact && artifact.defects) ? artifact.defects.slice() : [],
+  };
+  const units = Array.isArray(measurements) && measurements.length
+    ? measurements.map((unit) => ({ ...unit }))
+    : [
+        {
+          id: 'system_health:measurement-evidence',
+          cardId: 'system_health',
+          name: 'System Health measurement evidence',
+          status: 'unverified',
+          actionable: true,
+          detail: reason || 'System Health artifact had no measurement work-unit evidence.',
+        },
+      ];
+  next.systemHealthMeasurements = units;
+  const failed = units.filter((unit) => unit && unit.actionable && unit.status !== 'green');
+  if (failed.length) {
+    let health = next.cards.find((card) => card && card.id === 'system_health');
+    if (!health) {
+      health = {
+        id: 'system_health',
+        title: 'SYSTEM HEALTH',
+        status: 'defect',
+        defectKinds: [],
+        asOf: next.ts || new Date().toISOString(),
+      };
+      next.cards.push(health);
+    }
+    health.status = health.status === 'blocked' ? 'blocked' : 'defect';
+    health.defectKinds = [
+      ...new Set([
+        ...(health.defectKinds || []),
+        'system/data health',
+        'SYSTEM-HEALTH-MEASUREMENT',
+      ]),
+    ];
+    for (const unit of failed) {
+      const message = `SYSTEM-HEALTH-MEASUREMENT: system_health (${unit.name || unit.id || 'measurement'}) ${unit.id || 'ExampleCo'}=${unit.status || 'unverified'}${unit.detail ? `: ${unit.detail}` : ''}`;
+      if (!next.defects.includes(message)) next.defects.push(message);
+    }
+  }
+  next.defects = next.defects.slice(0, 200);
+  next.defectCount = next.defects.length;
+  next.defectiveCardCount = next.cards.filter((card) => card && card.status !== 'clean').length;
+  next.ok = next.defectiveCardCount === 0;
+  return next;
 }
 
 // Pure decision function for the per-card defect badge (ExampleCo 2026-07-06
@@ -422,6 +529,8 @@ module.exports = {
   cardDefectBadge,
   blockersTileHeadlineCount,
   blockerIssueSummary,
+  reconcileBlockerRows,
+  applySystemHealthMeasurementTruth,
   blockerMatchesSystemHealthIssue,
   perCardCompletionSummary,
 };

@@ -326,14 +326,15 @@ function parseContractObject(text) {
   const status = String(parsed.status || '').toLowerCase();
   const commit_sha = String(parsed.commit_sha || '');
   const pushed = parsed.pushed === true;
-  if (status === 'cleared') {
+  if (status === 'cleared' || status === 'repaired') {
     return {
-      status: 'cleared',
+      status: status === 'cleared' ? 'cleared' : 'repaired',
       commit_sha,
       pushed,
       summary: parsed.summary || parsed.verification || '',
       tests: parsed.tests || '',
       reflection: parsed.reflection || '',
+      defects: Array.isArray(parsed.defects) ? parsed.defects : [],
     };
   }
   // The session itself reported escalated. Categorize by the reason text so
@@ -353,6 +354,8 @@ function parseContractObject(text) {
     pushed,
     summary: parsed.summary || '',
     reflection: parsed.reflection || '',
+    tests: parsed.tests || '',
+    defects: Array.isArray(parsed.defects) ? parsed.defects : [],
   };
 }
 

@@ -4,7 +4,7 @@
 #
 # After the mechanical pass (rung 1) and the briefing build have finished, this
 # wrapper spawns the AGENTIC HEALER driver (scripts/agentic-healer-driver.js):
-# one full dev session (claude CLI primary, codex fallback) handed the fresh
+# one full dev session (Codex CLI primary, Claude fallback) handed the fresh
 # dashboard-qc-result.json defect list with the standing mission to fix the
 # defects like an interactive session ExampleCo dispatched: root-cause, code fix in
 # an isolated worktree, tests, land via land.js --apply, deploy via
@@ -47,7 +47,7 @@ if [ -r "$TOKEN_PATH" ]; then
   export CLAUDE_CODE_OAUTH_TOKEN
   echo "[agentic-healer-run] Claude OAuth token loaded from $TOKEN_PATH"
 else
-  echo "[agentic-healer-run] WARNING: no readable token at $TOKEN_PATH; the claude rung may fail to the codex rung."
+  echo "[agentic-healer-run] WARNING: no readable token at $TOKEN_PATH; the Claude fallback rung may be unavailable."
 fi
 export HOME
 

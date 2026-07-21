@@ -101,6 +101,7 @@ const {
   defectiveCardCount: liveBoardDefectiveCardCount,
   perCardCompletionSummary,
   readLiveBoardArtifact,
+  applySystemHealthMeasurementTruth,
 } = require('./lib/live-board-truth.js');
 
 // Owner identity (name, owned emails, employer + scan token, reputation targets)
@@ -832,12 +833,31 @@ function runDashboardRenderQc({ date, verifier = null, htmlFetcher = null } = {}
 // read `defectiveCardCount` and `cards[].status` from the canonical shape.
 function writeDashboardQcArtifact(dataDir, dashQc, date, cardTitles = {}, blockers = []) {
   const canonical = buildLiveBoardArtifact({ dashQc, date, cardTitles, blockers });
-  const artifact = {
+  let artifact = {
     ...canonical,
     // Legacy fields, retained for backward compatibility only.
     defectCount: dashQc.ran && dashQc.ok === false ? (dashQc.defects || []).length : 0,
     defects: (dashQc.defects || []).slice(0, 200),
   };
+  const systemHealthArtifactPath = path.join(
+    dataDir,
+    'agent',
+    'briefing-cards',
+    String(date || 'ExampleCo'),
+    'system_health.json',
+  );
+  let workUnits = [];
+  let reason = '';
+  try {
+    const systemHealthArtifact = JSON.parse(fs.readFileSync(systemHealthArtifactPath, 'utf8'));
+    workUnits = Array.isArray(systemHealthArtifact.workUnits) ? systemHealthArtifact.workUnits : [];
+    if (!workUnits.length) reason = 'System Health artifact had no measurement work-unit evidence.';
+  } catch (error) {
+    reason = `System Health measurement artifact could not be read: ${String(
+      (error && error.message) || error,
+    ).slice(0, 180)}`;
+  }
+  artifact = applySystemHealthMeasurementTruth(artifact, workUnits, { reason });
   try {
     writeJsonAtomic(path.join(dataDir, 'agent', 'dashboard-qc-result.json'), artifact);
   } catch (e) {
@@ -1690,7 +1710,7 @@ function blockersReconciliationState(dataDir) {
   if (stale) {
     line = `Live card badge count: stale (last verified ${artifact.ts || 'ExampleCo time'}, older than one briefing cycle) -- do not treat this as the current Blockers issue count.`;
   } else {
-    line = `Live card badge count: ${canonicalCount} defective card(s) as of ${artifact.ts} (source: dashboard-qc-result.json); Blockers issue count is blocker rows plus individual System Health failures.`;
+    line = `Live card badge count: ${canonicalCount} defective card(s) as of ${artifact.ts} (source: dashboard-qc-result.json); Blockers excludes System Health measurements, which are tracked on that card.`;
   }
   return { line, canonicalCount, stale: Boolean(stale), artifact };
 }
@@ -1700,16 +1720,20 @@ function blockersReconciliationLine(dataDir, blockersCount) {
 }
 
 function blockersCleanVerdictLine(reconciliationState) {
-  const count = Number(reconciliationState && reconciliationState.canonicalCount);
-  if (
-    reconciliationState &&
-    reconciliationState.stale === false &&
-    Number.isFinite(count) &&
-    count > 0
-  ) {
-    return `Clean? no. Live dashboard QC reports ${count} defective card(s) for this briefing. See live card badges and System Health for detail.`;
+  const artifact = reconciliationState && reconciliationState.artifact;
+  const nonHealthCount = Array.isArray(artifact && artifact.cards)
+    ? artifact.cards.filter(
+        (card) =>
+          card &&
+          card.status !== 'clean' &&
+          card.id !== 'blockers' &&
+          card.id !== 'system_health',
+      ).length
+    : 0;
+  if (nonHealthCount) {
+    return `Separate blockers? yes. Live dashboard QC reports ${nonHealthCount} defective card(s) outside System Health.`;
   }
-  return 'Clean? yes. Live dashboard QC reports 0 survived defects for this briefing.';
+  return 'Separate blockers? no. System Health measurements are tracked only on System Health.';
 }
 
 function renderBlockersSection(blockers, opts = {}) {

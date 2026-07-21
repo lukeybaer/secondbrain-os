@@ -4,9 +4,10 @@
 //
 // Renders the BIG DECISIONS briefing card from the big-decisions ledger
 // (scripts/lib/big-decisions.js, data/agent/big-decisions.jsonl). ExampleCo's
-// dispatch (2026-07-11, answer 19, W11): a Big Decisions surface, newest
-// first, 1 to 2 sentences per entry, FYI voice, placed right after
-// COMMUNICATION COACHING in dashboard order.
+// dispatch (2026-07-11, answer 19, W11), refined 2026-07-21: a Big Decisions
+// surface with every consequential decision from the past 24 hours plus at
+// most five highest-impact decisions from the rolling seven-day window, 1 to
+// 2 sentences per entry, FYI voice, placed right after COMMUNICATION COACHING.
 //
 // ONE shared formatter, both briefing generators (scripts/cloud-morning-
 // briefing.js, scripts/manual-briefing-v3.js) call it, so the markdown/Gmail-
@@ -32,11 +33,13 @@
 // should reuse for its `data-item` attribute, so the two never drift onto
 // different id schemes for the same entry.
 
-const { readBigDecisions } = require('./big-decisions');
+const { readBigDecisions, impactForRow } = require('./big-decisions');
 
 const TITLE = 'BIG DECISIONS';
 const WINDOW_DAYS = 7;
 const EMPTY_PLACEHOLDER = 'No big decisions in the last 7 days.';
+const DAILY_EMPTY_PLACEHOLDER = 'No consequential decisions logged in the past 24 hours.';
+const WEEKLY_HIGH_IMPACT_LIMIT = 5;
 
 // America/Chicago calendar date as YYYY-MM-DD (matches ctDateKey in
 // scripts/comm-coaching-card.js -- "times in CT, never UTC").
@@ -81,12 +84,14 @@ function whyItMatters(entry) {
 function decisionLine(entry) {
   const key = bigDecisionItemKey(entry);
   const supersedesNote = entry.supersedes ? ` Supersedes: ${entry.supersedes}.` : '';
-  return `- [${key}] ${entry.date} (${entry.category}): ${entry.summary}${supersedesNote}`;
+  const impact = impactForRow(entry);
+  return `- [${key}] ${entry.date} (${entry.category}, ${impact.label} impact): ${entry.summary}${supersedesNote}`;
 }
 
 // Enriched per-decision record for consumers that want structure instead of
 // the flat markdown line (tests, and the future ec2-server.js tile reader).
 function enrichDecision(entry) {
+  const impact = impactForRow(entry);
   return {
     key: bigDecisionItemKey(entry),
     date: entry.date,
@@ -95,6 +100,9 @@ function enrichDecision(entry) {
     summary: entry.summary,
     supersedes: entry.supersedes || null,
     whyItMatters: whyItMatters(entry),
+    impact: impact.label,
+    impactScore: impact.score,
+    loggedAt: entry.loggedAt || null,
   };
 }
 
@@ -117,6 +125,7 @@ function enrichDecision(entry) {
 // honest placeholder instead of ancient history.
 function buildBigDecisionsSection(opts = {}) {
   const days = Number.isFinite(opts.days) ? opts.days : WINDOW_DAYS;
+  const now = opts.now instanceof Date ? opts.now : new Date();
   let allRows;
   try {
     allRows = readBigDecisions({ ledgerFile: opts.ledgerFile });
@@ -130,22 +139,53 @@ function buildBigDecisionsSection(opts = {}) {
   // is (days - 1) days back, not `days` back (which would make an 8-day
   // window for days=7 -- an off-by-one that would let one extra stale day
   // slip in).
-  const cutoff = daysAgoCtDateKey(Math.max(days - 1, 0), opts.now);
-  const rows = allRows.filter((r) => String(r.date) >= cutoff);
-  const decisions = rows.map(enrichDecision);
+  const cutoff = daysAgoCtDateKey(Math.max(days - 1, 0), now);
+  const weeklyRows = allRows
+    .filter((row) => String(row.date) >= cutoff)
+    .map((row) => ({ row, impact: impactForRow(row) }))
+    .filter((entry) => entry.impact.score >= 4)
+    .sort(
+      (a, b) =>
+        b.impact.score - a.impact.score ||
+        String(b.row.date).localeCompare(String(a.row.date)) ||
+        Number(b.row.seq || 0) - Number(a.row.seq || 0),
+    )
+    .slice(0, WEEKLY_HIGH_IMPACT_LIMIT)
+    .map((entry) => entry.row);
+  const dailyCutoffMs = now.getTime() - 24 * 60 * 60 * 1000;
+  const today = ctDateKey(now);
+  const dailyRows = allRows
+    .filter((row) => {
+      const loggedMs = Date.parse(row.loggedAt || '');
+      if (Number.isFinite(loggedMs)) return loggedMs >= dailyCutoffMs && loggedMs <= now.getTime() + 300000;
+      return row.date === today;
+    })
+    .sort(
+      (a, b) =>
+        Date.parse(b.loggedAt || `${b.date}T23:59:59Z`) -
+        Date.parse(a.loggedAt || `${a.date}T23:59:59Z`),
+    )
+    .slice(0, WEEKLY_HIGH_IMPACT_LIMIT);
+  const dailyDecisions = dailyRows.map(enrichDecision);
+  const weeklyDecisions = weeklyRows.map(enrichDecision);
+  const decisions = weeklyDecisions;
   const count = decisions.length;
-  // Empty week: an explicit placeholder, never a silently dropped card.
-  const face =
-    count === 0
-      ? EMPTY_PLACEHOLDER
-      : `${count} big decision${count === 1 ? '' : 's'} in the last ${days} days. Newest: ${decisions[0].summary}`;
-  const bodyLines = count === 0 ? [EMPTY_PLACEHOLDER] : decisions.map(decisionLine);
+  const face = `${dailyDecisions.length} in the past 24 hours; ${weeklyDecisions.length} highest-impact decision${weeklyDecisions.length === 1 ? '' : 's'} in the rolling ${days}-day window.`;
+  const bodyLines = [
+    'PAST 24 HOURS',
+    ...(dailyRows.length ? dailyRows.map(decisionLine) : [DAILY_EMPTY_PLACEHOLDER]),
+    '',
+    `ROLLING ${days} DAYS, HIGHEST IMPACT`,
+    ...(weeklyRows.length ? weeklyRows.map(decisionLine) : [EMPTY_PLACEHOLDER]),
+  ];
   return {
     ok: true,
     count,
     days,
     face,
     decisions,
+    dailyDecisions,
+    weeklyDecisions,
     bodyText: [face, '', ...bodyLines].join('\n'),
   };
 }
@@ -164,6 +204,8 @@ module.exports = {
   TITLE,
   WINDOW_DAYS,
   EMPTY_PLACEHOLDER,
+  DAILY_EMPTY_PLACEHOLDER,
+  WEEKLY_HIGH_IMPACT_LIMIT,
   ctDateKey,
   daysAgoCtDateKey,
   bigDecisionItemKey,

@@ -61,8 +61,34 @@ function pathIsAllowedWorkerWrite(filePath, env = {}) {
   const roots = protectedRootsFromEnv(env);
   if (!filePath) return false;
   if (roots.some((root) => isSameOrInside(filePath, root))) return false;
-  if (!workerRoot) return true;
+  if (!workerRoot) return false;
   return isSameOrInside(filePath, workerRoot);
+}
+
+function hasShellWriteEffect(command) {
+  const cmd = String(command || '');
+  return (
+    /(?:^|[;&|]\s*)(?:rm|rmdir|del|mv|move|cp|copy|touch|mkdir|install|tee|truncate|chmod|chown|sed\s+-i|perl\s+-i|python\b|node\b)/i.test(
+      cmd,
+    ) ||
+    /(?:^|\s)(?:Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item|Rename-Item)\b/i.test(
+      cmd,
+    ) ||
+    /(^|[^>])>{1,2}(?!>)/.test(cmd)
+  );
+}
+
+function mentionsParentTraversal(command) {
+  return /(?:^|[\s'"=])\.\.(?:[\\/]|$)/.test(String(command || ''));
+}
+
+function absolutePathCandidates(command) {
+  const out = [];
+  const rx = /(?:^|[\s'"=>(])([A-Za-z]:[\\/][^\s'";|]+|\/(?!\/)[^\s'";|]+)/g;
+  for (const match of String(command || '').matchAll(rx)) {
+    out.push(String(match[1] || '').replace(/[),]+$/, ''));
+  }
+  return out;
 }
 
 function isWorkerForbiddenCommand(command, roots = []) {
@@ -76,6 +102,13 @@ function isWorkerForbiddenCommand(command, roots = []) {
   }
   if (/\bgit\b[\s\S]*\bcommit\b/i.test(cmd)) {
     return 'self-heal workers may not commit; the coordinator owns git landing';
+  }
+  if (
+    /(?:scripts[\\/])?(?:land\.js|deploy-ec2-server\.sh|ec2-sync-build-path\.sh|refresh-card\.js|card-controller\.js|verify-dashboard-cards-live\.js|cloud-morning-briefing\.js)/i.test(
+      cmd,
+    )
+  ) {
+    return 'self-heal workers repair the cause only; the coordinator owns commit, land, deploy, refresh, QC, and publish';
   }
   if (/\bgit\b[^\n]*\bbranch\b[^\n]*(\s-D\b|\s--delete\s+--force\b)/i.test(cmd)) {
     return 'self-heal workers may not force-delete branches';
@@ -93,6 +126,38 @@ function isWorkerForbiddenCommand(command, roots = []) {
 
 function evaluateSelfHealWorkerCommand({ command, env = {} } = {}) {
   const roots = protectedRootsFromEnv(env);
+  const workerRoot = env.SB_SELF_HEAL_WORKER_ROOT;
+  if (!workerRoot) {
+    return {
+      blocked: true,
+      reason: 'self-heal Bash is fail-closed until the coordinator supplies the worker checkout root',
+    };
+  }
+  if (mentionsProtectedRoot(command, roots)) {
+    return {
+      blocked: true,
+      reason: 'self-heal workers may not address coordinator-owned or protected roots from Bash',
+    };
+  }
+  if (hasShellWriteEffect(command) && mentionsParentTraversal(command)) {
+    return {
+      blocked: true,
+      reason: 'self-heal Bash writes may not traverse outside the worker checkout',
+    };
+  }
+  if (hasShellWriteEffect(command)) {
+    const outside = absolutePathCandidates(command).filter(
+      (candidate) =>
+        !isSameOrInside(candidate, workerRoot) &&
+        !/^\/(?:usr\/bin|usr\/local\/bin|bin)\//i.test(normalizePath(candidate)),
+    );
+    if (outside.length) {
+      return {
+        blocked: true,
+        reason: `self-heal Bash writes may only target the worker checkout; outside path: ${outside[0]}`,
+      };
+    }
+  }
   const reason = isWorkerForbiddenCommand(command, roots);
   return reason ? { blocked: true, reason } : { blocked: false, reason: 'allowed' };
 }
@@ -146,4 +211,5 @@ module.exports = {
   mentionsProtectedRoot,
   normalizePath,
   protectedRootsFromEnv,
+  absolutePathCandidates,
 };

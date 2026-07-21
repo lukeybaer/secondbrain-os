@@ -60,7 +60,11 @@ const {
   newsPublisherChromeSource,
 } = require('./lib/news-summarize.js');
 const { loadOperatorIdentity } = require('./lib/operator-identity.js');
-const { ARTIFACT_REL_PATH, buildLiveBoardArtifact } = require('./lib/live-board-truth.js');
+const {
+  ARTIFACT_REL_PATH,
+  buildLiveBoardArtifact,
+  applySystemHealthMeasurementTruth,
+} = require('./lib/live-board-truth.js');
 const { resolveDataArtifact, writeDataArtifact } = require('./lib/data-root.js');
 const { ctDayKeyForInstant } = require('./lib/ct-day.js');
 const { numericFaceNeedsDateStamp } = require('./lib/briefing-date-stamp.js');
@@ -70,13 +74,8 @@ const { numericFaceNeedsDateStamp } = require('./lib/briefing-date-stamp.js');
 // real employer / username so the QC matches the live dashboard exactly; the
 // public shell resolves neutral placeholders and ExampleCos no PII.
 const OPERATOR = loadOperatorIdentity();
-const EMPLOYER_SLUG = OPERATOR.owner.employer
-  .toLowerCase()
-  .replace(/[^a-z0-9]+/g, '_')
-  .replace(/^_+|_+$/g, '');
 const EMPLOYER_RX = OPERATOR.owner.employer.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const OWNER_USERNAME_RX = OPERATOR.owner.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const EMPLOYER_NEWS_ID = `${EMPLOYER_SLUG}_group_news`;
 
 const EXIT_OK = 0;
 const EXIT_DEFECT = 1;
@@ -198,6 +197,31 @@ function writeCanonicalArtifactFromResult(result, opts) {
     defectCount: dashQc.ok === false ? dashQc.defects.length : 0,
     defects: dashQc.defects.slice(0, 200),
   };
+  const systemHealthArtifactPath = path.join(
+    opts.dataDir || process.env.SECONDBRAIN_DATA_DIR || path.join(path.resolve(__dirname, '..'), 'data'),
+    'agent',
+    'briefing-cards',
+    String(opts.date || 'ExampleCo'),
+    'system_health.json',
+  );
+  let systemHealthMeasurements = [];
+  let measurementReason = '';
+  try {
+    const systemHealthArtifact = JSON.parse(fs.readFileSync(systemHealthArtifactPath, 'utf8'));
+    systemHealthMeasurements =
+      Array.isArray(systemHealthArtifact.workUnits) && systemHealthArtifact.workUnits.length
+        ? systemHealthArtifact.workUnits
+        : [];
+    if (!systemHealthMeasurements.length)
+      measurementReason = 'System Health artifact had no measurement work-unit evidence.';
+  } catch (error) {
+    measurementReason = `System Health measurement artifact could not be read: ${String(
+      (error && error.message) || error,
+    ).slice(0, 180)}`;
+  }
+  artifact = applySystemHealthMeasurementTruth(artifact, systemHealthMeasurements, {
+    reason: measurementReason,
+  });
   if (result.scoped) {
     const existing = resolveDataArtifact(ARTIFACT_REL_PATH, writeOpts).json;
     // Fail closed (Codex 316b85167727): a scoped grade MUST merge over a
@@ -208,6 +232,9 @@ function writeCanonicalArtifactFromResult(result, opts) {
       return { artifact: null, absPath: null, error: 'scoped-merge-no-baseline' };
     }
     artifact = mergeScopedArtifact(existing, artifact, result.scopeCardIds || []);
+    artifact = applySystemHealthMeasurementTruth(artifact, artifact.systemHealthMeasurements, {
+      reason: measurementReason,
+    });
   }
   const absPath = writeDataArtifact(ARTIFACT_REL_PATH, artifact, writeOpts);
   return { artifact, absPath };
@@ -271,6 +298,9 @@ function mergeScopedArtifact(existing, scopedArtifact, scopeCardIds) {
     cards,
     defectCount: defects.length,
     defects,
+    systemHealthMeasurements: scopedIds.has('system_health')
+      ? scopedArtifact.systemHealthMeasurements || []
+      : existing.systemHealthMeasurements || scopedArtifact.systemHealthMeasurements || [],
   };
 }
 
@@ -596,16 +626,9 @@ const PROVENANCE_SIGNAL =
   /(?:read ok|scan ran|scanned|checked|fetch(?:ed)? ok|fetch succeeded|pulled|polled|queried|monitored|reviewed|swept|no (?:new )?(?:matches|results|hits|items|flags|risks)\b|clean\b|all clear)/i;
 
 // Card-class predicates keyed on stable manifest ids (never on fuzzy titles).
-const NEWS_IDS = new Set([
-  'ai_tech_news',
-  'us_news',
-  'world_news',
-  'us_immigration_news',
-  'mortgage_industry_news',
-  'covid_news',
-  EMPLOYER_NEWS_ID,
-]);
-const isNewsCard = (card) => NEWS_IDS.has(card.id);
+const isNewsCard = (card) =>
+  manifest.isNewsCard(card) || manifest.isNewsCard(manifest.getCardById(card && card.id));
+const NEWS_IDS = new Set(manifest.CARDS.filter(isNewsCard).map((card) => card.id));
 const isMonitorCard = (card) => card.id === 'tesla_cybercab' || isNewsCard(card);
 const isProvenanceCard = (card) =>
   card.id === 'meetings' || card.id === 'reputation_risk' || isNewsCard(card);
@@ -2777,28 +2800,29 @@ function verifyDashboard(html, runDate, options = {}) {
     const reportedBlockers = blockersTile
       ? parseInt((String(blockersTile.metric).match(/\d+/) || ['0'])[0], 10)
       : 0;
-    // distinctDefectiveCards is the canonical denominator for BOTH accounting
-    // checks: one defective card counts once, whether it ExampleCos one defect string
-    // or several (a red SYSTEM HEALTH with multiple subsystem strings is ONE card),
-    // and a card NAMED on the Blockers card as unresolved is already recorded into
-    // defectsByCard above (blockersNamedCardDefects), so it counts here as exactly
-    // one defective card. Using this single basis keeps BLOCKERS-FLOOR and
-    // BLOCKERS-COUNT reconciled instead of comparing the reported count against the
-    // raw defect-string total (which double-counted multi-defect cards and produced
-    // the "5 reported but 7 found" drift, live 2026-06-29 blockers-accounting defect).
-    const distinctDefectiveCards = [...defectsByCard.values()].filter((b) => b.length).length;
-    if (reportedBlockers > 0 && distinctDefectiveCards === 0) {
+    // System Health measurements are independent work units owned by that card,
+    // never general Blockers rows. A different card remains a separate blocker
+    // when its own render/QC is red, even if a related health measurement exists.
+    const distinctNonHealthDefectiveCards = [...defectsByCard.entries()].filter(
+      ([cardId, cardDefects]) =>
+        cardDefects.length && String(cardId) !== 'system_health',
+    ).length;
+    if (reportedBlockers > 0 && distinctNonHealthDefectiveCards === 0) {
       defects.push(
-        `BLOCKERS-FLOOR: the briefing's Blockers card reports ${reportedBlockers} hard blocker(s) but the QC found no defective cards; the QC must not call the dashboard clean while Blockers says it is blocked`,
+        `BLOCKERS-FLOOR: the briefing's Blockers card reports ${reportedBlockers} separate blocker(s) but the QC found no defective cards outside System Health`,
       );
     }
     // STRICT, never papered over: every distinct defective card (including each card
     // named on the Blockers card as unresolved) must be reflected in the reported
     // hard-blocker count. When the reported count is lower than the distinct
     // defective-card count, the Blockers card under-reports and this fires.
-    if (blockersTile && distinctDefectiveCards > 0 && reportedBlockers < distinctDefectiveCards) {
+    if (
+      blockersTile &&
+      distinctNonHealthDefectiveCards > 0 &&
+      reportedBlockers < distinctNonHealthDefectiveCards
+    ) {
       defects.push(
-        `BLOCKERS-COUNT: the Blockers card reports ${reportedBlockers} hard blocker(s), but live render QC found ${distinctDefectiveCards} defective card(s); every defective card (including each card named on the Blockers card as unresolved) must count as a blocker`,
+        `BLOCKERS-COUNT: the Blockers card reports ${reportedBlockers} separate blocker(s), but live render QC found ${distinctNonHealthDefectiveCards} defective card(s) outside System Health`,
       );
     }
 

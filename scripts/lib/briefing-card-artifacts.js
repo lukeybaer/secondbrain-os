@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -8,11 +9,16 @@ const { CARDS, getCardById } = require('./briefing-card-manifest.js');
 const { splitMarkdownCards, qcCard } = require('./briefing-card-qc.js');
 const { askAI } = require('./ask-ai.js');
 const { writeDataArtifact } = require('./data-root.js');
-const { defectiveCardCount, readLiveBoardArtifact } = require('./live-board-truth.js');
+const {
+  defectiveCardCount,
+  readLiveBoardArtifact,
+  applySystemHealthMeasurementTruth,
+} = require('./live-board-truth.js');
 const { providerReceiptPath, readProviderUsage } = require('./token-usage-receipts.js');
 const { listCallSummaryArtifacts } = require('./otter-exec-summary-artifacts.js');
 const { renderOtterSpeakerParetoCard } = require('./otter-speaker-pareto-card.js');
 const { buildBigDecisionsSection, renderBigDecisionsMarkdown } = require('./big-decisions-card.js');
+const { systemHealthWorkUnits } = require('./system-health-nongreen.js');
 
 const SCHEMA_VERSION = 1;
 const CARD_ARTIFACT_REL_DIR = path.join('agent', 'briefing-cards');
@@ -660,19 +666,57 @@ function artifactDefectKinds(artifact) {
   ]);
 }
 
-function liveBoardArtifactFromCardArtifacts(artifacts, { date, now = new Date() } = {}) {
+function liveBoardArtifactFromCardArtifacts(
+  artifacts,
+  { date, now = new Date(), enforceMeasurementTruth = true } = {},
+) {
   const ts = now.toISOString();
   const cards = orderArtifacts(artifacts).map((artifact) => {
     const liveStatus = statusToLiveStatus(artifact.status);
+    const exactEvidence = {
+      id: artifact.id,
+      status: artifact.status,
+      qcFailures:
+        artifact && artifact.qc && Array.isArray(artifact.qc.failures)
+          ? artifact.qc.failures.map(String)
+          : [],
+      blockedReason: String(artifact.blockedReason || ''),
+      sourceDigest: String(
+        (artifact.source &&
+          (artifact.source.digest ||
+            artifact.source.contentHash ||
+            artifact.source.sourceHash ||
+            artifact.source.etag ||
+            artifact.source.lastModified)) ||
+          '',
+      ),
+    };
     return {
       id: artifact.id,
       title: artifact.title || cardTitle(artifact.id),
       status: liveStatus,
       defectKinds: liveStatus === 'clean' ? [] : artifactDefectKinds(artifact),
+      defectEvidenceHash: crypto
+        .createHash('sha256')
+        .update(JSON.stringify(exactEvidence))
+        .digest('hex'),
       asOf: artifact.generatedAt || ts,
     };
   });
-  return liveBoardArtifactFromCards(cards, { date, now, source: PER_CARD_BOARD_SOURCE });
+  const systemHealthArtifact = (artifacts || []).find(
+    (artifact) => artifact && artifact.id === 'system_health',
+  );
+  const base = {
+    ...liveBoardArtifactFromCards(cards, { date, now, source: PER_CARD_BOARD_SOURCE }),
+    systemHealthMeasurements: Array.isArray(systemHealthArtifact && systemHealthArtifact.workUnits)
+      ? systemHealthArtifact.workUnits
+      : [],
+  };
+  return enforceMeasurementTruth
+    ? applySystemHealthMeasurementTruth(base, base.systemHealthMeasurements, {
+        reason: 'Per-card System Health artifact had no measurement work-unit evidence.',
+      })
+    : base;
 }
 
 // Board-artifact provenance tags. The controller's post-refresh verifier has to
@@ -727,17 +771,38 @@ function writeLiveBoardArtifactFromCardArtifacts({
   refreshedCardId = '',
   now = new Date(),
 }) {
-  let artifact = liveBoardArtifactFromCardArtifacts(artifacts, { date, now });
   const previous = refreshedCardId ? readExistingLiveBoardArtifact(dataDir) : null;
-  if (previous && previous.date === date && Array.isArray(previous.cards)) {
+  const haveScopedBaseline = !!(
+    previous &&
+    previous.date === date &&
+    Array.isArray(previous.cards)
+  );
+  let artifact = liveBoardArtifactFromCardArtifacts(artifacts, {
+    date,
+    now,
+    enforceMeasurementTruth: !haveScopedBaseline,
+  });
+  if (haveScopedBaseline) {
     const previousById = new Map(previous.cards.map((card) => [card.id, card]));
     const cards = artifact.cards.map((card) =>
       card.id === refreshedCardId ? card : previousById.get(card.id) || card,
     );
-    artifact = liveBoardArtifactFromCards(cards, {
-      date,
-      now,
-      source: PER_CARD_BOARD_SOURCE_SCOPED,
+    const systemHealthMeasurements =
+      refreshedCardId === 'system_health'
+        ? artifact.systemHealthMeasurements
+        : Array.isArray(previous.systemHealthMeasurements)
+          ? previous.systemHealthMeasurements
+          : artifact.systemHealthMeasurements;
+    artifact = {
+      ...liveBoardArtifactFromCards(cards, {
+        date,
+        now,
+        source: PER_CARD_BOARD_SOURCE_SCOPED,
+      }),
+      systemHealthMeasurements,
+    };
+    artifact = applySystemHealthMeasurementTruth(artifact, systemHealthMeasurements, {
+      reason: 'Scoped board merge had no System Health measurement work-unit evidence.',
     });
   }
   const absPath = writeDataArtifact(BOARD_ARTIFACT_REL, artifact, { dataDir });
@@ -758,7 +823,9 @@ function writeCompatibilityMarkdown({
   });
   const file = markdownPathFor(dataDir, date);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, markdown, 'utf8');
+  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temp, markdown, 'utf8');
+  fs.renameSync(temp, file);
   return file;
 }
 
@@ -885,25 +952,40 @@ function produceSystemHealthCardArtifact({
       ? readCompatibilityMarkdown({ dataDir, date })
       : markdownForProof;
   const markdown = String(renderer(proof, { dataDir, date }) || '').trim();
-  const status = systemHealthStatusFromMarkdown(markdown);
+  const workUnits = systemHealthWorkUnits(markdown);
+  const nonGreenWorkUnits = workUnits.filter((unit) => unit.actionable);
+  const status = nonGreenWorkUnits.length ? 'blocked' : systemHealthStatusFromMarkdown(markdown);
   const redRow = firstRedSystemHealthRow(markdown);
-  const blockedReason = redRow ? redRow.replace(/^\u2717\s+/, '').slice(0, 220) : '';
-  return createCardArtifact({
-    id: 'system_health',
-    title: cardTitle('system_health'),
-    date,
-    kind: 'data',
-    status,
-    generatedAt: now.toISOString(),
-    markdown,
-    source: { mode: 'system-health-renderer' },
-    blockedReason:
-      status === 'blocked' ? blockedReason || 'System Health still has red subsystem rows.' : '',
-    qc: {
-      ok: status === 'clean',
-      failures: status === 'clean' ? [] : [blockedReason || 'System Health red subsystem rows'],
+  const blockedReason = redRow
+    ? redRow.replace(/^\u2717\s+/, '').slice(0, 220)
+    : nonGreenWorkUnits[0]
+      ? `${nonGreenWorkUnits[0].name}: ${nonGreenWorkUnits[0].detail}`.slice(0, 220)
+      : '';
+  return {
+    ...createCardArtifact({
+      id: 'system_health',
+      title: cardTitle('system_health'),
+      date,
+      kind: 'data',
+      status,
+      generatedAt: now.toISOString(),
+      markdown,
+      source: { mode: 'system-health-renderer' },
+      blockedReason:
+        status === 'blocked' ? blockedReason || 'System Health still has red subsystem rows.' : '',
+      qc: {
+        ok: status === 'clean',
+        failures: status === 'clean' ? [] : [blockedReason || 'System Health red subsystem rows'],
+      },
+    }),
+    workUnits,
+    workUnitSummary: {
+      total: workUnits.length,
+      green: workUnits.filter((unit) => unit.status === 'green').length,
+      nonGreen: nonGreenWorkUnits.length,
+      informational: workUnits.filter((unit) => unit.status === 'informational').length,
     },
-  });
+  };
 }
 
 // Pull the live board's own QC messages for one card. The board records
@@ -947,18 +1029,25 @@ function formatBlockersCardBodyFromLiveBoard(liveBoardEnvelope = {}) {
   const artifact = liveBoardEnvelope.artifact || null;
   const cards = Array.isArray(artifact && artifact.cards) ? artifact.cards : [];
   const defectiveCards = cards.filter(
-    (card) => card && card.status !== 'clean' && card.id !== 'blockers',
+    (card) =>
+      card &&
+      card.status !== 'clean' &&
+      card.id !== 'blockers' &&
+      card.id !== 'system_health',
   );
+  const healthMeasurements = Array.isArray(artifact && artifact.systemHealthMeasurements)
+    ? artifact.systemHealthMeasurements.filter((unit) => unit && unit.actionable)
+    : [];
   const count = defectiveCards.length;
   const lines = [];
   if (!artifact || defectiveCardCount(artifact) === null) {
     return 'Blocked: the live board count source is missing or invalid; cannot render the canonical Blockers count.';
   }
   if (count === 0) {
-    lines.push('Clean? yes. Live dashboard QC reports 0 survived defects for this briefing.');
+    lines.push('Separate blockers? no. System Health measurements are tracked only on System Health.');
   } else {
     lines.push(
-      `Clean? no. Live dashboard QC reports ${count} card${count === 1 ? '' : 's'} needing repair for this briefing.`,
+      `Separate blockers? yes. ${count} non-health card${count === 1 ? '' : 's'} need repair.`,
     );
   }
   if (liveBoardEnvelope.stale) {
@@ -966,7 +1055,9 @@ function formatBlockersCardBodyFromLiveBoard(liveBoardEnvelope = {}) {
       `Live card badge count: stale (last verified ${artifact.ts || 'ExampleCo time'}, older than one briefing cycle) -- do not treat this as the current Blockers issue count.`,
     );
   } else {
-    lines.push(`Live card badge count: ${count} card(s) needing repair as of ${artifact.ts}.`);
+    lines.push(
+      `Live board: ${count} separate blocker(s); ${healthMeasurements.length} non-green System Health measurement(s) are tracked there, as of ${artifact.ts}.`,
+    );
   }
   defectiveCards.forEach((card, index) => {
     const title = card.title || card.id || `Defective card ${index + 1}`;
@@ -1025,6 +1116,20 @@ function produceBlockersCardArtifact({ date, dataDir, now = new Date() } = {}) {
       stale: Boolean(liveBoardEnvelope.stale),
       defectiveCardCount: liveBoardEnvelope.artifact
         ? defectiveCardCount(liveBoardEnvelope.artifact)
+        : null,
+      nonHealthBlockerCount: liveBoardEnvelope.artifact
+        ? (liveBoardEnvelope.artifact.cards || []).filter(
+            (card) =>
+              card &&
+              card.status !== 'clean' &&
+              card.id !== 'blockers' &&
+              card.id !== 'system_health',
+          ).length
+        : null,
+      systemHealthMeasurementFailures: liveBoardEnvelope.artifact
+        ? (liveBoardEnvelope.artifact.systemHealthMeasurements || []).filter(
+            (unit) => unit && unit.actionable,
+          ).length
         : null,
     },
     blockedReason: missing ? 'dashboard-qc-result.json missing or invalid.' : '',
@@ -2359,6 +2464,7 @@ async function produceAllCardArtifacts({
   now = new Date(),
   cardTimeoutMs,
   produceCardArtifactFn = produceCardArtifact,
+  publish = true,
 } = {}) {
   const timeoutMs = producerTimeoutMs(cardTimeoutMs);
   const artifacts = await mapLimit(CARDS, producerConcurrency(), async (card) => {
@@ -2391,7 +2497,9 @@ async function produceAllCardArtifacts({
     }
   });
   for (const artifact of artifacts) writeCardArtifact({ dataDir, date, artifact });
-  const board = writeLiveBoardArtifactFromCardArtifacts({ dataDir, date, artifacts, now });
+  const board = publish
+    ? writeLiveBoardArtifactFromCardArtifacts({ dataDir, date, artifacts, now })
+    : null;
   return { artifacts: orderArtifacts(artifacts), board };
 }
 

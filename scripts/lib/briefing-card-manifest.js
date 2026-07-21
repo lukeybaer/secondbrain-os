@@ -357,6 +357,7 @@ const CARD_DEFINITIONS = [
       'i',
     ),
     always: true,
+    newsCard: true,
     mentionOrZero: true,
     condition: `Always: ${EMPLOYER} Group news tile. MUST render even with 0 items (renders a scanned-zero placeholder). ExampleCo works at ${EMPLOYER}; this card must never silently disappear.`,
   },
@@ -470,6 +471,10 @@ function getNewsTarget(card) {
   return Number.isFinite(card.newsTarget) ? card.newsTarget : null;
 }
 
+function isNewsCard(card) {
+  return Boolean(card && (card.newsCard === true || Number.isFinite(card.newsTarget)));
+}
+
 // The CLEAN minimum item count: a card rendering at least this many source-backed
 // items is not a shortfall. Defaults to the aspirational target (so every other
 // news card keeps its exact-count contract); covid overrides it to 1 because a
@@ -487,5 +492,6 @@ module.exports = {
   ALWAYS_HONEST_BLOCKER,
   getCardById,
   getNewsTarget,
+  isNewsCard,
   getNewsMinimum,
 };

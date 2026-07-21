@@ -3,7 +3,7 @@
 // Append-only ledger of big decisions Amy made on ExampleCo's behalf: rule
 // supersessions, policy adoptions, architecture calls. ExampleCo's dispatch
 // (2026-07-11, answer 19): a Big Decisions surface, newest first, 1 to 2
-// sentences per entry, normally at most 5 per day and never more than 10,
+// sentences per entry, at most 5 consequential decisions per day,
 // history never deleted. Every rule supersession MUST land here in the same
 // commit that archives the superseded rule (memory/AMY_AUTHORIZATIONS.md,
 // tiebreaker section).
@@ -22,8 +22,22 @@ const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..', '..')
 const DEFAULT_LEDGER = path.join(REPO, 'data', 'agent', 'big-decisions.jsonl');
 
 const MAX_SUMMARY_CHARS = 300;
-const MAX_PER_DAY = 10;
+const MAX_PER_DAY = 5;
 const CATEGORIES = new Set(['rule-supersession', 'policy', 'architecture', 'spend', 'other']);
+const IMPACT_SCORES = Object.freeze({ critical: 5, high: 4, medium: 3, low: 1 });
+
+function impactForRow(row) {
+  const explicit = String((row && row.impact) || '').toLowerCase();
+  if (IMPACT_SCORES[explicit]) return { label: explicit, score: IMPACT_SCORES[explicit] };
+  const category = String((row && row.category) || '');
+  if (category === 'rule-supersession' || category === 'policy') {
+    return { label: 'critical', score: IMPACT_SCORES.critical };
+  }
+  if (category === 'architecture' || category === 'spend') {
+    return { label: 'high', score: IMPACT_SCORES.high };
+  }
+  return { label: 'medium', score: IMPACT_SCORES.medium };
+}
 
 function isBigDecisionRow(row) {
   return Boolean(
@@ -108,13 +122,16 @@ function appendBigDecision(entry, opts) {
   if (!e.category || !CATEGORIES.has(e.category))
     problems.push(`category must be one of: ${[...CATEGORIES].join(', ')}`);
   if (!e.source) problems.push('source required (dispatch, session, or call that authorized this)');
+  if (e.impact && !IMPACT_SCORES[String(e.impact).toLowerCase()]) {
+    problems.push(`impact must be one of: ${Object.keys(IMPACT_SCORES).join(', ')}`);
+  }
   if (problems.length) throw new Error('big-decisions: invalid entry: ' + problems.join('; '));
 
   const existing = readAll(opts).filter((r) => r.date === e.date && isBigDecisionRow(r));
   if (existing.length >= MAX_PER_DAY) {
     throw new Error(
       `big-decisions: ${MAX_PER_DAY} entries already logged for ${e.date}. ` +
-        'ExampleCo caps big-decision notifications at 10 per day (5 typical). ' +
+        'ExampleCo caps the Big Decisions ledger at 5 consequential decisions per day. ' +
         'If this is genuinely a big decision, consolidate or reclassify a lesser entry first.',
     );
   }
@@ -125,6 +142,7 @@ function appendBigDecision(entry, opts) {
     summary: e.summary.trim(),
     category: e.category,
     source: e.source,
+    impact: impactForRow(e).label,
     ...(e.supersedes ? { supersedes: e.supersedes } : {}),
     loggedAt: e.loggedAt || new Date().toISOString(),
   };
@@ -141,4 +159,6 @@ module.exports = {
   MAX_SUMMARY_CHARS,
   DEFAULT_LEDGER,
   isBigDecisionRow,
+  impactForRow,
+  IMPACT_SCORES,
 };

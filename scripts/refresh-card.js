@@ -119,7 +119,7 @@ const {
 } = require('./cloud-morning-briefing.js');
 const { runContentHeal } = require('./content-heal.js');
 const { qcBriefingMarkdown } = require('./lib/briefing-card-qc.js');
-const { CARDS, getCardById } = require('./lib/briefing-card-manifest.js');
+const { CARDS, getCardById, isNewsCard } = require('./lib/briefing-card-manifest.js');
 const { ctDayKeyForInstant } = require('./lib/ct-day.js');
 // The health/blockers checks run only on the scoped refresh slice. System
 // Health owns health-check rows and remediation; Blockers may count health
@@ -145,6 +145,7 @@ const {
   produceAllCardArtifacts,
   produceCardArtifact,
   writeCardArtifact,
+  readCardArtifact,
   readCardArtifactUnion,
   writeLiveBoardArtifactFromCardArtifacts,
   writeCompatibilityMarkdown,
@@ -239,6 +240,10 @@ function normalizeRefreshTargetId(value) {
 
 function newsSummaryCardKeyForTarget(cardId) {
   return NEWS_SUMMARY_CARD_BY_TARGET[normalizeRefreshTargetId(cardId)] || null;
+}
+
+function requiresPreviousNewsForCard(cardId) {
+  return isNewsCard(getCardById(normalizeRefreshTargetId(cardId)));
 }
 
 async function prepareTargetedRebuild({
@@ -675,16 +680,22 @@ function liveCardBadgeLineFromArtifact(artifact) {
   const rawCount = Number(artifact && artifact.defectiveCardCount);
   const count = Number.isFinite(rawCount) && rawCount >= 0 ? rawCount : 0;
   const ts = (artifact && artifact.ts) || new Date().toISOString();
-  return `Live card badge count: ${count} defective card(s) as of ${ts} (source: dashboard-qc-result.json); Blockers issue count is blocker rows plus individual System Health failures.`;
+  return `Live card badge count: ${count} defective card(s) as of ${ts} (source: dashboard-qc-result.json); Blockers excludes System Health measurements, which are tracked on that card.`;
 }
 
 function blockersCleanVerdictLineFromArtifact(artifact) {
-  const rawCount = Number(artifact && artifact.defectiveCardCount);
-  const count = Number.isFinite(rawCount) && rawCount >= 0 ? rawCount : 0;
+  const cards = Array.isArray(artifact && artifact.cards) ? artifact.cards : [];
+  const count = cards.filter(
+    (card) =>
+      card &&
+      card.status !== 'clean' &&
+      card.id !== 'blockers' &&
+      card.id !== 'system_health',
+  ).length;
   if (count > 0) {
-    return `Clean? no. Live dashboard QC reports ${count} defective card(s) for this briefing. See live card badges and System Health for detail.`;
+    return `Separate blockers? yes. Live dashboard QC reports ${count} defective card(s) outside System Health.`;
   }
-  return 'Clean? yes. Live dashboard QC reports 0 survived defects for this briefing.';
+  return 'Separate blockers? no. System Health measurements are tracked only on System Health.';
 }
 
 function refreshBlockersReconciliationLine(markdown, artifact) {
@@ -1063,7 +1074,7 @@ function reportExampleCoLiveVerdict(detail, reasonCode) {
   process.exitCode = 1;
 }
 
-async function runVerify({ cardId, date, dataDir }) {
+async function runVerify({ cardId, date, dataDir, lockHeld = false }) {
   let liveQc;
   try {
     liveQc = require('./verify-dashboard-cards-live.js');
@@ -1089,7 +1100,7 @@ async function runVerify({ cardId, date, dataDir }) {
     return;
   }
   const scopedCardIds = scopedCardIdsForRefresh(cardId);
-  const requirePreviousNews = Boolean(newsSummaryCardKeyForTarget(cardId));
+  const requirePreviousNews = requiresPreviousNewsForCard(cardId);
   let previousHtml = '';
   if (requirePreviousNews && typeof liveQc.previousDateString === 'function') {
     const previousDate = liveQc.previousDateString(date);
@@ -1191,9 +1202,9 @@ async function runVerify({ cardId, date, dataDir }) {
       );
       try {
         const markdownPath = markdownPathFor(dataDir, date);
-        const changed = await withSharedBriefingLock(() =>
-          refreshPublishedBlockersReconciliationLine({ markdownPath, artifact }),
-        );
+        const reconcile = () =>
+          refreshPublishedBlockersReconciliationLine({ markdownPath, artifact });
+        const changed = lockHeld ? await reconcile() : await withSharedBriefingLock(reconcile);
         if (changed) {
           console.log(
             '[refresh-card] --verify: refreshed Blockers live badge line from canonical artifact',
@@ -1252,6 +1263,7 @@ async function refreshOneCardArtifact({
   dataDir,
   publish,
   verify,
+  lockHeld = false,
   prepareFn = prepareTargetedRebuild,
   produceCardArtifactFn = produceCardArtifact,
 } = {}) {
@@ -1262,22 +1274,45 @@ async function refreshOneCardArtifact({
   // fresh source candidates a chance to displace yesterday's stories.
   await prepareFn({ dataDir, date, now, cardId });
   const artifact = await produceCardArtifactFn({ cardId, date, dataDir, now });
-  const artifactPath = writeCardArtifact({ dataDir, date, artifact });
-  console.log(
-    `[refresh-card] produced artifact card='${cardId}' status=${artifact.status} path=${artifactPath}`,
-  );
-  if (publish) {
-    let { union, board, markdownPath } = await publishArtifactUnion({
-      dataDir,
-      date,
-      refreshedCardId: cardId,
-    });
+  const transact = async () => {
+    const artifactPath = writeCardArtifact({ dataDir, date, artifact });
     console.log(
-      `[refresh-card] published artifact union cards=${union.artifacts.length} ${summarizeArtifactPublish(
-        union.artifacts,
-      )} board=${board.absPath} markdown=${markdownPath}`,
+      `[refresh-card] produced artifact card='${cardId}' status=${artifact.status} path=${artifactPath}`,
     );
-    if (cardId !== 'blockers' && artifact.status === 'clean') {
+    let union;
+    let board;
+    let markdownPath;
+    if (publish) {
+      ({ union, board, markdownPath } = await publishArtifactUnion({
+        dataDir,
+        date,
+        refreshedCardId: cardId,
+      }));
+      console.log(
+        `[refresh-card] published artifact union cards=${union.artifacts.length} ${summarizeArtifactPublish(
+          union.artifacts,
+        )} board=${board.absPath} markdown=${markdownPath}`,
+      );
+    }
+    if (artifact.status !== 'clean') {
+      if (verify) {
+        console.error(
+          `[refresh-card] --verify: card='${cardId}' status=${artifact.status}; artifact is honest but not clean.`,
+        );
+        process.exitCode = 1;
+      }
+    } else if (verify) {
+      // A self-reported clean artifact is NOT proof. --verify must mean the
+      // rendered page was fetched and graded (briefing Invariants 2/4/8): the
+      // live artifact is the only defect count. Without this, the controller
+      // accepted producer stdout alone as "verifiedLive".
+      await runVerify({ cardId, date, dataDir, lockHeld: true });
+    }
+    // Blockers is a derived view of the post-QC canonical artifact. Rebuild it
+    // after every non-Blockers publish, including a failed scoped QC, while the
+    // same transaction lock is still held. This prevents a green Blockers tile
+    // from surviving beside a fresh non-health red verdict.
+    if (publish && cardId !== 'blockers') {
       const blockers = await produceCardArtifact({ cardId: 'blockers', date, dataDir });
       const blockersPath = writeCardArtifact({ dataDir, date, artifact: blockers });
       ({ union, board, markdownPath } = await publishArtifactUnion({
@@ -1289,48 +1324,79 @@ async function refreshOneCardArtifact({
         `[refresh-card] refreshed derived blockers artifact status=${blockers.status} path=${blockersPath} board=${board.absPath} markdown=${markdownPath}`,
       );
     }
+  };
+  // Preparation and artifact construction are isolated staging work. Every
+  // shared promotion, canonical merge, compatibility-markdown replacement,
+  // Blockers derivation, and scoped live-QC write is one serialized publish
+  // transaction. Direct refreshes and controller children share this lock.
+  if (publish || verify) {
+    if (lockHeld) await transact();
+    else await withSharedBriefingLock(transact);
   }
-  if (verify) {
-    if (artifact.status !== 'clean') {
-      // Honest and not clean: there is nothing to prove against the live page,
-      // and the non-clean artifact is the answer. Report and stop.
-      console.error(
-        `[refresh-card] --verify: card='${cardId}' status=${artifact.status}; artifact is honest but not clean.`,
-      );
-      process.exitCode = 1;
-    } else {
-      // A self-reported clean artifact is NOT proof. --verify must mean the
-      // rendered page was fetched and graded (briefing Invariants 2/4/8): the
-      // live artifact is the only defect count. Without this, the controller
-      // accepted producer stdout alone as "verifiedLive".
-      await runVerify({ cardId, date, dataDir });
-    }
-  }
+  else await transact();
   return artifact;
 }
 
+async function markCardExampleCoAndRepublish({ dataDir, date, cardId, now = new Date() }) {
+  const current = readCardArtifact({ dataDir, date, id: cardId });
+  if (!current) throw new Error(`cannot mark missing card artifact '${cardId}' ExampleCo`);
+  const marker = 'LIVE-VERIFY-ExampleCo: scoped live dashboard verification was unavailable';
+  const failures = [...new Set([...(current.qc && current.qc.failures ? current.qc.failures : []), marker])];
+  const markdown = String(current.markdown || '');
+  const next = {
+    ...current,
+    status: 'stale',
+    generatedAt: now.toISOString(),
+    blockedReason: marker,
+    markdown: markdown.includes('LIVE-VERIFY-ExampleCo')
+      ? markdown
+      : `${markdown.trimEnd()}\n\n${marker}`,
+    qc: { ...(current.qc || {}), passed: false, failures },
+  };
+  writeCardArtifact({ dataDir, date, artifact: next });
+  let published = await publishArtifactUnion({
+    dataDir,
+    date,
+    refreshedCardId: cardId,
+    now,
+  });
+  if (cardId !== 'blockers') {
+    const blockers = await produceCardArtifact({ cardId: 'blockers', date, dataDir, now });
+    writeCardArtifact({ dataDir, date, artifact: blockers });
+    published = await publishArtifactUnion({
+      dataDir,
+      date,
+      refreshedCardId: 'blockers',
+      now,
+    });
+  }
+  return { artifact: next, ...published };
+}
+
 async function refreshAllCardArtifacts({ date, dataDir, publish, verify } = {}) {
-  const result = await produceAllCardArtifacts({ dataDir, date });
-  console.log(
-    `[refresh-card] produced all card artifacts cards=${result.artifacts.length} ${summarizeArtifactPublish(
-      result.artifacts,
-    )}`,
-  );
-  if (publish) {
-    console.log(`[refresh-card] published artifact union board=${result.board.absPath}`);
-  }
-  if (verify) {
-    const union = readCardArtifactUnion({ dataDir, date, allowMarkdownFallback: false });
-    if (union.artifacts.length !== CARDS.length) {
-      console.error(
-        `[refresh-card] --verify: expected ${CARDS.length} card artifacts, found ${union.artifacts.length}`,
-      );
-      process.exitCode = 1;
-    } else {
-      console.log('[refresh-card] --verify: every manifest card has an artifact');
+  return withSharedBriefingLock(async () => {
+    const result = await produceAllCardArtifacts({ dataDir, date, publish: !!publish });
+    console.log(
+      `[refresh-card] produced all card artifacts cards=${result.artifacts.length} ${summarizeArtifactPublish(
+        result.artifacts,
+      )}`,
+    );
+    if (publish) {
+      console.log(`[refresh-card] published artifact union board=${result.board.absPath}`);
     }
-  }
-  return result;
+    if (verify) {
+      const union = readCardArtifactUnion({ dataDir, date, allowMarkdownFallback: false });
+      if (union.artifacts.length !== CARDS.length) {
+        console.error(
+          `[refresh-card] --verify: expected ${CARDS.length} card artifacts, found ${union.artifacts.length}`,
+        );
+        process.exitCode = 1;
+      } else {
+        console.log('[refresh-card] --verify: every manifest card has an artifact');
+      }
+    }
+    return result;
+  });
 }
 
 function main() {
@@ -1340,6 +1406,40 @@ function main() {
   // would target a briefing file that does not exist yet. Explicit --date wins.
   const date = opts.date || ctDayKeyForInstant();
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR;
+  // Publishing is a transaction, not a renderer option. The controller owns
+  // the snapshot, journal, scoped live verification, rollback, and ExampleCo
+  // verdict repaint. Preserve the convenient refresh-card CLI, but route any
+  // direct publish/verify request through that single production boundary.
+  // The controller's child sets BRIEFING_CONTROLLER_TRANSACTION to prevent a
+  // delegation loop once it has opened the transaction.
+  if (
+    (opts.publish || opts.verify) &&
+    process.env.BRIEFING_CONTROLLER_TRANSACTION !== '1'
+  ) {
+    const controllerArgs = [
+      path.join(__dirname, 'card-controller.js'),
+      '--mode',
+      'midday',
+      '--date',
+      date,
+      '--data-dir',
+      dataDir,
+      '--cards',
+      opts.all ? 'all' : opts.cardId,
+    ];
+    const delegated = spawnSync(process.execPath, controllerArgs, {
+      cwd: path.resolve(__dirname, '..'),
+      env: process.env,
+      stdio: 'inherit',
+    });
+    if (delegated.error) {
+      console.error(`[refresh-card] controller delegation failed: ${delegated.error.message}`);
+      process.exitCode = 1;
+    } else if (delegated.status !== 0) {
+      process.exitCode = Number.isInteger(delegated.status) ? delegated.status : 1;
+    }
+    return;
+  }
   const task = opts.all
     ? refreshAllCardArtifacts({ date, dataDir, publish: opts.publish, verify: opts.verify })
     : refreshOneCardArtifact({
@@ -1348,6 +1448,7 @@ function main() {
         dataDir,
         publish: opts.publish,
         verify: opts.verify,
+        lockHeld: process.env.BRIEFING_SHARED_LOCK_HELD === '1',
       });
   task.catch((err) => {
     console.error(`[refresh-card] failed: ${(err && err.message) || err}`);
@@ -1381,10 +1482,12 @@ module.exports = {
   buildTargetedRebuild,
   prepareTargetedRebuild,
   newsSummaryCardKeyForTarget,
+  requiresPreviousNewsForCard,
   withSharedBriefingLock,
   refreshCard,
   refreshOneCardArtifact,
   refreshAllCardArtifacts,
+  markCardExampleCoAndRepublish,
   runVerify,
   markdownPathFor,
   receiptPathFor,

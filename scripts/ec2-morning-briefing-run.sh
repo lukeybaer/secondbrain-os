@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 #
-# ec2-morning-briefing-run.sh -- EC2 ALWAYS-ON daily briefing generate + publish.
+# ec2-morning-briefing-run.sh -- EC2 morning briefing reconciliation.
 #
-# The 5:30 CT daily briefing (cloud-morning-briefing.js --publish) had NO cloud cron:
-# it was triggered only by a laptop scheduled task (daily-briefing.bat), so when the
-# laptop did not run it the public dashboard went stale (no fresh dated briefing was
-# generated or published). This runner generates + publishes the briefing ON EC2 daily,
-# after the overnight self-heal (2:45/3:00) and the otter resolver (4:45), against the
-# cloud data store. It publishes clean OR blocked (the clean-or-blocked contract), so
-# the dashboard always ExampleCos a fresh dated briefing, never a silent stale one.
+# Under card-controller authority, the 11 PM controller opens the dated board and
+# publishes cards as their sources become ready. This 5:30 runner reconciles only
+# remaining non-green work, runs the bounded healer, and reports the final honest
+# state. The legacy cloud-morning-briefing.js full build remains rollback-only while
+# authority is off.
 #
-# CLAUDE AUTH: the news summaries need the Max-plan OAuth token; same contract as the
-# self-heal runner (HOME + CLAUDE_CODE_OAUTH_TOKEN from /home/ec2-user/.claude-oauth-token).
+# CLAUDE AUTH: legacy news summarization and the healer fallback may need the Max-plan
+# OAuth token; same contract as the self-heal runner (HOME +
+# CLAUDE_CODE_OAUTH_TOKEN from /home/ec2-user/.claude-oauth-token).
 #
 # IDEMPOTENT: flock -n makes a second invocation a clean no-op. LOGGED: dated header.
 # TEST-GATED: under NODE_ENV=test / VITEST / BRIEFING_DRY_RUN=1 it prints the command it
@@ -49,6 +48,7 @@ HOME="${HOME:-/home/ec2-user}"
 TOKEN_PATH="${CLAUDE_OAUTH_TOKEN_PATH:-$HOME/.claude-oauth-token}"
 # Briefing date = today in Central Time (the briefing's canonical day).
 DATE="${BRIEFING_DATE:-$(TZ=America/Chicago date +%F)}"
+CONTROLLER_MAX_SECONDS="${BRIEFING_MORNING_CONTROLLER_MAX_SECONDS:-7200}"
 DATE_ATTEMPT_FILE="${BRIEFING_DATE_ATTEMPT_FILE:-$DATA_DIR/agent/briefing-generation-attempts/$DATE.json}"
 DATE_LOCK_FILE="${BRIEFING_DATE_LOCK_FILE:-$DATA_DIR/agent/briefing-generation-attempts/$DATE.lock}"
 DATE_LEASE_HELD=0
@@ -83,16 +83,13 @@ else
 fi
 export HOME
 
-# Build the exact command once so the dry-run print and the real spawn cannot drift.
-# The morning run must create the dated briefing markdown before any per-card
-# artifact union can be meaningful. refresh-card --all is a repaint helper, not
-# the 5:30 generator.
+# Build the exact commands once so dry-run and real execution cannot drift.
 CMD=("$NODE_BIN" scripts/cloud-morning-briefing.js --date "$DATE" --publish)
 
-# The old card-controller authority switch is now only a deployed-root selector.
-# It no longer runs a competing final-pass writer; both branches publish the
-# same real cloud briefing.
-CONTROLLER_CMD=("${CMD[@]}")
+# Under controller authority, 5:30 is a targeted reconciliation pass over only
+# the still-non-green cards. The 11 PM controller already opened the dated shell.
+# No --cards all and no whole-document generator are allowed here.
+CONTROLLER_CMD=("$NODE_BIN" scripts/card-controller.js --mode overnight --date "$DATE" --bootstrap --notify --max-seconds "$CONTROLLER_MAX_SECONDS")
 
 # Mechanical-pass command, built once for the same reason. `--mechanical-only` is
 # W2a's flag on the orchestrator (coordinated, landing on another branch); this
@@ -101,7 +98,7 @@ MECH_CMD=("$NODE_BIN" scripts/overnight-self-heal-orchestrator.js --mechanical-o
 
 # RUNG 2 (Wave 4): the AGENTIC OVERNIGHT HEALER. After the mechanical pass
 # (rung 1) and the briefing build+publish have finished, this spawns one full
-# agentic dev session (claude primary, codex fallback per the ladder) against
+# agentic dev session (Codex primary, Claude fallback) against
 # the FRESH dashboard-qc-result.json defect list the publish just wrote, with
 # the standing mission to fix remaining defects like an interactive session
 # ExampleCo dispatched: root-cause, code fix in an isolated worktree, tests, land
@@ -113,7 +110,7 @@ MECH_CMD=("$NODE_BIN" scripts/overnight-self-heal-orchestrator.js --mechanical-o
 # Budget (45m hard wall clock), no-repeat-tactics ledger, and the
 # honest-blocked-receipt-on-expiry rail live in scripts/agentic-healer-driver.js.
 HEALER_CMD=(bash scripts/overnight-agentic-healer.sh)
-SELF_HEAL_REFRESH_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/refresh-card.js" self_heal_health --date "$DATE" --data-dir "$DATA_DIR" --publish --verify)
+SELF_HEAL_REFRESH_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/card-controller.js" --mode overnight --cards self_heal_health --date "$DATE" --data-dir "$DATA_DIR")
 CAP_CMD=("$NODE_BIN" "$CONTROLLER_ROOT/scripts/ensure-neo4j-cpu-cap.js" --apply --data-dir "$DATA_DIR")
 
 # Deterministic incident report from canonical board truth. It is generated
@@ -188,8 +185,8 @@ run_watch_report() {
 }
 
 # ExampleCo's 5:30 contract is a current-state pointer, not a premature terminal
-# verdict. This runs before the full build and is marker-deduped with the 5:29
-# in-process fallback. It quotes only a fresh live render-QC artifact.
+# verdict. This runs before targeted reconciliation and is marker-deduped with
+# the 5:29 in-process fallback. It quotes only a fresh live render-QC artifact.
 # The watch report renders first so the notify line can link it.
 run_watch_report
 notify_briefing_state current
@@ -390,8 +387,7 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # No legacy mechanical pass under card-controller authority. It has a
   # different fan-out model and would become a competing writer again.
   if [ "$TEST_MODE" = "1" ]; then
-    print_date_generation_lease_dry_run
-    echo "[morning-briefing-run] DRY-RUN (card-controller authority): would run: (cd $CONTROLLER_ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR BRIEFING_SCHEDULED_RUN=1 ${CONTROLLER_CMD[*]})"
+    echo "[morning-briefing-run] DRY-RUN (card-controller authority): would run targeted non-green cards: (cd $CONTROLLER_ROOT && SECONDBRAIN_DATA_DIR=$DATA_DIR ${CONTROLLER_CMD[*]})"
     if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
       echo "[morning-briefing-run] agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
       run_lessons_fallback_capture
@@ -405,21 +401,25 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
     run_weekly_lessons_rollup
     exit 0
   fi
-  if ! acquire_date_generation_lease; then
-    exit 0
-  fi
   cd "$CONTROLLER_ROOT" || { echo "[morning-briefing-run] cannot cd to deployed controller runtime $CONTROLLER_ROOT" >&2; exit 1; }
   mkdir -p "$LOG_DIR"
   unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
-  # BRIEFING_SCHEDULED_RUN=1: the scheduler lease. This runner owns the
-  # date-level generation-attempt lease (acquired above), so it is the ONE
-  # place a whole-document publish is ExampleCoed its lease; the builder's CLI
-  # gate (cloud-morning-briefing.js cliPublishLease) refuses ad hoc full
-  # rebuilds that lack it.
-  flock -n "$LOCK" env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" BRIEFING_SCHEDULED_RUN=1 "${CONTROLLER_CMD[@]}"
-  status=$?
+  # The controller owns its run lease and per-card transaction journal. This
+  # outer flock only suppresses duplicate cron supervisors.
+  CONTROLLER_OWNED=0
+  exec 8>"$LOCK"
+  if flock -n 8; then
+    CONTROLLER_OWNED=1
+    env SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" "${CONTROLLER_CMD[@]}"
+    status=$?
+    flock -u 8 || true
+  else
+    status=75
+  fi
   if [ "$status" = "0" ]; then
     echo "[morning-briefing-run] $(date -u +%FT%TZ) card-controller final pass completed."
+  elif [ "$status" = "75" ]; then
+    echo "[morning-briefing-run] $(date -u +%FT%TZ) card-controller pass skipped: another controller supervisor owns the lock."
   else
     echo "[morning-briefing-run] $(date -u +%FT%TZ) card-controller final pass exit=$status; briefing remains honestly labeled until its scoped repairs pass."
   fi
@@ -430,30 +430,35 @@ if [ "$CONTROLLER_AUTHORITY" = "1" ]; then
   # this runner.
   if [ "${BRIEFING_SKIP_AGENTIC_HEALER:-}" = "1" ]; then
     echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: skipped (BRIEFING_SKIP_AGENTIC_HEALER=1)."
-    if [ "$status" = "1" ]; then
-      echo "[morning-briefing-run] lessons-fallback-capture: skipped (exit 1: lock held; this invocation built nothing, so its artifact provenance is unproven)."
+    if [ "$CONTROLLER_OWNED" != "1" ]; then
+      echo "[morning-briefing-run] lessons-fallback-capture: skipped because another controller owns the run."
     else
       run_lessons_fallback_capture
     fi
-  else
+  elif [ "$CONTROLLER_OWNED" = "1" ]; then
     cd "$ROOT" || echo "[morning-briefing-run] WARNING: cannot cd to $ROOT for the agentic healer."
-    BRIEFING_DATE="$DATE" SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" SECONDBRAIN_ROOT="$ROOT" "${HEALER_CMD[@]}"
+    BRIEFING_DATE="$DATE" SECONDBRAIN_DATA_DIR="$DATA_DIR" HOME="$HOME" SECONDBRAIN_ROOT="$ROOT" SECONDBRAIN_CONTROLLER_ROOT="$CONTROLLER_ROOT" "${HEALER_CMD[@]}"
     healer_status=$?
     echo "[morning-briefing-run] $(date -u +%FT%TZ) agentic-healer: finished with exit $healer_status (receipt: $DATA_DIR/agent/overnight-agentic-healer-runs.jsonl)."
+  else
+    echo "[morning-briefing-run] agentic-healer: skipped because another controller owns the active run."
   fi
-  if [ "$status" != "1" ]; then
+  if [ "$CONTROLLER_OWNED" = "1" ]; then
     refresh_self_heal_health_after_batch
     notify_briefing_state final
   else
-    echo "[morning-briefing-run] briefing-final-notify: skipped because this invocation did not own a completed build."
+    echo "[morning-briefing-run] briefing-final-notify: skipped because this invocation did not own the controller run."
   fi
   write_morning_report
   # W5 parity snapshot AFTER the healer: the healer may have repaired cards
   # and republished the markdown, so the snapshot captures the finished
   # cloud-built board.
-  snapshot_parity_artifact "$status"
+  if [ "$CONTROLLER_OWNED" = "1" ]; then
+    snapshot_parity_artifact "$status"
+  else
+    echo "[morning-briefing-run] parity-snapshot: skipped because this invocation did not own the controller run."
+  fi
   run_weekly_lessons_rollup
-  release_date_generation_lease
   exit 0
 fi
 

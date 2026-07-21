@@ -21,12 +21,14 @@ const { buildBriefingDashboardUrl } = require('./briefing-auth.js');
 const { notifyWithFallback } = require('./notify-with-fallback.js');
 const { loadBriefingNotifyEnv, notifyBriefingPublished } = require('./briefing-notify.js');
 const { getSourceContract, controllerSourceEnv } = require('./briefing-source-contracts.js');
-const { isPerCardBoardSource } = require('./briefing-card-artifacts.js');
+const { artifactPathFor, isPerCardBoardSource } = require('./briefing-card-artifacts.js');
 const {
   DERIVED_CARD_IDS,
   LIVE_VERDICT_ExampleCo_MARKER,
   MANIFEST_CARD_RENDER,
   markdownPathFor,
+  withSharedBriefingLock,
+  markCardExampleCoAndRepublish,
 } = require('../refresh-card.js');
 const {
   defectKey,
@@ -393,6 +395,13 @@ function restoreSnapshot(snapshot) {
   fs.renameSync(temp, snapshot.source);
 }
 
+function restoreTransactionBackups(backups) {
+  if (!backups) return;
+  for (const key of ['markdown', 'artifact', 'cardArtifact', 'blockersArtifact']) {
+    restoreSnapshot(backups[key]);
+  }
+}
+
 function activeTransactionPath(dataDir) {
   return path.join(controllerDir(dataDir), 'active-transaction.json');
 }
@@ -420,8 +429,7 @@ function recoverIncompleteTransaction(dataDir) {
   const transaction = readJson(file, null);
   if (!transaction || !transaction.backups) return null;
   try {
-    restoreSnapshot(transaction.backups.markdown);
-    restoreSnapshot(transaction.backups.artifact);
+    restoreTransactionBackups(transaction.backups);
     fs.unlinkSync(file);
     return {
       recovered: true,
@@ -626,6 +634,75 @@ async function mapWithConcurrency(items, limit, worker) {
   return results;
 }
 
+function scheduleWithConcurrency(items, limit, worker) {
+  const list = Array.isArray(items) ? items : [];
+  const concurrency = Math.max(1, Math.min(list.length || 1, Number(limit) || 1));
+  const results = new Array(list.length);
+  const deferred = list.map(() => {
+    let resolve;
+    let reject;
+    const promise = new Promise((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    return { promise, resolve, reject };
+  });
+  let next = 0;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (true) {
+      const index = next;
+      next += 1;
+      if (index >= list.length) return;
+      try {
+        results[index] = await worker(list[index], index);
+        deferred[index].resolve(results[index]);
+      } catch (error) {
+        deferred[index].reject(error);
+        throw error;
+      }
+    }
+  });
+  return {
+    promises: deferred.map((entry) => entry.promise),
+    all: Promise.all(workers).then(() => results),
+  };
+}
+
+function safeJobName(value) {
+  return (
+    String(value || 'job')
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || 'job'
+  );
+}
+
+function createJobWorkspace({ runId, jobId, input }) {
+  const root = path.join(os.tmpdir(), 'secondbrain-card-controller', safeJobName(runId));
+  fs.mkdirSync(root, { recursive: true });
+  const dir = fs.mkdtempSync(path.join(root, `${safeJobName(jobId)}-`));
+  const inputFile = path.join(dir, 'input.json');
+  const serialized = `${JSON.stringify(input || {}, null, 2)}\n`;
+  fs.writeFileSync(inputFile, serialized, { encoding: 'utf8', mode: 0o444 });
+  return {
+    path: dir,
+    inputFile,
+    inputHash: crypto.createHash('sha256').update(serialized).digest('hex'),
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function disposeJobWorkspace(workspace) {
+  if (!workspace || !workspace.path) return { removed: false, reason: 'missing' };
+  const resolved = path.resolve(workspace.path);
+  const allowedRoot = path.resolve(path.join(os.tmpdir(), 'secondbrain-card-controller'));
+  const inside = resolved.startsWith(`${allowedRoot}${path.sep}`) && resolved !== allowedRoot;
+  if (!inside) return { removed: false, reason: 'outside-controller-temp-root' };
+  fs.rmSync(resolved, { recursive: true, force: true });
+  return { removed: !fs.existsSync(resolved), removedAt: new Date().toISOString() };
+}
+
 function currentEvidence(contract, dataDir, date) {
   try {
     return typeof contract.evidence === 'function'
@@ -794,7 +871,18 @@ async function runCardController(options = {}, injected = {}) {
         ],
         {
           cwd: REPO_ROOT,
-          env: controllerSourceEnv(context.dataDir),
+          env: controllerSourceEnv(context.dataDir, {
+            TMPDIR: context.workspaceDir,
+            TMP: context.workspaceDir,
+            TEMP: context.workspaceDir,
+            BRIEFING_JOB_WORKSPACE: context.workspaceDir,
+            BRIEFING_SHARED_LOCK_HELD: '1',
+            // Only a controller-owned transaction may ask refresh-card to
+            // publish. Direct CLI publication delegates back through this
+            // entrypoint so journaling, rollback, and live proof cannot be
+            // skipped by an operator or a legacy runner.
+            BRIEFING_CONTROLLER_TRANSACTION: '1',
+          }),
           timeoutMs: context.timeoutMs || options.refreshTimeoutMs || DEFAULT_REFRESH_TIMEOUT_MS,
         },
       ));
@@ -876,10 +964,10 @@ async function runCardController(options = {}, injected = {}) {
     // Data-only source pulls have no briefing markdown write. They can run in
     // parallel because the controller serializes only the shared publish lane.
     const sourceRows = sourceRefreshPlan(plan, getContract);
-    const sourceResults = await mapWithConcurrency(
+    const sourceSchedule = scheduleWithConcurrency(
       sourceRows,
       options.sourceConcurrency || DEFAULT_SOURCE_CONCURRENCY,
-      async ({ contract, cardIds }) => {
+      async ({ contract, cardIds }, sourceIndex) => {
         const beforeEvidence = currentEvidence(contract, dataDir, date);
         const implementationDigest = controllerImplementationDigest(contract);
         const humanActionToken = options.humanActionToken ? String(options.humanActionToken) : '';
@@ -915,22 +1003,52 @@ async function runCardController(options = {}, injected = {}) {
             error:
               'The identical source refresh already failed with unchanged source evidence today.',
             commands: [],
+            readyAt: new Date().toISOString(),
+            sourceIndex,
           };
         }
+        const workspace = createJobWorkspace({
+          runId,
+          jobId: `source-${contract.family || sourceIndex}`,
+          input: {
+            schemaVersion: 1,
+            kind: 'source-refresh',
+            runId,
+            date,
+            family: contract.family || 'card-local',
+            cardIds: [...cardIds],
+            evidenceDigest: beforeEvidence.digest,
+          },
+        });
         let result;
         let error = null;
+        let workspaceCleanup = null;
         try {
+          const sourceCommandRunner = (command, args, runOptions = {}) =>
+            commandRunner(command, args, {
+              ...runOptions,
+              env: {
+                ...(runOptions.env || process.env),
+                TMPDIR: workspace.path,
+                TMP: workspace.path,
+                TEMP: workspace.path,
+                BRIEFING_JOB_WORKSPACE: workspace.path,
+              },
+            });
           result = await contract.refresh({
             dataDir,
             date,
             cardIds,
             cwd: REPO_ROOT,
             node: process.execPath,
-            runCommand: commandRunner,
+            runCommand: sourceCommandRunner,
+            workspaceDir: workspace.path,
           });
         } catch (caught) {
           error = String((caught && caught.message) || caught);
           result = { ok: false, error };
+        } finally {
+          workspaceCleanup = disposeJobWorkspace(workspace);
         }
         const afterEvidence = currentEvidence(contract, dataDir, date);
         return {
@@ -949,6 +1067,14 @@ async function runCardController(options = {}, injected = {}) {
           implementationDigest,
           beforeEvidence,
           afterEvidence,
+          readyAt: new Date().toISOString(),
+          sourceIndex,
+          workspace: {
+            path: workspace.path,
+            inputHash: workspace.inputHash,
+            createdAt: workspace.createdAt,
+            ...workspaceCleanup,
+          },
           error: error || String((result && result.error) || ''),
           // Keep the durable receipt inspectable without accidentally storing a
           // multi-megabyte child-process transcript on every overnight run.
@@ -964,9 +1090,18 @@ async function runCardController(options = {}, injected = {}) {
         };
       },
     );
-    receipt.sourceFamilies = sourceResults;
-    for (const source of sourceResults) {
-      if (source.ok || source.noSpin) continue;
+    const sourcePromiseByCard = new Map();
+    sourceRows.forEach((row, index) => {
+      for (const cardId of row.cardIds) {
+        sourcePromiseByCard.set(cardId, sourceSchedule.promises[index]);
+      }
+    });
+    const recordedSourceIndexes = new Set();
+    const recordSourceResult = (source) => {
+      if (!source || recordedSourceIndexes.has(source.sourceIndex)) return;
+      recordedSourceIndexes.add(source.sourceIndex);
+      receipt.sourceFamilies.push(source);
+      if (source.ok || source.noSpin) return;
       for (const cardId of source.cardIds) {
         recordAttempt(
           date,
@@ -989,17 +1124,31 @@ async function runCardController(options = {}, injected = {}) {
           { dataDir },
         );
       }
-    }
-    persist();
+    };
 
-    const sourceByCard = new Map();
-    for (const source of sourceResults)
-      for (const cardId of source.cardIds) sourceByCard.set(cardId, source);
+    const pendingCards = plan.map((item, planIndex) => ({
+      item,
+      planIndex,
+      sourcePromise: sourcePromiseByCard.get(item.cardId) || Promise.resolve(null),
+    }));
 
     // This is intentionally a single lane. refresh-card atomically splices into
     // the same briefing file, so parallel publishes would race even though card
-    // source/QC reasoning is independent.
-    for (const item of plan) {
+    // source/QC reasoning is independent. The next lane entrant is whichever
+    // card's declared source becomes ready first, not whichever source family
+    // happens to be slowest.
+    while (pendingCards.length) {
+      const ready = await Promise.race(
+        pendingCards.map((entry) =>
+          entry.sourcePromise.then((source) => ({ entry, source })),
+        ),
+      );
+      const pendingIndex = pendingCards.indexOf(ready.entry);
+      if (pendingIndex >= 0) pendingCards.splice(pendingIndex, 1);
+      const item = ready.entry.item;
+      const source = ready.source;
+      recordSourceResult(source);
+      persist();
       if (receipt.frozen) break;
       if (deadlineAtMs && Date.now() >= deadlineAtMs) {
         receipt.timeBudgetExhausted = true;
@@ -1009,7 +1158,6 @@ async function runCardController(options = {}, injected = {}) {
       }
       const cardId = item.cardId;
       const contract = getContract(cardId);
-      const source = sourceByCard.get(cardId);
       const attemptBefore = readArtifact();
       const evidence = currentEvidence(contract, dataDir, date);
       const defects = defectCodesForCard(attemptBefore, cardId);
@@ -1065,6 +1213,21 @@ async function runCardController(options = {}, injected = {}) {
         cardReceipt.reflection =
           'The identical tactic with identical live/source evidence already failed today.';
       } else {
+        await withSharedBriefingLock(async () => {
+        const workspace = createJobWorkspace({
+          runId,
+          jobId: `card-${cardId}`,
+          input: {
+            schemaVersion: 1,
+            kind: 'card-refresh',
+            runId,
+            date,
+            cardId,
+            sourceFamily: contract.family || 'card-local',
+            evidenceDigest: evidence.digest,
+            verificationInputs,
+          },
+        });
         const markdown = markdownPathFor(dataDir, date);
         const backups = {
           markdown: snapshotFile(markdown, path.join(paths.backupDir, `${cardId}.md`)),
@@ -1072,10 +1235,20 @@ async function runCardController(options = {}, injected = {}) {
             paths.artifact,
             path.join(paths.backupDir, `${cardId}.dashboard-qc.json`),
           ),
+          cardArtifact: snapshotFile(
+            artifactPathFor({ dataDir, date, id: cardId }),
+            path.join(paths.backupDir, `${cardId}.card-artifact.json`),
+          ),
+          blockersArtifact: snapshotFile(
+            artifactPathFor({ dataDir, date, id: 'blockers' }),
+            path.join(paths.backupDir, `${cardId}.blockers-artifact.json`),
+          ),
         };
         cardReceipt.backups = {
           markdownExisted: backups.markdown.existed,
           artifactExisted: backups.artifact.existed,
+          cardArtifactExisted: backups.cardArtifact.existed,
+          blockersArtifactExisted: backups.blockersArtifact.existed,
         };
         writeActiveTransaction(dataDir, {
           runId,
@@ -1094,6 +1267,7 @@ async function runCardController(options = {}, injected = {}) {
             dataDir,
             mode,
             supervised: !!options.supervised,
+            workspaceDir: workspace.path,
             timeoutMs: remainingMs
               ? Math.min(options.refreshTimeoutMs || DEFAULT_REFRESH_TIMEOUT_MS, remainingMs)
               : options.refreshTimeoutMs || DEFAULT_REFRESH_TIMEOUT_MS,
@@ -1105,6 +1279,13 @@ async function runCardController(options = {}, injected = {}) {
             stderr: String((error && error.stack) || error),
           };
         }
+        const workspaceCleanup = disposeJobWorkspace(workspace);
+        cardReceipt.workspace = {
+          path: workspace.path,
+          inputHash: workspace.inputHash,
+          createdAt: workspace.createdAt,
+          ...workspaceCleanup,
+        };
         const attemptAfter = readArtifact();
         // A full-card practice is still only allowed to move cards red -> green.
         // Preserve a formerly green target too, not merely unrelated green cards.
@@ -1139,8 +1320,7 @@ async function runCardController(options = {}, injected = {}) {
         cardReceipt.defectsAfter = defectCodesForCard(attemptAfter, cardId);
         cardReceipt.greenRegressions = regressions;
         if (regressions.length) {
-          restoreSnapshot(backups.markdown);
-          restoreSnapshot(backups.artifact);
+          restoreTransactionBackups(backups);
           cardReceipt.outcome = 'rolled-back-green-regression';
           cardReceipt.reflection = `Rolled back: ${regressions.map((row) => `${row.id} ${row.beforeStatus}->${row.afterStatus}`).join(', ')}.`;
           receipt.frozen = true;
@@ -1151,11 +1331,12 @@ async function runCardController(options = {}, injected = {}) {
           // Destroying a good build over an infrastructure outage is the defect
           // class da4dde67 fixed. Keep the build, own the uncertainty out loud,
           // and refuse to call the run clean until live proof arrives.
-          const marked = markCardVerificationExampleCo({
-            artifactFile: paths.artifact,
-            artifact: attemptAfter,
+          const markedPublished = await markCardExampleCoAndRepublish({
+            dataDir,
+            date,
             cardId,
           });
+          const marked = markedPublished.board;
           cardReceipt.statusAfter = cardStatus(marked, cardId);
           cardReceipt.defectsAfter = defectCodesForCard(marked, cardId);
           cardReceipt.outcome = 'kept-unverified-live-unreachable';
@@ -1163,8 +1344,7 @@ async function runCardController(options = {}, injected = {}) {
           cardReceipt.reflection =
             'Live dashboard could not be consulted, so the scoped verdict is ExampleCo, not failed. The target built clean and its own artifact advanced, so the build stands rather than being rolled back. Its verification state is published as stale so the board shows it unproven and the next run re-selects it.';
         } else if (!verifiedLive) {
-          restoreSnapshot(backups.markdown);
-          restoreSnapshot(backups.artifact);
+          restoreTransactionBackups(backups);
           cardReceipt.outcome = 'rolled-back-unverified-target';
           cardReceipt.reflection =
             'Rolled back: targeted write did not produce fresh scoped live-QC proof, so a partial markdown/artifact update cannot remain published.';
@@ -1178,6 +1358,7 @@ async function runCardController(options = {}, injected = {}) {
             'Targeted refresh and scoped live QC passed without regressing any unrelated green card.';
         }
         clearActiveTransaction(dataDir, runId);
+        });
       }
 
       const qcResult = cardReceipt.outcome === 'cleared' ? 'cleared' : cardReceipt.outcome;
@@ -1208,6 +1389,14 @@ async function runCardController(options = {}, injected = {}) {
       receipt.cards.push(cardReceipt);
       persist();
     }
+    const allSourceResults = await sourceSchedule.all;
+    for (const source of allSourceResults) recordSourceResult(source);
+    receipt.sourceFamilies.sort(
+      (a, b) =>
+        Date.parse(a.readyAt || 0) - Date.parse(b.readyAt || 0) ||
+        Number(a.sourceIndex || 0) - Number(b.sourceIndex || 0),
+    );
+    persist();
   } finally {
     releaseLease(lease, runId);
   }
@@ -1276,6 +1465,7 @@ module.exports = {
   resolvePlan,
   snapshotFile,
   restoreSnapshot,
+  restoreTransactionBackups,
   activeTransactionPath,
   writeActiveTransaction,
   clearActiveTransaction,
@@ -1286,6 +1476,9 @@ module.exports = {
   runProcess,
   sourceRefreshPlan,
   mapWithConcurrency,
+  scheduleWithConcurrency,
+  createJobWorkspace,
+  disposeJobWorkspace,
   controllerPaths,
   cardShellTitle,
   controllerShellMarkdown,
