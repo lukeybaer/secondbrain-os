@@ -108,7 +108,53 @@ function parseCardList(value) {
 }
 
 function primaryCardIds() {
-  return CARDS.map((card) => card.id).filter((id) => !DERIVED_CARD_SET.has(id));
+  // Blockers is a projection rebuilt from canonical board truth after every
+  // target. System Health is not merely a projection: its measurement roster
+  // and evidence are independently produced and must earn a fresh verdict on
+  // every all-card run.
+  return CARDS.map((card) => card.id).filter((id) => id !== 'blockers');
+}
+
+function boundedCommandTimeoutMs(requestedMs, deadlineAtMs, nowMs = Date.now()) {
+  const requested = Number.isFinite(requestedMs) && requestedMs > 0 ? requestedMs : null;
+  if (!Number.isFinite(deadlineAtMs)) return requested;
+  const remaining = Math.max(0, deadlineAtMs - nowMs);
+  return requested == null ? remaining : Math.min(requested, remaining);
+}
+
+function deadlineExceededError() {
+  const error = new Error('Controller wall-clock deadline reached; no new work was started.');
+  error.code = 'CONTROLLER_DEADLINE_EXCEEDED';
+  return error;
+}
+
+function assertWithinDeadline(signal, deadlineAtMs) {
+  if (signal?.aborted || (Number.isFinite(deadlineAtMs) && Date.now() >= deadlineAtMs)) {
+    throw deadlineExceededError();
+  }
+}
+
+function awaitWithAbort(value, signal) {
+  if (!signal) return Promise.resolve(value);
+  if (signal.aborted) return Promise.reject(deadlineExceededError());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(deadlineExceededError());
+    };
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(value).then(
+      (result) => {
+        cleanup();
+        resolve(result);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 function normalizeStatus(status) {
@@ -406,7 +452,8 @@ function activeTransactionPath(dataDir) {
   return path.join(controllerDir(dataDir), 'active-transaction.json');
 }
 
-function writeActiveTransaction(dataDir, transaction) {
+function writeActiveTransaction(dataDir, transaction, { signal = null, deadlineAtMs = null } = {}) {
+  assertWithinDeadline(signal, deadlineAtMs);
   const file = activeTransactionPath(dataDir);
   writeJsonAtomic(file, transaction);
   return file;
@@ -528,8 +575,23 @@ function releaseLease(lease, runId) {
 function runProcess(
   command,
   args,
-  { cwd = REPO_ROOT, env = process.env, timeoutMs = DEFAULT_REFRESH_TIMEOUT_MS } = {},
+  {
+    cwd = REPO_ROOT,
+    env = process.env,
+    timeoutMs = DEFAULT_REFRESH_TIMEOUT_MS,
+    hardDeadlineAtMs = null,
+    signal = null,
+  } = {},
 ) {
+  if (signal?.aborted || (Number.isFinite(hardDeadlineAtMs) && Date.now() >= hardDeadlineAtMs)) {
+    return Promise.resolve({
+      stdout: '',
+      stderr: 'Controller wall-clock deadline reached before process spawn.',
+      exitCode: 124,
+      timedOut: true,
+      deadlineExpired: true,
+    });
+  }
   return new Promise((resolve) => {
     // The cloud uses GNU timeout as a child-owned deadline as well as this
     // parent's process-group fallback. If the controller itself is stopped,
@@ -554,12 +616,26 @@ function runProcess(
     let timedOut = false;
     let killGraceTimer = null;
     let timer = null;
+    let hardTimer = null;
+    let abortHandler = null;
     const finish = (result) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       if (killGraceTimer) clearTimeout(killGraceTimer);
+      if (hardTimer) clearTimeout(hardTimer);
+      if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
       resolve({ stdout, stderr, ...result });
+    };
+    const hardKill = () => {
+      timedOut = true;
+      try {
+        if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch {
+        // The process may have completed in the race before the deadline.
+      }
+      finish({ exitCode: 124, timedOut: true, deadlineExpired: true, signal: 'SIGKILL' });
     };
     child.stdout.on('data', (chunk) => {
       stdout = `${stdout}${chunk}`.slice(-200000);
@@ -598,6 +674,13 @@ function runProcess(
       },
       timeoutMs + 20 * 1000,
     );
+    if (Number.isFinite(hardDeadlineAtMs)) {
+      hardTimer = setTimeout(hardKill, Math.max(0, hardDeadlineAtMs - Date.now()));
+    }
+    if (signal) {
+      abortHandler = hardKill;
+      signal.addEventListener('abort', abortHandler, { once: true });
+    }
   });
 }
 
@@ -634,7 +717,7 @@ async function mapWithConcurrency(items, limit, worker) {
   return results;
 }
 
-function scheduleWithConcurrency(items, limit, worker) {
+function scheduleWithConcurrency(items, limit, worker, controls = {}) {
   const list = Array.isArray(items) ? items : [];
   const concurrency = Math.max(1, Math.min(list.length || 1, Number(limit) || 1));
   const results = new Array(list.length);
@@ -648,8 +731,23 @@ function scheduleWithConcurrency(items, limit, worker) {
     return { promise, resolve, reject };
   });
   let next = 0;
+  const stopRemaining = () => {
+    const start = next;
+    next = list.length;
+    for (let index = start; index < list.length; index += 1) {
+      const result = controls.onSkipped
+        ? controls.onSkipped(list[index], index)
+        : undefined;
+      results[index] = result;
+      deferred[index].resolve(result);
+    }
+  };
   const workers = Array.from({ length: concurrency }, async () => {
     while (true) {
+      if (controls.shouldStart && !controls.shouldStart()) {
+        stopRemaining();
+        return;
+      }
       const index = next;
       next += 1;
       if (index >= list.length) return;
@@ -852,10 +950,20 @@ async function runCardController(options = {}, injected = {}) {
   const readArtifact = injected.readArtifact || (() => liveArtifact(dataDir));
   const getContract = injected.getSourceContract || getSourceContract;
   const commandRunner = injected.runCommand || runProcess;
+  const sharedBriefingLock = injected.withSharedBriefingLock || withSharedBriefingLock;
+  const createWorkspace = injected.createJobWorkspace || createJobWorkspace;
+  const snapshot = injected.snapshotFile || snapshotFile;
   const startedAtMs = Number.isFinite(options.startedAtMs) ? options.startedAtMs : Date.now();
   const maxRunMs =
     Number.isFinite(options.maxRunMs) && options.maxRunMs > 0 ? options.maxRunMs : null;
   const deadlineAtMs = maxRunMs ? startedAtMs + maxRunMs : null;
+  const deadlineController = new AbortController();
+  let deadlineTimer = null;
+  if (deadlineAtMs) {
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) deadlineController.abort();
+    else deadlineTimer = setTimeout(() => deadlineController.abort(), remainingMs);
+  }
   const targetRefresh =
     injected.runTargetRefresh ||
     ((context) =>
@@ -884,6 +992,8 @@ async function runCardController(options = {}, injected = {}) {
             BRIEFING_CONTROLLER_TRANSACTION: '1',
           }),
           timeoutMs: context.timeoutMs || options.refreshTimeoutMs || DEFAULT_REFRESH_TIMEOUT_MS,
+          hardDeadlineAtMs: context.hardDeadlineAtMs,
+          signal: context.signal,
         },
       ));
   const paths = controllerPaths({ dataDir, date, runId });
@@ -909,6 +1019,7 @@ async function runCardController(options = {}, injected = {}) {
   persist();
 
   if (options.shadow) {
+    if (deadlineTimer) clearTimeout(deadlineTimer);
     receipt.outcome = 'shadow-planned';
     receipt.finishedAt = new Date().toISOString();
     persist();
@@ -924,6 +1035,7 @@ async function runCardController(options = {}, injected = {}) {
     leaseMs: options.leaseMs,
   });
   if (!lease.acquired) {
+    if (deadlineTimer) clearTimeout(deadlineTimer);
     receipt.outcome = 'lease-held';
     receipt.lease = lease.lease || null;
     receipt.finishedAt = new Date().toISOString();
@@ -931,6 +1043,8 @@ async function runCardController(options = {}, injected = {}) {
     return receipt;
   }
 
+  let sourceSchedule = null;
+  let fatalError = null;
   try {
     const recovery = recoverIncompleteTransaction(dataDir);
     if (recovery) {
@@ -964,10 +1078,42 @@ async function runCardController(options = {}, injected = {}) {
     // Data-only source pulls have no briefing markdown write. They can run in
     // parallel because the controller serializes only the shared publish lane.
     const sourceRows = sourceRefreshPlan(plan, getContract);
-    const sourceSchedule = scheduleWithConcurrency(
+    const deadlineSourceResult = ({ contract, cardIds }, sourceIndex) => {
+      const beforeEvidence = currentEvidence(contract, dataDir, date);
+      const implementationDigest = controllerImplementationDigest(contract);
+      const tactic = `source:${contract.family || 'card-local'}`;
+      const tacticInputHash = hashTacticInput({
+        family: contract.family || 'card-local',
+        cardIds: [...cardIds].sort(),
+        evidenceDigest: beforeEvidence.digest,
+        implementationDigest,
+        humanActionToken: options.humanActionToken ? String(options.humanActionToken) : null,
+        mode,
+      });
+      return {
+        family: contract.family,
+        cardIds,
+        ok: false,
+        noSpin: false,
+        deadlineSkipped: true,
+        tactic,
+        tacticInputHash,
+        implementationDigest,
+        beforeEvidence,
+        afterEvidence: beforeEvidence,
+        error: 'Controller deadline reached before this source family started.',
+        commands: [],
+        readyAt: new Date().toISOString(),
+        sourceIndex,
+      };
+    };
+    sourceSchedule = scheduleWithConcurrency(
       sourceRows,
       options.sourceConcurrency || DEFAULT_SOURCE_CONCURRENCY,
       async ({ contract, cardIds }, sourceIndex) => {
+        if (deadlineController.signal.aborted) {
+          return deadlineSourceResult({ contract, cardIds }, sourceIndex);
+        }
         const beforeEvidence = currentEvidence(contract, dataDir, date);
         const implementationDigest = controllerImplementationDigest(contract);
         const humanActionToken = options.humanActionToken ? String(options.humanActionToken) : '';
@@ -1024,9 +1170,19 @@ async function runCardController(options = {}, injected = {}) {
         let error = null;
         let workspaceCleanup = null;
         try {
-          const sourceCommandRunner = (command, args, runOptions = {}) =>
-            commandRunner(command, args, {
+          const sourceCommandRunner = (command, args, runOptions = {}) => {
+            const boundedTimeoutMs = boundedCommandTimeoutMs(
+              runOptions.timeoutMs,
+              deadlineAtMs,
+            );
+            if (boundedTimeoutMs === 0 || deadlineController.signal.aborted) {
+              throw deadlineExceededError();
+            }
+            return commandRunner(command, args, {
               ...runOptions,
+              ...(boundedTimeoutMs == null ? {} : { timeoutMs: boundedTimeoutMs }),
+              hardDeadlineAtMs: deadlineAtMs,
+              signal: deadlineController.signal,
               env: {
                 ...(runOptions.env || process.env),
                 TMPDIR: workspace.path,
@@ -1035,15 +1191,21 @@ async function runCardController(options = {}, injected = {}) {
                 BRIEFING_JOB_WORKSPACE: workspace.path,
               },
             });
-          result = await contract.refresh({
-            dataDir,
-            date,
-            cardIds,
-            cwd: REPO_ROOT,
-            node: process.execPath,
-            runCommand: sourceCommandRunner,
-            workspaceDir: workspace.path,
-          });
+          };
+          result = await awaitWithAbort(
+            contract.refresh({
+              dataDir,
+              date,
+              cardIds,
+              cwd: REPO_ROOT,
+              node: process.execPath,
+              runCommand: sourceCommandRunner,
+              workspaceDir: workspace.path,
+              signal: deadlineController.signal,
+              deadlineAtMs,
+            }),
+            deadlineController.signal,
+          );
         } catch (caught) {
           error = String((caught && caught.message) || caught);
           result = { ok: false, error };
@@ -1056,6 +1218,10 @@ async function runCardController(options = {}, injected = {}) {
           cardIds,
           ok: !!(result && result.ok),
           noSpin: false,
+          deadlineExpired:
+            deadlineController.signal.aborted ||
+            (error && /CONTROLLER_DEADLINE_EXCEEDED|wall-clock deadline/i.test(error)) ||
+            undefined,
           // A contract may intentionally preserve a fresh proven source instead
           // of rewriting it (producer parity, frozen run 20260719103219). The
           // receipt must say so explicitly, or a skip is indistinguishable from
@@ -1089,6 +1255,10 @@ async function runCardController(options = {}, injected = {}) {
             : [],
         };
       },
+      {
+        shouldStart: () => !deadlineController.signal.aborted,
+        onSkipped: deadlineSourceResult,
+      },
     );
     const sourcePromiseByCard = new Map();
     sourceRows.forEach((row, index) => {
@@ -1101,7 +1271,7 @@ async function runCardController(options = {}, injected = {}) {
       if (!source || recordedSourceIndexes.has(source.sourceIndex)) return;
       recordedSourceIndexes.add(source.sourceIndex);
       receipt.sourceFamilies.push(source);
-      if (source.ok || source.noSpin) return;
+      if (source.ok || source.noSpin || source.deadlineSkipped || source.deadlineExpired) return;
       for (const cardId of source.cardIds) {
         recordAttempt(
           date,
@@ -1213,152 +1383,170 @@ async function runCardController(options = {}, injected = {}) {
         cardReceipt.reflection =
           'The identical tactic with identical live/source evidence already failed today.';
       } else {
-        await withSharedBriefingLock(async () => {
-        const workspace = createJobWorkspace({
-          runId,
-          jobId: `card-${cardId}`,
-          input: {
-            schemaVersion: 1,
-            kind: 'card-refresh',
-            runId,
-            date,
-            cardId,
-            sourceFamily: contract.family || 'card-local',
-            evidenceDigest: evidence.digest,
-            verificationInputs,
+        await sharedBriefingLock(
+          async () => {
+            assertWithinDeadline(deadlineController.signal, deadlineAtMs);
+            const workspace = createWorkspace({
+              runId,
+              jobId: `card-${cardId}`,
+              input: {
+                schemaVersion: 1,
+                kind: 'card-refresh',
+                runId,
+                date,
+                cardId,
+                sourceFamily: contract.family || 'card-local',
+                evidenceDigest: evidence.digest,
+                verificationInputs,
+              },
+            });
+            const markdown = markdownPathFor(dataDir, date);
+            assertWithinDeadline(deadlineController.signal, deadlineAtMs);
+            const backups = {
+              markdown: snapshot(markdown, path.join(paths.backupDir, `${cardId}.md`)),
+              artifact: snapshot(
+                paths.artifact,
+                path.join(paths.backupDir, `${cardId}.dashboard-qc.json`),
+              ),
+              cardArtifact: snapshot(
+                artifactPathFor({ dataDir, date, id: cardId }),
+                path.join(paths.backupDir, `${cardId}.card-artifact.json`),
+              ),
+              blockersArtifact: snapshot(
+                artifactPathFor({ dataDir, date, id: 'blockers' }),
+                path.join(paths.backupDir, `${cardId}.blockers-artifact.json`),
+              ),
+            };
+            cardReceipt.backups = {
+              markdownExisted: backups.markdown.existed,
+              artifactExisted: backups.artifact.existed,
+              cardArtifactExisted: backups.cardArtifact.existed,
+              blockersArtifactExisted: backups.blockersArtifact.existed,
+            };
+            assertWithinDeadline(deadlineController.signal, deadlineAtMs);
+            writeActiveTransaction(
+              dataDir,
+              {
+                runId,
+                cardId,
+                date,
+                mode,
+                startedAt: new Date().toISOString(),
+                backups,
+              },
+              { signal: deadlineController.signal, deadlineAtMs },
+            );
+            let command;
+            try {
+              const remainingMs = deadlineAtMs ? Math.max(0, deadlineAtMs - Date.now()) : null;
+              if (remainingMs === 0 || deadlineController.signal.aborted) {
+                throw deadlineExceededError();
+              }
+              command = await awaitWithAbort(
+                targetRefresh({
+                  cardId,
+                  date,
+                  dataDir,
+                  mode,
+                  supervised: !!options.supervised,
+                  workspaceDir: workspace.path,
+                  timeoutMs: remainingMs
+                    ? Math.min(options.refreshTimeoutMs || DEFAULT_REFRESH_TIMEOUT_MS, remainingMs)
+                    : options.refreshTimeoutMs || DEFAULT_REFRESH_TIMEOUT_MS,
+                  hardDeadlineAtMs: deadlineAtMs,
+                  signal: deadlineController.signal,
+                }),
+                deadlineController.signal,
+              );
+            } catch (error) {
+              command = {
+                exitCode: 1,
+                timedOut: false,
+                stderr: String((error && error.stack) || error),
+              };
+            }
+            const workspaceCleanup = disposeJobWorkspace(workspace);
+            cardReceipt.workspace = {
+              path: workspace.path,
+              inputHash: workspace.inputHash,
+              createdAt: workspace.createdAt,
+              ...workspaceCleanup,
+            };
+            const attemptAfter = readArtifact();
+            // A full-card practice is still only allowed to move cards red -> green.
+            // Preserve a formerly green target too, not merely unrelated green cards.
+            const regressions = greenRegressions(attemptBefore, attemptAfter, {
+              cardId,
+              protectTarget: true,
+            });
+            const verifiedLive = hasVerifiedScopedLiveResult({
+              command,
+              beforeArtifact: attemptBefore,
+              afterArtifact: attemptAfter,
+              cardId,
+              date,
+            });
+            const liveVerdictExampleCo =
+              !verifiedLive &&
+              hasExampleCoLiveVerdict({
+                command,
+                beforeArtifact: attemptBefore,
+                afterArtifact: attemptAfter,
+                cardId,
+                date,
+              });
+            cardReceipt.command = {
+              exitCode: Number(command && command.exitCode),
+              timedOut: !!(command && command.timedOut),
+              verifiedLive,
+              liveVerdictExampleCo,
+              stderr: String((command && command.stderr) || '').slice(-4000),
+            };
+            cardReceipt.statusAfter = cardStatus(attemptAfter, cardId);
+            cardReceipt.defectsAfter = defectCodesForCard(attemptAfter, cardId);
+            cardReceipt.greenRegressions = regressions;
+            if (regressions.length) {
+              restoreTransactionBackups(backups);
+              cardReceipt.outcome = 'rolled-back-green-regression';
+              cardReceipt.reflection = `Rolled back: ${regressions.map((row) => `${row.id} ${row.beforeStatus}->${row.afterStatus}`).join(', ')}.`;
+              receipt.frozen = true;
+              receipt.freezeReason = cardReceipt.reflection;
+            } else if (liveVerdictExampleCo && cardReceipt.statusAfter === 'clean') {
+              // The card BUILT clean and its own artifact advanced; the live
+              // dashboard simply could not be consulted, so the verdict is ExampleCo.
+              // Destroying a good build over an infrastructure outage is the defect
+              // class da4dde67 fixed. Keep the build, own the uncertainty out loud,
+              // and refuse to call the run clean until live proof arrives.
+              const markedPublished = await markCardExampleCoAndRepublish({
+                dataDir,
+                date,
+                cardId,
+              });
+              const marked = markedPublished.board;
+              cardReceipt.statusAfter = cardStatus(marked, cardId);
+              cardReceipt.defectsAfter = defectCodesForCard(marked, cardId);
+              cardReceipt.outcome = 'kept-unverified-live-unreachable';
+              cardReceipt.liveVerdict = 'ExampleCo';
+              cardReceipt.reflection =
+                'Live dashboard could not be consulted, so the scoped verdict is ExampleCo, not failed. The target built clean and its own artifact advanced, so the build stands rather than being rolled back. Its verification state is published as stale so the board shows it unproven and the next run re-selects it.';
+            } else if (!verifiedLive) {
+              restoreTransactionBackups(backups);
+              cardReceipt.outcome = 'rolled-back-unverified-target';
+              cardReceipt.reflection =
+                'Rolled back: targeted write did not produce fresh scoped live-QC proof, so a partial markdown/artifact update cannot remain published.';
+            } else if (cardReceipt.statusAfter !== 'clean') {
+              cardReceipt.outcome = 'target-remains-nonclean';
+              cardReceipt.reflection =
+                'Targeted refresh completed but scoped live QC still reports the card non-clean.';
+            } else {
+              cardReceipt.outcome = 'cleared';
+              cardReceipt.reflection =
+                'Targeted refresh and scoped live QC passed without regressing any unrelated green card.';
+            }
+            clearActiveTransaction(dataDir, runId);
           },
-        });
-        const markdown = markdownPathFor(dataDir, date);
-        const backups = {
-          markdown: snapshotFile(markdown, path.join(paths.backupDir, `${cardId}.md`)),
-          artifact: snapshotFile(
-            paths.artifact,
-            path.join(paths.backupDir, `${cardId}.dashboard-qc.json`),
-          ),
-          cardArtifact: snapshotFile(
-            artifactPathFor({ dataDir, date, id: cardId }),
-            path.join(paths.backupDir, `${cardId}.card-artifact.json`),
-          ),
-          blockersArtifact: snapshotFile(
-            artifactPathFor({ dataDir, date, id: 'blockers' }),
-            path.join(paths.backupDir, `${cardId}.blockers-artifact.json`),
-          ),
-        };
-        cardReceipt.backups = {
-          markdownExisted: backups.markdown.existed,
-          artifactExisted: backups.artifact.existed,
-          cardArtifactExisted: backups.cardArtifact.existed,
-          blockersArtifactExisted: backups.blockersArtifact.existed,
-        };
-        writeActiveTransaction(dataDir, {
-          runId,
-          cardId,
-          date,
-          mode,
-          startedAt: new Date().toISOString(),
-          backups,
-        });
-        let command;
-        try {
-          const remainingMs = deadlineAtMs ? Math.max(1, deadlineAtMs - Date.now()) : null;
-          command = await targetRefresh({
-            cardId,
-            date,
-            dataDir,
-            mode,
-            supervised: !!options.supervised,
-            workspaceDir: workspace.path,
-            timeoutMs: remainingMs
-              ? Math.min(options.refreshTimeoutMs || DEFAULT_REFRESH_TIMEOUT_MS, remainingMs)
-              : options.refreshTimeoutMs || DEFAULT_REFRESH_TIMEOUT_MS,
-          });
-        } catch (error) {
-          command = {
-            exitCode: 1,
-            timedOut: false,
-            stderr: String((error && error.stack) || error),
-          };
-        }
-        const workspaceCleanup = disposeJobWorkspace(workspace);
-        cardReceipt.workspace = {
-          path: workspace.path,
-          inputHash: workspace.inputHash,
-          createdAt: workspace.createdAt,
-          ...workspaceCleanup,
-        };
-        const attemptAfter = readArtifact();
-        // A full-card practice is still only allowed to move cards red -> green.
-        // Preserve a formerly green target too, not merely unrelated green cards.
-        const regressions = greenRegressions(attemptBefore, attemptAfter, {
-          cardId,
-          protectTarget: true,
-        });
-        const verifiedLive = hasVerifiedScopedLiveResult({
-          command,
-          beforeArtifact: attemptBefore,
-          afterArtifact: attemptAfter,
-          cardId,
-          date,
-        });
-        const liveVerdictExampleCo =
-          !verifiedLive &&
-          hasExampleCoLiveVerdict({
-            command,
-            beforeArtifact: attemptBefore,
-            afterArtifact: attemptAfter,
-            cardId,
-            date,
-          });
-        cardReceipt.command = {
-          exitCode: Number(command && command.exitCode),
-          timedOut: !!(command && command.timedOut),
-          verifiedLive,
-          liveVerdictExampleCo,
-          stderr: String((command && command.stderr) || '').slice(-4000),
-        };
-        cardReceipt.statusAfter = cardStatus(attemptAfter, cardId);
-        cardReceipt.defectsAfter = defectCodesForCard(attemptAfter, cardId);
-        cardReceipt.greenRegressions = regressions;
-        if (regressions.length) {
-          restoreTransactionBackups(backups);
-          cardReceipt.outcome = 'rolled-back-green-regression';
-          cardReceipt.reflection = `Rolled back: ${regressions.map((row) => `${row.id} ${row.beforeStatus}->${row.afterStatus}`).join(', ')}.`;
-          receipt.frozen = true;
-          receipt.freezeReason = cardReceipt.reflection;
-        } else if (liveVerdictExampleCo && cardReceipt.statusAfter === 'clean') {
-          // The card BUILT clean and its own artifact advanced; the live
-          // dashboard simply could not be consulted, so the verdict is ExampleCo.
-          // Destroying a good build over an infrastructure outage is the defect
-          // class da4dde67 fixed. Keep the build, own the uncertainty out loud,
-          // and refuse to call the run clean until live proof arrives.
-          const markedPublished = await markCardExampleCoAndRepublish({
-            dataDir,
-            date,
-            cardId,
-          });
-          const marked = markedPublished.board;
-          cardReceipt.statusAfter = cardStatus(marked, cardId);
-          cardReceipt.defectsAfter = defectCodesForCard(marked, cardId);
-          cardReceipt.outcome = 'kept-unverified-live-unreachable';
-          cardReceipt.liveVerdict = 'ExampleCo';
-          cardReceipt.reflection =
-            'Live dashboard could not be consulted, so the scoped verdict is ExampleCo, not failed. The target built clean and its own artifact advanced, so the build stands rather than being rolled back. Its verification state is published as stale so the board shows it unproven and the next run re-selects it.';
-        } else if (!verifiedLive) {
-          restoreTransactionBackups(backups);
-          cardReceipt.outcome = 'rolled-back-unverified-target';
-          cardReceipt.reflection =
-            'Rolled back: targeted write did not produce fresh scoped live-QC proof, so a partial markdown/artifact update cannot remain published.';
-        } else if (cardReceipt.statusAfter !== 'clean') {
-          cardReceipt.outcome = 'target-remains-nonclean';
-          cardReceipt.reflection =
-            'Targeted refresh completed but scoped live QC still reports the card non-clean.';
-        } else {
-          cardReceipt.outcome = 'cleared';
-          cardReceipt.reflection =
-            'Targeted refresh and scoped live QC passed without regressing any unrelated green card.';
-        }
-        clearActiveTransaction(dataDir, runId);
-        });
+          { signal: deadlineController.signal, deadlineAtMs },
+        );
       }
 
       const qcResult = cardReceipt.outcome === 'cleared' ? 'cleared' : cardReceipt.outcome;
@@ -1397,45 +1585,91 @@ async function runCardController(options = {}, injected = {}) {
         Number(a.sourceIndex || 0) - Number(b.sourceIndex || 0),
     );
     persist();
+  } catch (error) {
+    fatalError = error;
+    receipt.error = String((error && error.message) || error);
+    if (
+      deadlineController.signal.aborted ||
+      (error && error.code === 'CONTROLLER_DEADLINE_EXCEEDED') ||
+      /controller deadline|wall-clock deadline/i.test(receipt.error)
+    ) {
+      receipt.timeBudgetExhausted = true;
+      receipt.timeBudgetReason =
+        'Controller deadline reached while waiting for or holding the shared publish lock; no post-deadline transaction was started.';
+    }
+    if (sourceSchedule) {
+      try {
+        await sourceSchedule.all;
+      } catch {
+        // The original fatal error remains the receipt authority.
+      }
+    }
+    receipt.outcome = receipt.timeBudgetExhausted ? 'time-budget-exhausted' : 'failed';
+    receipt.finishedAt = new Date().toISOString();
+    persist();
   } finally {
-    releaseLease(lease, runId);
+    if (deadlineTimer) clearTimeout(deadlineTimer);
+    try {
+      releaseLease(lease, runId);
+    } catch (error) {
+      fatalError = fatalError || error;
+      receipt.error = receipt.error
+        ? `${receipt.error}; lease release failed: ${String((error && error.message) || error)}`
+        : `Lease release failed: ${String((error && error.message) || error)}`;
+      receipt.outcome = 'failed';
+      receipt.finishedAt = new Date().toISOString();
+      persist();
+    }
   }
 
-  const finalArtifact = readArtifact();
-  receipt.final = {
-    ts: finalArtifact.ts || null,
-    defectiveCardCount: Number.isFinite(finalArtifact.defectiveCardCount)
-      ? finalArtifact.defectiveCardCount
-      : statusMap(finalArtifact).size
-        ? [...statusMap(finalArtifact).values()].filter((status) => status !== 'clean').length
-        : null,
-    nonCleanCards: [...statusMap(finalArtifact).entries()]
-      .filter(([, status]) => status !== 'clean')
-      .map(([id, status]) => ({ id, status })),
-  };
   receipt.outcome = receipt.frozen
     ? 'frozen-after-rollback'
     : receipt.timeBudgetExhausted
       ? 'time-budget-exhausted'
+      : fatalError
+        ? 'failed'
       : receipt.cards.some((card) => card.outcome !== 'cleared')
         ? 'needs-attention'
         : 'clean';
-  if (options.notify) {
-    loadBriefingNotifyEnv(dataDir);
-    receipt.notify = await notifyBriefingPublished({
-      dataDir,
-      date,
-      artifact: finalArtifact,
-      phase: 'final',
-      url: buildBriefingDashboardUrl(
-        process.env.BRIEFING_PUBLIC_BASE_URL || 'http://ExampleCo:3001/briefing',
-        process.env.SB_BRIEFING_TOKEN || '',
-      ),
-      send: injected.notifySend || notifyWithFallback,
-    });
-  }
   receipt.finishedAt = new Date().toISOString();
   persist();
+  try {
+    const finalArtifact = readArtifact();
+    receipt.final = {
+      ts: finalArtifact.ts || null,
+      defectiveCardCount: Number.isFinite(finalArtifact.defectiveCardCount)
+        ? finalArtifact.defectiveCardCount
+        : statusMap(finalArtifact).size
+          ? [...statusMap(finalArtifact).values()].filter((status) => status !== 'clean').length
+          : null,
+      nonCleanCards: [...statusMap(finalArtifact).entries()]
+        .filter(([, status]) => status !== 'clean')
+        .map(([id, status]) => ({ id, status })),
+    };
+    if (options.notify) {
+      loadBriefingNotifyEnv(dataDir);
+      receipt.notify = await notifyBriefingPublished({
+        dataDir,
+        date,
+        artifact: finalArtifact,
+        phase: 'final',
+        url: buildBriefingDashboardUrl(
+          process.env.BRIEFING_PUBLIC_BASE_URL || 'http://ExampleCo:3001/briefing',
+          process.env.SB_BRIEFING_TOKEN || '',
+        ),
+        send: injected.notifySend || notifyWithFallback,
+      });
+    }
+  } catch (error) {
+    fatalError = fatalError || error;
+    receipt.error = receipt.error
+      ? `${receipt.error}; finalization failed: ${String((error && error.message) || error)}`
+      : `Finalization failed: ${String((error && error.message) || error)}`;
+    receipt.outcome = 'failed';
+  } finally {
+    receipt.finishedAt = new Date().toISOString();
+    persist();
+  }
   return receipt;
 }
 
@@ -1450,6 +1684,7 @@ module.exports = {
   makeRunId,
   parseCardList,
   primaryCardIds,
+  boundedCommandTimeoutMs,
   statusMap,
   defectCodesForCard,
   cardStatus,

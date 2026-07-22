@@ -16,15 +16,21 @@
 //   1. profile-curated  -- the resolved-ExampleCo Otter quotes already distilled into
 //                          memory/user_profile.md (dated, leadership context).
 //                          Guaranteed non-empty, so the card is never thin.
-//   2. gmail-sent       -- emails ExampleCo himself wrote to real people (last N days).
-//   3. telegram         -- ExampleCo's own directives (data/agent/telegram-inbound.jsonl).
-//   4. dispatch         -- ExampleCo's own dashboard feedback (amy-dispatch-log.jsonl).
+//   2. otter            -- recent transcript segments with explicit confirmed
+//                          ExampleCo speaker identity.
+//   3. gmail-sent       -- emails ExampleCo himself wrote to real people (last N days).
+//   4. telegram         -- ExampleCo's own directives (data/agent/telegram-inbound.jsonl).
+//   5. dispatch         -- ExampleCo's own dashboard feedback (amy-dispatch-log.jsonl).
 
 const fs = require('fs');
 const path = require('path');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const ExampleCo_EMAIL = 'ExampleCo.d.ExampleCo@gmail.com';
+const CONFIRMED_ExampleCo_IDENTITY_TIERS = new Set([
+  'confirmed_by_ExampleCo_cluster',
+  'confirmed_reference_voiceprint_match',
+]);
 
 function safe(fn, fallback) {
   try {
@@ -173,7 +179,111 @@ function loadGmailSent(root, days, today) {
   return out;
 }
 
-// ---- Source 3 + 4: ExampleCo's directives / dashboard feedback ------------------
+function confirmedExampleCoSegment(segment) {
+  const resolved = (segment && segment.resolved_speaker) || {};
+  const person = String(resolved.person_id || resolved.resolved_person || '').trim();
+  const tier = String(resolved.identity_tier || '').toLowerCase();
+  if (!/^(ExampleCo|ExampleCo ExampleCo)$/i.test(person)) return false;
+  return CONFIRMED_ExampleCo_IDENTITY_TIERS.has(tier);
+}
+
+function boundedTextChunks(text, maxChars) {
+  const chunks = [];
+  let current = '';
+  const flush = () => {
+    const value = cleanText(current);
+    if (value) chunks.push(value);
+    current = '';
+  };
+  const sentences = cleanText(text).split(/(?<=[.!?])\s+/).filter(Boolean);
+  for (const sentence of sentences) {
+    const words = sentence.split(/\s+/).filter(Boolean);
+    for (const word of words) {
+      if (word.length > maxChars) {
+        flush();
+        for (let offset = 0; offset < word.length; offset += maxChars) {
+          chunks.push(word.slice(offset, offset + maxChars));
+        }
+        continue;
+      }
+      const prospective = current ? `${current} ${word}` : word;
+      if (prospective.length > maxChars) flush();
+      current = current ? `${current} ${word}` : word;
+    }
+  }
+  flush();
+  return chunks;
+}
+
+function ExampleCoTranscriptQuoteWindows(segments, maxChars = 520) {
+  const out = [];
+  let current = [];
+  let start = null;
+  const flush = () => {
+    const text = cleanText(current.join(' '));
+    if (isSubstantiveQuote(text)) out.push({ text, startSeconds: start });
+    current = [];
+    start = null;
+  };
+  for (const segment of Array.isArray(segments) ? segments : []) {
+    if (!confirmedExampleCoSegment(segment)) {
+      flush();
+      continue;
+    }
+    const segmentStart = Number(segment.start_seconds) || 0;
+    for (const text of boundedTextChunks(segment.text, maxChars)) {
+      if (start == null) start = segmentStart;
+      const prospective = cleanText([...current, text].join(' '));
+      if (prospective.length > maxChars && current.length) {
+        flush();
+        start = segmentStart;
+      }
+      current.push(text);
+      // Produce several usable quotes from a long ExampleCo monologue instead of one
+      // enormous transcript wall. The text remains verbatim and traceable.
+      if (cleanText(current.join(' ')).length >= 180) flush();
+    }
+  }
+  flush();
+  return out;
+}
+
+// ---- Source 2: confirmed ExampleCo speech from recent Otter calls ---------------
+function loadOtterExampleCo(root, days, today) {
+  const rosterFile = path.join(
+    root,
+    'data',
+    'life-archive',
+    'voiceprints',
+    'otter-call-speaker-rosters-latest.json',
+  );
+  const roster = safe(() => JSON.parse(fs.readFileSync(rosterFile, 'utf8')), null);
+  const calls = roster && Array.isArray(roster.calls) ? roster.calls : [];
+  const out = [];
+  for (const call of calls) {
+    const when = String((call && call.date) || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(when) || !withinDays(when, days, today)) continue;
+    const otid = String((call && call.otid) || '').trim();
+    if (!otid || /[^A-Za-z0-9_-]/.test(otid)) continue;
+    const file = path.join(root, 'data', 'otter', 'enriched', `${otid}.json`);
+    const doc = safe(() => JSON.parse(fs.readFileSync(file, 'utf8')), null);
+    if (!doc) continue;
+    for (const quote of ExampleCoTranscriptQuoteWindows(doc.segments)) {
+      out.push({
+        text: quote.text,
+        speaker: 'ExampleCo',
+        source: 'otter',
+        when,
+        ref: `otter:${otid}:${Number(quote.startSeconds || 0).toFixed(2)}`,
+        context: `Otter: ${call.title || doc.title || 'recent conversation'}`,
+        speakerProof: 'confirmed ExampleCo identity on enriched transcript segment',
+      });
+    }
+  }
+  return out;
+}
+
+// ---- Source 4 + 5: ExampleCo's directives / dashboard feedback ------------------
 function tailJsonl(file, max) {
   const raw = safe(() => fs.readFileSync(file, 'utf8'), '');
   if (!raw) return [];
@@ -268,12 +378,13 @@ function loadExampleCoQuotePool(opts = {}) {
   // The grounding file proves values and allowed literature, but its quotes do
   // not carry an observation date. It cannot satisfy a recent-speech card.
   const groundingReference = [];
+  const otter = safe(() => loadOtterExampleCo(root, days, today), []).filter(inAllowedDates);
   const gmailSent = safe(() => loadGmailSent(root, days, today), []).filter(inAllowedDates);
   const telegram = safe(() => loadTelegram(root, days, today), []).filter(inAllowedDates);
   const dispatch = safe(() => loadDispatch(root, days, today), []).filter(inAllowedDates);
 
   const quotes = finalize(
-    [...profileCurated, ...groundingReference, ...gmailSent, ...telegram, ...dispatch],
+    [...profileCurated, ...groundingReference, ...otter, ...gmailSent, ...telegram, ...dispatch],
     max,
   );
   return {
@@ -281,6 +392,7 @@ function loadExampleCoQuotePool(opts = {}) {
     counts: {
       profileCurated: profileCurated.length,
       groundingReference: groundingReference.length,
+      otter: otter.length,
       gmailSent: gmailSent.length,
       telegram: telegram.length,
       dispatch: dispatch.length,
@@ -296,6 +408,9 @@ module.exports = {
   isSubstantiveQuote,
   loadProfileCurated,
   loadGroundingReference,
+  loadOtterExampleCo,
+  confirmedExampleCoSegment,
+  ExampleCoTranscriptQuoteWindows,
   recentDayParts,
   topOfEmailBody,
   finalize,

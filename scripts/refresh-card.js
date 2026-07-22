@@ -521,8 +521,21 @@ async function withSharedBriefingLock(
     // contract this function depends on.
     flockCommand = ['flock'],
     heldCommand = ['sh', '-c', `echo ${LOCK_ACQUIRED_MARKER}; exec cat`],
+    signal = null,
+    deadlineAtMs = null,
   } = {},
 ) {
+  const deadlineExpired = () =>
+    Boolean(signal?.aborted) ||
+    (Number.isFinite(deadlineAtMs) && Date.now() >= deadlineAtMs);
+  const deadlineError = () => {
+    const error = new Error(
+      `ABORT: controller deadline reached while waiting for the shared briefing lock (${lockPath}).`,
+    );
+    error.code = 'CONTROLLER_DEADLINE_EXCEEDED';
+    return error;
+  };
+  if (deadlineExpired()) throw deadlineError();
   if (platform !== 'linux') {
     // No flock on this platform: run inline. Documented, not silent -- callers
     // (and the --publish path) print this so a Windows dev run is never
@@ -538,19 +551,49 @@ async function withSharedBriefingLock(
   const holder = spawn(
     flockBin,
     [...flockLeadingArgs, '-w', String(waitSeconds), lockPath, ...heldCommand],
-    { stdio: ['pipe', 'pipe', 'pipe'] },
+    {
+      detached: process.platform !== 'win32',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    },
   );
 
   let holderExited = false;
   let holderExitInfo = null;
+  let resolveHolderExit;
+  const holderExit = new Promise((resolve) => {
+    resolveHolderExit = resolve;
+  });
   holder.once('exit', (code, signal) => {
     holderExited = true;
     holderExitInfo = { code, signal };
+    resolveHolderExit(holderExitInfo);
   });
   let holderSpawnError = null;
   holder.once('error', (e) => {
     holderSpawnError = e;
+    resolveHolderExit({ error: e });
   });
+
+  const killHolderGroup = (signalName = 'SIGKILL') => {
+    if (holderExited) return;
+    try {
+      if (process.platform !== 'win32' && holder.pid) process.kill(-holder.pid, signalName);
+      else holder.kill(signalName);
+    } catch {
+      /* already gone */
+    }
+  };
+  const terminateHolder = async (signalName = 'SIGKILL') => {
+    if (!holderExited) killHolderGroup(signalName);
+    if (holderExited || holderSpawnError) return;
+    await Promise.race([
+      holderExit,
+      new Promise((resolve) => {
+        const timer = setTimeout(resolve, 2_000);
+        timer.unref();
+      }),
+    ]);
+  };
 
   // Race: the marker line appears on stdout (real acquisition) vs. the
   // holder exiting first (flock's wait expired, or the held command could
@@ -561,18 +604,41 @@ async function withSharedBriefingLock(
   // last-resort safety net so this can never hang forever even if flock's own
   // -w contract were somehow violated.
   const acquired = await new Promise((resolve) => {
+    let settled = false;
     let stdoutBuf = '';
+    let hardTimer = null;
+    let safetyTimer = null;
+    let abortHandler = null;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      holder.stdout.removeListener('data', onStdout);
+      if (hardTimer) clearTimeout(hardTimer);
+      if (safetyTimer) clearTimeout(safetyTimer);
+      if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+      resolve(value);
+    };
+    const killForDeadline = () => {
+      void terminateHolder('SIGKILL').then(() => done(false));
+    };
     const onStdout = (chunk) => {
       stdoutBuf += chunk.toString('utf8');
       if (stdoutBuf.includes(LOCK_ACQUIRED_MARKER)) {
-        holder.stdout.removeListener('data', onStdout);
-        resolve(true);
+        done(true);
       }
     };
     holder.stdout.on('data', onStdout);
-    holder.once('exit', () => resolve(false));
-    holder.once('error', () => resolve(false));
-    setTimeout(() => resolve(false), waitSeconds * 1000 + 5000).unref();
+    holder.once('exit', () => done(false));
+    holder.once('error', () => done(false));
+    safetyTimer = setTimeout(() => done(false), waitSeconds * 1000 + 5000);
+    safetyTimer.unref();
+    if (Number.isFinite(deadlineAtMs)) {
+      hardTimer = setTimeout(killForDeadline, Math.max(0, deadlineAtMs - Date.now()));
+    }
+    if (signal) {
+      abortHandler = killForDeadline;
+      signal.addEventListener('abort', abortHandler, { once: true });
+    }
   });
 
   if (holderSpawnError) {
@@ -587,19 +653,19 @@ async function withSharedBriefingLock(
     // ever seeing the marker. Either way, we never proved acquisition --
     // abort loudly, never proceed as if we had it. Clean up a still-alive
     // but unconfirmed holder rather than leaking it.
-    if (!holderExited) {
-      try {
-        holder.kill('SIGKILL');
-      } catch {
-        /* already gone */
-      }
-    }
+    await terminateHolder('SIGKILL');
+    if (deadlineExpired()) throw deadlineError();
     const detail = holderExitInfo
       ? `exit code=${holderExitInfo.code} signal=${holderExitInfo.signal}`
       : 'never confirmed (hard timeout)';
     throw new Error(
       `ABORT: the shared briefing lock (${lockPath}) is held by another run (flock holder did not signal acquisition, ${detail}, after waiting up to ${waitSeconds}s). Refusing to proceed -- retry once the other run finishes.`,
     );
+  }
+
+  if (deadlineExpired()) {
+    await terminateHolder('SIGKILL');
+    throw deadlineError();
   }
 
   const releaseHolder = () =>
@@ -625,19 +691,11 @@ async function withSharedBriefingLock(
       // leaking a lock-holding process indefinitely.
       setTimeout(() => {
         if (settled) return;
-        try {
-          holder.kill('SIGTERM');
-        } catch {
-          /* already gone */
-        }
+        killHolderGroup('SIGTERM');
       }, 2000).unref();
       setTimeout(() => {
         if (settled) return;
-        try {
-          holder.kill('SIGKILL');
-        } catch {
-          /* already gone */
-        }
+        killHolderGroup('SIGKILL');
         done();
       }, 5000).unref();
     });
@@ -645,7 +703,8 @@ async function withSharedBriefingLock(
   try {
     return await fn();
   } finally {
-    await releaseHolder();
+    if (deadlineExpired()) await terminateHolder('SIGKILL');
+    else await releaseHolder();
   }
 }
 

@@ -13,7 +13,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 const crypto = require('crypto');
 const { withCodexAmyPrelude } = require('./lib/codex-amy-prelude.js');
 const { sharedCheckoutRoots } = require('./lib/shared-checkout-root.js');
@@ -37,6 +37,7 @@ function parseArgs(argv) {
     else if (a === '--runner') out.runner = argv[++i];
     else if (a === '--focus') out.focus.push(argv[++i]);
     else if (a === '--title') out.title = argv[++i];
+    else if (a === '--follow-up-of') out.followUpOf = argv[++i];
     // --gate <id> stamps the receipt as a review OF a specific irreversible
     // action (see GATED_ACTIONS in scripts/claude-hooks/two-bot-gate.mjs).
     // The gate requires this declaration: keyword similarity is not consent.
@@ -84,7 +85,10 @@ function readRealArtifact(artifactFile) {
   return { artifactPath, text };
 }
 
-function buildReviewPrompt({ artifactPath, text, focus = [], title }) {
+function buildReviewPrompt({ artifactPath, text, focus = [], title, followUpOf = null }) {
+  if (followUpOf && (!Array.isArray(focus) || focus.length === 0)) {
+    throw new Error('A follow-up review must name the exact fixes to verify with --focus.');
+  }
   const focusLines =
     focus && focus.length
       ? focus.map((f) => `- ${f}`).join('\n')
@@ -100,6 +104,7 @@ function buildReviewPrompt({ artifactPath, text, focus = [], title }) {
       '',
       `Artifact: ${rel(artifactPath)}`,
       `Review title: ${title || path.basename(artifactPath)}`,
+      followUpOf ? `Follow-up of receipt: ${followUpOf}` : 'Review pass: initial',
       '',
       'Review stance:',
       '- Findings first, ordered by severity.',
@@ -107,6 +112,13 @@ function buildReviewPrompt({ artifactPath, text, focus = [], title }) {
       '- Distinguish confirmed facts from inferences.',
       '- If there are no issues, say so and name residual risk.',
       '- Lifecycle note: this invocation writes its receipt after your answer returns. Review whether the code has a durable receipt path; do not flag the current run for lacking its own not-yet-written receipt.',
+      ...(followUpOf
+        ? [
+            '- This is a fix-only follow-up. Review only the prior findings, the exact fixes named under Focus, and their focused regression tests.',
+            '- Do not reopen already-reviewed architecture, rescan unrelated files, or introduce new scope. Flag a new issue only when it is directly caused by one of the listed fixes.',
+            '- Treat the full artifact below as context, not as the review surface.',
+          ]
+        : []),
       '',
       'Focus:',
       focusLines,
@@ -254,7 +266,7 @@ function appendJsonl(file, row) {
  * worktree. data/agent/*-peer-review-results.jsonl is gitignored runtime state,
  * so this never dirties the shared tree.
  */
-function durableResultsFiles(primary) {
+function durableResultsFiles(primary, options = {}) {
   // Identity by realpath, not by string. C:\Users\ExampleCod\secondbrain is a
   // junction onto the real checkout, so two different-looking roots are often
   // one physical file and must not receive the receipt twice.
@@ -269,11 +281,47 @@ function durableResultsFiles(primary) {
     }
   };
 
-  const files = [path.resolve(primary)];
-  const seen = new Set([identity(primary)]);
-  for (const root of sharedCheckoutRoots({ cwd: REPO, extraRoots: [REPO] })) {
+  const roots = options.sharedRoots || sharedCheckoutRoots({ cwd: REPO, extraRoots: [REPO] });
+  const canonicalName = path.basename(DEFAULT_RESULTS);
+  const primaryAbs = path.resolve(primary);
+  const inside = (file, root) => {
+    const relative = path.relative(path.resolve(root), path.resolve(file));
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  };
+  const checkoutRootForPath =
+    options.checkoutRootForPath ||
+    ((file) => {
+      let probe = path.dirname(path.resolve(file));
+      while (!fs.existsSync(probe)) {
+        const parent = path.dirname(probe);
+        if (parent === probe) return null;
+        probe = parent;
+      }
+      try {
+        return execFileSync('git', ['-C', probe, 'rev-parse', '--show-toplevel'], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 5000,
+        }).trim();
+      } catch {
+        return null;
+      }
+    });
+  const enclosingCheckout = checkoutRootForPath(primaryAbs);
+  if (
+    ([REPO, ...roots].some((root) => inside(primaryAbs, root)) ||
+      (enclosingCheckout && inside(primaryAbs, enclosingCheckout))) &&
+    path.basename(primaryAbs).toLowerCase() !== canonicalName.toLowerCase()
+  ) {
+    throw new Error(
+      `Peer-review receipts inside a checkout must use the canonical ${canonicalName} filename; refusing ${primaryAbs}.`,
+    );
+  }
+  const files = [primaryAbs];
+  const seen = new Set([identity(primaryAbs)]);
+  for (const root of roots) {
     if (!fs.existsSync(root)) continue;
-    const candidate = path.join(root, 'data', 'agent', path.basename(primary));
+    const candidate = path.join(root, 'data', 'agent', canonicalName);
     const key = identity(candidate);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -352,6 +400,7 @@ async function runReview(opts, deps = {}) {
     text,
     focus: opts.focus,
     title: opts.title,
+    followUpOf: opts.followUpOf,
   });
   const { id, promptPath } = writePrompt(prompt, opts.promptDir || DEFAULT_PROMPT_DIR);
   if (opts.dryRun) return { id, artifactPath, promptPath, dryRun: true };
@@ -373,6 +422,7 @@ async function runReview(opts, deps = {}) {
     review,
     source: 'scripts/codex-peer-review.js',
   };
+  if (opts.followUpOf) row.followUpOf = String(opts.followUpOf).trim();
   if (opts.gate) row.gate = String(opts.gate).trim().toLowerCase();
   row.receiptFiles = appendReceipt(opts.resultsFile || DEFAULT_RESULTS, row).map((f) => rel(f));
   if (opts.writePlan) {
