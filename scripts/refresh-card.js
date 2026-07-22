@@ -1325,6 +1325,10 @@ async function refreshOneCardArtifact({
   lockHeld = false,
   prepareFn = prepareTargetedRebuild,
   produceCardArtifactFn = produceCardArtifact,
+  produceDerivedCardArtifactFn = produceCardArtifact,
+  writeCardArtifactFn = writeCardArtifact,
+  publishArtifactUnionFn = publishArtifactUnion,
+  runVerifyFn = runVerify,
 } = {}) {
   const now = new Date();
   // The artifact-first CLI still owns the same source/summarization preparation
@@ -1334,7 +1338,7 @@ async function refreshOneCardArtifact({
   await prepareFn({ dataDir, date, now, cardId });
   const artifact = await produceCardArtifactFn({ cardId, date, dataDir, now });
   const transact = async () => {
-    const artifactPath = writeCardArtifact({ dataDir, date, artifact });
+    const artifactPath = writeCardArtifactFn({ dataDir, date, artifact });
     console.log(
       `[refresh-card] produced artifact card='${cardId}' status=${artifact.status} path=${artifactPath}`,
     );
@@ -1342,7 +1346,7 @@ async function refreshOneCardArtifact({
     let board;
     let markdownPath;
     if (publish) {
-      ({ union, board, markdownPath } = await publishArtifactUnion({
+      ({ union, board, markdownPath } = await publishArtifactUnionFn({
         dataDir,
         date,
         refreshedCardId: cardId,
@@ -1353,35 +1357,55 @@ async function refreshOneCardArtifact({
         )} board=${board.absPath} markdown=${markdownPath}`,
       );
     }
-    if (artifact.status !== 'clean') {
-      if (verify) {
+
+    const refreshDerivedBlockers = async (phase) => {
+      const blockers = await produceDerivedCardArtifactFn({
+        cardId: 'blockers',
+        date,
+        dataDir,
+      });
+      const blockersPath = writeCardArtifactFn({ dataDir, date, artifact: blockers });
+      ({ union, board, markdownPath } = await publishArtifactUnionFn({
+        dataDir,
+        date,
+        refreshedCardId: 'blockers',
+      }));
+      console.log(
+        `[refresh-card] refreshed derived blockers artifact phase=${phase} status=${blockers.status} path=${blockersPath} board=${board.absPath} markdown=${markdownPath}`,
+      );
+    };
+
+    // A formerly red target can produce a clean artifact while the currently
+    // published Blockers projection still names it. Rebuild that projection
+    // from the artifact union before live verification, or the stale Blockers
+    // text creates a circular BLOCKERS-NAMED-CARD defect and prevents the clean
+    // target from ever proving itself.
+    if (publish && verify && cardId !== 'blockers' && artifact.status === 'clean') {
+      await refreshDerivedBlockers('pre-verify');
+    }
+
+    if (verify) {
+      // A self-reported clean artifact is NOT proof. --verify must mean the
+      // rendered page was fetched and graded (briefing Invariants 2/4/8): the
+      // live artifact is the only defect count. Without this, the controller
+      // accepted producer stdout alone as "verifiedLive".
+      // A non-clean artifact also needs the same scoped live proof. Otherwise
+      // the controller rolls back fresher red measurement evidence as
+      // "unverified," leaving yesterday's less-informative failure in place.
+      await runVerifyFn({ cardId, date, dataDir, lockHeld: true });
+      if (artifact.status !== 'clean') {
         console.error(
           `[refresh-card] --verify: card='${cardId}' status=${artifact.status}; artifact is honest but not clean.`,
         );
         process.exitCode = 1;
       }
-    } else if (verify) {
-      // A self-reported clean artifact is NOT proof. --verify must mean the
-      // rendered page was fetched and graded (briefing Invariants 2/4/8): the
-      // live artifact is the only defect count. Without this, the controller
-      // accepted producer stdout alone as "verifiedLive".
-      await runVerify({ cardId, date, dataDir, lockHeld: true });
     }
     // Blockers is a derived view of the post-QC canonical artifact. Rebuild it
     // after every non-Blockers publish, including a failed scoped QC, while the
     // same transaction lock is still held. This prevents a green Blockers tile
     // from surviving beside a fresh non-health red verdict.
     if (publish && cardId !== 'blockers') {
-      const blockers = await produceCardArtifact({ cardId: 'blockers', date, dataDir });
-      const blockersPath = writeCardArtifact({ dataDir, date, artifact: blockers });
-      ({ union, board, markdownPath } = await publishArtifactUnion({
-        dataDir,
-        date,
-        refreshedCardId: 'blockers',
-      }));
-      console.log(
-        `[refresh-card] refreshed derived blockers artifact status=${blockers.status} path=${blockersPath} board=${board.absPath} markdown=${markdownPath}`,
-      );
+      await refreshDerivedBlockers('post-verify');
     }
   };
   // Preparation and artifact construction are isolated staging work. Every
@@ -1391,8 +1415,7 @@ async function refreshOneCardArtifact({
   if (publish || verify) {
     if (lockHeld) await transact();
     else await withSharedBriefingLock(transact);
-  }
-  else await transact();
+  } else await transact();
   return artifact;
 }
 
