@@ -143,8 +143,13 @@ const MUST_CONTAIN = [
   ],
   [
     'ec2-server.js',
-    '(?:people_file_match|confirmed|full_script_name_hypothesis|strict)',
-    'concrete people-file suggestion gate uses bounded positive evidence tokens',
+    '(?:people_file_match|confirmed|strict)',
+    'concrete people-file suggestion gate uses bounded non-transcript positive evidence tokens',
+  ],
+  [
+    'ec2-server.js',
+    'hypothesis.is_provisional',
+    'provisional transcript clues never preselect a people file',
   ],
   [
     'scripts/voice-confirmation-queue-build.js',

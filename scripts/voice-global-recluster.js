@@ -52,6 +52,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { buildConfirmedSequenceLineage } = require('./lib/voice-sequence-lineage');
 
 const REPO = path.resolve(__dirname, '..');
 const SPEAKER_BACKEND = String(process.env.VOICE_SPEAKER_BACKEND || 'ecapa').toLowerCase();
@@ -220,7 +221,7 @@ function lookupEmbedding(index, probeAudioPath, paths) {
   return null;
 }
 
-function confirmedPersonFor(registry, voiceClusterId) {
+function confirmedPersonFor(registry, voiceClusterId, sequenceLineage = new Map()) {
   if (!voiceClusterId) return null;
   const resolution = registry.voice_cluster_resolutions?.[voiceClusterId];
   if (resolution?.status === 'confirmed_by_ExampleCo' && resolution.person_id) {
@@ -230,7 +231,7 @@ function confirmedPersonFor(registry, voiceClusterId) {
   if (acoustic?.status === 'confirmed_by_ExampleCo' && acoustic.person_id) {
     return { person_id: acoustic.person_id, display_name: acoustic.display_name || '' };
   }
-  return null;
+  return sequenceLineage.get(voiceClusterId) || null;
 }
 
 function deniedPeopleFor(registry, voiceClusterId) {
@@ -252,7 +253,7 @@ function registryAcousticIdFor(registry, personId) {
   return entries[0] || '';
 }
 
-function buildItems(rows, embeddingIndex, registry, paths) {
+function buildItems(rows, embeddingIndex, registry, paths, sequenceLineage = new Map()) {
   const items = [];
   let missingEmbedding = 0;
   let withoutProbe = 0;
@@ -266,7 +267,7 @@ function buildItems(rows, embeddingIndex, registry, paths) {
       missingEmbedding += 1;
       continue;
     }
-    const confirmed = confirmedPersonFor(registry, row.voice_cluster_id);
+    const confirmed = confirmedPersonFor(registry, row.voice_cluster_id, sequenceLineage);
     items.push({
       key: row.track_key,
       otid: row.otid,
@@ -749,7 +750,18 @@ function runRecluster(options = {}) {
   const registry = readJson(paths.registry, {});
   const rows = discoverTrackRows(paths);
   const embeddingIndex = loadEmbeddingIndex(paths.embedCacheDir);
-  const { items, missingEmbedding, withoutProbe } = buildItems(rows, embeddingIndex, registry, paths);
+  const sequenceLineage = buildConfirmedSequenceLineage(registry, {
+    repoRoot: REPO,
+    dataDir: paths.dataDir,
+    voiceprintDir: paths.vpDir,
+  });
+  const { items, missingEmbedding, withoutProbe } = buildItems(
+    rows,
+    embeddingIndex,
+    registry,
+    paths,
+    sequenceLineage.byVoiceClusterId,
+  );
   if (items.length > opts.maxEmbeddings) {
     throw new Error(
       `voice-global-recluster: ${items.length} embeddings exceed the --max-embeddings cap of ${opts.maxEmbeddings}. ` +
@@ -812,6 +824,9 @@ function runRecluster(options = {}) {
       tracks_without_probe: withoutProbe,
       confirmed_tracks: items.filter((item) => item.confirmedPersonId).length,
       unconfirmed_tracks: items.filter((item) => !item.confirmedPersonId).length,
+      confirmed_sequence_manifests_loaded: sequenceLineage.manifests.length,
+      confirmed_sequence_member_ids: sequenceLineage.byVoiceClusterId.size,
+      confirmed_sequence_conflicts: sequenceLineage.conflicts,
     },
     summary: {
       clusters: clusterRows.length,
