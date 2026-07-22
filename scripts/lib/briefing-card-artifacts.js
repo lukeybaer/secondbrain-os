@@ -1045,6 +1045,7 @@ function formatBlockersCardBodyFromLiveBoard(liveBoardEnvelope = {}) {
   }
   if (count === 0) {
     lines.push('Separate blockers? no. System Health measurements are tracked only on System Health.');
+    lines.push('No ExampleCo action required on this card; use System Health for measurement detail.');
   } else {
     lines.push(
       `Separate blockers? yes. ${count} non-health card${count === 1 ? '' : 's'} need repair.`,
