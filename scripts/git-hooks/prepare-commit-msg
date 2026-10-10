@@ -1,0 +1,73 @@
+#!/bin/bash
+# prepare-commit-msg guard: warn when a commit is about to include files
+# the author did not explicitly pass on the command line. Catches the
+# 2026-05-23 shared-tree leak (commit 9a87f7f5 swept in 3 unrelated files
+# from a concurrent session).
+#
+# History: Source of truth at scripts/git-hooks/prepare-commit-msg
+# (tracked). The .git/hooks/ copy is a deployment artifact. install-git-hooks.sh
+# keeps both in sync.
+#
+# Logic: when invoked from `git commit -- pathA pathB -m "..."`, git sets
+# GIT_INDEX_FILE pointing at a per-commit index built from only those paths.
+# When invoked from `git commit -m "..."` (full index), GIT_INDEX_FILE points
+# at the regular .git/index. We cannot perfectly detect intent, so the guard
+# takes a pragmatic shortcut: if MORE THAN ONE distinct top-level directory
+# is being committed and the commit message does not name them, log a warning
+# to a sidecar file and continue. The author can choose to act on it.
+#
+# This is a soft guard. The strong fix is to always use explicit paths.
+# Memory rule: feedback_git_commit_explicit_paths_in_shared_tree.md.
+
+set -e
+
+COMMIT_MSG_FILE="$1"
+COMMIT_SOURCE="$2"
+
+# Only inspect human-authored commits (not merge / squash / amend templates).
+if [[ "$COMMIT_SOURCE" == "merge" || "$COMMIT_SOURCE" == "squash" || "$COMMIT_SOURCE" == "commit" ]]; then
+  exit 0
+fi
+
+# What files are about to be committed?
+STAGED=$(git diff --cached --name-only 2>/dev/null || true)
+if [[ -z "$STAGED" ]]; then
+  exit 0
+fi
+
+# Top-level directories touched.
+TOP_DIRS=$(echo "$STAGED" | awk -F/ '{print $1}' | sort -u)
+DIR_COUNT=$(echo "$TOP_DIRS" | wc -l | tr -d ' ')
+
+# Logging sidecar for review. Never blocks.
+LOG_DIR="$HOME/.secondbrain"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+LOG_FILE="$LOG_DIR/commit-scope-audit.log"
+{
+  echo "---"
+  echo "ts: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "pwd: $PWD"
+  echo "branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  echo "top_dirs_touched: $DIR_COUNT"
+  echo "files:"
+  echo "$STAGED" | sed 's/^/  - /'
+} >> "$LOG_FILE" 2>/dev/null || true
+
+# If the staged set spans more than 2 top-level dirs, warn loudly on stderr.
+# Author can still proceed; the goal is visibility, not blocking.
+if [[ "$DIR_COUNT" -gt 2 ]]; then
+  {
+    echo ""
+    echo "WARNING: commit-scope guard"
+    echo "  This commit spans $DIR_COUNT top-level directories:"
+    echo "$TOP_DIRS" | sed 's/^/    - /'
+    echo ""
+    echo "  In shared-tree scenarios (concurrent Claude/Codex sessions) this can"
+    echo "  indicate a peer session's staged work was swept in. Verify intent."
+    echo "  Memory rule: feedback_git_commit_explicit_paths_in_shared_tree.md"
+    echo "  Audit log: $LOG_FILE"
+    echo ""
+  } >&2
+fi
+
+exit 0

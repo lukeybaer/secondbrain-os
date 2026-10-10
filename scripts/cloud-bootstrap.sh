@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Amy mobile cloud-session bootstrap (v1).
+#
+# Runs at the start of every Claude Code web/mobile cloud session so a phone
+# session behaves like Amy: read-only AWS access and secondbrain memory + #learn.
+#
+# Platform reality (discovered, not assumed): the claude.ai cloud sandbox's
+# pre-session "setup script" phase has NO environment variables and NO git
+# auth available yet (the git credential proxy is not up at that point), so a
+# setup script referencing GH_TOKEN or AMY_BOOTSTRAP_* here would silently do
+# nothing. Inside the live session itself, env vars ARE available and, for
+# secondbrain sessions specifically, the repo is already checked out at the
+# session's working directory.
+#
+# Supported wiring, secondbrain sessions: the repo-level SessionStart hook in
+# .claude/settings.json runs scripts/cloud-bootstrap-autorun.sh on every
+# session start. That autorun script gates on being inside the Linux root
+# sandbox (uname -s = Linux, id -un = root, HOME = /root) and, only when true,
+# runs this script automatically. Desktop and EC2 sessions no-op.
+#
+# Supported wiring, sessions on OTHER repos (not secondbrain): there is no
+# autorun hook there, so the first message of that session should manually
+# run (requires a GH_TOKEN env var with Contents read-write on the
+# SecondBrain repo):
+#
+#     git clone https://x-access-token:${GH_TOKEN}@github.com/ExampleCo/SecondBrain "$HOME/secondbrain" && \
+#       bash "$HOME/secondbrain/scripts/cloud-bootstrap.sh"
+#
+# Required environment variables (set in the claude.ai environment config):
+#   AMY_BOOTSTRAP_AWS_ACCESS_KEY_ID      key for the assume-only IAM user
+#   AMY_BOOTSTRAP_AWS_SECRET_ACCESS_KEY  its secret
+#   AMY_SANDBOX_ROLE_ARN                 arn of the read-only role to assume
+#   AMY_SANDBOX_EXTERNAL_ID              external id required by the role trust
+#   AWS_REGION                           defaults to us-east-1 if unset
+#
+# Security model (Codex-reviewed): the bootstrap key can do NOTHING except
+# sts:AssumeRole into a short-lived (1h) read-only role. No secrets read, no
+# writes, no deploy from the sandbox. Deploys happen only through the GitHub
+# Actions workflow that ExampleCo approves; deploy credentials never enter a sandbox.
+#
+# v1 scope: read-only AWS + memory + #learn.
+# Phase 2 (not yet): EC2 SSM shell, full 13-hook port, cross-repo Amy-identity
+# injection into non-secondbrain repos, per-repo scoped write/deploy roles.
+set -uo pipefail
+log() { echo "[amy-bootstrap] $*"; }
+
+# --- 1. AWS read-only access via assume-role ------------------------------
+if [ -n "${AMY_BOOTSTRAP_AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AMY_SANDBOX_ROLE_ARN:-}" ]; then
+  if ! command -v aws >/dev/null 2>&1; then
+    log "installing awscli..."
+    if curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip \
+        && (cd /tmp && unzip -q -o awscliv2.zip) \
+        && /tmp/aws/install -i "$HOME/.local/aws-cli" -b "$HOME/.local/bin" >/dev/null 2>&1; then
+      export PATH="$HOME/.local/bin:$PATH"
+    elif command -v pip >/dev/null 2>&1 && pip install --quiet awscli; then
+      : # pip fallback
+    else
+      log "WARNING: awscli install failed; AWS access unavailable this session"
+    fi
+  fi
+
+  if command -v aws >/dev/null 2>&1; then
+    mkdir -p "$HOME/.aws"
+    umask 077
+    cat > "$HOME/.aws/credentials" <<EOF
+[amy-bootstrap]
+aws_access_key_id = ${AMY_BOOTSTRAP_AWS_ACCESS_KEY_ID}
+aws_secret_access_key = ${AMY_BOOTSTRAP_AWS_SECRET_ACCESS_KEY}
+EOF
+    cat > "$HOME/.aws/config" <<EOF
+[default]
+role_arn = ${AMY_SANDBOX_ROLE_ARN}
+source_profile = amy-bootstrap
+external_id = ${AMY_SANDBOX_EXTERNAL_ID:-}
+region = ${AWS_REGION:-us-east-1}
+EOF
+    if AWS_ARN=$(aws sts get-caller-identity --query Arn --output text 2>/dev/null); then
+      log "AWS read-only ready: ${AWS_ARN}"
+    else
+      log "WARNING: assume-role failed; check the AMY_BOOTSTRAP_AWS_* env vars and role trust"
+    fi
+  fi
+else
+  log "no AMY_BOOTSTRAP_AWS_* env vars set; skipping AWS setup"
+fi
+
+# --- 2. secondbrain memory at the standard path ---------------------------
+SB="${SECONDBRAIN_DIR:-$HOME/secondbrain}"
+if [ -d "$SB/memory" ]; then
+  mkdir -p "$HOME/.claude"
+  ln -sfn "$SB/memory" "$HOME/.claude/memory"
+  log "memory linked: ~/.claude/memory -> $SB/memory"
+  if [ -f "$SB/memory/MEMORY.md" ]; then
+    log "Amy Tier 1 present. READ FIRST: ~/.claude/memory/MEMORY.md, then AMY.md, AMY_REQUIREMENTS.md, AMY_FOUNDATION_REFLECTION.md before acting."
+  fi
+else
+  log "secondbrain memory not found at $SB/memory (clone step may have failed)"
+fi
+
+# --- 3. Amy hooks (verified path-portable subset) -------------------------
+# Only hooks confirmed to resolve via $HOME and free of Windows-isms are wired:
+#   #learn (learn-and-usage.js) and the em-dash guard (em-dash-guard.mjs).
+# The Windows-specific hooks (spine-session, session-coordination,
+# archive-to-s3, session-start-inject.sh, and guards with C:\ paths) are NOT
+# ported yet and are intentionally omitted until tested in a live sandbox.
+H="$SB/scripts/claude-hooks"
+if [ -d "$H" ] && command -v node >/dev/null 2>&1; then
+  mkdir -p "$HOME/.claude"
+  cat > "$HOME/.claude/settings.json" <<EOF
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "echo '{\"systemMessage\":\"You are Amy. READ FIRST: ~/.claude/memory/MEMORY.md, then AMY.md, AMY_REQUIREMENTS.md, AMY_FOUNDATION_REFLECTION.md before acting.\"}'" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": "#learn", "hooks": [ { "type": "command", "command": "node $H/learn-and-usage.js" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash|Edit|Write|NotebookEdit", "hooks": [ { "type": "command", "command": "node $H/em-dash-guard.mjs" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "node $H/em-dash-guard.mjs" } ] }
+    ]
+  }
+}
+EOF
+  log "hooks wired: #learn + em-dash guard + Tier-1 session inject (portable subset)"
+else
+  log "hooks not wired (node or hook dir missing); memory still available for manual #learn"
+fi
+
+log "bootstrap complete (v1: read-only AWS + memory + #learn; EC2 shell and full hook port are phase 2)"

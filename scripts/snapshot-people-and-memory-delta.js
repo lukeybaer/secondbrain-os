@@ -1,0 +1,662 @@
+#!/usr/bin/env node
+// snapshot-people-and-memory-delta.js
+//
+// Produces two JSON snapshots that the EC2 dashboard reads as a fallback
+// when git is not available on EC2:
+//   data/agent/people-files-snapshot.json
+//   data/agent/memory-delta-snapshot.json
+//
+// Run locally (where git lives), then scp the JSONs along with the briefing
+// markdown. The dashboard helpers in ec2-server.js
+// (buildPeopleFilesChangeCard, buildMemoryDeltaCard) prefer live git but
+// fall back to these JSON files when git fails.
+//
+// ExampleCo 2026-04-28 dispatch: top-level cards for biggest/smallest people
+// file change + MEMORY.md change. EC2 has no .git so we ship the
+// pre-computed snapshot.
+
+const fs = require('fs');
+const path = require('path');
+const { execFileSync } = require('child_process');
+const {
+  classifyMemoryPatch,
+  memoryPatchForWindow,
+} = require('./lib/memory-delta-classifier.js');
+
+// REPO honors SECONDBRAIN_ROOT (the repo-wide convention used by
+// health-self-heal.js) so regression tests can point it at a temp git repo.
+// git still runs in REPO (that is where the .git lives).
+const REPO = process.env.SECONDBRAIN_ROOT || path.resolve(__dirname, '..');
+// OUTPUT honors SECONDBRAIN_DATA_DIR so the snapshots land in the SAME live
+// data store the cloud briefing reader looks at (/opt/secondbrain/data/agent
+// on EC2). cloud-morning-briefing.js spawns this generator with
+// SECONDBRAIN_DATA_DIR=<live data dir>, but the generator used to ignore it and
+// wrote to REPO/data/agent (the build-path checkout), so the reader kept
+// reading a stale/missing snapshot at the live path and rendered "the memory
+// and people snapshot did not run on the cloud build" even when the data
+// existed. Defaulting to REPO/data keeps local runs and the regression tests
+// (which only set SECONDBRAIN_ROOT) unchanged.
+const DATA_DIR = process.env.SECONDBRAIN_DATA_DIR || path.join(REPO, 'data');
+const OUT_PEOPLE = path.join(DATA_DIR, 'agent', 'people-files-snapshot.json');
+const OUT_MEMORY = path.join(DATA_DIR, 'agent', 'memory-delta-snapshot.json');
+
+function execGit(args) {
+  try {
+    return execFileSync('git', args, {
+      cwd: REPO,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
+// Distinguish "git ran, no commits in window" from "git is fatal in this dir"
+// (REPO has no real .git). On EC2 the live briefing runner's REPO is
+// /opt/secondbrain, whose .git is an empty stub, so EVERY `git log` was fatal and
+// execGit returned '' -- indistinguishable from a genuinely idle 24h. That false
+// empty was written over the real snapshot and the card read "0 people/memory
+// changes" even on a day with a Gmail-scan commit touching 6 contacts (ExampleCo
+// 2026-07-07 #gap). This probe lets main() refuse to write a false-zero and lets
+// the cloud runner point REPO at a checkout with a real .git.
+function gitIsAvailable() {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: REPO,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return out === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function ensureDir(p) {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+}
+
+// ExampleCo 2026-04-29 dispatch (third pass): aggregator/index files like
+// _gmail-daily-intel.md and _upcoming-dates.md are not people. Filter them
+// out at snapshot-write time AND read-time so the People Files card is
+// always per-contact.
+function isAggregatorFile(file) {
+  if (!file) return false;
+  const basename = path.basename(file, '.md');
+  if (basename.startsWith('_')) return true;
+  if (basename.toUpperCase() === 'INDEX') return true;
+  return false;
+}
+
+function peopleHistoryPartIsFresh(text, hours = 24, nowMs = Date.now()) {
+  const dates = explicitPeopleDates(text, nowMs);
+  if (!dates.length) return true;
+  const cutoff = nowMs - Number(hours || 24) * 60 * 60 * 1000;
+  return dates.every((ms) => Number.isFinite(ms) && ms >= cutoff);
+}
+
+function explicitPeopleDates(text, nowMs = Date.now()) {
+  const raw = String(text || '');
+  const dates = [...raw.matchAll(/\b(20\d{2}-\d{2}-\d{2})\b/g)].map((m) =>
+    Date.parse(`${m[1]}T12:00:00Z`),
+  );
+  const year = new Date(nowMs).getUTCFullYear();
+  const monthByName = {
+    jan: 0,
+    january: 0,
+    feb: 1,
+    february: 1,
+    mar: 2,
+    march: 2,
+    apr: 3,
+    april: 3,
+    may: 4,
+    jun: 5,
+    june: 5,
+    jul: 6,
+    july: 6,
+    aug: 7,
+    august: 7,
+    sep: 8,
+    sept: 8,
+    september: 8,
+    oct: 9,
+    october: 9,
+    nov: 10,
+    november: 10,
+    dec: 11,
+    december: 11,
+  };
+  for (const m of raw.matchAll(
+    /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sept?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})(?:\s*(?:-|to)\s*(\d{1,2}))?\b/gi,
+  )) {
+    const month = monthByName[m[1].toLowerCase()];
+    const startDay = Number(m[2]);
+    const endDay = Number(m[3] || m[2]);
+    for (const day of [startDay, endDay]) {
+      const ms = Date.UTC(year, month, day, 12, 0, 0);
+      if (Number.isFinite(ms)) dates.push(ms);
+    }
+  }
+  return dates;
+}
+
+function hasVoiceOrSourceProof(text) {
+  return (
+    /\b(?:voice(?:print)?|speaker|source|transcript)\b/i.test(text) &&
+    /\b(?:verified|confirmed|matched|identified|proof|evidence|explicitly)\b/i.test(text)
+  );
+}
+
+function isUnsafePeopleSample(text, file = '') {
+  const raw = String(text || '');
+  const fileName = path.basename(String(file || ''), '.md').toLowerCase();
+  const isPeter = fileName === 'family_member' || /\bFamily Member\b/i.test(raw);
+  if (!isPeter) return false;
+  const isExampleCoLike =
+    /\b(?:ExampleCo|teaching)\b/i.test(
+      raw,
+    );
+  return isExampleCoLike && !hasVoiceOrSourceProof(raw);
+}
+
+function isPlaceholderPeopleSamplePart(text) {
+  const cleaned = String(text || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return /^(?:What was new:\s*)?(?:\[\s*\.\s*\.\s*\.\s*\]|\.\.\.|placeholder)$/i.test(cleaned);
+}
+
+// A "what was new" sample must never surface frontmatter/metadata plumbing or an
+// internal id -- those leak onto the PEOPLE FILES CHANGES face and trip the
+// render-QC UUID/internal-id denylist (verify-dashboard-cards-live.js
+// FACE_DENYLIST; live 2026-07-07 defect: family_member's only fresh added line
+// was "originSessionId: db11bd01-f073-47ab-bd53-94c48e855d0e", which rendered a
+// bare UUID on the face). CATEGORY, not one literal key: any single-token
+// frontmatter key line (`someKey: value`) whose key looks like plumbing
+// (id/session/uuid/slug/origin/*Id), OR any line carrying an internal id shape
+// (a true UUID, a spine-session id, or a dispatch-N id). Kept in sync with the
+// QC's own matchers by the regression test that cross-extracts them.
+const INTERNAL_ID_SHAPE =
+  /(?:\b(?=[0-9a-f]{0,17}[a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\bspine-session-|\bdispatch-\d+\b)/i;
+const METADATA_KEY_LINE =
+  /^(?:[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)*)(?:Id|_id|-id|Session|_session|Uuid|_uuid|Slug)\s*:/i;
+function isInternalIdOrMetadataLine(text) {
+  const s = String(text || '').trim();
+  if (!s) return false;
+  if (INTERNAL_ID_SHAPE.test(s)) return true;
+  // Explicit frontmatter plumbing keys we never want on a face, plus the
+  // generic *Id/*Session/*Uuid/*Slug key shape above.
+  if (/^(?:originSessionId|sessionId|id|uuid|slug|origin|source|guid)\s*:/i.test(s)) return true;
+  if (METADATA_KEY_LINE.test(s)) return true;
+  return false;
+}
+
+function freshPeopleSubjectText(text, hours = 24) {
+  const subject = String(text || '').trim();
+  if (subject && peopleHistoryPartIsFresh(subject, hours) && !isUnsafePeopleSample(subject))
+    return subject;
+  return 'contact file changed';
+}
+
+// Word-boundary truncation for the "What was new" sample. ExampleCo 2026-04-29
+// dispatch: the 280-char cap was cutting off mid-word mid-sentence; 600 chars
+// lets multi-source same-day scans (Gmail + Otter on the same contact) finish
+// their sentences. The truncation suffix must NOT be "[...]": render-QC
+// (peopleFilesDetailDefects in verify-dashboard-cards-live.js) treats a
+// literal "[...]" anywhere in the rendered card as a blank/placeholder
+// "What was new" detail and flags the card defective (2026-07-06 live defect:
+// PRIVATE_NAME' long Otter entry truncated to "... could be [...]" and the
+// whole PEOPLE FILES CHANGES card went red). A plain ellipsis marks the cut
+// without reading as a placeholder token to any QC placeholder matcher.
+function truncatePeopleSample(joined, max = 600) {
+  const text = String(joined || '');
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const lastSpace = cut.lastIndexOf(' ');
+  return (lastSpace > max - 100 ? cut.slice(0, lastSpace) : cut) + '…';
+}
+
+function signalActivitySummary(raw) {
+  const block = String(raw || '').match(
+    /<!-- amy-signal-activity:start -->([\s\S]*?)<!-- amy-signal-activity:end -->/i,
+  );
+  if (!block) return null;
+  const countMatch = block[1].match(/^- Recorded messages in this block:\s*(\d+)\s*$/im);
+  return {
+    messageCount: countMatch ? Number(countMatch[1]) : null,
+    facts: [...block[1].matchAll(/^- Fact:\s*(.+)$/gim)].map((match) => match[1].trim()),
+  };
+}
+
+const SIGNAL_PROJECTION_SUBJECT_RE = /Memory:\s*project\s+\d+\s+Signal interaction\(s\)/i;
+
+function signalProjectionSemanticSummary(file, hours, change) {
+  const projectionCount = Number(change?.signalCommitCount || 0);
+  const commitCount = Number(change?.commitCount || 0);
+  if (projectionCount < 1) return '';
+  if (Number(change?.delta || 0) < 30) return '';
+  let current = '';
+  try {
+    current = fs.readFileSync(path.join(REPO, file), 'utf8');
+  } catch {
+    return '';
+  }
+  let before = null;
+  const after = signalActivitySummary(current);
+  try {
+    const baselineCommit = execGit([
+      'rev-list',
+      '-1',
+      `--before=${hours} hours ago`,
+      'HEAD',
+      '--',
+      file,
+    ]).trim();
+    if (!baselineCommit) {
+      const creationCommit = execGit([
+        'log',
+        '-1',
+        `--since=${hours} hours ago`,
+        '--diff-filter=A',
+        '--format=%H',
+        '--',
+        file,
+      ]).trim();
+      if (!creationCommit || !after) return '';
+      const attribution =
+        commitCount === projectionCount
+          ? `All ${commitCount} file-touching commit${commitCount === 1 ? '' : 's'} matched the Signal projection subject.`
+          : `${projectionCount} of ${commitCount} file-touching commits matched the Signal projection subject, so the line total also includes other update types.`;
+      return `This contact file was created during this window. Its initial Amy-managed Signal block contains ${after.messageCount == null ? 'an unverified number of' : after.messageCount} recorded Signal message${after.messageCount === 1 ? '' : 's'} and ${after.facts.length} durable fact${after.facts.length === 1 ? '' : 's'}. ${attribution} The +${change.added}/-${change.deleted} figure is cumulative Git line activity, not a count of new facts.`;
+    }
+    before = signalActivitySummary(execGit(['show', `${baselineCommit}:${file}`]));
+  } catch {
+    return '';
+  }
+  if (!before || !after) return '';
+  if (!Number.isFinite(before.messageCount) || !Number.isFinite(after.messageCount)) return '';
+  const netMessages = after.messageCount - before.messageCount;
+  const priorFacts = new Set(before.facts);
+  const newFacts = after.facts.filter((fact) => !priorFacts.has(fact));
+  const newFactCount = newFacts.length;
+  const projectionLabel = `${projectionCount} Signal projection${projectionCount === 1 ? '' : 's'}`;
+  const messageCount = Math.abs(netMessages);
+  const messageLabel = `${messageCount} Signal message${messageCount === 1 ? '' : 's'}`;
+  const factLabel = `${newFactCount} new durable fact${newFactCount === 1 ? '' : 's'}`;
+  const fileTouchAttribution =
+    commitCount === projectionCount
+      ? `All ${commitCount} file-touching commit${commitCount === 1 ? '' : 's'} in the window matched the Signal projection subject; no Gmail or Otter commit touched this file in the window.`
+      : `${projectionCount} of ${commitCount} file-touching commits in the window matched the Signal projection subject, so the line total also includes other update types and cannot be attributed only to Signal.`;
+  const newFactDetail =
+    newFacts.length > 0 && newFacts.length <= 2
+      ? ` New fact${newFacts.length === 1 ? '' : 's'}: ${truncatePeopleSample(newFacts.join(' | '), 360)}`
+      : '';
+  return `${projectionLabel} updated the Amy-managed Signal activity block. The durable block change was ${
+    netMessages >= 0 ? `${messageLabel} added` : `${messageLabel} removed`
+  } (${before.messageCount} to ${after.messageCount}) and ${factLabel}.${newFactDetail} ${fileTouchAttribution} The +${
+    change.added
+  }/-${change.deleted} figure is cumulative Git line activity across those commits, not a count of new facts.`;
+}
+
+function snapshotPeople(hours = 24) {
+  const since = `${hours} hours ago`;
+  const numstat = execGit([
+    'log',
+    `--since=${since}`,
+    '--numstat',
+    '--format=__COMMIT__%H %s',
+    '--',
+    'memory/contacts/',
+  ]);
+  if (!numstat) return null;
+  const perFile = {};
+  let lastSubject = '';
+  for (const line of numstat.split('\n')) {
+    if (line.startsWith('__COMMIT__')) {
+      lastSubject = line.replace('__COMMIT__', '').slice(41).trim();
+      continue;
+    }
+    const m = line.match(/^(\d+)\s+(\d+)\s+(memory\/contacts\/[^\s]+)/);
+    if (!m) continue;
+    const file = m[3];
+    if (isAggregatorFile(file)) continue;
+    if (!perFile[file]) {
+      perFile[file] = {
+        added: 0,
+        deleted: 0,
+        lastSubject,
+        commitCount: 0,
+        signalCommitCount: 0,
+      };
+    }
+    perFile[file].added += parseInt(m[1], 10);
+    perFile[file].deleted += parseInt(m[2], 10);
+    perFile[file].lastSubject = lastSubject;
+    perFile[file].commitCount += 1;
+    if (SIGNAL_PROJECTION_SUBJECT_RE.test(lastSubject)) perFile[file].signalCommitCount += 1;
+  }
+  // Pull a few added lines per file from the actual diff so the dashboard
+  // can surface "what was new" instead of just commit subjects. ExampleCo
+  // 2026-04-29 third pass: "what detail was new that you learned."
+  function addedSampleFor(file) {
+    const diff = execGit(['log', `--since=${since}`, '-p', '--no-color', '--', file]);
+    if (!diff) return '';
+    const lines = diff.split('\n');
+    const historyEntries = [];
+    const bulletEntries = [];
+    const proseEntries = [];
+    for (const ln of lines) {
+      if (ln.startsWith('+++')) continue;
+      if (!ln.startsWith('+')) continue;
+      const text = ln.slice(1).trim();
+      if (!text) continue;
+      if (/^(last_update|updated|effective|category|warmth|description):/i.test(text)) continue;
+      // Never let frontmatter plumbing or an internal id (UUID / spine-session /
+      // dispatch-N) become the "what was new" sample -- it leaks onto the face
+      // and trips the render-QC internal-id denylist (2026-07-07 UUID leak).
+      if (isInternalIdOrMetadataLine(text)) continue;
+      if (/^---$/.test(text)) continue;
+      if (/^##\s/.test(text)) continue;
+      if (/^-\s+\d{4}-\d{2}-\d{2}/.test(text)) {
+        historyEntries.push(text.replace(/^-\s+/, ''));
+        continue;
+      }
+      if (/^[-*]\s+\S/.test(text)) {
+        bulletEntries.push(text.replace(/^[-*]\s+/, ''));
+        continue;
+      }
+      if (text.length > 30 && /[a-z]/.test(text)) proseEntries.push(text);
+    }
+    // ExampleCo 2026-04-29 dispatch: 280-char cap was cutting off mid-word
+    // mid-sentence. Extend to 600 chars so multi-source same-day scans
+    // (Gmail + Otter on the same contact) finish their sentences. The
+    // dashboard tile still shows ~240-char preview; the drilldown reads
+    // the full string.
+    const joined = [...historyEntries, ...bulletEntries, ...proseEntries]
+      .filter((entry) => !isPlaceholderPeopleSamplePart(entry))
+      .filter((entry) => peopleHistoryPartIsFresh(entry, hours))
+      .filter((entry) => !isUnsafePeopleSample(entry, file))
+      .slice(0, 3)
+      .join(' • ');
+    return truncatePeopleSample(joined);
+  }
+  function impactFor(sample) {
+    const text = String(sample || '');
+    if (/\b(?:voice|speaker|calls?|segments?|words?|acoustic|voiceprint)\b/i.test(text)) {
+      return 'This changes which call evidence can be associated with this person; a wrong identity match would contaminate future meeting recall, so the source calls and identity proof matter.';
+    }
+    if (/\b(?:operating style|works? on|role|company|relationship|decision|preference|timeline|goal)\b/i.test(text)) {
+      return 'This changes future relationship recall and the context Amy uses when preparing work, messages, and decisions involving this person.';
+    }
+    return 'This changes the durable context Amy may retrieve for future work involving this person; the new content should be reviewed when its source identity is uncertain.';
+  }
+  const entries = Object.entries(perFile)
+    .map(([file, s]) => {
+      const addedSample = addedSampleFor(file);
+      return {
+        file,
+        name: path.basename(file, '.md').replace(/-/g, ' '),
+        delta: s.added + s.deleted,
+        added: s.added,
+        deleted: s.deleted,
+        commitCount: s.commitCount,
+        signalCommitCount: s.signalCommitCount,
+        hasMixedSourceActivity: s.signalCommitCount !== s.commitCount,
+        lastSubject: freshPeopleSubjectText(s.lastSubject, hours),
+        addedSample,
+        newContent: addedSample,
+        impact: impactFor(addedSample),
+      };
+    })
+    .map((entry) => ({
+      ...entry,
+      semanticSummary: signalProjectionSemanticSummary(entry.file, hours, entry),
+    }))
+    .sort((a, b) => b.delta - a.delta);
+  if (entries.length === 0) return null;
+  return {
+    biggest: entries[0],
+    smallest: entries[entries.length - 1],
+    biggestTwo: entries.slice(0, 2),
+    smallestTwo: entries.slice(-2).sort((a, b) => a.delta - b.delta),
+    allEntries: entries, // ExampleCo 2026-04-29 second pass: drilldown needs all
+    totalFiles: entries.length,
+    totalLines: entries.reduce((s, e) => s + e.delta, 0),
+    hours,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+// Counts every commit on the repo over the window. The MEMORY.md-scoped
+// `git log` only returns commits that touched memory/MEMORY.md, so on a day
+// with heavy dev work but no index edit it reported "0 commits" even though
+// the repo was busy. ExampleCo 2026-05-18: "I don't believe nothing changed."
+// The card now reports the real repo-wide commit count alongside the
+// MEMORY.md-specific line delta.
+function repoCommitCount(hours) {
+  const out = execGit(['log', `--since=${hours} hours ago`, '--pretty=format:%H']);
+  if (!out) return 0;
+  return out.split('\n').filter((l) => /^[0-9a-f]{7,}$/.test(l.trim())).length;
+}
+
+function snapshotMemory(hours = 24) {
+  const since = `${hours} hours ago`;
+  const numstat = execGit([
+    'log',
+    `--since=${since}`,
+    '--numstat',
+    '--format=__COMMIT__%H|%s',
+    '--',
+    'memory/MEMORY.md',
+  ]);
+  const repoCommits = repoCommitCount(hours);
+  let added = 0;
+  let deleted = 0;
+  const subjects = [];
+  for (const line of (numstat || '').split('\n')) {
+    if (line.startsWith('__COMMIT__')) {
+      const subj = line.split('|').slice(1).join('|').trim();
+      if (subj) subjects.push(subj);
+      continue;
+    }
+    const m = line.match(/^(\d+)\s+(\d+)\s+memory\/MEMORY\.md/);
+    if (m) {
+      added += parseInt(m[1], 10);
+      deleted += parseInt(m[2], 10);
+    }
+  }
+  // This snapshot owns MEMORY.md activity only. Unrelated repository commits
+  // are retained as diagnostic context, but must never populate the card or be
+  // relabeled as memory commits.
+  if (added === 0 && deleted === 0 && subjects.length === 0) return null;
+  // Read the NET diff for the window. A revision to an existing Tier 1 pointer
+  // is one update, not a newly learned lesson plus a removed old lesson.
+  let updatedLines = [];
+  let addedLines = [];
+  let deletedLines = [];
+  try {
+    const diff = memoryPatchForWindow(execGit, since);
+    if (diff) {
+      const classified = classifyMemoryPatch(diff, {
+        shouldIncludeLine: (line) => !isInternalIdOrMetadataLine(line),
+      });
+      updatedLines = classified.updatedLines.slice(0, 5);
+      addedLines = classified.addedLines.slice(0, 5);
+      deletedLines = classified.deletedLines.slice(0, 5);
+    }
+  } catch {
+    /* ignore */
+  }
+  let currentLines = 0;
+  try {
+    const memPath = path.join(REPO, 'memory', 'MEMORY.md');
+    if (fs.existsSync(memPath)) currentLines = fs.readFileSync(memPath, 'utf8').split('\n').length;
+  } catch {
+    /* ignore */
+  }
+  return {
+    added,
+    deleted,
+    delta: added + deleted,
+    // `commits` drives the card's "N memory commits" count, so it is always
+    // scoped to commits that actually touched MEMORY.md.
+    commits: subjects.length,
+    memoryCommits: subjects.length,
+    repoCommits,
+    subjects: subjects.slice(0, 3),
+    updatedLines,
+    addedLines,
+    deletedLines,
+    currentLines,
+    hours,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function emptyPeopleSnapshot(hours = 24) {
+  return {
+    hours,
+    totalFiles: 0,
+    totalLines: 0,
+    biggest: null,
+    smallest: null,
+    biggestTwo: [],
+    smallestTwo: [],
+    allEntries: [],
+    detail: 'No fresh people-file changes with concrete 24-hour details.',
+    empty: true,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function emptyMemorySnapshot(hours = 24) {
+  let currentLines = 0;
+  try {
+    const memPath = path.join(REPO, 'memory', 'MEMORY.md');
+    if (fs.existsSync(memPath)) currentLines = fs.readFileSync(memPath, 'utf8').split('\n').length;
+  } catch {
+    /* ignore */
+  }
+  return {
+    added: 0,
+    deleted: 0,
+    delta: 0,
+    commits: 0,
+    memoryCommits: 0,
+    repoCommits: 0,
+    subjects: [],
+    updatedLines: [],
+    addedLines: [],
+    deletedLines: [],
+    currentLines,
+    hours,
+    source: 'snapshot-empty-success',
+    empty: true,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function gitUnavailableSnapshot(kind, hours = 24) {
+  return {
+    hours,
+    empty: true,
+    gitUnavailable: true,
+    detail: `git is not available in ${REPO} (no real .git); the ${kind} change window could not be read. This is a runtime/deploy defect, not a genuinely idle day.`,
+    source: 'snapshot-git-unavailable',
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function main() {
+  // If git is fatal in REPO, a '' from execGit is NOT "no commits" -- it is "we
+  // could not look." Never overwrite an existing real snapshot with a false zero;
+  // write an honest gitUnavailable marker (or leave a good snapshot in place) so
+  // the card renders a repair blocker instead of "0 changes."
+  const gitOk = gitIsAvailable();
+  const people = gitOk ? snapshotPeople(24) : null;
+  const memory = gitOk ? snapshotMemory(24) : null;
+  ensureDir(OUT_PEOPLE);
+  if (people) {
+    fs.writeFileSync(OUT_PEOPLE, JSON.stringify(people, null, 2));
+    console.log(
+      `wrote ${OUT_PEOPLE}: biggest=${people.biggest.name} (${people.biggest.delta} lines), totalFiles=${people.totalFiles}`,
+    );
+  } else if (!gitOk) {
+    // Do not clobber an existing good snapshot (e.g. one SCP'd from the git
+    // machine) with a false zero. Only write the honest marker if no real
+    // snapshot is already present.
+    if (existingSnapshotIsReal(OUT_PEOPLE)) {
+      console.log(`${OUT_PEOPLE}: git unavailable in ${REPO}; kept existing real snapshot`);
+    } else {
+      fs.writeFileSync(
+        OUT_PEOPLE,
+        JSON.stringify(gitUnavailableSnapshot('people-file', 24), null, 2),
+      );
+      console.log(
+        `wrote ${OUT_PEOPLE}: git unavailable in ${REPO} (honest marker, not a false zero)`,
+      );
+    }
+  } else {
+    fs.writeFileSync(OUT_PEOPLE, JSON.stringify(emptyPeopleSnapshot(24), null, 2));
+    console.log(`wrote ${OUT_PEOPLE}: no people-file changes in window`);
+  }
+  ensureDir(OUT_MEMORY);
+  if (memory) {
+    fs.writeFileSync(OUT_MEMORY, JSON.stringify(memory, null, 2));
+    console.log(
+      `wrote ${OUT_MEMORY}: +${memory.added}/-${memory.deleted}, ${memory.commits} commits`,
+    );
+  } else if (!gitOk) {
+    if (existingSnapshotIsReal(OUT_MEMORY)) {
+      console.log(`${OUT_MEMORY}: git unavailable in ${REPO}; kept existing real snapshot`);
+    } else {
+      fs.writeFileSync(
+        OUT_MEMORY,
+        JSON.stringify(gitUnavailableSnapshot('MEMORY.md', 24), null, 2),
+      );
+      console.log(
+        `wrote ${OUT_MEMORY}: git unavailable in ${REPO} (honest marker, not a false zero)`,
+      );
+    }
+  } else {
+    fs.writeFileSync(OUT_MEMORY, JSON.stringify(emptyMemorySnapshot(24), null, 2));
+    console.log(`wrote ${OUT_MEMORY}: no MEMORY.md changes in window`);
+  }
+}
+
+// A pre-existing snapshot counts as "real" only if it recorded actual changes
+// (not an empty/marker snapshot). We must never keep a stale empty in place of a
+// fresh honest marker, and never overwrite a real one with a false zero.
+function existingSnapshotIsReal(file) {
+  try {
+    const snap = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!snap || snap.empty || snap.gitUnavailable) return false;
+    const changed =
+      Number(snap.totalFiles || 0) > 0 ||
+      Number(snap.commits || 0) > 0 ||
+      Number(snap.added || 0) > 0 ||
+      Number(snap.deleted || 0) > 0;
+    return changed;
+  } catch {
+    return false;
+  }
+}
+
+if (require.main === module) main();
+
+module.exports = {
+  snapshotPeople,
+  snapshotMemory,
+  emptyPeopleSnapshot,
+  emptyMemorySnapshot,
+  gitUnavailableSnapshot,
+  gitIsAvailable,
+  existingSnapshotIsReal,
+  main,
+  truncatePeopleSample,
+  isInternalIdOrMetadataLine,
+  signalActivitySummary,
+};

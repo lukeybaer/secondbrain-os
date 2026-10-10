@@ -1,0 +1,8 @@
+#!/bin/bash
+# Mechanical branch-cleanliness floor for Claude, Codex, and subagents.
+# Blocks commits from the shared main checkout. Work in an isolated worktree and
+# land through scripts/land.js. Source of truth: scripts/git-hooks/pre-commit.
+
+node scripts/git-hooks/shared-tree-policy.js pre-commit || exit $?
+
+exit 0

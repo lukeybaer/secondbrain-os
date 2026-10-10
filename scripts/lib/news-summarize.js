@@ -1,0 +1,2579 @@
+'use strict';
+/**
+ * Cloud news summarizer. Summarizing an article is just: fetch the URL, ask the
+ * LLM to summarize. The cloud host has both (network + the askAI ladder), so the
+ * cloud build does this itself -- no desktop required. The OLD cloud renderer
+ * fabricated three identical generic commentary paragraphs per item instead of
+ * summarizing; this replaces that with a real, grounded, 3-paragraph summary of
+ * the actual article body.
+ *
+ * Anti-fabrication: we summarize ONLY real fetched article text (or a substantial
+ * RSS excerpt). If neither exists we return null and the renderer shows an honest
+ * headline-only note -- we never summarize from a bare headline.
+ *
+ * Pure + dependency-injected (fetchText, askAI, cache, now) so it is unit-testable
+ * with no network and no LLM.
+ */
+const https = require('node:https');
+const http = require('node:http');
+
+// A news paragraph is "substantial" only when it clears the SAME floor the
+// canonical briefing validator enforces (validate-briefing-quality.js: a
+// too-thin paragraph is < 110 chars OR < 18 words). Centralized here so the
+// cloud renderer gates full-summary rows at the exact bar the QC will judge
+// them by -- a row that renders as a full 3-paragraph summary is guaranteed to
+// clear the validator instead of being a "1/3 paragraphs" / "too-thin" defect.
+const SUBSTANTIAL_PARAGRAPH_MIN_CHARS = 110;
+const SUBSTANTIAL_PARAGRAPH_MIN_WORDS = 18;
+
+// The per-paragraph upper bound when SHAPING a model summary. ExampleCo 2026-06-22:
+// the paragraphs "used to be longer". The 2026-06-22 zero-silent-drops change
+// trimmed each paragraph to 600 chars, which clipped the richer, multi-sentence
+// summaries he wants. Raise the cap so a full 3-to-5-sentence paragraph survives
+// whole (still trimmed only at a SENTENCE boundary, never mid-word). The
+// canonical QC enforces only a LOWER floor (110 chars / 18 words), so a richer
+// paragraph is always QC-valid; this cap just guards against a runaway wall of
+// text on a pathologically long model response.
+const PARAGRAPH_RICH_MAX_CHARS = 900;
+
+function paragraphWordCount(p) {
+  return String(p || '')
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+function isSubstantialNewsParagraph(p) {
+  const s = String(p || '').trim();
+  return (
+    s.length >= SUBSTANTIAL_PARAGRAPH_MIN_CHARS &&
+    paragraphWordCount(s) >= SUBSTANTIAL_PARAGRAPH_MIN_WORDS
+  );
+}
+
+function endsAsProse(p) {
+  return /[.!?]["']?$/.test(String(p || '').trim());
+}
+
+const NEWS_SUMMARY_TERM_STOPWORDS = new Set(
+  'about above after again against ahead also amid among before being between could daily from have into just more most news only other over said says that their them then there these they this those through under until what when where which while with would will'.split(
+    /\s+/,
+  ),
+);
+
+// Generic news-filler words. These appear in boilerplate "this matters because..."
+// summaries and in many weak headlines, so a title-only grounding hit on one of
+// these alone is NOT proof the summary is about the article (adversarial false-
+// pass 2026-06-30: title "Markets brace for Fed decision" + filler that says
+// "markets" hit titleHits >= 1 and published filler as a real summary). A hit on
+// one of these counts toward the total but never as a DISTINCTIVE hit.
+const NEWS_TITLE_BOILERPLATE_TERMS = new Set(
+  'markets market leaders leader strategy strategies future reporting report reports public momentum stakeholders stakeholder headline headlines response responses coverage sources source development developments institutions planning information consequences outlook'.split(
+    /\s+/,
+  ),
+);
+
+// Filler / connective vocabulary that a GENERIC "3 paragraphs that don't really
+// say anything" summary leans on when it merely restates the headline (the
+// news-sparse-16 defect: a rate-limits article whose summary was technically 3
+// paragraphs but carried no article-body specifics). A word from this set is
+// NEVER counted as a body specific: "this development is significant for users,
+// observers note it signals a shift, watchers will be paying attention" is filler,
+// not a concrete fact from the body. Kept as a SUPERSET of the two stopword sets
+// above plus the connective/editorializing verbs that pad a hollow summary.
+const NEWS_FILLER_TERMS = new Set([
+  ...NEWS_SUMMARY_TERM_STOPWORDS,
+  ...NEWS_TITLE_BOILERPLATE_TERMS,
+  ...'company companies feature features change changes changed move moves moved users user people going forward matter matters mattered significant meaningful major important notable observers watchers industry popular capability capabilities routine routines depend depends decided decide limit limits limited putting signal signals signaled whether time times adjusted adjust evolves evolve attention paying represent represents represented shift shifts works working make makes made manage manages managed many much such thing things step steps effort efforts approach approaches space overall context continue continues continued come comes came become becomes became affect affects affected reshape reshapes reshaped previously already several across amid within recent recently latest ongoing broader wider will now new'.split(
+    /\s+/,
+  ),
+]);
+
+// Historical helper retained for tests and diagnostics. It is NOT the acceptance
+// gate: ExampleCo's 2026-07-15 correction made the active standard simpler. The model
+// reads the article, checks whether it belongs in the target news category, and
+// outputs a straight three-paragraph shortened version of the article.
+const NEWS_MIN_BODY_SPECIFICS = 3;
+
+// The anti-sparse gate judges a summary AGAINST its own article body. It applies
+// only when the summary is genuinely DERIVED from that body -- i.e. the two share
+// at least this many distinct content tokens. A summary that shares essentially
+// nothing with the body is not a summary of it (a mismatched/stub pairing); that
+// case is governed by the separate term-grounding gate, not the specifics gate, so
+// the specifics gate stays silent and never falsely rejects it.
+const NEWS_MIN_BODY_OVERLAP = 4;
+
+function newsContentWords(text) {
+  return String(text || '').match(/\b[A-Za-z][A-Za-z0-9$%.'-]*\b/g) || [];
+}
+
+// Distinct >=4-char content tokens shared between the summary and the body: proof
+// the summary is actually about this body before we demand specifics from it.
+function newsSummaryBodyOverlap(summary, bodyTokens) {
+  const seen = new Set();
+  for (const word of newsContentWords(summary)) {
+    const lw = word.toLowerCase();
+    if (lw.length >= 4 && bodyTokens.has(lw)) seen.add(lw);
+  }
+  return seen.size;
+}
+
+// The best available real ARTICLE BODY for grounding checks: the fetched body
+// threaded through as item.bodyText (LLM path) wins; otherwise the stored
+// sourceText / excerpt (render path). Only returns text when it is a real body,
+// substantial and distinct from the title -- a short RSS excerpt or a body equal
+// to the title is NOT enough to demand body specifics against (that would falsely
+// reject a legitimate summary grounded only in a thin excerpt).
+function newsGroundingBody(item = {}) {
+  const title = String(item.title || '').trim();
+  for (const candidate of [item.bodyText, item.sourceText, item.excerpt]) {
+    const body = String(candidate || '').trim();
+    if (body.length >= MIN_BODY_CHARS && body !== title) return body;
+  }
+  return '';
+}
+
+// Count the DISTINCT concrete specifics the summary draws from the article body
+// beyond the headline. Numbers (grounded in the body) and distinctive body-only
+// content terms both count; filler/connective words never do.
+function countNewsBodySpecifics(paras, item = {}) {
+  const body = newsGroundingBody(item);
+  if (!body) return null; // no real body to judge against: check does not apply
+  const summary = (Array.isArray(paras) ? paras : []).join(' ');
+  const bodyLower = body.toLowerCase();
+  const titleTokens = new Set(newsContentWords(item.title).map((w) => w.toLowerCase()));
+  const bodyTokens = new Set(newsContentWords(bodyLower));
+  // The summary must be genuinely derived from this body before we judge its
+  // specifics; a summary that shares almost nothing with the body is not about it
+  // (mismatched pairing) and is left to the term-grounding gate.
+  if (newsSummaryBodyOverlap(summary, bodyTokens) < NEWS_MIN_BODY_OVERLAP) return null;
+  const specifics = new Set();
+  // Numeric / quantity specifics that are grounded in the body (anti-fabrication:
+  // a number the summary invented, not present in the body, does not count).
+  for (const num of summary.match(/\$?\b\d[\d,.]*%?\b/g) || []) {
+    const n = num.toLowerCase();
+    if (bodyLower.includes(n)) specifics.add('#' + n);
+  }
+  // Distinctive content terms: >=4 chars, not filler, present in the body but NOT
+  // in the headline (so it is detail ADDED from the body, not headline echo).
+  for (const word of newsContentWords(summary)) {
+    const lw = word.toLowerCase();
+    if (lw.length < 4) continue;
+    if (NEWS_FILLER_TERMS.has(lw)) continue;
+    if (titleTokens.has(lw)) continue;
+    if (!bodyTokens.has(lw)) continue;
+    specifics.add(lw);
+  }
+  return specifics.size;
+}
+
+// Historical diagnostic helper. The active acceptance gate is now the simpler
+// "does this read as a shortened article in the target category?" standard, but
+// this count remains useful for tests and forensic review of weak summaries.
+function newsSummaryHasBodySpecifics(paras, item = {}) {
+  const count = countNewsBodySpecifics(paras, item);
+  if (count === null) return true; // no real body: not applicable
+  return count >= NEWS_MIN_BODY_SPECIFICS;
+}
+
+function normalizeNewsOpeningText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/&[a-z#0-9]+;/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const NEWS_AUTHOR_PROCESS_RE =
+  /\b(?:Could|Can|Should|Would)\s+I\b|\bI\s+(?:have|wondered|started|installed|fired|checked|appeared|casually|compared|spent|provided|admit|asked|wanted|decided|tried|tested)\b|\bHere's what surprised me\b|\b(?:my|me)\s*(?:[:;]|\s+(?:newsletter|review unit|living room|experiment|inbox))\b/i;
+
+const NEWS_SOURCE_FAILURE_PROSE_RE =
+  /\b(?:available excerpt|source excerpt|article text (?:is|was) not|body text (?:is|was) not|full article (?:is|was) not|fuller executive briefing summary|needs? the rest of (?:the )?(?:body|article|text)|(?:no concrete|no grounded)[^.!?]{0,120}\b(?:excerpt|article text|source text|body text|to summarize)\b|insufficient (?:(?:article|source) (?:content|context|material)|source material|content to summarize|context to summarize)|cannot summarize|unable to summarize|not enough (?:(?:article|source) (?:content|context|material)|source material|content to summarize|context to summarize)|the excerpt (?:does not|doesn't|only|also says)|(?:the )?(?:available|supplied|provided) (?:body|text|material|article text|article|source text)[^.!?]{0,80}\b(?:cuts? off (?:at (?:this|that) point|before\b)|breaks? off (?:partway\b|before\b|at (?:this|that) point)|is truncated|ends? (?:before|partway))\b|the (?:supplied|provided) (?:body|text|article text|article|source text)(?=\s+(?:does|is|was|lacks|contains|includes|provided|supplied|appears)|[.,;:]|$))\b/i;
+
+function isIrrelevantToCategoryResponse(text) {
+  return /\bIRRELEVANT_TO_CATEGORY\b/i.test(String(text || ''));
+}
+
+function newsSummaryHasSourceFailureProse(text) {
+  return NEWS_SOURCE_FAILURE_PROSE_RE.test(String(text || ''));
+}
+
+// A fallback summary must not be the article opening pasted into three
+// paragraphs. This catches the "modal shows the start of the article" class:
+// exact source-prefix excerpts, first-person author process prose, and review
+// metadata pasted as detail. LLM summaries can still use article facts, but if
+// the rendered text is just the body prefix, it is not an executive summary.
+function newsSummaryLooksLikeArticleOpening(paras, item = {}) {
+  const list = Array.isArray(paras) ? paras.map((p) => String(p || '').trim()).filter(Boolean) : [];
+  if (!list.length) return false;
+  const body = newsGroundingBody(item);
+  if (!body) return false;
+  const joined = list.join(' ');
+  if (NEWS_AUTHOR_PROCESS_RE.test(joined)) return true;
+  if (
+    /\b(?:RATING:\s*\d+(?:\.\d+)?\s*\/\s*10|Pros\s+[^.]{0,180}\s+Cons\b|News\s+Social Media|Reviews?\s+Gaming|Share\s+Copied to clipboard|Loading the player)\b/i.test(
+      joined,
+    )
+  )
+    return true;
+  const bodyNorm = normalizeNewsOpeningText(body);
+  const summaryNorm = normalizeNewsOpeningText(joined);
+  if (bodyNorm.length < 300 || summaryNorm.length < 220) return false;
+  const prefix = summaryNorm.slice(0, Math.min(420, summaryNorm.length));
+  if (prefix.length >= 220 && bodyNorm.startsWith(prefix)) return true;
+  const bodySentences = articleSentences(body)
+    .map(normalizeNewsOpeningText)
+    .filter((s) => s.length >= 45)
+    .slice(0, 4);
+  if (bodySentences.length < 3) return false;
+  const summaryStart = normalizeNewsOpeningText(list.slice(0, 2).join(' '));
+  const matchingOpeningSentences = bodySentences.filter((s) =>
+    summaryStart.includes(s.slice(0, Math.min(90, s.length))),
+  ).length;
+  return matchingOpeningSentences >= 2;
+}
+
+function newsSummarySentences(paragraph) {
+  return String(paragraph || '').match(/[.!?]["']?(?=\s|$)/g) || [];
+}
+
+function articleSummaryTerms(item = {}) {
+  const raw = [item.title, item.excerpt, item.summaryText, item.sourceText, item.bodyText]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  const terms = raw.match(/\b[a-z][a-z0-9-]{3,}\b/g) || [];
+  // Keep the full de-duplicated evidence vocabulary. Capping this list at the
+  // first 12 terms let a long publisher headline consume the whole grounding
+  // window, so a real summary of the attached article body failed unless two
+  // paragraphs repeated headline wording. The acceptance threshold below is
+  // still three distinct evidence hits across at least two paragraphs; this
+  // only lets the body participate in the evidence set it is meant to ground.
+  return [
+    ...new Set(
+      terms.filter((term) => !NEWS_SUMMARY_TERM_STOPWORDS.has(term) && !/^\d+$/.test(term)),
+    ),
+  ];
+}
+
+function isThreeParagraphArticleSummary(paras, item = {}) {
+  const list = Array.isArray(paras) ? paras : [];
+  if (list.length !== 3) return false;
+  if (!list.every(isSubstantialNewsParagraph)) return false;
+  if (!list.every(endsAsProse)) return false;
+  if (!list.every((p) => newsSummarySentences(p).length >= 1)) return false;
+  if (new Set(list.map(normalizeNewsOpeningText)).size !== 3) return false;
+  if (newsSummaryHasSourceFailureProse(list.join(' '))) return false;
+  if (newsSummaryLooksLikeArticleOpening(list, item)) return false;
+  const terms = articleSummaryTerms(item);
+  if (terms.length < 2) return true;
+  const hasExpandedMetadata = Boolean(
+    item.excerpt || item.summaryText || item.sourceText || item.bodyText,
+  );
+  if (!hasExpandedMetadata) {
+    // Title-only grounding (no excerpt/body to match against): the summary must
+    // reference at least one DISTINCTIVE term from the headline. A short title
+    // carries few distinctive terms and a genuine on-topic summary often
+    // paraphrases the headline verb (e.g. title "Repositioning retail for the AI
+    // era" -> a real summary says "retail" but not "repositioning"/"era"), so
+    // demanding 2-of-N wrongly stubbed legitimate articles. But >=1 of ANY term
+    // is too lax: a generic-news word the headline shares with boilerplate filler
+    // ("markets", "leaders", "future") gets hit by accident and publishes filler
+    // as a real summary. So: accept on >=1 DISTINCTIVE (non-boilerplate) hit, or
+    // >=2 total hits; reject a lone boilerplate hit and the zero-hit filler case.
+    const titleHitTerms = terms.filter((term) => list.some((p) => p.toLowerCase().includes(term)));
+    const titleHits = new Set(titleHitTerms).size;
+    const distinctiveHits = new Set(
+      titleHitTerms.filter((term) => !NEWS_TITLE_BOILERPLATE_TERMS.has(term)),
+    ).size;
+    return distinctiveHits >= 1 || titleHits >= 2;
+  }
+  const paragraphHits = list.map((paragraph) => {
+    const lower = paragraph.toLowerCase();
+    return terms.filter((term) => lower.includes(term)).length;
+  });
+  const totalHits = new Set(
+    terms.filter((term) => list.some((paragraph) => paragraph.toLowerCase().includes(term))),
+  ).size;
+  const requiredHits = Math.min(3, terms.length);
+  return totalHits >= requiredHits && paragraphHits.filter((n) => n > 0).length >= 2;
+}
+
+// Common abbreviations whose trailing period is NOT a sentence end. A naive
+// "period + space + capital" boundary would cut a paragraph at "... the U.S."
+// or "... said Dr." and leave a mid-sentence fragment that still ends in a
+// period (so it would falsely pass endsAsProse). We reject any candidate
+// boundary whose preceding token is one of these. (Codex review 2026-06-22.)
+const SENTENCE_TRIM_ABBREVIATIONS = new Set([
+  'mr',
+  'mrs',
+  'ms',
+  'dr',
+  'st',
+  'sr',
+  'jr',
+  'prof',
+  'gen',
+  'sen',
+  'rep',
+  'gov',
+  'lt',
+  'sgt',
+  'col',
+  'capt',
+  'inc',
+  'ltd',
+  'corp',
+  'co',
+  'vs',
+  'etc',
+  'no',
+  'dept',
+  'est',
+  'fig',
+  'al',
+  'jan',
+  'feb',
+  'mar',
+  'apr',
+  'jun',
+  'jul',
+  'aug',
+  'sep',
+  'sept',
+  'oct',
+  'nov',
+  'dec',
+]);
+
+// Is the "." ending at index `endIdx` (exclusive) in `s` a REAL sentence end,
+// not an abbreviation or a dotted initialism (U.S., e.g.)? The boundary already
+// requires whitespace/end after it; here we reject when the token ending at the
+// period is a known abbreviation, a single letter (initial / dotted initialism
+// like U.S.), or itself ends in an inner period (e.g.).
+function isRealSentenceEnd(s, endIdx, punctChar) {
+  if (punctChar === '!' || punctChar === '?') return true; // never abbreviations
+  // The word characters immediately before the period.
+  const before = s.slice(0, endIdx - 1);
+  const tokenMatch = before.match(/([A-Za-z][A-Za-z.]*)$/);
+  if (!tokenMatch) return true;
+  const token = tokenMatch[1];
+  if (token.length === 1) return false; // a single-letter initial: "U." / "J."
+  if (token.includes('.')) return false; // dotted initialism: "U.S" before final "." => "e.g", "U.S"
+  if (SENTENCE_TRIM_ABBREVIATIONS.has(token.toLowerCase())) return false;
+  return true;
+}
+
+// Trim a paragraph to <= max chars WITHOUT cutting mid-sentence. A naive
+// slice(0, max) cut mid-word (cloud build: "item N has a paragraph that does
+// not end as prose"). Instead keep only whole sentences that fit the budget:
+// find the last REAL sentence-ending punctuation at or before `max` (skipping
+// abbreviations / dotted initialisms like U.S. or Dr.) and cut there so the
+// result always ends as a complete sentence. Returns '' when no sentence
+// boundary fits (the caller then treats the summary as unusable and renders
+// headline-only, never a truncated fragment).
+function trimToSentenceBoundary(text, max) {
+  const s = String(text || '').trim();
+  if (!s) return '';
+  if (s.length <= max && endsAsProse(s)) return s;
+  const budget = s.slice(0, max);
+  const re = /([.!?])["']?(?=\s|$)/g;
+  let lastEnd = -1;
+  let m;
+  while ((m = re.exec(budget))) {
+    const end = m.index + m[0].length;
+    if (isRealSentenceEnd(budget, end, m[1])) lastEnd = end;
+  }
+  if (lastEnd <= 0) return '';
+  return budget.slice(0, lastEnd).trim();
+}
+
+// The ONE canonical "honest headline-only" note. When an article body is too
+// thin to ground a real 3-paragraph summary, the row renders the title + source
+// link + this single factual line (never addressed to the reader, never
+// fabricated). Every QC layer (validate-briefing-quality.js, the live dashboard
+// verifier) recognizes this note via isHeadlineOnlyNote and EXEMPTS the row from
+// the 3-paragraph rule while still COUNTING it as a rendered row -- so the title
+// "(N)", the Coverage line, and the rendered row count stay equal with zero
+// silent drops.
+const HEADLINE_ONLY_NOTE =
+  'Full summary unavailable: the article body was too thin to summarize; headline and source only.';
+
+// Recognize the honest headline-only note in rendered text. Matches the
+// canonical lead-in so paraphrase drift cannot smuggle an "in-between" thin
+// summary past the gate; the distinguishing clause is the fixed
+// "Full summary unavailable: the article body was too thin to summarize".
+const HEADLINE_ONLY_NOTE_RE =
+  /full summary unavailable:\s*the article body was too thin to summarize/i;
+
+// ANCHORED whole-paragraph form: the paragraph must BE the canonical note start
+// to end (allowing only surrounding whitespace), not merely CONTAIN the phrase.
+// This is the strict gate used for the headline-only EXEMPTION so a single
+// paragraph of "<note> + extra leaked prose" cannot skip the 3-paragraph rule
+// (Codex review 2026-06-22). Drift-locked to HEADLINE_ONLY_NOTE.
+const HEADLINE_ONLY_NOTE_ANCHORED_RE =
+  /^full summary unavailable:\s*the article body was too thin to summarize;\s*headline and source only\.?$/i;
+
+function isHeadlineOnlyNote(text) {
+  return HEADLINE_ONLY_NOTE_RE.test(String(text || ''));
+}
+
+// ANCHORED row-level check (Codex review 2026-06-22): a row is an HONEST
+// headline-only row only when its summary content is EXACTLY the canonical note
+// and nothing else. An unanchored substring match would let an in-between row
+// (a thin / truncated / sub-3-paragraph body that merely CONTAINS the note
+// phrase) skip the 3-paragraph gate. `paras` is the list of NON-EMPTY summary
+// paragraphs for the row (excluding title/source/meta lines): it must be a
+// SINGLE paragraph that IS the note (anchored whole-string match, so trailing
+// leaked prose in the same paragraph is rejected too).
+function isHeadlineOnlyParagraphs(paras) {
+  const list = (Array.isArray(paras) ? paras : [])
+    .map((p) => String(p || '').trim())
+    .filter(Boolean);
+  if (list.length !== 1) return false;
+  return HEADLINE_ONLY_NOTE_ANCHORED_RE.test(list[0]);
+}
+
+const FETCH_TIMEOUT_MS = 12000;
+// HARD wall-clock budget for one fetch INCLUDING redirects (ExampleCo wave 3a,
+// 2026-07-12). The 5:30 cloud run hung 26 minutes on two dead HTTPS
+// connections: the socket-idle `timeout` option fired and req.destroy() ran,
+// but destroy-without-error emits no 'error' event once a response stream has
+// started, so the fetch promise never settled and Promise chains upstream
+// hung the whole generator. Every fetch in this file now (1) carries a hard
+// deadline timer that destroys the request AND settles the promise, (2)
+// settles on 'timeout' directly instead of trusting destroy() to error, and
+// (3) settles on req 'close' / res 'aborted' as the always-settle backstop.
+// A never-responding or died-mid-request host can therefore delay one item by
+// at most this budget, never stall the pipeline.
+const HARD_FETCH_BUDGET_MS = Number(process.env.BRIEFING_FETCH_TIMEOUT_MS) || 20000;
+const MAX_REDIRECTS = 4;
+const MIN_BODY_CHARS = 400; // below this, treat as "no real body" (RSS-only)
+const MIN_EXCERPT_CHARS = 200; // compatibility export; excerpts never qualify as article bodies
+const MIN_CONTAINER_CHARS = 500; // a container shorter than this is a teaser, not the article
+const RESOLVE_TIMEOUT_MS = 10000; // Google-News URL resolution budget (interstitial GET + batchexecute POST)
+
+// Resilience contract for the LLM summarize step. Reproduced live on EC2
+// (2026-06-22): the full cloud build left ~13 REAL fetchable articles
+// (techcrunch, npr, technologyreview) as headline-only stubs, even though every
+// one of them summarizes in <10s in isolation. Root cause: a SINGLE askAI call
+// with no retry -- after dozens of earlier build LLM calls the codex rung
+// transiently failed (starved / crashed / rate-limited) and returned null, so a
+// perfectly summarizable body degraded to the honest stub on one hiccup.
+//
+// Category encoded (not the one incident): when the body IS substantial enough
+// to summarize, an unusable LLM response is TRANSIENT and must be retried with
+// exponential backoff before the row falls back to headline-only. The stub is
+// reserved for genuinely-unsummarizable bodies (thin / unfetchable), never an
+// LLM hiccup.
+const NEWS_SUMMARIZE_RETRIES = 3; // total askAI attempts per item (1 try + 2 retries)
+const NEWS_SUMMARIZE_RETRY_BASE_MS = 1500; // exponential backoff base between attempts
+// Per-call LLM budget. A full 3-paragraph summary of a 5-6K-char article is a
+// real generation; under build load a too-short rung timeout SIGTERMs an
+// in-budget call (the 2026-05-30 90s-vs-120s incident). Match the documented
+// 120s per-call budget so an in-budget summary is never killed mid-flight.
+const NEWS_SUMMARIZE_RUNG_TIMEOUT_MS = 120000;
+// Bounded concurrency for the news summary pass (report breakpoint 6 transitional
+// guard). The serial loop coupled every card's publish to the slowest news call:
+// 12 items x ~12s median = a multi-minute serial floor that held the monolithic
+// pass's publish lock. Running a bounded pool (a few summaries in flight, each
+// still under its own per-item rung timeout) collapses that floor without
+// hammering the shared LLM rung. Env-overridable; clamped to at least 1.
+const NEWS_SUMMARIZE_CONCURRENCY = Math.max(1, Number(process.env.NEWS_SUMMARIZE_CONCURRENCY) || 4);
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Arm the always-settle guards on a client request: a hard wall-clock timer
+// (destroys the request and settles), settle-on-socket-idle-timeout, settle on
+// 'error', and settle on 'close' as the final backstop. Returns the timer so
+// callers can clear it inside finish(). finish must be idempotent.
+function armAlwaysSettleGuards(req, finish, { remainingMs, url }) {
+  const hardTimer = setTimeout(
+    () => {
+      try {
+        req.destroy(new Error(`hard fetch timeout after ${remainingMs}ms: ${url}`));
+      } catch {
+        /* already destroyed */
+      }
+      finish('');
+    },
+    Math.max(1, remainingMs),
+  );
+  if (hardTimer.unref) hardTimer.unref();
+  req.on('timeout', () => {
+    try {
+      req.destroy(new Error(`socket idle timeout: ${url}`));
+    } catch {
+      /* already destroyed */
+    }
+    finish('');
+  });
+  req.on('error', () => finish(''));
+  req.on('close', () => finish(''));
+  return hardTimer;
+}
+
+// Compact, self-contained article fetch (returns plain text, '' on any failure).
+// opts.deadline carries ONE wall clock across the whole redirect chain so a
+// looping or slow chain can never outlive the hard budget.
+function fetchArticleText(
+  url,
+  { timeoutMs = FETCH_TIMEOUT_MS, deadline } = {},
+  redirectsLeft = MAX_REDIRECTS,
+) {
+  return new Promise((resolve) => {
+    if (!url || !/^https?:\/\//i.test(url)) return resolve('');
+    const hardDeadline =
+      deadline != null ? deadline : Date.now() + Math.max(timeoutMs, HARD_FETCH_BUDGET_MS);
+    const remainingMs = hardDeadline - Date.now();
+    if (remainingMs <= 0) return resolve('');
+    const lib = url.startsWith('https:') ? https : http;
+    let done = false;
+    let hardTimer = null;
+    const finish = (v) => {
+      if (!done) {
+        done = true;
+        if (hardTimer) clearTimeout(hardTimer);
+        resolve(v);
+      }
+    };
+    let req;
+    try {
+      req = lib.get(
+        url,
+        { headers: { 'user-agent': 'Mozilla/5.0 (SecondBrain briefing)' }, timeout: timeoutMs },
+        (res) => {
+          const status = res.statusCode || 0;
+          if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
+            res.resume();
+            const next = new URL(res.headers.location, url).toString();
+            return finish(
+              fetchArticleText(next, { timeoutMs, deadline: hardDeadline }, redirectsLeft - 1),
+            );
+          }
+          if (status !== 200) {
+            res.resume();
+            return finish('');
+          }
+          let html = '';
+          res.setEncoding('utf8');
+          res.on('data', (c) => {
+            html += c;
+            if (html.length > 3_000_000) req.destroy();
+          });
+          res.on('end', () => finish(stripHtmlToText(html)));
+          res.on('aborted', () => finish(''));
+          res.on('error', () => finish(''));
+        },
+      );
+      hardTimer = armAlwaysSettleGuards(req, finish, { remainingMs, url });
+    } catch {
+      finish('');
+    }
+  });
+}
+
+// A news.google.com/rss/articles/<id> URL is a Google-News redirect stub, NOT
+// the publisher article. It 302s to itself then 400s, and the CBMi... blob is an
+// internal Google id, not a URL. We must resolve it to the real publisher URL
+// before fetching the body, or the whole feed (policy is ~100% these)
+// summarizes 0 items.
+function isGoogleNewsArticleUrl(url) {
+  return /^https?:\/\/news\.google\.com\/rss\/articles\//i.test(String(url || ''));
+}
+
+// Raw HTTP GET that returns the body string ('' on any failure). Follows
+// redirects. Unlike fetchArticleText this does NOT strip HTML -- the resolver
+// needs the raw interstitial markup to read the signing params out of it.
+function httpGetRaw(
+  url,
+  { timeoutMs = RESOLVE_TIMEOUT_MS, deadline } = {},
+  redirectsLeft = MAX_REDIRECTS,
+) {
+  return new Promise((resolve) => {
+    if (!url || !/^https?:\/\//i.test(url)) return resolve('');
+    const hardDeadline =
+      deadline != null ? deadline : Date.now() + Math.max(timeoutMs, HARD_FETCH_BUDGET_MS);
+    const remainingMs = hardDeadline - Date.now();
+    if (remainingMs <= 0) return resolve('');
+    const lib = url.startsWith('https:') ? https : http;
+    let done = false;
+    let hardTimer = null;
+    const finish = (v) => {
+      if (!done) {
+        done = true;
+        if (hardTimer) clearTimeout(hardTimer);
+        resolve(v);
+      }
+    };
+    let req;
+    try {
+      req = lib.get(
+        url,
+        {
+          headers: { 'user-agent': 'Mozilla/5.0 (SecondBrain briefing)' },
+          timeout: timeoutMs,
+        },
+        (res) => {
+          const status = res.statusCode || 0;
+          if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
+            res.resume();
+            let next;
+            try {
+              next = new URL(res.headers.location, url).toString();
+            } catch {
+              return finish('');
+            }
+            // A Google-News stub 302s to ITSELF; do not chase the self-loop.
+            if (next === url) return finish('');
+            return finish(
+              httpGetRaw(next, { timeoutMs, deadline: hardDeadline }, redirectsLeft - 1),
+            );
+          }
+          if (status !== 200) {
+            res.resume();
+            return finish('');
+          }
+          let body = '';
+          res.setEncoding('utf8');
+          res.on('data', (c) => {
+            body += c;
+            if (body.length > 3_000_000) req.destroy();
+          });
+          res.on('end', () => finish(body));
+          res.on('aborted', () => finish(''));
+          res.on('error', () => finish(''));
+        },
+      );
+      hardTimer = armAlwaysSettleGuards(req, finish, { remainingMs, url });
+    } catch {
+      finish('');
+    }
+  });
+}
+
+// Raw HTTP POST (form-encoded) that returns the body string ('' on any failure).
+// opts.deadline lets a caller share ONE wall clock across a GET+POST pair.
+function httpPostForm(url, formBody, { timeoutMs = RESOLVE_TIMEOUT_MS, deadline } = {}) {
+  return new Promise((resolve) => {
+    if (!url || !/^https?:\/\//i.test(url)) return resolve('');
+    const remainingMs =
+      deadline != null ? deadline - Date.now() : Math.max(timeoutMs, HARD_FETCH_BUDGET_MS);
+    if (remainingMs <= 0) return resolve('');
+    const lib = url.startsWith('https:') ? https : http;
+    let done = false;
+    let hardTimer = null;
+    const finish = (v) => {
+      if (!done) {
+        done = true;
+        if (hardTimer) clearTimeout(hardTimer);
+        resolve(v);
+      }
+    };
+    let req;
+    try {
+      const u = new URL(url);
+      req = lib.request(
+        {
+          method: 'POST',
+          hostname: u.hostname,
+          path: u.pathname + u.search,
+          protocol: u.protocol,
+          headers: {
+            'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+            'user-agent': 'Mozilla/5.0 (SecondBrain briefing)',
+            'content-length': Buffer.byteLength(formBody),
+          },
+          timeout: timeoutMs,
+        },
+        (res) => {
+          if ((res.statusCode || 0) !== 200) {
+            res.resume();
+            return finish('');
+          }
+          let body = '';
+          res.setEncoding('utf8');
+          res.on('data', (c) => {
+            body += c;
+            if (body.length > 3_000_000) req.destroy();
+          });
+          res.on('end', () => finish(body));
+          res.on('aborted', () => finish(''));
+          res.on('error', () => finish(''));
+        },
+      );
+      hardTimer = armAlwaysSettleGuards(req, finish, { remainingMs, url });
+      req.write(formBody);
+      req.end();
+    } catch {
+      finish('');
+    }
+  });
+}
+
+// Build the batchexecute form body for the Fbv4je "garturlreq" RPC that decodes
+// one Google-News article id into its real publisher URL.
+function buildGarturlBody(articleId, ts, sig) {
+  const inner = JSON.stringify([
+    'garturlreq',
+    [
+      [
+        'X',
+        'X',
+        ['X', 'X'],
+        null,
+        null,
+        1,
+        1,
+        'US:en',
+        null,
+        1,
+        null,
+        null,
+        null,
+        null,
+        null,
+        0,
+        1,
+      ],
+      'X',
+      'X',
+      1,
+      [1, 1, 1],
+      1,
+      1,
+      null,
+      0,
+      0,
+      null,
+      0,
+    ],
+    articleId,
+    Number(ts),
+    sig,
+  ]);
+  const payload = JSON.stringify([[['Fbv4je', inner, null, 'generic']]]);
+  return 'f.req=' + encodeURIComponent(payload);
+}
+
+// Pull the resolved publisher URL out of a batchexecute response. The body is a
+// )]}'-prefixed JSON-ish stream; the URL lives inside a "garturlres" tuple where
+// quotes are backslash-escaped (e.g. ["garturlres","https://site/path",1]).
+function parseGarturlResponse(text) {
+  const s = String(text || '');
+  const m = s.match(/garturlres\\?",\\?"(https?:\/\/[^"\\]+)/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Resolve a news.google.com/rss/articles/<id> URL to the real publisher article
+ * URL via Google News's batchexecute decode, the same path the desktop relies on
+ * to escape the redirect stub. Best-effort and dependency-injected:
+ *   - non-Google URLs pass straight through (returned unchanged)
+ *   - any failure (no params, bad response, network/timeout) returns null
+ *     so the caller summarizes nothing rather than the stub
+ * httpGet/httpPost are injected so this is unit-testable with no network.
+ */
+async function resolveGoogleNewsUrl(
+  url,
+  { httpGet = httpGetRaw, httpPost = httpPostForm, timeoutMs = RESOLVE_TIMEOUT_MS } = {},
+) {
+  if (!isGoogleNewsArticleUrl(url)) return url; // not a stub: nothing to resolve
+  try {
+    const articleId = String(url).split('/articles/')[1].split('?')[0].split('/')[0];
+    if (!articleId) return null;
+    // ONE wall clock for the whole resolution (Codex review, wave 3a): the
+    // interstitial GET and the batchexecute POST share a single hard deadline
+    // so a slow GET cannot hand the POST a fresh full budget and double the
+    // worst-case stall for one resolution.
+    const deadline = Date.now() + Math.max(timeoutMs, HARD_FETCH_BUDGET_MS);
+    const html = await httpGet(url, { timeoutMs, deadline });
+    if (!html) return null;
+    const sig = (html.match(/data-n-a-sg="([^"]+)"/) || [])[1];
+    const ts = (html.match(/data-n-a-ts="([^"]+)"/) || [])[1];
+    if (!sig || !ts) return null;
+    const resp = await httpPost(
+      'https://news.google.com/_/DotsSplashUi/data/batchexecute',
+      buildGarturlBody(articleId, ts, sig),
+      { timeoutMs, deadline },
+    );
+    const real = parseGarturlResponse(resp);
+    if (real && /^https?:\/\//i.test(real) && !/news\.google\.com/i.test(real)) return real;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function htmlFragmentToText(h) {
+  return String(h || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#8217;|&#39;|&rsquo;/g, "'")
+    .replace(/&#8220;|&#8221;|&quot;|&ldquo;|&rdquo;/g, '"')
+    .replace(/&#[0-9]+;/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Publisher CHROME that the improved <p>-reconstruction now drags in alongside
+// the real article body: NPR-style show credits, bylines / "<NAME> reports"
+// credits, "Read full/more" prompts, newsletter/subscribe CTAs, "Related:" /
+// "More from" recirculation, photo caption/credit lines, and social-share text.
+// Incident 2026-06-23: the build QC failed on a leaked "Heard on All Things
+// Considered" credit and a "publisher chrome instead of briefing prose" item.
+// Each rule is anchored to the chrome's own shape so it strips the boilerplate
+// WITHOUT eating real article prose (no over-strip): the body fed to the LLM and
+// the excerpt fallback is clean article prose only.
+//
+// Category encoded (not the one incident): the canonical publisher-chrome
+// patterns are removed from the extracted body before summarizing, the real
+// prose survives. The set covers (and stays a subset of) the chrome the build QC
+// bans (validate-briefing-quality.js: newsArtifactRe + banned) so chrome stripped
+// here can never reach the QC gate; it is intentionally NOT exhaustive of every
+// QC pattern (some QC bans are page-structure artifacts, not prose chrome).
+//
+// Over-strip is the cardinal sin (Codex review 2026-06-23): a rule must match the
+// chrome's OWN boilerplate shape and nothing else. Every rule that could collide
+// with real prose is anchored to a clause boundary (start-of-text or after
+// sentence punctuation, via lookbehind so the prior sentence's period survives)
+// AND is case-SENSITIVE where the chrome is a Capitalized label ("Heard on",
+// "Read more" CTA) so the lowercase verb sense ("witnesses heard on", "read more
+// books") is preserved.
+const CLAUSE_START = '(?<=^|[.!?]\\s)';
+
+// SINGLE SOURCE OF TRUTH for the categorical publisher/page-chrome LABELS that
+// both this stripper AND the live render QC detector (verify-dashboard-cards-
+// live.js NEWS_PUBLISHER_CHROME) treat as chrome. The detector compiles its
+// chrome regex from newsPublisherChromeSource() below, and stripPublisherChrome
+// runs a generic clause-anchored pass over these same labels, so the stripper
+// and the detector can never disagree about what a chrome LABEL is: a label the
+// detector flags is, by construction, a label the stripper removes.
+//
+// These are GENERALIZABLE Capitalized boilerplate labels (NPR/CBS show credits,
+// caption toggles, navigation/recirculation CTAs, law-firm marketing banners).
+// They are intentionally NOT incident-pinned literal place names, bare company
+// names, or ordinary article sentences. A prior detector revision (commit
+// 40b6a2e5) pinned real prose fragments ("Gulf of Oman", "Strait of Hormuz",
+// "The move was highly unusual", "faking his own death", "Tankers and cargo
+// vessels", ...) into the detector; those flagged legitimate world-news prose as
+// chrome (world news routinely names those straits) and were removed. A chrome
+// detector must encode the CATEGORY, never the one literal trigger
+// (feedback_frugal_regression_tests.md).
+//
+// Over-strip guard: each label is a Capitalized boilerplate phrase, and the
+// generic strip pass is clause-anchored AND case-SENSITIVE, so a lowercase
+// in-prose sense survives. Bare company names / common lowercase phrases that
+// over-flag prose ("Getty Images", "AP Photo", "more coverage") are deliberately
+// NOT here -- they belong only inside a chrome SHAPE ("Credit: Getty Images"),
+// which the shape rules in PUBLISHER_CHROME_RULES handle (Codex review
+// 2026-06-30).
+const NEWS_PUBLISHER_CHROME_LABELS = [
+  'Image source',
+  'Image caption',
+  'Image credit',
+  'Image credits',
+  'Courtesy photo',
+  'Business reporter',
+  'BBC Verify',
+  'hide caption',
+  'toggle caption',
+  'Share Twitter',
+  'Share Copy URL',
+  'Read more Overview',
+  'Add NBC News to Google',
+  'CBS News Sunday Morning',
+  'Jane Pauley hosts',
+  "Sunday Morning's familiar faces",
+  'Essential American Songbook',
+  'LISTEN & FOLLOW',
+  'Audio will be available',
+  'Download it here',
+  'Leave your feedback',
+  'Request a Consultation',
+  'Start RFP Process',
+  'A Global Law Firm',
+  'JOIN AILA TODAY',
+  'Trailblazer in Legal Technology',
+  'Enhance your law practice',
+];
+
+// Structural chrome patterns the detector recognizes that are NOT fixed labels
+// (relative/absolute datelines, NPR "Heard on <Show>", CBS broadcast promos, a
+// raw "deltaMinutes" template token). The detector compiles these into its regex
+// alongside the literal labels above; the stripper already covers each via a
+// clause-anchored rule in PUBLISHER_CHROME_RULES. Exported so the detector and
+// stripper share one definition of the structural shapes too. These are matched
+// case-INSENSITIVELY by the detector (the detector regex carries the 'i' flag);
+// the stripper rules that cover them stay case-sensitive + clause-anchored, which
+// is a strict subset, so anything the stripper removes the detector also flags.
+//
+// The dateline + NPR-credit patterns must encode the chrome SHAPE, never a bare
+// "<verb> N" count or a lowercase legal verb (live NEWS-CHROME false positive on
+// US NEWS item 1 + US POLICY NEWS item 2, 2026-06-30). After Google-News
+// URLs began resolving to the real publisher, full BODIES reached the summaries
+// and the old loose `\bPublished \d+\b` / `\bUpdated \d+\b` / "Heard on <Cap>"
+// flagged ordinary fresh prose -- "the rule was published 30 days before...", "the
+// agency published 12 documents", "the policy was updated 3 times", "the bill was
+// heard on Capitol Hill / heard on Tuesday". Because the detector compiles with
+// the 'i' flag, case cannot be relied on: the SHAPE is the discriminator. A real
+// publisher dateline is "Published|Updated" immediately followed by a DATE
+// (day + month name) or a RELATIVE timestamp ("N minutes/hours/days ago") -- never
+// a bare count that continues into ordinary words. (A bare "Published HH:MM" clock
+// time with no date is deliberately NOT flagged: the stripper's dateline rules only
+// remove the day+month and relative-"ago" forms, so flagging a clock-only shape the
+// stripper leaves would reopen a detector/stripper gap. A real dateline that shows
+// a time shows it WITH a date -- "Published 29 June 2026, 04:34 BST" -- which the
+// month branch already flags.) A real NPR credit is "Heard on <named show>", not
+// the lowercase "heard on <weekday/place>" legal/legislative sense. This keeps the
+// stripper (which already only removes these dateline/credit SHAPES, case-
+// sensitively + clause-anchored) and the detector reconciled: everything the
+// tightened detector flags is still removed by the stripper, and the ordinary-prose
+// false positives are gone.
+const NEWS_PUBLISHER_CHROME_PATTERNS = [
+  String.raw`^Text settings Story text Size\b[\s\S]{0,200}?Minimize to nav`,
+  String.raw`\b(?:WATCH|RELATED VIDEO)\s+[^:]{8,180}:`,
+  String.raw`\b(?:Published|Updated)\s+(?:\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b|\d{1,2}\s+(?:minutes?|hours?|days?)\s+ago\b)`,
+  String.raw`\bHeard on\s+(?:All Things Considered|Weekend All Things Considered|Morning Edition|Weekend Edition(?:\s+(?:Saturday|Sunday))?|Fresh Air|All Songs Considered|Here and Now|On Point|The Takeaway|Marketplace)\b`,
+  String.raw`\bbroadcast on (?:the )?CBS\b`,
+  String.raw`\bstreams on (?:the )?CBS\b`,
+  String.raw`\bwatch CBS News\b`,
+  String.raw`\b(?:Comment Loader\s+Save Story\s+Save this story\s*)+\b`,
+  String.raw`\bLoading the player\b`,
+  String.raw`:\s*(?:Image|Photo)\s+Credits?:\s*[^.!?\n]{1,120}?(?=\s+[A-Z][a-z])`,
+  String.raw`\[?deltaMinutes?\]?`,
+];
+
+// Escape a literal label for use inside a RegExp source. "&" / "(" / "." etc. in
+// a label ("LISTEN & FOLLOW") must match literally, not as a regex metachar.
+function escapeRegExpLiteral(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Build the word-boundary-anchored literal-label alternation source that both the
+// detector regex and the stripper's generic label pass consume. A label that
+// starts/ends with a word char gets a \b on that side so a partial-word match
+// ("Sharer") is avoided.
+function newsChromeLabelAlternationSource() {
+  return NEWS_PUBLISHER_CHROME_LABELS.map((label) => {
+    const escaped = escapeRegExpLiteral(label);
+    const lead = /^\w/.test(label) ? '\\b' : '';
+    const tail = /\w$/.test(label) ? '\\b' : '';
+    return lead + escaped + tail;
+  }).join('|');
+}
+
+// The full chrome-detector alternation source (labels + structural patterns).
+// verify-dashboard-cards-live.js compiles this into NEWS_PUBLISHER_CHROME so the
+// authoritative live QC definition of "chrome" stays reconciled with the stripper
+// from a single place. Returned as a plain source string (no flags, no global
+// state) so the importer can compile a fresh, stateless RegExp at each call site.
+function newsPublisherChromeSource() {
+  return [newsChromeLabelAlternationSource(), ...NEWS_PUBLISHER_CHROME_PATTERNS].join('|');
+}
+
+// The stripper's generic label pass: every shared label, clause-anchored and
+// case-SENSITIVE, consuming only an optional immediately-trailing terminal mark
+// (never a greedy tail). This is the rule that mechanically reconciles the
+// stripper with the detector's literal-label set.
+const SHARED_LABEL_CHROME_RE = new RegExp(
+  CLAUSE_START + '(?:' + newsChromeLabelAlternationSource() + ')[.!?]?',
+  'g',
+);
+
+const EMBEDDED_IMAGE_CREDIT_RE = new RegExp(
+  String.raw`:\s*(?:Image|Photo)\s+Credits?:\s*[^.!?\n]{1,120}?(?=\s+[A-Z][a-z])`,
+  'g',
+);
+
+const PUBLISHER_CHROME_RULES = [
+  // Flattened article-reader controls can lead an otherwise complete article
+  // body. Mandatory start/end labels and a bounded middle tolerate option-order
+  // changes without matching ordinary prose about text size or subscribers.
+  /^Text settings Story text Size\b[\s\S]{0,200}?Minimize to nav\s*/i,
+  // Embedded video recirculation label plus its linked headline. Keep the
+  // article prose after the mandatory colon; ordinary uses of watch/related
+  // video without this publisher-card shape survive.
+  /\b(?:WATCH|RELATED VIDEO)\s+[^:]{8,180}:\s*/g,
+  // Flattened recirculation card immediately followed by an absolute dateline.
+  // BBC pages can concatenate a related-story headline and its "Published"
+  // label directly in front of the real article sentence. The title-like run is
+  // clause-anchored and the capitalized absolute dateline is mandatory, so
+  // ordinary in-prose uses of "published" remain untouched.
+  new RegExp(
+    CLAUSE_START +
+      '[A-Z][^.!?\\n]{8,160}?\\s+(?:Published|Updated)\\s+\\d{1,2}\\s+[A-Z][a-z]+\\s+\\d{4}(?:,\\s*\\d{1,2}:\\d{2}\\s*[A-Z]{2,4})?\\b',
+    'g',
+  ),
+  // NPR-style show credit: "Heard on All Things Considered". CASE-SENSITIVE
+  // "Heard on" at a clause start -- the lowercase verb "witnesses heard on
+  // Capitol Hill" is real prose and must survive.
+  new RegExp(CLAUSE_START + 'Heard on [A-Z][^.!?\\n]{0,120}[.!?]?', 'g'),
+  // "<NAME> reports/writes/wrote" credit (NPR/AP staff line). A reporting credit
+  // is a STANDALONE clause: clause start + the verb ENDS the clause (period). A
+  // mid-sentence "said PRIVATE_NAME reported the findings to Congress" is real
+  // prose (preceding subject, verb runs on) and must NOT match.
+  new RegExp(
+    CLAUSE_START +
+      '[A-Z][a-z]+(?:\\s+[A-Z]\\.?)?\\s+[A-Z][a-z]+\\s+(?:reports|reported|writes|wrote)\\s*[.!?]',
+    'g',
+  ),
+  // Wire-service byline, handled BEFORE the generic human-name byline so
+  // "By The Associated Press" is removed whole (the generic rule would leave a
+  // dangling "Press."). Clause-anchored.
+  new RegExp(
+    CLAUSE_START +
+      'By (?:The Associated Press|Reuters|Agence France-Presse|AFP|Bloomberg|The Canadian Press)\\b[^.!?\\n]{0,40}[.!?]?',
+    'g',
+  ),
+  // Byline with a desk role. Two safe shapes only (Codex review 2026-06-23 -- an
+  // unanchored "<Name>, <Role> ..." ate real appositive prose like "the award
+  // went to Jane Smith, Reporter of the Year, after ..."):
+  //   (a) "By <Name>[ and <Name>], ...<ROLE>..." -- the leading "By" + a comma +
+  //       a role KEYWORD anywhere in the byline tail makes it an unambiguous
+  //       byline. Once a role keyword is present, the WHOLE byline line (any beat
+  //       modifier: "Technology Reporter", "National Security Correspondent", plus
+  //       "in Chief"/"for NPR" extensions) is consumed up to the clause end, so no
+  //       role fragment leaks. The mandatory role keyword keeps a rare "By <Name>,
+  //       who founded the firm, ..." prose opener (no role word) from matching.
+  //   (c) clause-start role-FIRST "<Role>, <Name>" -- this is the only role byline
+  //       the build QC bans (newsArtifactRe + banned), so it is the form worth
+  //       stripping; clause-anchored so an embedded "..., including Editor, Jane
+  //       Doe, ..." is not touched.
+  // The role-SECOND no-"By" form ("Jane Smith, Reporter.") is intentionally NOT
+  // stripped: QC does not ban it and it is indistinguishable from a real
+  // title-case appositive ("Jane Smith, Editor In Chief, said ...").
+  /\bBy [A-Z][a-z]+(?:\s+[A-Z]\.?)?\s+[A-Z][a-z]+(?:\s+and\s+[A-Z][a-z]+(?:\s+[A-Z]\.?)?\s+[A-Z][a-z]+)?,\s+(?:[A-Za-z][^.!?\n]{0,58}?\s)?(?:Correspondent|Reporter|Editor|Staff Writer|Contributor|Columnist|Anchor|Bureau Chief)\b(?:\s+(?:in|for|of|at|and|the)\s+[A-Z][A-Za-z]*){0,4}[.!?]?(?=\s|$)/g,
+  new RegExp(
+    CLAUSE_START +
+      '(?:Correspondent|Reporter|Editor),\\s+[A-Z][a-z]+(?:\\s+[A-Z]\\.?)?\\s+[A-Z][a-z]+(?![ \\t]+[a-z])[.!?]?(?=\\s|$)',
+    'g',
+  ),
+  // Standalone "By <NAME>" credit line at a clause boundary (no role tag, no wire
+  // service -- those are handled above).
+  new RegExp(
+    CLAUSE_START +
+      'By [A-Z][a-z]+(?:\\s+[A-Z]\\.?)?\\s+[A-Z][a-z]+(?:\\s+and\\s+[A-Z][a-z]+\\s+[A-Z][a-z]+)?\\b[^.!?\\n]{0,40}?(?=[.!?]|\\s+[A-Z]|$)',
+    'g',
+  ),
+  // "Read full article" / "Read the full article" / "Read more" CTA. CASE-
+  // SENSITIVE and clause-anchored; the CTA is chrome ONLY when it ENDS its clause
+  // -- immediately followed by sentence punctuation (which it consumes, leaving no
+  // orphan period) or end-of-text. A real "Read more books than peers" continues
+  // into a word, not punctuation, so it is preserved (Codex review 2026-06-23).
+  // "Read more Overview" is the specific QC-banned heading: strip only the two-word
+  // label, never the sentence that follows it.
+  new RegExp(CLAUSE_START + 'Read more Overview\\b', 'g'),
+  new RegExp(CLAUSE_START + 'Read (?:the )?(?:full article|more)(?![ \\t]+[A-Za-z])[.!?]?', 'g'),
+  // Newsletter / subscribe CTAs (imperative at a clause start). The lowercase
+  // "people who subscribe to the newsletter get updates" sense is preserved by
+  // the clause-start anchor + capitalized imperative.
+  new RegExp(
+    CLAUSE_START +
+      '(?:Sign up|Subscribe)(?:\\s+(?:for|to))?\\s+(?:our\\s+|the\\s+)?(?:free\\s+)?newsletter\\b[^.!?\\n]{0,140}[.!?]?',
+    'g',
+  ),
+  // Recirculation: "Related: ..." (label + colon) and the QC-banned
+  // "Related insights/offices/contacts" headings. CASE-SENSITIVE Capitalized
+  // "Related" at a clause start, so "the memo used related: contacts" (lowercase,
+  // mid-sentence) and "the agency posted related insights" are preserved as real
+  // prose (Codex review 2026-06-23). "More from <Outlet>" is intentionally NOT
+  // stripped: QC does not ban it and "More from Amazon will arrive next quarter"
+  // is real sentence-start prose a rule cannot distinguish from a recirc heading.
+  new RegExp(CLAUSE_START + 'Related:\\s*[^.!?\\n]{0,160}[.!?]?', 'g'),
+  // The "Related insights/offices/contacts" heading is a FIXED label: strip only
+  // the label plus an immediately-trailing terminal punctuation, never a greedy
+  // run to the next sentence boundary (a label with no trailing punctuation must
+  // not eat the following article sentence) (Codex review 2026-06-23).
+  new RegExp(CLAUSE_START + 'Related (?:insights|offices|contacts)\\b[.!?]?', 'g'),
+  // Misc standalone publisher chrome the QC bans, all CASE-SENSITIVE Capitalized
+  // labels at a clause start (the lowercase "paid to sponsor message testing",
+  // "users can download embed codes" senses are real prose and survive). A bare
+  // "N hours ago" line is intentionally NOT stripped: flattened to one line it is
+  // indistinguishable from real prose ("2 hours ago the agency issued ...").
+  // These are FIXED labels: strip ONLY the exact label plus an immediately-
+  // trailing terminal punctuation. A bounded "{0,N}" tail would eat the next real
+  // article sentence when the label has no trailing punctuation ("Sponsor Message
+  // The agency confirmed ...") (Codex review 2026-06-23).
+  new RegExp(CLAUSE_START + 'Sponsor Message\\b[.!?]?', 'g'),
+  new RegExp(CLAUSE_START + 'Courtesy photo\\b[.!?]?', 'g'),
+  new RegExp(CLAUSE_START + 'Business reporter\\b[.!?]?', 'g'),
+  new RegExp(CLAUSE_START + 'BBC Verify\\b[.!?]?', 'g'),
+  new RegExp(
+    CLAUSE_START + '(?:Published|Updated)\\s+\\d{1,2}\\s+(?:minutes?|hours?|days?)\\s+ago\\b[.!?]?',
+    'g',
+  ),
+  new RegExp(
+    CLAUSE_START +
+      '(?:Published|Updated)\\s+\\d{1,2}\\s+[A-Z][a-z]+\\s+\\d{4}(?:,\\s*\\d{1,2}:\\d{2}\\s*[A-Z]{2,4})?\\b[.!?]?',
+    'g',
+  ),
+  // Leading photo / wire credit: "<ALLCAPS PHOTOGRAPHER NAME>/<AGENCY> [Getty
+  // Images]" (live SCIENCE 2026-07-01 -- "PATRICK T. FALLON/AFP Getty Images Paxlovid
+  // ..."). A body that OPENS with 1-4 all-caps name tokens + "/" + a known wire
+  // agency is a photo caption credit, never article prose, so the whole leading
+  // credit (plus a trailing "Getty Images" agency tag) is removed. Anchored to the
+  // credit SHAPE (all-caps name + slash + agency), so an ordinary sentence that
+  // merely contains a slash or an agency name in prose is untouched.
+  /^\s*[A-Z][A-Z.]+(?:\s+[A-Z][A-Z.]+){0,3}\/(?:AFP|Reuters|AP|EPA|Bloomberg|Getty(?:\s+Images)?|Anadolu(?:\s+Agency)?)\b(?:\s+Getty\s+Images)?[\s,.:;-]*/,
+  // ("Latest Big pharma", "Help ensure someone", "MAKING AMERICA SAFE AGAIN" were
+  // removed here 2026-06-30: incident-pinned fragments, not proven general chrome.
+  // They were also removed from the live detector. See NEWS_PUBLISHER_CHROME_LABELS.)
+  /^Listen Listen \(\d+\s+mins?\) Save Click here to share on social media share-nodes\b[\s\S]{0,260}?Add Al Jazeera on Google info\s*/i,
+  /^Toggle Play\s+/i,
+  /^(?:Comment Loader\s+Save Story\s+Save this story\s*)+/i,
+  /^Loading the player\s*/i,
+  /^News\s+(?:AI|Mobile Smartphones|EVs and Transportation|Social Media|Computing)\s+/i,
+  /^Reviews?\s+(?:Gaming|Computing|AI|Tech)\s+/i,
+  /^Big Tech\s+/i,
+  // Leading date-fragment + relative-timestamp dateline (live WORLD NEWS miss
+  // 2026-06-30: the body opened "une 2026 Updated 7 hours ago Many areas ..."
+  // where an earlier strip left a partial month, followed by a relative "Updated
+  // N hours ago" dateline). A "<word> <year> (Published|Updated) N
+  // (minutes|hours|days) ago" run at the VERY START of the body is a publisher
+  // dateline fragment, not article prose (real prose does not open that way).
+  /^[A-Za-z]+ \d{4} (?:Published|Updated) \d{1,2} (?:minutes?|hours?|days?) ago\b[.!?]?\s*/,
+  /^Why you can trust ZDNET\b[\s\S]{0,360}?(?:ZDNET Recommendations|Our process)\s*/i,
+  new RegExp(CLAUSE_START + "PRIVATE_NAME'?t Miss an Update\\b[.!?]?", 'g'),
+  new RegExp(CLAUSE_START + 'Download\\s+Embed\\b[.!?]?', 'g'),
+  new RegExp(CLAUSE_START + 'Back transcript\\b[.!?]?', 'g'),
+  new RegExp(CLAUSE_START + 'Transcript(?![ \\t]+[A-Za-z])[.!?]?', 'g'),
+  new RegExp(
+    CLAUSE_START +
+      'To play this video you need to enable JavaScript in your browser\\.\\s*This video can not be played\\.?\\s*',
+    'g',
+  ),
+  /\bFigure caption,\s*[^.!?\n]{0,180}[.!?]?/g,
+  new RegExp(CLAUSE_START + 'Image source,\\s*[^.!?\\n]{0,180}\\s+Image caption,\\s*', 'g'),
+  new RegExp(
+    CLAUSE_START +
+      'By [A-Z][A-Za-z .-]{2,80}\\s+(?:Business reporter|News reporter|Reporter|Correspondent|Technology reporter|Paris correspondent|BBC News)\\s+Published\\s+\\d{1,2}\\s+[A-Z][a-z]+\\s+\\d{4}(?:,\\s*\\d{1,2}:\\d{2}\\s*[A-Z]{3})?(?:\\s+Updated\\s+[^.!?\\n]{0,80})?',
+    'g',
+  ),
+  /\bBy [A-Z][A-Za-z .-]{2,80}\s+(?:Business reporter|News reporter|Reporter|Correspondent|Technology reporter|Paris correspondent|BBC News)\s+Published\s+\d{1,2}\s+[A-Z][a-z]+\s+\d{4}(?:,\s*\d{1,2}:\d{2}\s*[A-Z]{3})?(?:\s+Updated\s+[^.!?\n]{0,80})?/g,
+  // GENERAL inline byline + dateline run (live WORLD NEWS miss 2026-06-29). The
+  // two BBC rules above only match a FIXED role list ("Reporter", "Correspondent",
+  // ...) immediately after the name; live BBC chrome leaked a lowercase non-listed
+  // role ("Seoul correspondent"), TWO authors joined by "and", and the run sat
+  // MID-sentence with no preceding period ("...South Korea By PRIVATE_NAME, Seoul
+  // correspondent and Fan Wang Published 29 June 2026, 04:34 BST Updated 3 hours
+  // ago ..."). Category encoded: a "By <author run> ... Published|Updated <date>"
+  // byline+dateline is page chrome wherever it sits. Over-strip is bounded by
+  // making the "Published|Updated <date>" marker MANDATORY (a real "By Monday, the
+  // committee ..." opener or a bare "By <Name>" with no dateline does NOT match)
+  // and by stopping the author/role tail at the first sentence punctuation so the
+  // preceding article sentence is never eaten. The date matches BOTH orders
+  // ("29 June 2026" and "June 26, 2026"); the trailing time/timezone and any
+  // "Updated ... ago" tail are consumed up to the clause end so no fragment leaks.
+  /\bBy [A-Z][a-z]+[^.!?\n]{0,90}?(?:Published|Updated)\s+(?:\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|[A-Z][a-z]+\s+\d{1,2},\s+\d{4}|\d{1,2}\s+(?:minutes?|hours?|days?)\s+ago)(?:,?\s*\d{1,2}:\d{2}\s*(?:[AP]M\s+)?[A-Z]{2,4})?(?:\s+Updated\s+[^.!?\n]{0,40}?ago)?[^.!?\n]{0,15}?(?=[.!?]|\s+[A-Z]|$)/g,
+  // BBC-style "Reporting from" byline run (live WORLD NEWS miss 2026-06-30:
+  // "By Nomsa Maseko, BBC Africa, Reporting from Durban." and "By PRIVATE_NAME,
+  // BBC Africa, Reporting from Accra and Hafsa Khalil Published 33 minutes ago").
+  // A leading "By <Name>" + a "Reporting from <Place>" tag is an unambiguous BBC
+  // byline: real article prose never reads "By <Name>, BBC <section>, Reporting
+  // from <Place>". CASE-SENSITIVE "Reporting" (the lowercase "reporting from the
+  // field" and a no-"By" "Reporting from HQ, the analyst said" opener are real
+  // prose and survive). The whole byline (optional second author) is consumed up
+  // to the clause end so no name/place fragment leaks; any trailing
+  // Published/Updated dateline on the same row is taken out by the rule above.
+  /\bBy [A-Z][a-z]+[^.!?\n]{0,120}?\bReporting from [A-Z][^.!?\n]{0,80}?(?=[.!?]|$)/g,
+  /\bShare Add [A-Z][A-Za-z ]{1,80} to Google\b[.!?\s]*/g,
+  /\bLimited time:\s*Save\s+\d+%\s+on\s+[A-Z][A-Za-z ]{1,80}\s+subscription\b[.!?\s]*/g,
+  // Photo caption / credit lines: a Capitalized label + colon at a clause start.
+  // The colon REQUIRED form bounds the caption text up to the next sentence end,
+  // which is correct for a caption ("Photo: a worker stands outside. Credit:
+  // Getty."). "The photo: evidence dispute" (lowercase label, mid-sentence) is
+  // real prose and is preserved by the clause-start + case-sensitive anchor.
+  new RegExp(CLAUSE_START + '(?:Photo|Image|Caption|Photograph):\\s*[^.!?\\n]{0,160}[.!?]?', 'g'),
+  new RegExp(CLAUSE_START + 'Credit:\\s*[^.!?\\n]{0,120}[.!?]?', 'g'),
+  // Social-share boilerplate: "Share Twitter Facebook LinkedIn" (the QC-banned
+  // run). CASE-SENSITIVE so "companies share on a pro-rata basis" survives, and
+  // the platform run must actually follow "Share".
+  /\bShare\s+(?:Twitter|Facebook|LinkedIn)(?:\s+(?:Twitter|Facebook|LinkedIn))*\b[^.!?\n]{0,40}[.!?]?/g,
+  /\b(?:Twitter|Facebook|LinkedIn|Email|Print|Copy link)(?:\s+(?:Twitter|Facebook|LinkedIn|Email|Print|Copy link)){2,}\b/g,
+  // LAST rule: a STANDALONE relative-timestamp dateline that leaked MID-body (not
+  // at a clause start, no owning byline): live WORLD NEWS 2026-07-01 -- "... thought
+  // to be a firm Updated 55 minutes ago the filing ...". Runs after every combined
+  // byline+dateline rule above so it only mops up an orphan dateline they did not
+  // already consume as part of a byline (otherwise it would strip the dateline tail
+  // first and break those combined strips). CASE-SENSITIVE capital "Published|
+  // Updated" keeps real prose "... was updated 3 hours ago ..." (lowercase verb).
+  /(?:Published|Updated)\s+\d{1,2}\s+(?:minutes?|hours?|days?)\s+ago\b[.!?]?/g,
+];
+
+// Strip the canonical publisher-chrome patterns from already-extracted plain
+// text, leaving clean article prose. Whitespace-normalized at the end so a
+// removed run does not leave a double space. Real prose is preserved because
+// each rule is anchored to the chrome's own boilerplate shape.
+function stripPublisherChrome(text) {
+  // Normalize ALL whitespace (including newlines / blank-line paragraph breaks)
+  // to single spaces FIRST so the clause-start lookbehind ((?<=^|[.!?]\s)) sees a
+  // consistent "[.!?] " boundary even where chrome sits after a "\n\n" paragraph
+  // break ("Real sentence.\n\nHeard on ..."). Without this a chrome label that
+  // leads a paragraph escapes the clause anchor (Codex review 2026-06-23).
+  let s = String(text || '').replace(/\s+/g, ' ');
+  s = s.replace(EMBEDDED_IMAGE_CREDIT_RE, '. ');
+  // Collapse whitespace BETWEEN each rule so the clause-start lookbehind always
+  // sees a single space: an earlier rule that replaces a chrome run with a space
+  // can leave ". <space><space>Sponsor Message ...", and a multi-space gap would
+  // defeat the next rule's fixed lookbehind (keep anchored AND order-independent).
+  for (const re of PUBLISHER_CHROME_RULES) {
+    s = s
+      .replace(re, ' ')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/^\s+/, '');
+  }
+  // GENERIC shared-label pass: strip every entry in NEWS_PUBLISHER_CHROME_LABELS
+  // (the single source of truth the live detector also compiles from). This is
+  // what GUARANTEES the stripper covers every chrome LABEL the detector flags --
+  // a label cannot be in the detector list without also being removed here. The
+  // pass is clause-anchored (start-of-text or after sentence punctuation, via the
+  // CLAUSE_START lookbehind) AND case-SENSITIVE (matchLabelChromeRe carries no 'i'
+  // flag), so a lowercase in-prose sense survives ("the editor said to leave your
+  // feedback later" is preserved; a "Leave your feedback" CTA at a clause start is
+  // removed). Each label is consumed with an optional immediately-trailing
+  // terminal punctuation only -- never a greedy run -- so a label with no trailing
+  // punctuation does not eat the following real sentence.
+  s = s
+    .replace(SHARED_LABEL_CHROME_RE, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/^\s+/, '');
+  // A removed chrome run can leave an orphaned punctuation island (". ." when a
+  // CTA between two sentences was stripped). Collapse a lone punctuation mark
+  // that is now stranded between spaces so the result reads as clean prose.
+  s = s
+    // Pull a stranded punctuation mark back onto the preceding word ("text . X"
+    // -> "text. X") so a stripped CTA does not leave a floating period.
+    .replace(/\s+([.!?,;:])/g, '$1')
+    // Collapse a sentence mark that is EXACTLY doubled by a strip ("Tuesday.. The")
+    // to one. A real ellipsis ("here...") is a run of 3+ and is left intact: the
+    // pattern requires a non-dot (or start) before the pair and a non-dot (or end)
+    // after, so it never bites into a 3+ run.
+    .replace(/(^|[^.!?])([.!?])\2(?![.!?])/g, '$1$2')
+    // Drop a comma/semicolon/colon that is now stranded right after a sentence
+    // mark because a clause-start label that began with the orphan's clause was
+    // stripped ("Markets fell. Image source, Reuters." -> "Markets fell., Reuters."
+    // -> "Markets fell. Reuters."). Only a secondary mark immediately following a
+    // terminal mark is collapsed; real prose never writes ".,".
+    .replace(/([.!?])\s*[,;:]+\s*/g, '$1 ')
+    // A clause-initial label whose rule stopped BEFORE the sentence period (the
+    // "By <Name>" lookahead) leaves a leading orphan period once the label is
+    // gone ("By Jane Smith. The agency" -> ". The agency"). Drop a sentence mark
+    // that now LEADS the text (Codex review 2026-06-23).
+    .replace(/^\s*[.!?,;:]+\s*/, '');
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+// This is intentionally an affirmative bad-body detector instead of treating a
+// missing or thin discovery excerpt as bad. The producer fetches those URLs
+// later; only known access and navigation pages must be excluded before that
+// fetch can spend the bounded summary budget.
+function isKnownInvalidNewsArticleBody(text) {
+  const body = String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  if (!body) return false;
+
+  // Require paired page-shape signals so reporting that merely discusses bot
+  // detection or popularity lists remains valid evidence.
+  return Boolean(
+    (/\bare you a robot\b/.test(body) &&
+      /\b(?:unusual activity|click the box below|supports javascript and cookies)\b/.test(body)) ||
+      (/^trending now\b/.test(body) && /\b(?:latest in|most popular)\b/.test(body)),
+  );
+}
+
+function isLegitimateNewsArticleBody(text) {
+  const body = String(text || '').trim();
+  return Boolean(body) && !isKnownInvalidNewsArticleBody(body);
+}
+
+// A page whose visible text reads like an error / not-found / consent wall is NOT
+// a real article body. Treating it as one (it can still be 1000+ chars of nav
+// chrome) was how a removed/blocked story slipped past MIN_BODY_CHARS and got
+// summarized from junk. We detect the canonical error signatures, but ONLY when
+// they LEAD the candidate text -- a real article that merely mentions "access
+// denied" or "page not found" mid-body (security / legal / tech reporting) leads
+// with real article prose and must be preserved (Codex review 2026-06-22). The
+// signature is matched anchored at the very start of the extracted text.
+const ERROR_PAGE_LEAD_RE =
+  /^(?:404\s+(?:page\s+)?not\s+found|page\s+not\s+found|we(?:'re| are)?\s+sorry[,!]?\s+we\s+seem\s+to\s+have\s+lost\s+this\s+page|we\s+seem\s+to\s+have\s+lost\s+this\s+page|access\s+denied|are\s+you\s+a\s+(?:robot|human)|enable\s+javascript\s+to\s+continue|please\s+verify\s+you\s+are\s+(?:a\s+human|human)|this\s+page\s+(?:could\s+not|couldn'?t)\s+be\s+found)\b/i;
+
+// SHORT single-word error reasons that may follow an error lead after a dash or
+// colon ("Access denied - blocked"). These are unambiguous: a real headline does
+// not read "Access denied - forbidden", so we do not require an end anchor for
+// them (Codex review rounds 7, 8).
+const ERROR_REASON_WORD =
+  '(?:blocked|forbidden|denied|restricted|unavailable|unauthori[sz]ed|prohibited|403|404|401|429)';
+
+// The multi-word permission / authorization boilerplate that an error page shows
+// after the lead ("you do not have permission", "permission denied", ...). This
+// is conclusive ONLY when it COMPLETES the boilerplate sentence -- optionally a
+// short generic completion ("to access this resource") then end-of-segment or
+// sentence punctuation. A real news headline that quotes the phrase and then
+// continues into reporting ("... you do not have permission lawsuit proceeds") is
+// NOT matched, so that story is preserved (Codex review rounds 8, 9, 10).
+const ERROR_BOILERPLATE_PHRASE =
+  "(?:you\\s+(?:do\\s+not|don't|are\\s+not|aren't)\\s+(?:have\\s+(?:permission|access)|authori[sz]ed|allowed)|you\\s+don'?t\\s+have\\s+(?:permission|access)|permission\\s+denied|not\\s+authori[sz]ed|not\\s+allowed)";
+// The boilerplate phrase is conclusive only when it COMPLETES: an optional short
+// generic completion ("to access this resource"), then a sentence boundary
+// (sentence punctuation or end-of-text). A headline that continues into a new
+// word ("... permission lawsuit proceeds") has no boundary there and is preserved.
+const ERROR_BOILERPLATE_COMPLETION =
+  '(?:\\s+to\\s+(?:access|view|see|reach)\\s+this\\s+(?:resource|page|content|site|server))?(?=[\\s]*(?:[.!?:;,]|$))';
+
+// The error phrase must be STANDALONE at the lead: immediately followed by
+// end-of-text or sentence/clause punctuation -- NOT by a continuing word that
+// turns it into a noun phrase. This keeps a real headline like "Access denied
+// vulnerabilities are spreading" (the phrase runs on into more prose) from being
+// treated as an error page, while still catching "Access denied." and "Access
+// denied -- you do not have permission". A page whose error phrase is announced
+// in a heading ("404 Page not found", "Access denied") with trailing chrome is
+// caught separately by pageHasErrorHeading, which is the primary heading signal
+// (Codex review 2026-06-22, round 4).
+// The error phrase counts as a STANDALONE error lead when it is immediately
+// followed by:
+//   - end-of-text, or sentence-ending punctuation (. ! ?), or
+//   - a colon / dash / comma / semicolon that introduces a KNOWN error reason
+//     ("Access denied - blocked", "Access denied: forbidden"), or end/period.
+// A colon/dash that introduces ORDINARY headline prose ("Access denied: banks
+// face new attacks") is NOT an error lead, so that real story is preserved
+// (Codex review rounds 5, 6, 7).
+// After the error lead, accept: end-of-text / sentence punctuation, OR a
+// dash/colon run followed by EITHER a short error word, OR end/sentence-punct, OR
+// the permission boilerplate that COMPLETES (generic completion + end). The
+// boilerplate must complete-or-end so a real "Access denied - you do not have
+// permission lawsuit proceeds" headline is preserved.
+const ERROR_PAGE_STANDALONE_RE = new RegExp(
+  ERROR_PAGE_LEAD_RE.source +
+    '(?:\\s*[.!?]|\\s*$|\\s*[-:;,\\u2013\\u2014]+\\s*(?:' +
+    ERROR_REASON_WORD +
+    '|[.!?]|$|' +
+    ERROR_BOILERPLATE_PHRASE +
+    ERROR_BOILERPLATE_COMPLETION +
+    '))',
+  'i',
+);
+
+// True when ANY of the supplied texts LEADS with a STANDALONE error/not-found
+// signature (within the first ~120 chars). A real article that quotes the phrase
+// deeper in its body, or whose long headline merely starts with it, never matches.
+function looksLikeErrorPage(...texts) {
+  return texts.some((t) =>
+    ERROR_PAGE_STANDALONE_RE.test(
+      String(t || '')
+        .trim()
+        .slice(0, 120),
+    ),
+  );
+}
+
+// A SHORT, standalone heading is the error page's self-announcement ("Access
+// denied", "404 Page not found"). We scan ALL early headings + the <title> --
+// publishers sometimes render a brand <h1> before the error <h1> -- but only
+// treat a heading as error evidence when it is SHORT (<= 40 chars) AND the error
+// signature is essentially the WHOLE heading, not just a prefix. This catches
+// chrome-before-the-error-<h1> pages without rejecting a real article whose
+// headline happens to start with "Access denied ..." and runs on (Codex review
+// 2026-06-22, rounds 3 + 4).
+// A short heading is an error heading when the error signature is essentially the
+// whole heading. We allow trailing punctuation, OR a short dash/colon-separated
+// reason that is itself a KNOWN single error word ("Access denied - blocked",
+// "Access denied: forbidden"). We do NOT accept an arbitrary trailing clause: a
+// real headline like "Access denied: banks face new attacks" must be preserved
+// (Codex review rounds 5, 6, 7).
+const ERROR_HEADING_RE = new RegExp(
+  ERROR_PAGE_LEAD_RE.source +
+    '(?:\\s*[-:\\u2013\\u2014]\\s*' +
+    ERROR_REASON_WORD +
+    ')?[\\s.!?:;,]*$',
+  'i',
+);
+// The DEFINITIVE multi-word boilerplate continuation as a HEADING (any length):
+// error lead + dash/colon + the permission/authorization boilerplate that
+// COMPLETES (optional generic completion, then end-of-heading). A real news
+// headline that quotes the phrase then continues into reporting is NOT matched
+// (the boilerplate must end the heading) (Codex review rounds 9 + 10).
+const ERROR_BOILERPLATE_HEADING_RE = new RegExp(
+  ERROR_PAGE_LEAD_RE.source +
+    '\\s*[-:\\u2013\\u2014]+\\s*' +
+    ERROR_BOILERPLATE_PHRASE +
+    ERROR_BOILERPLATE_COMPLETION,
+  'i',
+);
+function pageHasErrorHeading(cleaned) {
+  const s = String(cleaned || '');
+  const heads = [];
+  let m;
+  const hRe = /<h[12][^>]*>([\s\S]*?)<\/h[12]>/gi;
+  while ((m = hRe.exec(s)) && heads.length < 6) heads.push(htmlFragmentToText(m[1]));
+  const titleM = s.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (titleM) heads.push(htmlFragmentToText(titleM[1]));
+  return heads.some((h) => {
+    const t = h.trim();
+    // Short heading that IS essentially the error self-announcement, OR a heading
+    // (any length) that carries the definitive permission/authorization boilerplate.
+    return (t.length <= 40 && ERROR_HEADING_RE.test(t)) || ERROR_BOILERPLATE_HEADING_RE.test(t);
+  });
+}
+
+// A class TOKEN (one space-separated class) marks a recirculation / comments /
+// promo region when it CONTAINS one of these stems (so hyphenated forms like
+// "related-content", "promo-content", "comment-list" all match). Compared per
+// token, not across the whole attribute (Codex review round 5).
+const RECIRC_TOKEN_RE =
+  /(?:comments?|related|recirc|recommend(?:ed|ations)?|promo|newsletter|subscribe|sharebar|social-share|trending|read-?more|more-from|outbrain|taboola|disqus)/i;
+// Real content roles: a class TOKEN that is EXACTLY one of these means the
+// element is the article, never a recirc block ("commentary article-body" keeps
+// the "article-body" token). Exact-token match so "related-content" (a recirc
+// token that merely ends in "content") is NOT treated as a content role
+// (Codex review round 5).
+const CONTENT_ROLE_TOKENS = new Set([
+  'article',
+  'article-body',
+  'articlebody',
+  'post',
+  'post-content',
+  'content',
+  'entry',
+  'entry-content',
+  'story',
+  'story-body',
+  'prose',
+  'main',
+  'main-content',
+  'body',
+]);
+
+function classTokens(cls) {
+  return String(cls || '')
+    .split(/\s+/)
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean);
+}
+// An element is a recirc block when SOME class token looks like recirc AND NO
+// class token is an exact content role.
+function isRecircClass(cls) {
+  const toks = classTokens(cls);
+  if (!toks.some((t) => RECIRC_TOKEN_RE.test(t))) return false;
+  if (toks.some((t) => CONTENT_ROLE_TOKENS.has(t))) return false;
+  return true;
+}
+
+// Remove recirc/comment/promo regions (tokenized class match), preserving any
+// element that also carries a real content role. Walks element starts and skips
+// to the matching close tag of the same tag name (depth-aware) so nested divs do
+// not truncate the removal early.
+function stripRecircRegions(html) {
+  const s = String(html || '');
+  const tagRe = /<(div|section|ul|ol|aside)\b[^>]*class="([^"]*)"[^>]*>/gi;
+  let out = '';
+  let last = 0;
+  let m;
+  while ((m = tagRe.exec(s))) {
+    const tag = m[1].toLowerCase();
+    const cls = m[2];
+    if (!isRecircClass(cls)) continue;
+    // Find the matching close tag from the end of this opening tag, depth-aware.
+    const openRe = new RegExp(`<${tag}\\b`, 'gi');
+    const closeRe = new RegExp(`</${tag}\\s*>`, 'gi');
+    let depth = 1;
+    let pos = tagRe.lastIndex;
+    let end = -1;
+    while (depth > 0) {
+      openRe.lastIndex = pos;
+      closeRe.lastIndex = pos;
+      const o = openRe.exec(s);
+      const c = closeRe.exec(s);
+      if (!c) break;
+      if (o && o.index < c.index) {
+        depth += 1;
+        pos = openRe.lastIndex;
+      } else {
+        depth -= 1;
+        pos = closeRe.lastIndex;
+        if (depth === 0) end = closeRe.lastIndex;
+      }
+    }
+    if (end < 0) continue; // unbalanced: leave it rather than over-strip
+    out += s.slice(last, m.index) + ' ';
+    last = end;
+    tagRe.lastIndex = end;
+  }
+  return out + s.slice(last);
+}
+
+// Prefer the body of the article that lives in a real text container (<p> rich
+// region), reject error/not-found pages. Modern publishers (e.g. TechCrunch)
+// no longer use a single entry-content div and split the body across many short
+// <p> tags inside <main>, so we also build a body from the substantial <p> tags
+// directly when the container heuristic comes up short.
+function stripHtmlToText(html) {
+  const cleaned = String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+    .replace(/<header[\s\S]*?<\/header>/gi, '')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+    .replace(/<aside[\s\S]*?<\/aside>/gi, '')
+    .replace(/<form[\s\S]*?<\/form>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '');
+  // Strip comment / related-story / promo / recirculation regions so their prose
+  // cannot pollute the article body (Codex review rounds 3 + 4). Match on a class
+  // TOKEN (word-boundary), and NEVER strip a block that also carries an article /
+  // content / body / story / prose role -- a real container like
+  // "commentary article-body" must survive (Codex review round 4).
+  const strippedRecirc = stripRecircRegions(cleaned);
+  // Collect every article-like container and take the LONGEST among them. A
+  // single greedy first-match grabbed a 26-char teaser div on some sites (e.g.
+  // financenewsdaily) and dropped the real article. We keep the matched
+  // container HTML so the <p>-reconstruction can be SCOPED to it (article-local
+  // paragraphs), not the whole document.
+  let bestContainerHtml = '';
+  let best = '';
+  for (const re of [
+    /<article[\s\S]*?<\/article>/gi,
+    /<main[\s\S]*?<\/main>/gi,
+    /<div[^>]*class="[^"]*(?:article|post|content|entry|story|prose)[^"]*"[\s\S]*?<\/div>/gi,
+  ]) {
+    let m;
+    while ((m = re.exec(strippedRecirc))) {
+      const t = htmlFragmentToText(m[0]);
+      if (t.length > best.length) {
+        best = t;
+        bestContainerHtml = m[0];
+      }
+    }
+  }
+  // Reconstruct the body from substantial <p> tags (modern publishers split the
+  // body across many short paragraphs no single non-greedy container captures
+  // whole). SCOPE the reconstruction to the best content container when we found
+  // one; only fall back to (recirc-stripped) document-wide paragraphs when no
+  // container exists, so comments / related-story prose can never replace it.
+  const paraScope = bestContainerHtml || strippedRecirc;
+  const paraText = substantialParagraphText(paraScope);
+  if (paraText.length > best.length) best = paraText;
+
+  const full = htmlFragmentToText(strippedRecirc);
+  const candidate = best.length >= MIN_CONTAINER_CHARS ? best : full;
+  // An error / not-found / consent-wall page is not a body, even when it carries
+  // 1000+ chars of nav chrome. Reject it when the error signature LEADS the
+  // extracted text or the full page lead, OR a SHORT standalone heading is the
+  // error self-announcement (pageHasErrorHeading) -- chrome before the <h1>, or
+  // a <p>-reconstruction that dropped the <h1>, is still caught. A real article
+  // that merely mentions the phrase mid-body, or whose long headline starts with
+  // it, is preserved (Codex review rounds 2-4). Headings are read from the
+  // original `cleaned` HTML so a stripped recirc block cannot hide one.
+  if (looksLikeErrorPage(candidate, full) || pageHasErrorHeading(cleaned)) return '';
+  // Strip publisher chrome (NPR show credits, bylines, "Read full article",
+  // newsletter prompts, "Related:"/"More from", photo credits, social-share)
+  // the <p>-reconstruction drags in alongside the real body, so the body fed to
+  // the LLM (and the excerpt fallback) is clean article prose only (2026-06-23).
+  return stripPublisherChrome(candidate);
+}
+
+// Reconstruct an article body from the substantial <p> tags WITHIN the given
+// HTML scope (the selected content container, or the whole page only when no
+// container was found). A real article paragraph is a <p> with enough text to be
+// prose (>= 60 chars); nav / byline / share-widget <p>s are short and get
+// filtered out. Returns '' when there are not enough real paragraphs to be a body.
+function substantialParagraphText(scopeHtml) {
+  const re = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+  const parts = [];
+  let m;
+  while ((m = re.exec(scopeHtml))) {
+    const t = htmlFragmentToText(m[1]);
+    if (t.length >= 60) parts.push(t);
+  }
+  if (parts.length < 2) return '';
+  return parts.join(' ').trim();
+}
+
+// Straight article-summary prompt. The model has the article text, so the job is
+// simple: decide whether it belongs in the target news category, then write a
+// shortened version of the article in exactly three paragraphs.
+function buildSummaryPrompt(item, sourceText) {
+  const title = String((item && item.title) || '').slice(0, 300);
+  const source = String((item && item.source) || '').slice(0, 80);
+  const category = String(
+    (item && (item.newsCategory || item.targetCategory || item.category || item.sectionTitle)) ||
+      '',
+  ).slice(0, 120);
+  const body = String(sourceText || '').slice(0, 6000);
+  return [
+    'Summarize this news article for an executive daily briefing.',
+    category ? `Target news category: ${category}.` : '',
+    category ? 'First decide whether the article belongs in the target news category.' : '',
+    category ? 'If it does not, return exactly IRRELEVANT_TO_CATEGORY and nothing else.' : '',
+    'Output one TITLE line followed by exactly 3 paragraphs and nothing else.',
+    'The first line must be TITLE: followed by a factual headline that summarizes the whole article in no more than 22 words and no fewer than 8.',
+    // ExampleCo 2026-08-16, verbatim: "Summarize these three paragraphs in no more
+    // than 22 words, in order to give ExampleCo maximum information whether he
+    // should read it or not." The title's only job is that read/skip decision,
+    // and it must be faithful to the three paragraphs below it.
+    'The title must faithfully summarize the three paragraphs you are about to write. It must not claim anything they do not support.',
+    'Pack the title with the specifics that decide whether reading the article is worth reading: who, what changed, how much, and the consequence.',
+    'Write the title from the full article text. Do not copy the first paragraph opening or merely shorten the publisher headline.',
+    'Lead with the main outcome or conclusion immediately in paragraph one. Name the actor and state what materially happened in its first sentence.',
+    'Do not open with suspense, scene-setting, a narrative journey, or how someone came to a decision.',
+    'Never use a teaser, question, clickbait phrase, curiosity gap, or promise that the answer comes later.',
+    'Paragraph one must contain the essential context an executive needs even if they read nothing else.',
+    'Paragraphs two and three add evidence, consequences, and context. They must not restart the story chronologically.',
+    'Write EXACTLY three full paragraphs separated by a single blank line.',
+    'Each paragraph MUST be at least three full sentences and at least 40 words',
+    'of article-summary prose.',
+    'Make the output a shortened version of the article. Say what is in the article.',
+    'Use only facts from the article text. Do not invent, forecast, or editorialize.',
+    'Use no labels other than TITLE:, and no bullets, headings, or markdown.',
+    'Do not mention the excerpt, supplied text, provided body, missing details, or needing more article text.',
+    'Do not frame the output as commentary about an article. Lead with the article substance.',
+    `Source: ${source}`,
+    `Title: ${title}`,
+    '',
+    'Article text:',
+    body,
+  ].join('\n');
+}
+
+function buildSummaryRetryPrompt(item, sourceText, previousOutput) {
+  return [
+    buildSummaryPrompt(item, sourceText),
+    '',
+    'The previous answer was rejected by the briefing summary validator.',
+    'Rewrite it now as one TITLE line followed by exactly three plain prose paragraphs.',
+    'Do not use headings, labels other than TITLE:, bullets, fragments, or section openers.',
+    'Every paragraph must start with a complete factual sentence about the article.',
+    '',
+    'Rejected answer:',
+    String(previousOutput || '').slice(0, 2400),
+  ].join('\n');
+}
+
+// Live FINANCE INDUSTRY NEWS defect (2026-06-30): two rows "summarized the
+// article as an article" instead of stating the substance -- e.g. "..., but the
+// article says that did not happen" and "..., but the article says builders
+// already face regulatory costs ...". The model framed the summary as a
+// DESCRIPTION of an article rather than reporting the facts directly. The prompt
+// now forbids this; this post-filter is the mechanical backstop so a stray
+// article-meta phrase never reaches the dashboard.
+//
+// Category encoded (not the two literal strings): a phrase that ATTRIBUTES the
+// prose to "the article / piece / report / story / author / reporter / column /
+// op-ed / analysis" (or the named publisher, "Newswire reports X") is
+// stripped so the surviving clause leads with substance.
+//
+// THE AUTHORITATIVE definition of "summarizes the article as an article" is the
+// NEWS-ARTICLE-META detector in scripts/verify-dashboard-cards-live.js
+// (NEWS_ARTICLE_META_PROSE_RE):
+//
+//   /\b(?:the|this|newswires?)\s+(?:article|story|report|author|reporter|
+//      piece|column|op-?ed|analysis)\s+
+//      (?:centers?|centres?|focus(?:es|ed)?|reports?|says|said|argues?|notes?|
+//       points?)\b/i
+//
+// So the stripper's noun list (ARTICLE_META_NOUN) and verb list
+// (ARTICLE_META_VERB) below are kept as a strict SUPERSET of that detector's
+// vocabularies -- every (subject)(noun)(verb) the detector flags is stripped
+// here, so the stripper and the detector can never disagree and a surviving
+// summary can never trip NEWS-ARTICLE-META. (We also strip equally-meta lead-ins
+// the detector happens not to enumerate -- "according to the report,", "as the
+// article notes,", "in this piece," -- for clean prose.)
+//
+// Over-strip is bounded (the cardinal sin):
+//   - the INLINE-conjunction form fires only after a comma + a conjunction
+//     (but/and/while/...), keeping the conjunction and the full following clause
+//     ("..., but the article says that did not happen" -> "..., but that did not
+//     happen"). A real "..., but activity remained subdued" is untouched.
+//   - the INLINE-CONNECTOR form (live FINANCE-NEWS miss 2026-06-30, the row this
+//     fix targets) generalizes the inline form to a mid-sentence connector with
+//     NO required leading comma: the detector matches "the article says" wherever
+//     it sits, but the old inline form only fired after a comma ("..., but the
+//     article says ..."). A no-comma coordinate ("...rebound but the article says
+//     ...", "...risk yet the report points to ...") or a subordinator ("...costs
+//     while the report notes that ...", "...dropped because the story reports
+//     ...") slipped through. This form keeps the connector + the full following
+//     clause and drops only the meta subject+verb (and an optional trailing
+//     particle to/on/out/that/how so "points to X"/"focuses on X" leave clean
+//     residual, not a dangling "yet to X"). Over-strip is bounded by REQUIRING
+//     the meta subject+verb right after the connector: a real "...costs while
+//     approvals slowed ..." (connector + ordinary prose) and "..., but the report
+//     is notable ..." (connector + copula, no reporting verb) are untouched.
+//   - the RELATIVE-pronoun form ("..., which the analysis argues will raise costs,
+//     ...") keeps the comma + which/who/that and the following clause, dropping
+//     only the meta subject+verb. A real "..., which regulators argue will ..." is
+//     untouched (no meta subject).
+//   - the AS-ASIDE form strips a mid-sentence comma-bracketed "as <subject>
+//     <verb>," aside ("..., as the article notes, even ..." -> "..., even ..."),
+//     which the clause-anchored AS form below does not reach.
+//   - the INTERJECTION form fires only on a comma-bracketed aside
+//     (", the report notes,") and removes the whole aside, leaving the host
+//     sentence intact.
+//   - the LEADING / "as" / "according to" forms fire only at a clause start.
+//   - the verb list is the detector's reporting verbs (say/report/note/state/
+//     argue/claim/add/write/describe/discuss/explain/highlight/mention/caution/
+//     warn/center on/centre on/focus on/point out), which deliberately EXCLUDES
+//     the copula (is/are/was/were/seems/remains), so "The report is notable
+//     because ..." (paragraph-3 framing) and "The article of incorporation was
+//     filed" (no reporting verb) both survive.
+// "U.S."/"Inc." capitalization is never mangled: we capitalize ONLY the single
+// surviving letter at each removal site, never a global recap.
+const ARTICLE_META_NOUN = 'article|piece|report|story|author|reporter|column|op-?ed|analysis';
+// Reporting verbs as a single fragment. "centers?|centres?" and "focus(?:es|ed)?"
+// take an "on", "points?" takes an "out"; we make those particles optional so a
+// "centers? on" still matches even if the model drops the particle. The detector
+// uses the bare verb, so matching the bare verb is sufficient and safe.
+const ARTICLE_META_VERB =
+  '(?:says?|said|reports?|reported|notes?|noted|states?|stated|describes?|discusses?|explains?|explained|argues?|argued|claims?|claimed|adds?|added|writes?|wrote|highlights?|highlighted|mentions?|mentioned|cautions?|cautioned|warns?|warned|centers?(?:\\s+on)?|centres?(?:\\s+on)?|focus(?:es|ed)?(?:\\s+on)?|points?(?:\\s+out)?)';
+// Subject: "the/this <noun>" OR the named finance publisher "Newswire(s)".
+//
+// NEWS-4d (ExampleCo, 2026-08-17): the determiner may carry the publisher's name
+// before the meta noun, as in "The Newswire article says ...". The detector
+// flags that, because "newswire article says" sits inside it, but this subject
+// pattern allowed only "the/this <noun>" or a bare "Newswire", so the shape
+// survived stripping. Downstream the surviving meta prose disqualified the whole
+// three-paragraph summary, which is how a finance card rendered zero rows out of
+// ten source-backed articles. The file header claims this stripper is a strict
+// superset of the detector; that claim was false for exactly this shape.
+//
+// One or two intervening words are allowed, which covers "the Newswire
+// article" and "the annual industry report" without letting the subject run away
+// across a clause. This does not widen the risk class: "the report says" was
+// already stripped before this change, so "the annual report says" is the same
+// rule applied one word later.
+const ARTICLE_META_QUALIFIER = `(?:[A-Za-z][A-Za-z.&'-]{1,24}\\s+){0,2}`;
+const ARTICLE_META_SUBJECT = `(?:(?:the|this)\\s+${ARTICLE_META_QUALIFIER}(?:${ARTICLE_META_NOUN})|newswires?)`;
+
+const ARTICLE_META_INLINE = new RegExp(
+  `,\\s+(but|and|while|though|although|yet|however)\\s+${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s+`,
+  'gi',
+);
+// Mid-sentence connector that introduces a meta clause, with NO required leading
+// comma (live FINANCE-NEWS miss 2026-06-30). A coordinating/subordinating
+// connector immediately followed by the meta subject+verb is article-meta framing
+// wherever it sits ("...rebound but the article says ...", "...costs while the
+// report notes that ...", "...dropped because the story reports ..."). Keep the
+// connector group ($1) and the following clause; drop only the subject+verb and an
+// optional trailing particle (to/on/out for the "points to"/"focuses on" idioms,
+// that/how for the complementizer) so the residual reads as substance, not a
+// dangling preposition. The mandatory meta subject+verb right after the connector
+// bounds over-strip: "...while approvals slowed ..." (no meta subject) and "...but
+// the report is notable ..." (copula, not a reporting verb) are left untouched.
+const ARTICLE_META_CONNECTORS =
+  '(?:but|and|while|whilst|though|although|yet|however|because|since|so|as|where|when)';
+const ARTICLE_META_INLINE_CONNECTOR = new RegExp(
+  `(,?\\s+${ARTICLE_META_CONNECTORS}\\s+)${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s+(?:to\\s+|on\\s+|out\\s+|that\\s+|how\\s+)?`,
+  'gi',
+);
+// Relative-pronoun aside: "..., which the analysis argues will raise costs, ..."
+// -> "..., which will raise costs, ...". Keep the comma + which/who/that ($1) and
+// the following clause; drop only the meta subject+verb. The leading comma keeps a
+// real "..., which regulators argue ..." (no meta subject) untouched.
+const ARTICLE_META_RELATIVE = new RegExp(
+  `(,\\s+(?:which|who|that)\\s+)${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s+`,
+  'gi',
+);
+// Mid-sentence comma-bracketed "as <subject> <verb>," aside ("..., as the article
+// notes, even ..." -> "..., even ..."). The clause-anchored ARTICLE_META_AS below
+// only fires at a clause start, so this catches the embedded aside form.
+const ARTICLE_META_AS_ASIDE = new RegExp(
+  `,\\s+as\\s+${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s*,`,
+  'gi',
+);
+// Comma-bracketed aside: "..., the report notes, ..." -> "..., ...". Requires the
+// trailing comma so a real "..., the report says lenders ..." (clause, not aside)
+// falls to the INLINE/LEAD forms instead, not this one.
+const ARTICLE_META_INTERJECT = new RegExp(
+  `,\\s+${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s*,`,
+  'gi',
+);
+// Inline attribution without a conjunction: "results improved, the article
+// says margins widened". The live detector sees this anywhere in the sentence,
+// but the earlier stripper only covered comma+conjunction and comma-bracketed
+// asides. Keep the comma and substantive clause; remove only the attribution.
+const ARTICLE_META_COMMA_CLAUSE = new RegExp(
+  ',' + '\\s+' + ARTICLE_META_SUBJECT + '\\s+' + ARTICLE_META_VERB +
+    '\\s+(?:to\\s+|on\\s+|out\\s+|that\\s+|how\\s+)?',
+  'gi',
+);
+// Trailing attribution: "costs rose, according to the article." There is no
+// following clause to capitalize, so remove the whole comma-delimited suffix
+// and leave its terminal punctuation in place.
+const ARTICLE_META_TRAILING_ACCORDING = new RegExp(
+  ',\\s+(?:according to|per)\\s+' + ARTICLE_META_SUBJECT + '(?=\\s*[.!?]|\\s*$)',
+  'gi',
+);
+const ARTICLE_META_LEAD = new RegExp(
+  `(^|[.!?]\\s)${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s+(?:that\\s+|how\\s+)?([a-z])`,
+  'gi',
+);
+// "As the article notes, <clause>" / "As Newswire reports, <clause>".
+const ARTICLE_META_AS = new RegExp(
+  `(^|[.!?]\\s)as\\s+${ARTICLE_META_SUBJECT}\\s+${ARTICLE_META_VERB}\\s*,?\\s+([a-z])`,
+  'gi',
+);
+// "According to the report, <clause>" / "Per the article, <clause>". The detector
+// does not flag this shape (no reporting verb after the noun), but it is the same
+// article-meta framing, so we strip it for clean prose.
+const ARTICLE_META_ACCORDING = new RegExp(
+  `(^|[.!?]\\s)(?:according to|per)\\s+${ARTICLE_META_SUBJECT}\\s*,?\\s+([a-z])`,
+  'gi',
+);
+const ARTICLE_META_IN_PIECE = /(^|[.!?]\s)In this piece,?\s+([a-z])/g;
+
+function stripArticleMetaFraming(text) {
+  let out = String(text || '');
+  // Comma-bracketed asides FIRST (they require trailing commas the later, looser
+  // forms would otherwise consume): the "as <subject> <verb>," aside, then the
+  // bare ", <subject> <verb>," aside.
+  out = out.replace(ARTICLE_META_AS_ASIDE, ',');
+  // Comma-bracketed aside ("..., the report notes, ...") -> drop the aside.
+  out = out.replace(ARTICLE_META_INTERJECT, ',');
+  // A trailing "according to the article" has no substantive following clause.
+  out = out.replace(ARTICLE_META_TRAILING_ACCORDING, '');
+  // Relative-pronoun aside ("..., which the analysis argues will ...") -> keep the
+  // comma + relative pronoun and the following clause.
+  out = out.replace(ARTICLE_META_RELATIVE, '$1');
+  // Inline attribution after a comma + conjunction: keep the conjunction and the
+  // full following clause, drop only "the article says".
+  out = out.replace(ARTICLE_META_INLINE, ', $1 ');
+  // Inline comma clause without a conjunction: keep the punctuation and facts.
+  out = out.replace(ARTICLE_META_COMMA_CLAUSE, ', ');
+  // Mid-sentence connector (no required comma) introducing a meta clause: keep the
+  // connector group and the following clause, drop the subject+verb+particle.
+  out = out.replace(ARTICLE_META_INLINE_CONNECTOR, '$1');
+  // Clause-start openers: keep the sentence boundary and capitalize ONLY the
+  // first surviving letter at the removal site (a global recap would corrupt real
+  // abbreviations like "U.S. economy" / "Inc. and Co.").
+  out = out.replace(ARTICLE_META_LEAD, (_m, b, c) => b + c.toUpperCase());
+  out = out.replace(ARTICLE_META_AS, (_m, b, c) => b + c.toUpperCase());
+  out = out.replace(ARTICLE_META_ACCORDING, (_m, b, c) => b + c.toUpperCase());
+  out = out.replace(ARTICLE_META_IN_PIECE, (_m, b, c) => b + c.toUpperCase());
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+// A valid summary is exactly three substantial paragraphs that read as a summary
+// of the supplied article metadata. This is the positive QC gate: it returns the
+// normalized 3-paragraph string only when the output has the required article
+// summary shape and grounding.
+function normalizeSummary(text, item = {}, bodyText = '') {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  if (isIrrelevantToCategoryResponse(raw)) return null;
+  if (newsSummaryHasSourceFailureProse(raw)) return null;
+  const paras = raw
+    .split(/\n{2,}/)
+    .map((p) => stripArticleMetaFraming(p.replace(/\s+/g, ' ').trim()))
+    .filter((p) => p.length >= 40);
+  const firstThree = paras.slice(0, 3);
+  // Thread the fetched article body through so the final-read gate can compare
+  // against the real article context. On the LLM path the body lives in a local
+  // var, not item.sourceText.
+  const gateItem = bodyText ? { ...item, bodyText } : item;
+  if (!isThreeParagraphArticleSummary(firstThree, gateItem)) return null;
+  return firstThree.join('\n\n');
+}
+
+function normalizeSummaryPackage(
+  text,
+  item = {},
+  bodyText = '',
+  { requireTitle = false, repairTitle = null } = {},
+) {
+  const raw = String(text || '')
+    .replace(/```(?:\w+)?/g, '')
+    .replace(/```/g, '')
+    .replace(/\r/g, '')
+    .trim();
+  if (!raw || isIrrelevantToCategoryResponse(raw)) return null;
+  const match = raw.match(/^TITLE:\s*([^\n]+)\n+([\s\S]+)$/i);
+  if (!match) {
+    if (requireTitle) return null;
+    const summary = normalizeSummary(raw, item, bodyText);
+    return summary ? { title: '', summary } : null;
+  }
+  let title = stripPublisherChrome(match[1])
+    .replace(/[.?!:;,-]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const summary = normalizeSummary(match[2], item, bodyText);
+  if (!summary) return null;
+  const normalized = (value) =>
+    String(value || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const publisherKey = normalized(item && (item.publisherTitle || item.title));
+  const firstParagraphKey = normalized(summary.split(/\n{2,}/)[0]);
+  const titleIsInvalid = (candidate, { publisherFallback = false } = {}) => {
+    const titleKey = normalized(candidate);
+    return (
+      newsTitleCompletenessFailures(candidate).length > 0 ||
+      !titleKey ||
+      (!publisherFallback && titleKey === publisherKey) ||
+      firstParagraphKey === titleKey ||
+      firstParagraphKey.startsWith(`${titleKey} `)
+    );
+  };
+  let publisherFallback = false;
+  if (titleIsInvalid(title) && typeof repairTitle === 'function') {
+    const repaired = repairTitle({ item, summary, sourceText: bodyText });
+    publisherFallback = Boolean(
+      repaired && typeof repaired === 'object' && repaired.publisherFallback === true,
+    );
+    const repairedTitle =
+      repaired && typeof repaired === 'object' ? repaired.title : repaired;
+    title = stripPublisherChrome(repairedTitle || '')
+      .replace(/[.?!:;,-]+$/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  if (titleIsInvalid(title, { publisherFallback })) return null;
+  return { title, summary };
+}
+
+function articleSentences(text) {
+  const s = String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s) return [];
+  const out = [];
+  const re = /([.!?])["']?(?=\s|$)/g;
+  let start = 0;
+  let m;
+  while ((m = re.exec(s))) {
+    const end = m.index + m[0].length;
+    if (!isRealSentenceEnd(s, end, m[1])) continue;
+    const sentence = s.slice(start, end).trim();
+    if (sentence.length >= 45) out.push(sentence);
+    start = end;
+  }
+  return out;
+}
+
+const NEWS_TITLE_CONTINUATION_LEAD_RE =
+  /^(?:he|she|they|it|this|these|those|also|meanwhile|however|instead)\b/i;
+const NEWS_TITLE_HANGING_END_RE =
+  /\b(?:whether|amid|as|after|because|while|with|to|from|of|and|or|but|U\.S|U\.K|Mr|Ms|Dr)\.?$/i;
+const NEWS_TITLE_CLICKBAIT_RE =
+  /(?:\b(?:everything|what) you need to know\b|\bwhy it matters\b|\bhere'?s (?:why|what we know)\b|\bfind out why\b|\byou won'?t believe\b|\b(?:could|this) changes? everything\b|\btakes? an unusual turn\b|\bthe latest move\b|\bthe truth about\b|\bshocking\b|\bstunning\b|\bsecret(?:s)?\b|\bleave you on the edge of your seat\b|\bwhat happens? next\b|\bwhat came next\b|\bthe reason may surprise you\b|\?$)/i;
+const NEWS_TITLE_UNNAMED_SUBJECT_RE =
+  /^(?:the|this|that)\s+(?:project|company|device|proposal|plan|move|order|policy|decision|product|service|platform|deal|initiative|system|model|technology|startup|article|report)\b/i;
+const NEWS_TITLE_ATTRIBUTION_WITHOUT_DEVELOPMENT_RE =
+  /\b(?:said|says|told|announced|commented)\s+(?:on|during|in|at)\b[^.!?]{0,100}\b(?:call|interview|statement|conference|event|hearing)\b(?:\s+about\b[^.!?]*)?$/i;
+
+function newsTitleCompletenessFailures(
+  title,
+  { minWords = 8, maxWords = 22, maxChars = 160 } = {},
+) {
+  const value = String(title || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const words = value.split(/\s+/).filter(Boolean);
+  const failures = [];
+  if (!value) failures.push('missing');
+  if (words.length < minWords || words.length > maxWords) failures.push('word-count');
+  if (value.length > maxChars) failures.push('character-count');
+  if (NEWS_TITLE_CONTINUATION_LEAD_RE.test(value)) failures.push('continuation-lead');
+  if (/\balso\s+(?:considering|assessing|investigating)\s+whether\b/i.test(value)) {
+    failures.push('conditional-continuation');
+  }
+  if (/\b(?:considering|assessing|investigating)\s+whether\b/i.test(value)) {
+    failures.push('conditional-fragment');
+  }
+  if (NEWS_TITLE_HANGING_END_RE.test(value)) failures.push('hanging-end');
+  if (NEWS_TITLE_CLICKBAIT_RE.test(value)) failures.push('clickbait');
+  if (NEWS_TITLE_UNNAMED_SUBJECT_RE.test(value)) failures.push('unnamed-subject');
+  if (NEWS_TITLE_ATTRIBUTION_WITHOUT_DEVELOPMENT_RE.test(value)) {
+    failures.push('attribution-without-development');
+  }
+  return failures;
+}
+
+function cleanExtractiveNewsSentence(sentence) {
+  return stripPublisherChrome(String(sentence || ''))
+    .replace(/&mdash;|&#8212;|[\u2013\u2014]/g, ' - ')
+    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractiveSentenceLooksLikeChrome(sentence) {
+  const s = String(sentence || '').trim();
+  if (!s) return true;
+  if (NEWS_AUTHOR_PROCESS_RE.test(s)) return true;
+  if (
+    /^(?:News|Reviews?|Gaming|Computing|Social Media|Tech|Mobile)\s+[A-Z][A-Za-z ]{3,80}\s+/i.test(
+      s,
+    )
+  )
+    return true;
+  if (
+    /\b(?:Loading the player|RATING:\s*\d+(?:\.\d+)?\s*\/\s*10|Pros\s+[^.]{0,180}\s+Cons\b|Share Copied to clipboard|Thrive Studios|Unsplash\/|ID\/Shutterstock)\b/i.test(
+      s,
+    )
+  )
+    return true;
+  return false;
+}
+
+function extractiveSentenceScore(sentence, index, total) {
+  const s = String(sentence || '');
+  let score = 0;
+  if (/\$?\b\d[\d,.]*%?\b/.test(s)) score += 5;
+  if (/[A-Z][A-Za-z0-9&.'-]+(?:\s+[A-Z][A-Za-z0-9&.'-]+){1,4}/.test(s)) score += 2;
+  if (/"[^"]{12,}"/.test(s)) score += 2;
+  if (
+    /\b(?:raised|released|announced|launched|found|reported|said|told|published|introduced|acquired|appointed|valued|valuation|study|researchers|customers|subscribers|revenue|shipments|market share|model|platform)\b/i.test(
+      s,
+    )
+  )
+    score += 3;
+  if (index === 0 && total > 4) score -= 4;
+  if (index > 0 && index < total - 1) score += 1;
+  if (s.length >= 110) score += 1;
+  return score;
+}
+
+function extractiveSummaryCandidates(sourceText) {
+  const raw = articleSentences(stripPublisherChrome(sourceText));
+  return raw
+    .map((sentence, index) => ({
+      index,
+      text: cleanExtractiveNewsSentence(sentence),
+    }))
+    .filter((candidate) => candidate.text.length >= 55)
+    .filter((candidate) => !extractiveSentenceLooksLikeChrome(candidate.text))
+    .map((candidate, _idx, list) => ({
+      ...candidate,
+      score: extractiveSentenceScore(candidate.text, candidate.index, raw.length || list.length),
+    }));
+}
+
+function buildExtractiveParagraph(seed, candidates, used) {
+  const selected = [seed];
+  used.add(seed.index);
+  const nearest = candidates
+    .filter((candidate) => !used.has(candidate.index))
+    .sort(
+      (a, b) =>
+        Math.abs(a.index - seed.index) - Math.abs(b.index - seed.index) ||
+        b.score - a.score ||
+        a.index - b.index,
+    );
+  for (const candidate of nearest) {
+    const joined = selected
+      .concat(candidate)
+      .sort((a, b) => a.index - b.index)
+      .map((entry) => entry.text)
+      .join(' ');
+    if (joined.length > PARAGRAPH_RICH_MAX_CHARS) continue;
+    selected.push(candidate);
+    used.add(candidate.index);
+    if (isSubstantialNewsParagraph(joined) && endsAsProse(joined)) break;
+  }
+  const paragraph = selected
+    .sort((a, b) => a.index - b.index)
+    .map((entry) => entry.text)
+    .join(' ');
+  return trimToSentenceBoundary(paragraph, PARAGRAPH_RICH_MAX_CHARS);
+}
+
+function extractiveSummaryCandidatePools(candidates) {
+  const pools = [];
+  const seen = new Set();
+  const addPool = (pool) => {
+    if (!Array.isArray(pool) || pool.length < 3) return;
+    const key = pool.map((candidate) => candidate.index).join(',');
+    if (seen.has(key)) return;
+    seen.add(key);
+    pools.push(pool.slice());
+  };
+
+  // The final article-summary QC rejects a fallback that looks like the source
+  // opening pasted into the card. Prefer body-detail sentences when the article
+  // has enough depth, then fall back to the historical opener-skipping pool.
+  addPool(candidates.filter((candidate) => candidate.index >= 4));
+  addPool(candidates.filter((candidate) => candidate.index >= 2));
+  addPool(candidates.filter((candidate) => !(candidate.index === 0 && candidates.length > 4)));
+  addPool(candidates);
+  return pools;
+}
+
+function buildExtractiveSummaryFromPool(item, sourceText, candidates, pool) {
+  const thirds = [
+    pool.filter((candidate) => candidate.index <= Math.max(2, Math.floor(candidates.length / 3))),
+    pool.filter(
+      (candidate) =>
+        candidate.index > Math.floor(candidates.length / 3) &&
+        candidate.index <= Math.floor((candidates.length * 2) / 3),
+    ),
+    pool.filter((candidate) => candidate.index > Math.floor((candidates.length * 2) / 3)),
+  ];
+  const used = new Set();
+  const seeds = thirds.map((group, idx) => {
+    const source = group.length ? group : pool;
+    return source
+      .filter((candidate) => !used.has(candidate.index))
+      .sort((a, b) => b.score - a.score || a.index - b.index)[0];
+  });
+  const paras = [];
+  for (const seed of seeds) {
+    if (!seed) continue;
+    if (used.has(seed.index)) continue;
+    const para = buildExtractiveParagraph(seed, pool, used);
+    if (para) paras.push(para);
+  }
+  if (paras.length < 3) {
+    for (const seed of pool.sort((a, b) => b.score - a.score || a.index - b.index)) {
+      if (paras.length >= 3) break;
+      if (used.has(seed.index)) continue;
+      const para = buildExtractiveParagraph(seed, pool, used);
+      if (para) paras.push(para);
+    }
+  }
+  if (paras.length < 3) return null;
+  return normalizeSummary(paras.slice(0, 3).join('\n\n'), item, sourceText);
+}
+
+function buildPostOpeningExtractiveSummary(item, sourceText, candidates) {
+  const pools = [
+    candidates.filter((candidate) => candidate.index >= 4),
+    // Short articles may not have three substantial sentences after the first
+    // four-source-sentence opening. Starting at sentence three still keeps the
+    // first two rendered paragraphs from being dominated by the source opening.
+    candidates.filter((candidate) => candidate.index >= 3),
+  ];
+  for (const pool of pools) {
+    const usable = pool
+      .slice()
+      .sort((a, b) => a.index - b.index)
+      .filter(
+        (candidate) => isSubstantialNewsParagraph(candidate.text) && endsAsProse(candidate.text),
+      );
+    for (let i = 0; i <= usable.length - 3; i += 1) {
+      const summary = normalizeSummary(
+        usable
+          .slice(i, i + 3)
+          .map((candidate) => candidate.text)
+          .join('\n\n'),
+        item,
+        sourceText,
+      );
+      if (summary) return summary;
+    }
+    const topScored = usable
+      .slice()
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .slice(0, 3)
+      .sort((a, b) => a.index - b.index);
+    if (topScored.length === 3) {
+      const summary = normalizeSummary(
+        topScored.map((candidate) => candidate.text).join('\n\n'),
+        item,
+        sourceText,
+      );
+      if (summary) return summary;
+    }
+  }
+  // A short but substantive article can have only three usable fact sentences
+  // after publisher chrome is removed. Reversing the final three makes the
+  // consequence lead, instead of pasting the article opening in source order,
+  // while every emitted sentence remains verbatim source evidence. The normal
+  // summary validator still enforces three unique substantial paragraphs,
+  // grounding, and the anti-opening check.
+  const impactFirst = candidates
+    .filter(
+      (candidate) => isSubstantialNewsParagraph(candidate.text) && endsAsProse(candidate.text),
+    )
+    .slice(-3)
+    .reverse();
+  if (impactFirst.length === 3) {
+    const summary = normalizeSummary(
+      impactFirst.map((candidate) => candidate.text).join('\n\n'),
+      item,
+      sourceText,
+    );
+    if (summary) return summary;
+  }
+  return null;
+}
+
+function buildExtractiveSummary(item, sourceText) {
+  const candidates = extractiveSummaryCandidates(sourceText).slice(0, 18);
+  if (candidates.length < 3) return null;
+  for (const pool of extractiveSummaryCandidatePools(candidates)) {
+    const summary = buildExtractiveSummaryFromPool(item, sourceText, candidates, pool);
+    if (summary) return summary;
+  }
+  return buildPostOpeningExtractiveSummary(item, sourceText, candidates);
+}
+
+// Summarize a single substantial body with retry-with-backoff. The body has
+// already cleared the thin-body gate, so a null/unusable model response here is
+// a TRANSIENT failure (rung starved, crashed, or rate-limited) -- we retry up to
+// `retries` total attempts with exponential backoff, falling through the askAI
+// ladder on each attempt. If every model attempt is unusable, return a bounded
+// extractive summary built only from the fetched article text; headline-only is
+// reserved for bodies too thin to support even that.
+async function summarizeBodyWithRetry(
+  item,
+  sourceText,
+  {
+    askAI,
+    retries = NEWS_SUMMARIZE_RETRIES,
+    retryBaseMs = NEWS_SUMMARIZE_RETRY_BASE_MS,
+    rungTimeoutMs = NEWS_SUMMARIZE_RUNG_TIMEOUT_MS,
+    sleep = defaultSleep,
+    requireTitle = false,
+    repairTitle = null,
+  },
+) {
+  const attempts = Math.max(1, Number(retries) || 1);
+  let previousUnusableOutput = '';
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let out = null;
+    try {
+      const prompt =
+        attempt > 0 && previousUnusableOutput
+          ? buildSummaryRetryPrompt(item, sourceText, previousUnusableOutput)
+          : buildSummaryPrompt(item, sourceText);
+      out = await askAI(prompt, {
+        surface: 'news-summarize',
+        phase: 'routine-observation',
+        silent: true,
+        rungTimeoutMs,
+        briefingContext: true,
+        // News follows the subscription brain switch (briefing-news-model-policy.js).
+        toolLess: true,
+        stableContext:
+          'Produce a source-grounded briefing summary for one news article. Preserve category relevance, return exactly three substantial prose paragraphs, and never invent facts or use publisher chrome.',
+        workerContract: {
+          task: 'Write the one selected news story supplied in this packet.',
+          selectedSources: [
+            `Selected article: ${String(item.title || item.url || 'untitled article').slice(0, 240)}`,
+            'The article body inside CURRENT EVIDENCE is the only factual source.',
+          ],
+          answerShape: requireTitle
+            ? 'Return one grounded display title followed by exactly three substantial prose paragraphs.'
+            : 'Return exactly three substantial prose paragraphs.',
+          acceptanceChecks: [
+            'Every factual claim is supported by the selected article body.',
+            'The result passes the news title and three-paragraph completeness validators.',
+            'Stop after this one story and do not discuss any other candidate or watcher history.',
+          ],
+        },
+      });
+    } catch {
+      out = null; // a throw is just another transient failure -> retry
+    }
+    if (isIrrelevantToCategoryResponse(out && out.text)) return null;
+    if (out && out.text) previousUnusableOutput = String(out.text);
+    const summaryPackage = normalizeSummaryPackage(out && out.text, item, sourceText, {
+      requireTitle,
+      repairTitle,
+    });
+    if (summaryPackage) return summaryPackage;
+    // Transient miss: back off (exponential) before the next attempt. No sleep
+    // after the final attempt (the candidate will remain unavailable).
+    if (attempt < attempts - 1) {
+      await sleep(retryBaseMs * 2 ** attempt);
+    }
+  }
+  const summary = buildExtractiveSummary(item, sourceText);
+  if (!summary) return null;
+  if (!requireTitle) {
+    return { title: '', summary, summaryProvenance: 'deterministic-extractive' };
+  }
+  if (typeof repairTitle !== 'function') return null;
+  // The canonical package contract permits a faithful publisher headline when
+  // the generated title alone fails. Preserve that same safe escape hatch for
+  // the deterministic extractive-summary fallback instead of discarding a
+  // substantial current article body after every model response is unusable.
+  const extractivePackage = normalizeSummaryPackage(
+    `TITLE: ${String(item.title || '')}\n\n${summary}`,
+    item,
+    sourceText,
+    {
+      requireTitle: true,
+      repairTitle,
+    },
+  );
+  return extractivePackage
+    ? { ...extractivePackage, summaryProvenance: 'deterministic-extractive' }
+    : null;
+}
+
+/**
+ * Summarize one news item. Returns { summary } (3-paragraph string) or
+ * { summary: null } when there is no real source text to ground a summary.
+ *
+ * A transient LLM failure on a REAL body is retried with backoff (see
+ * summarizeBodyWithRetry). A genuinely thin or unfetchable body rejects the
+ * candidate so discovery can backfill it; it never becomes an accepted stub.
+ */
+// Resolve (if Google-News) + fetch one article body ONCE. Returns the body text
+// ('' on resolve/fetch failure). Pure aside from the injected resolveUrl/fetchText.
+async function acquireSourceOnce(item, { fetchText, resolveUrl }) {
+  if (!item || !item.url) return '';
+  let fetchUrl = item.url;
+  if (isGoogleNewsArticleUrl(item.url)) {
+    try {
+      fetchUrl = await resolveUrl(item.url);
+    } catch {
+      fetchUrl = null;
+    }
+  }
+  if (!fetchUrl) return '';
+  try {
+    return await fetchText(fetchUrl, {});
+  } catch {
+    return '';
+  }
+}
+
+// Acquire the article body with retry-with-backoff. The Google-News resolve +
+// publisher fetch is the part that flakes under build load (concurrent requests
+// + rate limits): reproduced on EC2 2026-06-22, policy articles that
+// resolve + fetch fine in isolation returned an empty body mid-build and stubbed
+// with NO retry. We retry the whole resolve+fetch a bounded number of times so a
+// transient empty body self-heals, while a genuinely-blocked article (empty on
+// every attempt) remains unavailable after the bounded attempts.
+async function acquireSourceTextWithRetry(
+  item,
+  { fetchText, resolveUrl, retries, retryBaseMs, sleep },
+) {
+  const attempts = Math.max(1, Number(retries) || 1);
+  let best = '';
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const body = await acquireSourceOnce(item, { fetchText, resolveUrl });
+    // A full body wins immediately. Keep the longest partial only for diagnostics;
+    // a partial response never qualifies as an article body.
+    if (body && body.length >= MIN_BODY_CHARS) return body;
+    if (body && body.length > best.length) best = body;
+    if (attempt < attempts - 1) await sleep(retryBaseMs * 2 ** attempt);
+  }
+  return best;
+}
+
+async function summarizeNewsItem(
+  item,
+  {
+    askAI,
+    fetchText = fetchArticleText,
+    resolveUrl = resolveGoogleNewsUrl,
+    retries = NEWS_SUMMARIZE_RETRIES,
+    retryBaseMs = NEWS_SUMMARIZE_RETRY_BASE_MS,
+    rungTimeoutMs = NEWS_SUMMARIZE_RUNG_TIMEOUT_MS,
+    sleep = defaultSleep,
+    requireTitle = false,
+    repairTitle = null,
+  } = {},
+) {
+  if (!item) return { summary: null };
+  // Content-heal may already carry the full fetched article body. Use that
+  // durable evidence directly instead of spending the bounded repair window on
+  // another Google-News resolve and publisher fetch. Thin stored excerpts still
+  // take the fetch-first path so a richer article body can replace them.
+  const storedSourceText =
+    item.sourceText && item.sourceText !== item.title
+      ? stripPublisherChrome(String(item.sourceText))
+      : '';
+  let sourceText = storedSourceText.length >= MIN_BODY_CHARS ? storedSourceText : '';
+  if (!sourceText && item.url) {
+    sourceText = await acquireSourceTextWithRetry(item, {
+      fetchText,
+      resolveUrl,
+      retries,
+      retryBaseMs,
+      sleep,
+    });
+  }
+  // An RSS excerpt, publisher blurb, or partial response is not an article.
+  // Reject it and let candidate overfetch/backfill find a body-backed story.
+  if (!sourceText || sourceText.length < MIN_BODY_CHARS) {
+    return { summary: null, failureKind: 'source_unavailable' };
+  }
+  // Real body present: a null/unusable model response is transient -> retry.
+  const summaryPackage = await summarizeBodyWithRetry(item, sourceText, {
+    askAI,
+    retries,
+    retryBaseMs,
+    rungTimeoutMs,
+    sleep,
+    requireTitle,
+    repairTitle,
+  });
+  return {
+    summary: summaryPackage && summaryPackage.summary,
+    title: (summaryPackage && summaryPackage.title) || '',
+    summaryProvenance: (summaryPackage && summaryPackage.summaryProvenance) || '',
+    // Keep the fetched article body with the finished package. This makes a
+    // body acquired during summary rescue durable for the renderer even when
+    // the upstream content-heal artifact came from an older, excerpt-only run.
+    sourceText,
+    failureKind: summaryPackage ? null : 'summary_unavailable',
+  };
+}
+
+/**
+ * Summarize a list of items with a url-keyed cache. Mutates a returned copy with
+ * item.summary set when available. cache is { get(url), set(url, summary) }.
+ * Retry / backoff / timeout options are threaded through to summarizeNewsItem so
+ * a transient LLM failure on a real body self-heals instead of stubbing.
+ */
+async function summarizeNewsItems(
+  items,
+  {
+    askAI,
+    fetchText,
+    resolveUrl,
+    cache,
+    limit = 12,
+    concurrency = NEWS_SUMMARIZE_CONCURRENCY,
+    retries = NEWS_SUMMARIZE_RETRIES,
+    retryBaseMs = NEWS_SUMMARIZE_RETRY_BASE_MS,
+    rungTimeoutMs = NEWS_SUMMARIZE_RUNG_TIMEOUT_MS,
+    sleep = defaultSleep,
+    requireTitle = false,
+    repairTitle = null,
+    onSettled = null,
+  } = {},
+) {
+  const list = Array.isArray(items) ? items : [];
+  const head = list.slice(0, limit);
+  const results = new Array(head.length);
+
+  // Resolve one item cache-first, else summarize. Writes results[i] by index so
+  // the output order is identical to a serial pass regardless of finish order.
+  async function resolveOne(item, i) {
+    const url = item && item.url;
+    const cachedValue = url && cache && cache.get ? cache.get(url, item) : null;
+    const cachedSummary =
+      cachedValue && typeof cachedValue === 'object' ? cachedValue.summary : cachedValue;
+    let generatedTitle =
+      cachedValue && typeof cachedValue === 'object' ? String(cachedValue.title || '') : '';
+    let durableSourceText =
+      cachedValue && typeof cachedValue === 'object' ? String(cachedValue.sourceText || '') : '';
+    let summaryProvenance =
+      cachedValue && typeof cachedValue === 'object'
+        ? String(cachedValue.summaryProvenance || '')
+        : '';
+    let summary = cachedSummary ? normalizeSummary(cachedSummary, item) : null;
+    if (requireTitle && newsTitleCompletenessFailures(generatedTitle).length) summary = null;
+    if (!summary) {
+      const r = await summarizeNewsItem(item, {
+        askAI,
+        fetchText,
+        resolveUrl,
+        retries,
+        retryBaseMs,
+        rungTimeoutMs,
+        sleep,
+        requireTitle,
+        repairTitle,
+      });
+      summary = r.summary;
+      generatedTitle = String(r.title || '');
+      durableSourceText = String(r.sourceText || durableSourceText || '');
+      summaryProvenance = String(r.summaryProvenance || '');
+      if (summary && url && cache && cache.set) {
+        cache.set(url, summary, generatedTitle, durableSourceText, summaryProvenance);
+      }
+      if (!summary && url && cache && cache.setFailure) {
+        cache.setFailure(url, r.failureKind || 'summary_unavailable', durableSourceText);
+      }
+    }
+    if (typeof onSettled === 'function') onSettled({ item, summary: Boolean(summary) });
+    results[i] = summary
+      ? {
+          ...item,
+          summary,
+          ...(durableSourceText ? { sourceText: durableSourceText } : {}),
+          ...(generatedTitle ? { generatedTitle } : {}),
+          ...(summaryProvenance === 'deterministic-extractive'
+            ? { _deterministicExtractiveSummary: true }
+            : {}),
+        }
+      : item;
+  }
+
+  // Bounded-concurrency worker pool (report breakpoint 6 transitional guard): at
+  // most `bound` summarize calls in flight, so one slow LLM rung cannot serialize
+  // the whole news card. Each worker pulls the next index synchronously (no await
+  // between the grab and the bounds check, so no double-claim race), keeping at
+  // most `bound` items resolving at once while output order stays deterministic.
+  const bound = Math.max(1, Math.min(Number(concurrency) || 1, head.length || 1));
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const i = next;
+      next += 1;
+      if (i >= head.length) return;
+      await resolveOne(head[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: bound }, () => worker()));
+
+  const out = results.slice();
+  // pass through any beyond the limit unchanged
+  for (const item of list.slice(limit)) out.push(item);
+  return out;
+}
+
+module.exports = {
+  fetchArticleText,
+  httpGetRaw,
+  httpPostForm,
+  HARD_FETCH_BUDGET_MS,
+  stripHtmlToText,
+  stripPublisherChrome,
+  isKnownInvalidNewsArticleBody,
+  isLegitimateNewsArticleBody,
+  NEWS_PUBLISHER_CHROME_LABELS,
+  NEWS_PUBLISHER_CHROME_PATTERNS,
+  newsPublisherChromeSource,
+  buildSummaryPrompt,
+  articleSentences,
+  newsTitleCompletenessFailures,
+  normalizeSummary,
+  normalizeSummaryPackage,
+  stripArticleMetaFraming,
+  buildExtractiveSummary,
+  summarizeNewsItem,
+  summarizeNewsItems,
+  isGoogleNewsArticleUrl,
+  resolveGoogleNewsUrl,
+  buildGarturlBody,
+  parseGarturlResponse,
+  isSubstantialNewsParagraph,
+  endsAsProse,
+  articleSummaryTerms,
+  isThreeParagraphArticleSummary,
+  countNewsBodySpecifics,
+  newsSummaryHasBodySpecifics,
+  newsSummaryHasSourceFailureProse,
+  isIrrelevantToCategoryResponse,
+  newsSummaryLooksLikeArticleOpening,
+  NEWS_MIN_BODY_SPECIFICS,
+  trimToSentenceBoundary,
+  paragraphWordCount,
+  HEADLINE_ONLY_NOTE,
+  HEADLINE_ONLY_NOTE_RE,
+  isHeadlineOnlyNote,
+  isHeadlineOnlyParagraphs,
+  SUBSTANTIAL_PARAGRAPH_MIN_CHARS,
+  SUBSTANTIAL_PARAGRAPH_MIN_WORDS,
+  PARAGRAPH_RICH_MAX_CHARS,
+  MIN_BODY_CHARS,
+  MIN_EXCERPT_CHARS,
+  NEWS_SUMMARIZE_RETRIES,
+  NEWS_SUMMARIZE_RETRY_BASE_MS,
+  NEWS_SUMMARIZE_RUNG_TIMEOUT_MS,
+};

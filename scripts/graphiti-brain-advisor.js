@@ -1,0 +1,347 @@
+#!/usr/bin/env node
+'use strict';
+
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawn, spawnSync } = require('node:child_process');
+const {
+  advisorPaths,
+  buildAdvisorPromptBlock,
+  createDispositionReceipt,
+  createGraphitiAdvisor,
+  formatGraphitiImpact,
+  recordDispositionReceipt,
+  runtimeDataDir,
+} = require('./lib/graphiti-brain-advisor');
+const { writeGraphitiAdvisorHealth } = require('./lib/graphiti-advisor-health');
+const { graphitiRecallAdmission } = require('./lib/graphiti-overnight-policy.js');
+
+function parseArgs(argv) {
+  const out = { _: [] };
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (!token.startsWith('--')) {
+      out._.push(token);
+      continue;
+    }
+    const key = token.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+    const next = argv[i + 1];
+    if (next == null || next.startsWith('--')) out[key] = true;
+    else {
+      out[key] = next;
+      i += 1;
+    }
+  }
+  return out;
+}
+
+function stdinText() {
+  try {
+    return fs.readFileSync(0, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function readJson(file, fallback = null) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(value, null, 2), { mode: 0o600 });
+  fs.renameSync(temp, file);
+}
+
+function requestFrom(args) {
+  let body = {};
+  if (args.requestFile) body = readJson(path.resolve(args.requestFile), {}) || {};
+  else {
+    const raw = stdinText().trim();
+    if (raw) {
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        body = { prompt: raw };
+      }
+    }
+  }
+  return {
+    ...body,
+    prompt: args.prompt || body.prompt || body.user_prompt || '',
+    action: args.action || body.action || '',
+    actionType: args.actionType || body.actionType || body.action_type || '',
+    surface: args.surface || body.surface || 'unknown',
+    conversationId:
+      args.conversationId || body.conversationId || body.conversation_id || body.session_id || '',
+    project: args.project || body.project || 'SecondBrain',
+    recipient: args.recipient || body.recipient || '',
+    visibility: args.visibility || body.visibility || 'owner_private',
+    timeoutMs: Number(args.timeoutMs || body.timeoutMs || body.timeout_ms) || undefined,
+    advisorId: args.advisorId || body.advisorId || body.advisor_id || undefined,
+    workProduct:
+      args.workProduct || body.workProduct || body.work_product || process.env.SB_GRAPHITI_WORK_PRODUCT || '',
+  };
+}
+
+function updateSession(paths, sessionId, advisorId) {
+  if (!sessionId) return;
+  const sessions = readJson(paths.sessions, {}) || {};
+  sessions[String(sessionId)] = { advisor_id: advisorId, updated_at: new Date().toISOString() };
+  writeJson(paths.sessions, sessions);
+}
+
+function resolveAdvisorId(args, paths) {
+  if (args.advisorId) return String(args.advisorId);
+  if (args.sessionId) {
+    const sessions = readJson(paths.sessions, {}) || {};
+    return sessions[String(args.sessionId)] && sessions[String(args.sessionId)].advisor_id;
+  }
+  return null;
+}
+
+function resultPath(paths, advisorId) {
+  return path.join(paths.results, `${advisorId}.json`);
+}
+
+// One prompt, one injection. The marker is keyed on the advisor, and every
+// submitted prompt starts a new advisor, so it resets itself per prompt.
+function deliveryMarkerPath(paths, advisorId) {
+  return path.join(paths.results, `${advisorId}.delivered`);
+}
+
+function alreadyDelivered(paths, advisorId) {
+  return fs.existsSync(deliveryMarkerPath(paths, advisorId));
+}
+
+// Exclusive create IS the lock. Tool calls that fire at the same moment race
+// here and exactly one wins, so parallel PreToolUse hooks cannot both inject.
+// Claiming happens after the block is built, so a hook that times out while
+// waiting never burns the one delivery.
+function claimDelivery(paths, advisorId) {
+  const marker = deliveryMarkerPath(paths, advisorId);
+  try {
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, new Date().toISOString(), { flag: 'wx', mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Pending, timed out, and unavailable all mean the same thing to a caller: no
+// usable recall yet. None of them should spend the single delivery on a read,
+// and all of them must still be stated before a side effect.
+function isRecallIncomplete(envelope) {
+  const status = String((envelope && envelope.status) || '').toLowerCase();
+  return (
+    status === '' ||
+    status === 'pending' ||
+    status === 'started' ||
+    status === 'timeout' ||
+    status === 'unavailable'
+  );
+}
+
+function pendingEnvelope(request, advisorId, waitMs) {
+  return {
+    schema: 'amy.graphiti_advisor.v1',
+    advisor_id: advisorId,
+    surface: request.surface || 'unknown',
+    conversation_id: request.conversationId || '',
+    project: request.project || '',
+    visibility: request.visibility || 'owner_private',
+    status: 'pending',
+    consulted_about: request.consulted_about || [
+      `current intent: ${request.prompt || request.action || 'the pending Amy action'}`,
+      "ExampleCo's relevant preferences, constraints, and definition of helpfulness",
+      'prior decisions and approach changes',
+      'recent experience with the people and project involved',
+    ],
+    facts: [],
+    error: `Graphiti consultation is still running after ${waitMs}ms`,
+  };
+}
+
+async function waitForResult(paths, advisorId, waitMs, request) {
+  const file = resultPath(paths, advisorId);
+  const deadline = Date.now() + Math.max(0, waitMs);
+  do {
+    const found = readJson(file);
+    if (found) return found;
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(50, Math.max(1, deadline - Date.now()))),
+    );
+  } while (Date.now() <= deadline);
+  return pendingEnvelope(request || {}, advisorId, waitMs);
+}
+
+async function startDetached(args, dataDir, paths) {
+  const request = requestFrom(args);
+  if (String(process.env.SB_AUTOMATED_AGENT || '') === '1') {
+    const admission = graphitiRecallAdmission({
+      workProduct: request.workProduct || 'routine-repair',
+      priorQueries: 0,
+    });
+    if (!admission.allowed) {
+      return {
+        schema: 'amy.graphiti_advisor_start.v1',
+        advisor_id: null,
+        status: 'skipped-policy',
+        reason: admission.reason,
+        work_product: request.workProduct || 'routine-repair',
+      };
+    }
+  }
+  const advisorId =
+    request.advisorId || `ga_${Date.now()}_${crypto.randomBytes(5).toString('hex')}`;
+  request.advisorId = advisorId;
+  request.started_at = new Date().toISOString();
+  const requestFile = path.join(paths.requests, `${advisorId}.json`);
+  writeJson(requestFile, request);
+  updateSession(paths, request.conversationId || args.sessionId, advisorId);
+  if (process.platform === 'win32') {
+    // Start-Process is the reliable Windows detach boundary. Native detached
+    // spawn can close a Claude hook's capture pipe, while non-detached children
+    // are killed with the short-lived hook process.
+    const launched = spawnSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        "Start-Process -FilePath $env:GRAPHITI_ADVISOR_NODE -ArgumentList @($env:GRAPHITI_ADVISOR_SCRIPT,'query-request','--request-file',$env:GRAPHITI_ADVISOR_REQUEST) -WindowStyle Hidden",
+      ],
+      {
+        windowsHide: true,
+        stdio: 'ignore',
+        timeout: 3000,
+        env: {
+          ...process.env,
+          SECONDBRAIN_DATA_DIR: dataDir,
+          GRAPHITI_ADVISOR_NODE: process.execPath,
+          GRAPHITI_ADVISOR_SCRIPT: __filename,
+          GRAPHITI_ADVISOR_REQUEST: requestFile,
+        },
+      },
+    );
+    if (launched.error || launched.status !== 0) {
+      throw launched.error || new Error(`Windows advisor launch exited ${launched.status}`);
+    }
+  } else {
+    const child = spawn(
+      process.execPath,
+      [__filename, 'query-request', '--request-file', requestFile],
+      {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, SECONDBRAIN_DATA_DIR: dataDir },
+      },
+    );
+    child.unref();
+  }
+  return {
+    schema: 'amy.graphiti_advisor_start.v1',
+    advisor_id: advisorId,
+    status: 'started',
+    started_at: request.started_at,
+    surface: request.surface,
+    conversation_id: request.conversationId,
+  };
+}
+
+async function queryRequest(args) {
+  const request = requestFrom(args);
+  if (!request.advisorId) throw new Error('query-request requires advisorId in the request');
+  const advisor = createGraphitiAdvisor();
+  return advisor.begin(request).completion;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const command = args._[0] || 'help';
+  const dataDir = runtimeDataDir(args.dataDir);
+  const paths = advisorPaths(dataDir);
+  let output;
+
+  if (command === 'start' || command === 'start-detached') {
+    output = await startDetached(args, dataDir, paths);
+  } else if (command === 'query-request') {
+    output = await queryRequest(args);
+  } else if (command === 'await' || command === 'context') {
+    const advisorId = resolveAdvisorId(args, paths);
+    if (!advisorId) throw new Error('await/context requires --advisor-id or --session-id');
+    const request = readJson(path.join(paths.requests, `${advisorId}.json`), {}) || {};
+    const waitMs = Number(args.waitMs) || 0;
+    const once = command === 'context' && Boolean(args.once);
+    if (once && alreadyDelivered(paths, advisorId)) {
+      // The block is already in this prompt's transcript. Repeating it on every
+      // later tool call only burns context, so hand back the envelope with an
+      // empty block and skip the wait entirely.
+      output = {
+        envelope: readJson(resultPath(paths, advisorId)) || pendingEnvelope(request, advisorId, 0),
+        prompt_block: '',
+        suppressed: 'already-delivered',
+      };
+    } else {
+      const envelope = await waitForResult(paths, advisorId, waitMs, request);
+      if (command !== 'context') output = envelope;
+      else if (once && waitMs === 0 && isRecallIncomplete(envelope)) {
+        // Recall has not landed and nothing is about to happen that needs it.
+        // Stay quiet and let a later tool call deliver the real facts.
+        output = { envelope, prompt_block: '', suppressed: 'pending' };
+      } else if (once && !claimDelivery(paths, advisorId)) {
+        // A tool call running in parallel won the race and already injected.
+        output = { envelope, prompt_block: '', suppressed: 'already-delivered' };
+      } else {
+        output = { envelope, prompt_block: buildAdvisorPromptBlock(envelope) };
+      }
+    }
+  } else if (command === 'receipt') {
+    const advisorId = resolveAdvisorId(args, paths);
+    if (!advisorId) throw new Error('receipt requires --advisor-id or --session-id');
+    const request = readJson(path.join(paths.requests, `${advisorId}.json`), {}) || {};
+    const envelope =
+      readJson(resultPath(paths, advisorId)) || pendingEnvelope(request, advisorId, 0);
+    const answer = args.outputFile
+      ? fs.readFileSync(path.resolve(args.outputFile), 'utf8')
+      : stdinText();
+    const receipt = createDispositionReceipt({
+      envelope,
+      output: answer,
+      answerActionId:
+        args.answerActionId || `answer_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+      visibility: args.visibility || envelope.visibility,
+      ignoredReason: args.ignoredReason,
+    });
+    recordDispositionReceipt(receipt, { dataDir });
+    output = { envelope, receipt, graphiti_impact: formatGraphitiImpact(envelope, receipt) };
+  } else if (command === 'health') {
+    output = writeGraphitiAdvisorHealth({ dataDir });
+  } else {
+    output = {
+      usage:
+        'graphiti-brain-advisor.js start|await|context|receipt|health [--advisor-id ID] [--session-id ID] [--wait-ms N] [--ignored-reason TEXT]',
+    };
+  }
+  process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+}
+
+main()
+  .then(() => {
+    // The tunneled Graphiti client may leave a transport handle alive after a
+    // completed or timed-out detached query. Its durable result is already on
+    // disk, so the one-shot worker must terminate instead of leaking a process.
+    if (process.argv[2] === 'query-request') process.exit(0);
+  })
+  .catch((error) => {
+    process.stderr.write(`graphiti-brain-advisor: ${error.message}\n`);
+    process.exitCode = 1;
+  });

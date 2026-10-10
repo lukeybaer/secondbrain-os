@@ -1,0 +1,6 @@
+{
+  "schema": "secondbrain.graphiti-runtime-policy.v1",
+  "state": "disabled",
+  "ingestion_state": "disabled",
+  "reason": "Public default: Graphiti ingestion and recall stay off until an operator runs a Graphiti service and enables this policy."
+}
