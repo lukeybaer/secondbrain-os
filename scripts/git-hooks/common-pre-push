@@ -1,0 +1,11 @@
+#!/bin/sh
+# AMY_LAND_PUSH_PROOF_V1
+# Installed into the repository's shared .git/hooks/pre-push path. Resolve the
+# invoking worktree at runtime so every isolated branch runs its own tracked
+# policy while all worktrees share the same mandatory hook.
+
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
+# Git does not preserve executable bits on every checkout/filesystem. Invoke
+# the tracked policy through sh so an isolated EC2 worktree cannot lose a
+# verified repair only because the policy file arrived as mode 0644.
+exec sh "$root/scripts/git-hooks/pre-push" "$@"

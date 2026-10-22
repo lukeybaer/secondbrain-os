@@ -1,0 +1,158 @@
+/**
+ * Locks the rule from memory/feedback_communication_format_tldr_detail.md.
+ * Every official response from Amy must be TLDR + Detail, CEO-polish,
+ * English not code. The rule lives in two places (the global session
+ * memory and the feedback file); this test asserts both copies stay
+ * aligned so a session that loads MEMORY.md will see the rule.
+ *
+ * Triggered by the owner's 2026-04-29 dispatch:
+ *   "everything you say to me in any forum or medium should have a
+ *    TLDR as brief as possible while conveying the key decision /
+ *    issue / status, then a Detail section (if it's needed)... CEO-
+ *    level polish but normally 1-2 paras, 4 at the very most..."
+ */
+
+import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+
+const REPO = path.join(__dirname, '..');
+const MEMORY_MD = path.join(REPO, 'memory', 'MEMORY.md');
+const FEEDBACK = path.join(REPO, 'memory', 'feedback_communication_format_tldr_detail.md');
+const CLAUDE_SETTINGS = path.join(REPO, 'claude-config', 'settings.json');
+const CLAUDE_GLOBAL = path.join(REPO, 'claude-config', 'CLAUDE.global.md');
+const CODEX_INSTRUCTIONS = path.join(REPO, '.codex', 'instructions.md');
+const HOOK_MANIFEST = path.join(REPO, 'scripts', 'claude-hooks', 'hook-boundary-manifest.json');
+const HOOK_DISPATCHER = path.join(REPO, 'scripts', 'claude-hooks', 'hook-boundary-dispatcher.mjs');
+
+// CLAUDE.global.md loads Tier 1 through its @memory/MEMORY.md import (slimmed in 6dd016b1a),
+// so the rules Claude sees are the adapter text plus that imported file.
+function effectiveClaudeGlobal(): string {
+  const adapter = fs.readFileSync(CLAUDE_GLOBAL, 'utf8');
+  expect(adapter).toMatch(/^@memory\/MEMORY\.md$/m);
+  return adapter + '\n' + fs.readFileSync(MEMORY_MD, 'utf8');
+}
+
+describe('Communication format: TLDR + Detail (The owner)', () => {
+  it('the feedback file exists and is canonical', () => {
+    expect(fs.existsSync(FEEDBACK)).toBe(true);
+    const body = fs.readFileSync(FEEDBACK, 'utf8');
+    expect(body).toMatch(/^canonical:\s*true/m);
+  });
+
+  it('the feedback file documents the TLDR + Detail + Protocol-output shape', () => {
+    const body = fs.readFileSync(FEEDBACK, 'utf8');
+    expect(body).toMatch(/TLDR/);
+    expect(body).toMatch(/Detail/);
+    expect(body).toMatch(/1-2 sentences/);
+    expect(body).toMatch(
+      /4 paragraphs?\s+maximum|maximum.*4|4 at the very most|max(?:imum)?.{0,30}4 paragraph/i,
+    );
+    expect(body).toMatch(/CEO/);
+    // Section 3: protocol output for #learn / #gap / #ppl / #inbox / #mail.
+    expect(body).toMatch(
+      /Protocol output|workflow.*structure|9-step.*exec summary|protocol.*output/i,
+    );
+    expect(body).toMatch(/#learn/);
+    expect(body).toMatch(/#gap/);
+  });
+
+  it('the feedback file documents the official-response marker rule', () => {
+    const body = fs.readFileSync(FEEDBACK, 'utf8');
+    expect(body).toMatch(/Official response|## Official response/i);
+    expect(body).toMatch(/thinking|deliberation|work-in-progress/i);
+  });
+
+  it('the feedback file lists the daily exec briefing as the one exception', () => {
+    const body = fs.readFileSync(FEEDBACK, 'utf8');
+    expect(body).toMatch(/exec briefing|daily executive briefing|briefing dashboard/i);
+    expect(body).toMatch(/exception/);
+  });
+
+  it('MEMORY.md (Tier 1, loaded on every session) carries the rule', () => {
+    const body = fs.readFileSync(MEMORY_MD, 'utf8');
+    expect(body).toMatch(/TLDR/);
+    expect(body).toMatch(/feedback_communication_format_tldr_detail\.md/);
+  });
+
+  it('Claude Code has the TLDR Stop hook registered', () => {
+    // Stop routes through the hook-boundary dispatcher (family
+    // terminal-quality-closure); the manifest registers the TLDR guard there.
+    const commandsOf = (entries: any) =>
+      (Array.isArray(entries) ? entries : []).flatMap((entry: any) =>
+        (entry.hooks || []).map((hook: any) => String(hook.command || '')),
+      );
+    const settings = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS, 'utf8'));
+    expect(
+      commandsOf(settings.hooks?.Stop).some((command: string) =>
+        /hook-boundary-dispatcher\.mjs terminal-quality-closure$/.test(command),
+      ),
+    ).toBe(true);
+    expect(fs.readFileSync(HOOK_DISPATCHER, 'utf8')).toMatch(/'terminal-quality-closure':\s*'Stop'/);
+    const manifest = JSON.parse(fs.readFileSync(HOOK_MANIFEST, 'utf8'));
+    expect(
+      commandsOf(manifest.global?.Stop).some((command: string) => /tldr-position-guard\.mjs/.test(command)),
+    ).toBe(true);
+  });
+
+  it('the Codex runtime gap is documented so Codex responses self-check TLDR last', () => {
+    const feedback = fs.readFileSync(FEEDBACK, 'utf8');
+    const memory = fs.readFileSync(MEMORY_MD, 'utf8');
+    expect(feedback).toMatch(/Codex desktop\/API/i);
+    expect(feedback).toMatch(/do not run those Claude hooks/i);
+    // 2026-07-05: MEMORY.md's opening line was condensed ("MEMORY.md index is
+    // the skill router" pass) from "Codex desktop/API responses ... self-
+    // check before final" into "Codex desktop/API, ... Codex sessions are
+    // Amy too ... self-check before final". Match the surviving Codex mention
+    // and the self-check requirement separately instead of one adjacent phrase.
+    // Later condensed to "One brain everywhere; Codex is Amy too. ... self-check
+    // before final".
+    expect(memory).toMatch(/Codex is Amy too/i);
+    expect(memory).toMatch(/self-check before final/i);
+  });
+
+  it('writes no Graphiti line while Graphiti is off, across Amy runtimes', () => {
+    // Graphiti recall and ingestion are owner-disabled since 2026-09-07; the
+    // 2026-07-18 every-answer Graphiti impact line is superseded. The feedback
+    // file's frontmatter keeps that history, so only its body is checked.
+    const feedbackBody = fs.readFileSync(FEEDBACK, 'utf8').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '');
+    const memory = fs.readFileSync(MEMORY_MD, 'utf8');
+    const claude = effectiveClaudeGlobal();
+    const codex = fs.readFileSync(CODEX_INSTRUCTIONS, 'utf8');
+    const offRule =
+      /\bno `?Graphiti(?: impact)?`? line\b[^.\n]{0,60}\b(?:off|owner-disabled)\b|\boff\b[^.\n]{0,60}\bno Graphiti line\b/i;
+    const unconditionalDemand =
+      /(?:every|all) (?:official )?(?:answers?|responses?)[^.\n]{0,80}Graphiti impact|Graphiti impact line (?:in|on) (?:every|all) (?:official )?(?:answers?|responses?)/i;
+    for (const body of [feedbackBody, memory, claude, codex]) {
+      expect(body).toMatch(offRule);
+      expect(body).not.toMatch(unconditionalDemand);
+    }
+  });
+
+  it('uses a runtime-neutral adversarial-review impact line and reciprocal peer semantics', () => {
+    const feedback = fs.readFileSync(FEEDBACK, 'utf8');
+    const memory = fs.readFileSync(MEMORY_MD, 'utf8');
+    const claude = effectiveClaudeGlobal();
+    const codex = fs.readFileSync(CODEX_INSTRUCTIONS, 'utf8');
+    for (const body of [feedback, memory, claude, codex]) {
+      expect(body).toMatch(/Impact of adversarial review/i);
+      expect(body).not.toMatch(/^\s*(?:#{1,6}\s*)?Codex impact\s*:/im);
+    }
+    // Tier 1 (slimmed 6dd016b1a) states the Claude-side direction as "Codex reviews"; the
+    // full Codex-asks-Claude / Claude-asks-Codex wording lives in the feedback file and Codex instructions.
+    expect(claude).toMatch(/Codex reviews/i);
+    expect(feedback).toMatch(/Codex asks Claude, Claude asks Codex/i);
+    expect(codex).toMatch(/Codex.{0,80}(?:asks|consults|invoke).{0,80}Claude/is);
+  });
+
+  it('keeps runtime answer formatters on the neutral review label', () => {
+    for (const file of ['src/main/chat.ts', 'src/main/agent-step-loop.ts', 'ec2-server.js']) {
+      const body = fs.readFileSync(path.join(REPO, file), 'utf8');
+      expect(body).toMatch(/Impact of adversarial review/i);
+      expect(body).toMatch(/No peer review was recorded/i);
+      expect(body).not.toMatch(/Codex impact\s*:/i);
+    }
+    const telegram = fs.readFileSync(path.join(REPO, 'ec2-server.js'), 'utf8');
+    expect(telegram).not.toMatch(/reviewDetail|Codex produced the Telegram answer/i);
+  });
+});

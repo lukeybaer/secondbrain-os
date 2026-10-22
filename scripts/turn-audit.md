@@ -1,0 +1,13 @@
+# Reusable response audit
+
+Run `node scripts/turn-audit.js --manifest manifest.json --out /absolute/output-stem`.
+Optional: `--annotations review.json --baseline previous-audit.json --metrics metrics.json`.
+Optional `--summary summary.json` adds reusable report sections. Its shape is `{ "changes": [{ "title":"Change", "detail":"Result and state", "evidence":"Receipt" }], "limitations": [], "recommendations": [] }`; all three arrays use the same title/detail/evidence entry shape. These are supplied review statements, not automatically verified claims. Add `purpose` to each response annotation to expose the action's intended result alongside actual input, proposed input, and explanation. Unannotated purpose is explicitly labeled.
+No provider calls are made. JSONL is streamed; raw records are never exported.
+
+Manifest: `{"campaign":"repair","window":{"start":"2026-09-09T00:00:00Z","end":"2026-09-10T00:00:00Z"},"sessions":[{"id":"exact-session-id","file":"/absolute/rollout.jsonl","role":"Coordinator"}]}`.
+Each file must contain matching session metadata. Sessions are explicit and unique; missing files are disclosed. Windows are start-inclusive, end-exclusive. Cumulative token events are deduplicated before applying the shared canonical usage parser. Counter resets retain last-usage fallback. A duplicate event without cumulative usage is identified by timestamp plus token block. Response IDs are session ID plus the one-based response index within this window; retain the same window when reusing annotations.
+
+Annotations map response IDs to `{ "judgment":"suboptimal", "estimatedInput":1000, "category":"Reusable collection", "evidence":"Public action supporting this judgment", "explanation":"Why" }`. Judgments may also be optimal or uncertain. Unannotated rows are uncertain. Savings require a suboptimal judgment, evidence, one category and a nonnegative estimate no larger than actual input. Each response contributes to only one Pareto category. Estimates are reviewer judgments, not measured causal reductions.
+
+Metric receipts are an array of `{ "metric":"id", "before":"state", "after":"state", "evidence":"receipt reference" }`. The renderer compares campaign totals without claiming comparable workloads or causation. Raw input includes cached input and is not weekly quota consumption. Public action previews are bounded and credentials redacted; structured tool results and private model payloads are omitted. Reports may still contain confidential public-channel task text and should remain in private artifact storage. Baselines must be audit JSON using this schema.
