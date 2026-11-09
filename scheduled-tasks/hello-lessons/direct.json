@@ -1,0 +1,5 @@
+{
+  "script": "scripts/examples/hello-lessons.js",
+  "args": ["$DATE"],
+  "timeoutMs": 60000
+}
