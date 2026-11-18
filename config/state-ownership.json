@@ -1,0 +1,12 @@
+{
+  "schema": "amy.state_ownership.v1",
+  "principle": "Register a scheduled job here only to pin it to one executor host and storage home. Unregistered jobs run locally.",
+  "runtime_archive": {
+    "bucket": "",
+    "region": "",
+    "current_prefix": ""
+  },
+  "cloud_hosts": {},
+  "scheduled_jobs": {},
+  "artifacts": {}
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": { "type": "string", "enum": ["speak", "tool_call"] },
+    "content": { "type": "string" },
+    "toolName": { "type": "string" },
+    "argumentsJson": { "type": "string" }
+  },
+  "required": ["type", "content", "toolName", "argumentsJson"]
+}

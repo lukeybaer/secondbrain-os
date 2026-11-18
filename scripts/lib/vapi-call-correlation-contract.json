@@ -1,0 +1,7 @@
+{
+  "callIdHeader": "x-amy-call-id",
+  "callIdTemplate": "{{call.id}}",
+  "modelAuthHeader": "x-amy-llm-secret",
+  "voiceModel": "amy-codex-subscription-voice",
+  "voicePreflightModel": "amy-codex-subscription-voice-preflight"
+}
